@@ -6,7 +6,7 @@ use daemon::{
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, SyncRetryChannel, SyncState,
+    DaemonUpdateDraftOperation, DaemonWorkflowStepInput, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
@@ -28,6 +28,27 @@ fn context_content(content: &str) -> DaemonDraftContent {
 fn metaprompt_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Metaprompt {
         content: content.to_owned(),
+    }
+}
+
+fn rule_content(name: &str, constraint: &str, tags: &[&str]) -> DaemonDraftContent {
+    DaemonDraftContent::Rule {
+        name: Some(name.to_owned()),
+        applies_when: Some("Publishing durable memory".to_owned()),
+        constraint: constraint.to_owned(),
+        tags: Some(tags.iter().map(|tag| (*tag).to_owned()).collect()),
+    }
+}
+
+fn workflow_content(
+    name: &str,
+    description: &str,
+    steps: Vec<DaemonWorkflowStepInput>,
+) -> DaemonDraftContent {
+    DaemonDraftContent::Workflow {
+        name: Some(name.to_owned()),
+        description: description.to_owned(),
+        steps,
     }
 }
 
@@ -67,6 +88,180 @@ async fn approve_and_merge(
         )
         .await
         .unwrap()
+}
+
+async fn sync_local_draft_and_merge(
+    service: &DaemonIpcService,
+    repository: &ServerRepository,
+    local_draft_id: &str,
+    expected_ref: Option<&str>,
+) -> String {
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projection = service.get_draft(local_draft_id).await.unwrap();
+    let merge = approve_and_merge(
+        repository,
+        projection.draft.server_draft_id.as_deref().unwrap(),
+        projection.draft.server_version,
+        expected_ref,
+    )
+    .await;
+    let commit_id = merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_draft(local_draft_id)
+            .await
+            .unwrap()
+            .draft
+            .status,
+        DaemonLocalDraftStatus::Merged
+    );
+    commit_id
+}
+
+async fn create_project_resource_draft(
+    service: &DaemonIpcService,
+    project_id: &str,
+    resource: DaemonDraftResourceKind,
+    path: &str,
+    content: DaemonDraftContent,
+    source: DaemonDraftOperationSource,
+) -> String {
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_id.to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: path.to_owned(),
+                    content,
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(source),
+        })
+        .await
+        .unwrap()
+        .draft_id
+}
+
+async fn update_and_rename_project_resource_draft(
+    service: &DaemonIpcService,
+    project_id: &str,
+    resource: DaemonDraftResourceKind,
+    resource_id: &str,
+    content: DaemonDraftContent,
+    new_path: &str,
+    update_source: DaemonDraftOperationSource,
+) -> String {
+    let draft_id = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_id.to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation {
+                    id: resource_id.to_owned(),
+                    content,
+                    description: None,
+                }),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(update_source),
+        })
+        .await
+        .unwrap()
+        .draft_id;
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(draft_id.clone()),
+            base_commit_id: None,
+            project_id: project_id.to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: Some(DaemonRenameDraftOperation {
+                    id: resource_id.to_owned(),
+                    new_path: new_path.to_owned(),
+                    description: None,
+                }),
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    draft_id
+}
+
+async fn delete_project_resource_draft(
+    service: &DaemonIpcService,
+    project_id: &str,
+    resource: DaemonDraftResourceKind,
+    resource_id: &str,
+) -> String {
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_id.to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: resource_id.to_owned(),
+                    description: None,
+                }),
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap()
+        .draft_id
+}
+
+async fn cache_root_for_commit(
+    service: &DaemonIpcService,
+    project_id: &str,
+    commit_id: &str,
+) -> std::path::PathBuf {
+    let cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: project_id.to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cache.commit_id.as_deref(), Some(commit_id));
+    std::path::PathBuf::from(cache.root_path.unwrap())
 }
 
 #[tokio::test]
@@ -916,6 +1111,340 @@ async fn project_metaprompt_is_independent_from_hub_and_converges_through_delete
     let deleted_root = std::path::PathBuf::from(deleted_cache.root_path.unwrap());
     assert!(!deleted_root.join("cache/META_PROMPT.md").exists());
     assert!(updated_root.join("cache/META_PROMPT.md").exists());
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn rule_and_workflow_crud_preserve_structured_generations() {
+    let postgres = Postgres::default().start().await.unwrap();
+    let port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let repository = ServerRepository::new(pool.clone());
+    let bootstrap = repository
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Structured Lifecycle",
+        )
+        .await
+        .unwrap();
+
+    let access_token = "daemon-structured-lifecycle-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_structured_lifecycle', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_structured_lifecycle', 'ses_daemon_structured_lifecycle', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(pool))
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{server_address}");
+    config.project.project_id = Some(bootstrap.project_id.clone());
+    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    let service = DaemonIpcService::new(state);
+
+    let create_rule = create_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Rule,
+        "rules/memory-review",
+        rule_content(
+            "Memory review discipline",
+            "Review every memory change before merge.",
+            &["review", "memory"],
+        ),
+        DaemonDraftOperationSource::Desktop,
+    )
+    .await;
+    let rule_create_commit =
+        sync_local_draft_and_merge(&service, &repository, &create_rule, None).await;
+    let rule_meta = repository
+        .list_project_rules(&bootstrap.project_id)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|rule| rule.path == "rules/memory-review")
+        .unwrap();
+    let rule_id = rule_meta.rule_id;
+    let created_rule = repository
+        .get_project_rule(&bootstrap.project_id, &rule_id)
+        .await
+        .unwrap();
+    assert_eq!(created_rule.rule.name, "Memory review discipline");
+    assert_eq!(created_rule.content.tags, vec!["memory", "review"]);
+    let rule_create_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_create_commit).await;
+    assert_eq!(
+        std::fs::read_to_string(rule_create_root.join("cache/rule/rules/memory-review")).unwrap(),
+        "# Memory review discipline\n\n## Applies when\n\nPublishing durable memory\n\n## Constraint\n\nReview every memory change before merge.\n\nTags: memory, review"
+    );
+
+    let create_workflow = create_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Workflow,
+        "workflow/memory-publication",
+        workflow_content(
+            "Memory publication",
+            "Publish durable memory safely.",
+            vec![
+                DaemonWorkflowStepInput {
+                    rule_id: Some(rule_id.clone()),
+                    body: None,
+                },
+                DaemonWorkflowStepInput {
+                    rule_id: None,
+                    body: Some("Verify the materialized generation.".to_owned()),
+                },
+            ],
+        ),
+        DaemonDraftOperationSource::Desktop,
+    )
+    .await;
+    let workflow_create_commit = sync_local_draft_and_merge(
+        &service,
+        &repository,
+        &create_workflow,
+        Some(&rule_create_commit),
+    )
+    .await;
+    let workflow_meta = repository
+        .list_project_workflows(&bootstrap.project_id)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|workflow| workflow.path == "workflow/memory-publication")
+        .unwrap();
+    let workflow_id = workflow_meta.workflow_id;
+    let created_workflow = repository
+        .get_project_workflow(&bootstrap.project_id, &workflow_id)
+        .await
+        .unwrap();
+    assert_eq!(created_workflow.content.steps.len(), 2);
+    assert_eq!(
+        created_workflow.content.steps[0].rule_id.as_deref(),
+        Some(rule_id.as_str())
+    );
+    let workflow_create_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_create_commit).await;
+    assert_eq!(
+        std::fs::read_to_string(
+            workflow_create_root.join("cache/rule/workflow/memory-publication")
+        )
+        .unwrap(),
+        format!(
+            "# Memory publication\n\nPublish durable memory safely.\n\n1. Apply rule `{rule_id}`.\n2. Verify the materialized generation."
+        )
+    );
+
+    let update_rule = update_and_rename_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Rule,
+        &rule_id,
+        rule_content(
+            "Memory review discipline",
+            "Review the change and its materialized result before merge.",
+            &["memory", "review", "verification"],
+        ),
+        "rules/memory-review-policy",
+        DaemonDraftOperationSource::McpStore,
+    )
+    .await;
+    let rule_update_commit = sync_local_draft_and_merge(
+        &service,
+        &repository,
+        &update_rule,
+        Some(&workflow_create_commit),
+    )
+    .await;
+    let updated_rule = repository
+        .get_project_rule(&bootstrap.project_id, &rule_id)
+        .await
+        .unwrap();
+    assert_eq!(updated_rule.rule.path, "rules/memory-review-policy");
+    assert_eq!(
+        updated_rule.content.constraint,
+        "Review the change and its materialized result before merge."
+    );
+    let rule_update_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_update_commit).await;
+    assert!(
+        !rule_update_root
+            .join("cache/rule/rules/memory-review")
+            .exists()
+    );
+    assert!(
+        rule_update_root
+            .join("cache/rule/rules/memory-review-policy")
+            .exists()
+    );
+    assert!(
+        workflow_create_root
+            .join("cache/rule/rules/memory-review")
+            .exists()
+    );
+
+    let update_workflow = update_and_rename_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Workflow,
+        &workflow_id,
+        workflow_content(
+            "Memory publication",
+            "Publish and verify durable memory.",
+            vec![
+                DaemonWorkflowStepInput {
+                    rule_id: None,
+                    body: Some("Verify the materialized generation.".to_owned()),
+                },
+                DaemonWorkflowStepInput {
+                    rule_id: Some(rule_id.clone()),
+                    body: None,
+                },
+            ],
+        ),
+        "workflow/memory-publish",
+        DaemonDraftOperationSource::Desktop,
+    )
+    .await;
+    let workflow_update_commit = sync_local_draft_and_merge(
+        &service,
+        &repository,
+        &update_workflow,
+        Some(&rule_update_commit),
+    )
+    .await;
+    let updated_workflow = repository
+        .get_project_workflow(&bootstrap.project_id, &workflow_id)
+        .await
+        .unwrap();
+    assert_eq!(updated_workflow.workflow.path, "workflow/memory-publish");
+    assert_eq!(updated_workflow.content.steps[0].order, 1);
+    assert_eq!(
+        updated_workflow.content.steps[0].body.as_deref(),
+        Some("Verify the materialized generation.")
+    );
+    assert_eq!(
+        updated_workflow.content.steps[1].rule_id.as_deref(),
+        Some(rule_id.as_str())
+    );
+    let workflow_update_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_update_commit).await;
+    assert!(
+        !workflow_update_root
+            .join("cache/rule/workflow/memory-publication")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_to_string(workflow_update_root.join("cache/rule/workflow/memory-publish"))
+            .unwrap(),
+        format!(
+            "# Memory publication\n\nPublish and verify durable memory.\n\n1. Verify the materialized generation.\n2. Apply rule `{rule_id}`."
+        )
+    );
+    assert!(
+        workflow_create_root
+            .join("cache/rule/workflow/memory-publication")
+            .exists()
+    );
+
+    let delete_workflow = delete_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Workflow,
+        &workflow_id,
+    )
+    .await;
+    let workflow_delete_commit = sync_local_draft_and_merge(
+        &service,
+        &repository,
+        &delete_workflow,
+        Some(&workflow_update_commit),
+    )
+    .await;
+    assert!(matches!(
+        repository
+            .get_project_workflow(&bootstrap.project_id, &workflow_id)
+            .await,
+        Err(server::repository::ServerError::NotFound { .. })
+    ));
+    let workflow_delete_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_delete_commit).await;
+    assert!(
+        !workflow_delete_root
+            .join("cache/rule/workflow/memory-publish")
+            .exists()
+    );
+    assert!(
+        workflow_update_root
+            .join("cache/rule/workflow/memory-publish")
+            .exists()
+    );
+
+    let delete_rule = delete_project_resource_draft(
+        &service,
+        &bootstrap.project_id,
+        DaemonDraftResourceKind::Rule,
+        &rule_id,
+    )
+    .await;
+    let rule_delete_commit = sync_local_draft_and_merge(
+        &service,
+        &repository,
+        &delete_rule,
+        Some(&workflow_delete_commit),
+    )
+    .await;
+    assert!(matches!(
+        repository
+            .get_project_rule(&bootstrap.project_id, &rule_id)
+            .await,
+        Err(server::repository::ServerError::NotFound { .. })
+    ));
+    let rule_delete_root =
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_delete_commit).await;
+    assert!(
+        !rule_delete_root
+            .join("cache/rule/rules/memory-review-policy")
+            .exists()
+    );
+    assert!(
+        workflow_delete_root
+            .join("cache/rule/rules/memory-review-policy")
+            .exists()
+    );
 
     server_task.abort();
 }

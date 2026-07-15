@@ -100,6 +100,7 @@ import {
   memoryPathValidationError,
   mergeRuleTags,
   memoryKinds,
+  memoryKindNoun,
   reviewChangeFromDraft,
   reviewDiff,
   reviewTitleForDraft,
@@ -3455,7 +3456,7 @@ function MemoryWorkspace({
           </div>
           {kind === "Context" ? (
             <FileTree
-              createLabel={canCreate ? `New ${kind}` : undefined}
+              createLabel={canCreate ? `New ${memoryKindNoun(kind)}` : undefined}
               items={items}
               selectedId={selectedId}
               onCreate={canCreate ? () => onCreate(kind) : undefined}
@@ -3465,7 +3466,7 @@ function MemoryWorkspace({
           ) : (
             <ResourceList
               createLabel={
-                canCreate ? `New ${kind === "Rules" ? "Rule" : kind}` : undefined
+                canCreate ? `New ${memoryKindNoun(kind)}` : undefined
               }
               items={items}
               selectedId={selectedId}
@@ -3513,7 +3514,7 @@ function MemoryWorkspace({
           actionLabel={
             items.length || !canCreate
               ? undefined
-              : `Create ${kind === "Rules" ? "Rule" : kind}`
+              : `Create ${memoryKindNoun(kind)}`
           }
           onAction={items.length || !canCreate ? undefined : () => onCreate(kind)}
         />

@@ -164,8 +164,18 @@ export type SearchResult =
   | { type: "bundle"; id: string; label: string; detail: string }
   | { type: "review"; id: string; label: string; detail: string };
 
+export function memoryKindNoun(kind: MemoryKind): string {
+  if (kind === "Rules") {
+    return "Rule";
+  }
+  if (kind === "Workflows") {
+    return "Workflow";
+  }
+  return kind;
+}
+
 const blankDocument = (kind: MemoryKind, suffix: string): MemoryDocument => ({
-  title: `Untitled ${kind === "Rules" ? "Rule" : kind}`,
+  title: `Untitled ${memoryKindNoun(kind)}`,
   path:
     kind === "Context"
       ? `context/untitled-${suffix}.md`

@@ -12,6 +12,7 @@ import {
   listLocalResources,
   listResources,
   listWorkflowRuleOptions,
+  memoryKindNoun,
   memoryPathConflictError,
   memoryPathValidationError,
   mergeRuleTags,
@@ -229,9 +230,15 @@ describe("memory draft lifecycle", () => {
   });
 
   test("new Workflow and Metaprompt drafts use materializable canonical paths", () => {
-    expect(
-      createBlankDraft("Project", "Workflows", "koal", "Koal").document.path,
-    ).toMatch(/^workflow\/untitled-/);
+    const workflow = createBlankDraft(
+      "Project",
+      "Workflows",
+      "koal",
+      "Koal",
+    );
+    expect(workflow.document.path).toMatch(/^workflow\/untitled-/);
+    expect(workflow.document.title).toBe("Untitled Workflow");
+    expect(memoryKindNoun("Workflows")).toBe("Workflow");
     expect(
       createBlankDraft("Project", "Metaprompt", "koal", "Koal").document.path,
     ).toBe("META_PROMPT.md");
