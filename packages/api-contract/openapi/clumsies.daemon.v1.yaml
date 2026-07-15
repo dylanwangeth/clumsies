@@ -606,7 +606,7 @@ components:
       enum: [org, project]
     DaemonLocalDraftStatus:
       type: string
-      enum: [open, submitted, discarded, conflicted]
+      enum: [open, submitted, discarded, conflicted, merged]
     DaemonDraftOperationSource:
       type: string
       enum: [desktop, cli, mcp_store]

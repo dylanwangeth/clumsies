@@ -1024,7 +1024,7 @@ export interface components {
             draft_id: string;
             project_id: string;
             /** @enum {string} */
-            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "reopened" | "conflicted";
+            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "reopened" | "conflicted" | "merged";
             version: number;
             daemon_installation_id: string | null;
             /** Format: date-time */
@@ -1266,7 +1266,7 @@ export interface components {
         /** @enum {string} */
         CommitScope: "org" | "project";
         /** @enum {string} */
-        DraftStatus: "open" | "submitted" | "discarded" | "conflicted";
+        DraftStatus: "open" | "submitted" | "discarded" | "conflicted" | "merged";
         /** @enum {string} */
         DraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
         /** @enum {string} */

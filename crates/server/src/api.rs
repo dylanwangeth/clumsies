@@ -380,6 +380,7 @@ pub enum DraftStatus {
     Submitted,
     Discarded,
     Conflicted,
+    Merged,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -537,6 +538,7 @@ pub enum DraftEventType {
     Submitted,
     Reopened,
     Conflicted,
+    Merged,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -986,6 +988,7 @@ impl DraftEventType {
             Self::Submitted => "submitted",
             Self::Reopened => "reopened",
             Self::Conflicted => "conflicted",
+            Self::Merged => "merged",
         }
     }
 }

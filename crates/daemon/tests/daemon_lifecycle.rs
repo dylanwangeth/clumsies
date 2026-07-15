@@ -21,6 +21,7 @@ use daemon::{
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::sync::Notify;
 
 const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -950,6 +951,59 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
 }
 
 #[tokio::test]
+async fn concurrent_explicit_sync_retries_wait_for_the_inflight_sync() {
+    let blocking_state = BlockingDraftEventsState {
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+        request_count: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/api/v1/draft-events", get(blocking_draft_events))
+        .with_state(blocking_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_retry_lock".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let service = DaemonIpcService::new(state);
+
+    let first_service = service.clone();
+    let first = tokio::spawn(async move {
+        first_service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Drafts,
+            })
+            .await
+            .unwrap();
+    });
+    blocking_state.started.notified().await;
+
+    let second_service = service.clone();
+    let second = tokio::spawn(async move {
+        second_service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Drafts,
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!second.is_finished());
+    assert_eq!(blocking_state.request_count.load(Ordering::Acquire), 1);
+
+    blocking_state.release.notify_one();
+    first.await.unwrap();
+    second.await.unwrap();
+    assert_eq!(blocking_state.request_count.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
 async fn failed_remote_projection_does_not_advance_the_event_cursor() {
     let app = Router::new()
         .route("/api/v1/draft-events", get(fake_list_draft_events))
@@ -1513,6 +1567,28 @@ struct FakeServer {
     create_requests: Arc<Mutex<Vec<serde_json::Value>>>,
     batch_requests: Arc<Mutex<Vec<serde_json::Value>>>,
     delete_requests: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[derive(Clone)]
+struct BlockingDraftEventsState {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    request_count: Arc<AtomicUsize>,
+}
+
+async fn blocking_draft_events(
+    axum::extract::State(state): axum::extract::State<BlockingDraftEventsState>,
+) -> Json<serde_json::Value> {
+    let request_index = state.request_count.fetch_add(1, Ordering::AcqRel);
+    if request_index == 0 {
+        state.started.notify_one();
+        state.release.notified().await;
+    }
+    Json(json!({
+        "events": [],
+        "next_cursor": null,
+        "has_more": false
+    }))
 }
 
 struct AtomicCommitServer {

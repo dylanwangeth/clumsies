@@ -542,6 +542,47 @@ describe("Desktop backend mapping", () => {
     expect(projected.document.body).toBe("# Existing");
   });
 
+  test("maps a merged daemon draft to the terminal Desktop state", async () => {
+    const detail = {
+      draft: {
+        draft_id: "draft_merged",
+        project_id: "prj_test",
+        server_draft_id: "drf_server",
+        server_version: 5,
+        base_commit_id: null,
+        scope: "project" as const,
+        resource_kind: "context" as const,
+        target_id: "ctx_existing",
+        path: "context/existing.md",
+        conflict: null,
+        status: "merged" as const,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:03:00Z",
+        pending_operation_count: 0,
+        failed_operation_count: 0,
+      },
+      operations: [],
+    } as DaemonDraftDetail;
+    const backend = new DesktopBackend(async <T>(command: string) => {
+      if (command === "retry_daemon_sync") {
+        return { retry_id: "retry_merged", started: true } as T;
+      }
+      if (command === "read_daemon_draft") {
+        return detail as T;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const projected = await backend.syncDraftProjection(
+      "draft_merged",
+      [{ id: "prj_test", name: "Test", refCommitId: null }],
+      [resource],
+    );
+
+    expect(projected.status).toBe("merged");
+    expect(projected.syncState).toBe("local");
+  });
+
   test("switches the daemon project without replacing credentials and publishes Hub selection", async () => {
     const daemonCalls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const backend = new DesktopBackend(async <T>(command: string, args?: Record<string, unknown>) => {

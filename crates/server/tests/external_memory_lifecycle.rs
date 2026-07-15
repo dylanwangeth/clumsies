@@ -412,6 +412,13 @@ async fn draft_review_merge_produces_project_commit() {
     assert_eq!(merge.review.status, ReviewStatus::Merged);
     assert_eq!(merge.applied_operation_count, 1);
     let commit_id = merge.commit_id.expect("merge should create a commit");
+    let merged_draft: DraftDetail = get_json(
+        app.clone(),
+        &format!("/api/v1/drafts/{}", draft.draft.draft_id),
+    )
+    .await;
+    assert_eq!(merged_draft.draft.status, DraftStatus::Merged);
+    assert_eq!(merged_draft.draft.version, draft.draft.version + 2);
 
     let project: Project = get_json(app.clone(), &format!("/api/v1/projects/{project_id}")).await;
     assert_eq!(project.revision, 0);
@@ -540,6 +547,9 @@ async fn draft_review_merge_produces_project_commit() {
     );
     assert!(events.events.iter().any(|event| {
         event.event_type == DraftEventType::Submitted && event.daemon_installation_id.is_none()
+    }));
+    assert!(events.events.iter().any(|event| {
+        event.event_type == DraftEventType::Merged && event.daemon_installation_id.is_none()
     }));
     assert!(events.events.iter().any(|event| {
         event.event_type == DraftEventType::OperationAppended

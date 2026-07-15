@@ -1728,7 +1728,7 @@ components:
           type: string
         event_type:
           type: string
-          enum: [created, updated, operation_appended, discarded, submitted, reopened, conflicted]
+          enum: [created, updated, operation_appended, discarded, submitted, reopened, conflicted, merged]
         version:
           type: integer
         daemon_installation_id:
@@ -2228,7 +2228,7 @@ components:
       enum: [org, project]
     DraftStatus:
       type: string
-      enum: [open, submitted, discarded, conflicted]
+      enum: [open, submitted, discarded, conflicted, merged]
     DraftResourceKind:
       type: string
       enum: [context, rule, workflow, metaprompt]

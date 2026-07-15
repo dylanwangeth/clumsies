@@ -113,6 +113,7 @@ export class DesktopBackend {
     if (!projectConfig.project_id) {
       throw new Error("Authenticated Desktop has no active project");
     }
+    await this.daemon.retrySync({ channel: "all" });
 
     const api = new ClumsiesApi(createPublicApiClient({
       baseUrl: projectConfig.server_url,
@@ -155,7 +156,7 @@ export class DesktopBackend {
       api.listReviews({ limit: 200 }),
       Promise.all(
         draftPage.items
-          .filter((draft) => draft.status !== "discarded")
+          .filter((draft) => draft.status !== "discarded" && draft.status !== "merged")
           .map((draft) => this.daemon.draft(draft.draft_id)),
       ),
     ]);
@@ -582,9 +583,11 @@ function mapDaemonDraft(
     operation,
     origin: draftOrigin(detail),
     status:
-      summary.status === "submitted" || summary.status === "conflicted"
-        ? "in_review"
-        : "editing",
+      summary.status === "merged"
+        ? "merged"
+        : summary.status === "submitted" || summary.status === "conflicted"
+          ? "in_review"
+          : "editing",
     syncState: draftSyncState(detail),
     conflict: summary.conflict
       ? {

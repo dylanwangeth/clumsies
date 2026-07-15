@@ -278,7 +278,7 @@ export interface components {
         /** @enum {string} */
         DaemonDraftScope: "org" | "project";
         /** @enum {string} */
-        DaemonLocalDraftStatus: "open" | "submitted" | "discarded" | "conflicted";
+        DaemonLocalDraftStatus: "open" | "submitted" | "discarded" | "conflicted" | "merged";
         /** @enum {string} */
         DaemonDraftOperationSource: "desktop" | "cli" | "mcp_store";
         /** @enum {string} */

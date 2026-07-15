@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -33,7 +33,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 10;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 11;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -652,7 +652,7 @@ struct DaemonInner {
     http: reqwest::Client,
     daemon_installation_id: String,
     sync_notify: Notify,
-    sync_running: AtomicBool,
+    sync_lock: Mutex<()>,
     commit_sync_running: AtomicBool,
     token_refresh: Mutex<()>,
 }
@@ -683,7 +683,7 @@ impl DaemonState {
                 http: reqwest::Client::new(),
                 daemon_installation_id,
                 sync_notify: Notify::new(),
-                sync_running: AtomicBool::new(false),
+                sync_lock: Mutex::new(()),
                 commit_sync_running: AtomicBool::new(false),
                 token_refresh: Mutex::new(()),
             }),
@@ -1030,10 +1030,8 @@ impl DaemonState {
         sync_drafts: bool,
         sync_commits: bool,
     ) -> Result<(), DaemonError> {
-        if self.inner.sync_running.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-        let result = async {
+        let _sync_guard = self.inner.sync_lock.lock().await;
+        async {
             if !self.project_config().readiness().ready {
                 return Ok(());
             }
@@ -1062,9 +1060,7 @@ impl DaemonState {
                 None => Ok(()),
             }
         }
-        .await;
-        self.inner.sync_running.store(false, Ordering::Release);
-        result
+        .await
     }
 }
 
@@ -1339,7 +1335,8 @@ async fn resolve_local_draft(
     if let Some(existing) = sqlx::query(
         "SELECT draft_id, project_id, resource_scope, resource_kind, base_commit_id
          FROM local_drafts
-         WHERE draft_id = $1 OR target_id = $1
+         WHERE (draft_id = $1 OR target_id = $1)
+           AND status = 'open'
          ORDER BY updated_at DESC
          LIMIT 1",
     )
@@ -2251,6 +2248,7 @@ fn local_draft_status_from_str(value: &str) -> Result<DaemonLocalDraftStatus, Da
         "submitted" => Ok(DaemonLocalDraftStatus::Submitted),
         "discarded" => Ok(DaemonLocalDraftStatus::Discarded),
         "conflicted" => Ok(DaemonLocalDraftStatus::Conflicted),
+        "merged" => Ok(DaemonLocalDraftStatus::Merged),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown local draft status: {other}"
         ))),
@@ -2757,7 +2755,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             conflict_base_commit_id TEXT,
             conflict_current_commit_id TEXT,
             conflicted_at TEXT,
-            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted')) DEFAULT 'open',
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted', 'merged')) DEFAULT 'open',
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )",
@@ -3372,6 +3370,7 @@ pub enum DaemonLocalDraftStatus {
     Submitted,
     Discarded,
     Conflicted,
+    Merged,
 }
 
 impl DaemonLocalDraftStatus {
@@ -3381,6 +3380,7 @@ impl DaemonLocalDraftStatus {
             Self::Submitted => "submitted",
             Self::Discarded => "discarded",
             Self::Conflicted => "conflicted",
+            Self::Merged => "merged",
         }
     }
 }

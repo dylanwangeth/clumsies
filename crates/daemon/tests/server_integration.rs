@@ -1,17 +1,18 @@
 mod common;
 
 use daemon::{
-    DaemonConfig, DaemonCreateDraftOperation, DaemonDraftContent, DaemonDraftListQuery,
-    DaemonDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
-    DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService,
-    DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonProjectSelectionRequest,
-    DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
+    DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftContent,
+    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
+    DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
+    DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
+    DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
     DraftResourceKind, DraftResourceRef, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    ReviewDecision,
+    ReviewDecision, ReviewMergeResult,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -22,6 +23,44 @@ fn context_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Context {
         content: content.to_owned(),
     }
+}
+
+async fn approve_and_merge(
+    repository: &ServerRepository,
+    draft_id: &str,
+    expected_draft_version: i64,
+    expected_ref: Option<&str>,
+) -> ReviewMergeResult {
+    let review = repository
+        .create_review(CreateReviewRequest {
+            draft_id: draft_id.to_owned(),
+            expected_draft_version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    let approved = repository
+        .create_review_decision(
+            &review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    repository
+        .create_review_merge(
+            &approved.review.review_id,
+            expected_ref,
+            CreateReviewMergeRequest {
+                expected_review_version: approved.review.version,
+            },
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -255,6 +294,278 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     assert_eq!(projected.draft.status, DaemonLocalDraftStatus::Submitted);
     assert_eq!(projected.draft.server_version, resubmitted.draft.version);
     assert_eq!(resubmitted.review.review_id, review.review.review_id);
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
+    let postgres = Postgres::default().start().await.unwrap();
+    let port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let repository = ServerRepository::new(pool.clone());
+    let bootstrap = repository
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Context Lifecycle",
+        )
+        .await
+        .unwrap();
+
+    let seed_draft = repository
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_seed_context".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Seed context".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/original.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Project,
+                        kind: DraftResourceKind::Context,
+                        id: None,
+                        path: Some("context/original.md".to_owned()),
+                    },
+                    content: Some(DraftResourceContent::Context {
+                        content: "# Original\n\nBefore local editing.".to_owned(),
+                    }),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let seed_merge = approve_and_merge(
+        &repository,
+        &seed_draft.draft.draft_id,
+        seed_draft.draft.version,
+        None,
+    )
+    .await;
+    let seed_commit_id = seed_merge.commit_id.unwrap();
+    let context_id = repository
+        .list_project_context(&bootstrap.project_id)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|context| context.path == "context/original.md")
+        .unwrap()
+        .context_id;
+
+    let access_token = "daemon-context-lifecycle-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_context_lifecycle', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_context_lifecycle', 'ses_daemon_context_lifecycle', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(pool))
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{server_address}");
+    config.project.project_id = Some(bootstrap.project_id.clone());
+    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    let service = DaemonIpcService::new(state);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+
+    let update_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation {
+                    id: context_id.clone(),
+                    content: context_content("# Renamed\n\nUpdated through the daemon."),
+                    description: None,
+                }),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(update_draft.draft_id.clone()),
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: Some(DaemonRenameDraftOperation {
+                    id: context_id.clone(),
+                    new_path: "context/renamed.md".to_owned(),
+                    description: None,
+                }),
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let update_projection = service.get_draft(&update_draft.draft_id).await.unwrap();
+    let update_merge = approve_and_merge(
+        &repository,
+        update_projection.draft.server_draft_id.as_deref().unwrap(),
+        update_projection.draft.server_version,
+        Some(&seed_commit_id),
+    )
+    .await;
+    let update_commit_id = update_merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    let merged_update = service.get_draft(&update_draft.draft_id).await.unwrap();
+    assert_eq!(merged_update.draft.status, DaemonLocalDraftStatus::Merged);
+    let cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+    assert!(
+        !cache_root
+            .join("cache/context/context/original.md")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_to_string(cache_root.join("cache/context/context/renamed.md")).unwrap(),
+        "# Renamed\n\nUpdated through the daemon."
+    );
+
+    let delete_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: context_id,
+                    description: None,
+                }),
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    assert_ne!(delete_draft.draft_id, update_draft.draft_id);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let delete_projection = service.get_draft(&delete_draft.draft_id).await.unwrap();
+    let delete_merge = approve_and_merge(
+        &repository,
+        delete_projection.draft.server_draft_id.as_deref().unwrap(),
+        delete_projection.draft.server_version,
+        Some(&update_commit_id),
+    )
+    .await;
+    let delete_commit_id = delete_merge.commit_id.unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    let merged_delete = service.get_draft(&delete_draft.draft_id).await.unwrap();
+    assert_eq!(merged_delete.draft.status, DaemonLocalDraftStatus::Merged);
+    let deleted_cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted_cache.commit_id.as_deref(),
+        Some(delete_commit_id.as_str())
+    );
+    let deleted_cache_root = std::path::PathBuf::from(deleted_cache.root_path.unwrap());
+    assert_ne!(deleted_cache_root, cache_root);
+    assert!(cache_root.join("cache/context/context/renamed.md").exists());
+    assert!(
+        !deleted_cache_root
+            .join("cache/context/context/renamed.md")
+            .exists()
+    );
+    assert!(
+        repository
+            .list_project_context(&bootstrap.project_id)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
 
     server_task.abort();
 }

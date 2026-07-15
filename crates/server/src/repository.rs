@@ -1572,6 +1572,11 @@ impl ServerRepository {
                     "draft submission must use review creation".to_owned(),
                 ));
             }
+            Some(DraftStatus::Merged) => {
+                return Err(ServerError::InvalidRequest(
+                    "draft merge must use review merge".to_owned(),
+                ));
+            }
             None => status.as_str(),
         };
         let existing_title: String = row.try_get("title")?;
@@ -2262,6 +2267,24 @@ impl ServerRepository {
         .bind(&commit_id)
         .bind(materialized_operations.len() as i32)
         .execute(&mut *tx)
+        .await?;
+        let merged_draft_version: i64 = sqlx::query_scalar(
+            "UPDATE drafts
+             SET status = 'merged', version = version + 1, updated_at = now()
+             WHERE draft_id = $1
+             RETURNING version",
+        )
+        .bind(&draft_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        insert_draft_event(
+            &mut tx,
+            &draft_id,
+            &project_id,
+            DraftEventType::Merged,
+            merged_draft_version,
+            None,
+        )
         .await?;
 
         tx.commit().await?;
@@ -5549,6 +5572,7 @@ fn draft_status(value: &str) -> Result<DraftStatus, ServerError> {
         "submitted" => Ok(DraftStatus::Submitted),
         "discarded" => Ok(DraftStatus::Discarded),
         "conflicted" => Ok(DraftStatus::Conflicted),
+        "merged" => Ok(DraftStatus::Merged),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown draft status: {other}"
         ))),
@@ -5564,6 +5588,7 @@ fn draft_event_type(value: &str) -> Result<DraftEventType, ServerError> {
         "submitted" => Ok(DraftEventType::Submitted),
         "reopened" => Ok(DraftEventType::Reopened),
         "conflicted" => Ok(DraftEventType::Conflicted),
+        "merged" => Ok(DraftEventType::Merged),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown draft event type: {other}"
         ))),

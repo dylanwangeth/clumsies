@@ -124,6 +124,7 @@ import {
   memoryTabKey,
   openWorkspaceTab,
   pinWorkspaceTab,
+  retargetMemoryTabs,
   type MemoryTabSurface,
   type WorkspaceTab,
 } from "./workspace-tabs";
@@ -380,7 +381,7 @@ export function App() {
     const backend = backendRef.current;
     if (!backend) {
       setLoadState({ status: "preview" });
-      return;
+      return null;
     }
     setLoadState({ status: "loading" });
     try {
@@ -452,6 +453,7 @@ export function App() {
         mcpStatus: backendState.runtime.mcpStatus,
       });
       await invoke("present_main_window");
+      return backendState;
     } catch (error) {
       if (error instanceof AuthenticationRequiredError) {
         setAccount(null);
@@ -470,13 +472,14 @@ export function App() {
           });
           await invoke("present_main_window").catch(() => undefined);
         }
-        return;
+        return null;
       }
       setLoadState({
         status: "failed",
         message: error instanceof Error ? error.message : String(error),
       });
       await invoke("present_main_window").catch(() => undefined);
+      return null;
     }
   }, []);
 
@@ -892,6 +895,24 @@ export function App() {
       setActiveTabKey((current) =>
         current === sourceKey || current === previewKey ? null : current,
       );
+    },
+    [],
+  );
+
+  const retargetMemoryWorkspaceTabs = useCallback(
+    (view: "Hub" | "Local", currentTargetId: string, nextTargetId: string) => {
+      setWorkspaceTabs((current) =>
+        retargetMemoryTabs(current, view, currentTargetId, nextTargetId),
+      );
+      setActiveTabKey((current) => {
+        if (current === memoryTabKey(view, currentTargetId, "source")) {
+          return memoryTabKey(view, nextTargetId, "source");
+        }
+        if (current === memoryTabKey(view, currentTargetId, "markdown-preview")) {
+          return memoryTabKey(view, nextTargetId, "markdown-preview");
+        }
+        return current;
+      });
     },
     [],
   );
@@ -1589,7 +1610,40 @@ export function App() {
           }
           return;
         }
-        await refreshBackend({ preserveWorkspace: true });
+        const backendState = await refreshBackend({ preserveWorkspace: true });
+        const workspaceView = change.scope === "Hub" ? "Hub" : "Local";
+        if (change.operation === "delete" && change.baseResourceId) {
+          removeMemoryWorkspaceTabs(workspaceView, change.baseResourceId);
+          if (workspaceView === "Hub") {
+            setSelectedHubId((current) =>
+              current === change.baseResourceId ? null : current,
+            );
+          } else {
+            setSelectedProjectResourceId((current) =>
+              current === change.baseResourceId ? null : current,
+            );
+          }
+        } else if (!change.baseResourceId && localDraft && backendState) {
+          const mergedResource = backendState.resources.find(
+            (resource) =>
+              resource.scope === change.scope &&
+              resource.kind === change.kind &&
+              (change.scope === "Hub" || resource.projectId === change.projectId) &&
+              resource.document.path === change.document.path,
+          );
+          if (mergedResource) {
+            retargetMemoryWorkspaceTabs(workspaceView, localDraft.id, mergedResource.id);
+            if (workspaceView === "Hub") {
+              setSelectedHubId((current) =>
+                current === localDraft.id ? mergedResource.id : current,
+              );
+            } else {
+              setSelectedProjectResourceId((current) =>
+                current === localDraft.id ? mergedResource.id : current,
+              );
+            }
+          }
+        }
         setSelectedReviewId(reviewId);
         setReviewFilter("merged");
         return;
@@ -1612,9 +1666,41 @@ export function App() {
           item.id === reviewId ? { ...item, status: "merged" } : item,
         ),
       );
+      const workspaceView = change.scope === "Hub" ? "Hub" : "Local";
+      if (change.operation === "delete" && change.baseResourceId) {
+        removeMemoryWorkspaceTabs(workspaceView, change.baseResourceId);
+        if (workspaceView === "Hub") {
+          setSelectedHubId((current) =>
+            current === change.baseResourceId ? null : current,
+          );
+        } else {
+          setSelectedProjectResourceId((current) =>
+            current === change.baseResourceId ? null : current,
+          );
+        }
+      } else if (!change.baseResourceId && localDraft) {
+        retargetMemoryWorkspaceTabs(workspaceView, localDraft.id, resourceId);
+        if (workspaceView === "Hub") {
+          setSelectedHubId((current) =>
+            current === localDraft.id ? resourceId : current,
+          );
+        } else {
+          setSelectedProjectResourceId((current) =>
+            current === localDraft.id ? resourceId : current,
+          );
+        }
+      }
       setReviewFilter("merged");
     },
-    [drafts, projects, refreshBackend, resources, reviews],
+    [
+      drafts,
+      projects,
+      refreshBackend,
+      removeMemoryWorkspaceTabs,
+      resources,
+      retargetMemoryWorkspaceTabs,
+      reviews,
+    ],
   );
 
   const resolveReviewConflict = useCallback(
