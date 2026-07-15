@@ -1,23 +1,25 @@
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
-    APP_BUNDLE_IDENTIFIER, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDiscardDraftOperation,
-    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
-    DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
-    DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
-    DaemonIpcTransport, DaemonLocalDraftStatus, DaemonProjectConfigUpdateRequest, DaemonState,
-    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, SyncRetryChannel,
-    SyncState,
+    APP_BUNDLE_IDENTIFIER, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
+    DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
+    DaemonDiscardDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
+    DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
+    DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
+    DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
+    DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonState, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController,
+    LaunchAgentRuntimeStatus, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 #[tokio::test]
 async fn health_initializes_local_database_and_stable_installation_id() {
@@ -27,7 +29,7 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     let health = service.health().await;
 
     assert!(health.local_db.ready);
-    assert_eq!(health.local_db.schema_version, 6);
+    assert_eq!(health.local_db.schema_version, CURRENT_LOCAL_SCHEMA_VERSION);
     assert_eq!(health.daemon_installation_id, first_id);
     assert!(health.local_db.path.ends_with("local.db"));
     assert!(health.log_dir.ends_with("logs"));
@@ -309,6 +311,19 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
         .dispatch(DaemonIpcRequest::empty("sync_status"))
         .await;
     assert!(sync_status.ok);
+
+    let memory_cache: DaemonMemoryCacheStatus = service
+        .dispatch(DaemonIpcRequest::new(
+            "memory_cache",
+            serde_json::to_value(DaemonMemoryCacheRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .unwrap(),
+        ))
+        .await
+        .into_payload()
+        .unwrap();
+    assert!(!memory_cache.ready);
 
     let retry = service
         .dispatch(DaemonIpcRequest::new(
@@ -1064,6 +1079,94 @@ async fn mcp_status_reports_no_daemon_owned_supervisor() {
     assert!(status.adapters.is_empty());
 }
 
+#[tokio::test]
+async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
+    let server = AtomicCommitServer::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = server.url.clone();
+    config.project.project_id = Some("prj_atomic".to_owned());
+    config.project.access_token = Some("fake-access-token".to_owned());
+    let service = DaemonIpcService::new(DaemonState::initialize(config).await.unwrap());
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+    let installed = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: "prj_atomic".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(installed.ready);
+    assert_eq!(installed.commit_id.as_deref(), Some("commit-valid"));
+    let installed_root = installed.root_path.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(
+            std::path::Path::new(&installed_root).join("cache/context/context/valid.md")
+        )
+        .unwrap(),
+        "Valid authority"
+    );
+
+    server.publish_invalid_commit();
+    let error = service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("content-address verification"));
+
+    let after_failure = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: "prj_atomic".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(after_failure.ready);
+    assert_eq!(after_failure.commit_id.as_deref(), Some("commit-valid"));
+    assert_eq!(
+        after_failure.root_path.as_deref(),
+        Some(installed_root.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            std::path::Path::new(&installed_root).join("cache/context/context/valid.md")
+        )
+        .unwrap(),
+        "Valid authority"
+    );
+    assert!(
+        !root
+            .path()
+            .join("cache/projects/prj_atomic/generations/commit-invalid")
+            .exists()
+    );
+
+    let sync = service.sync_status().await.unwrap();
+    assert_eq!(sync.commit_sync.state, SyncState::Failed);
+    assert_eq!(
+        sync.commit_sync.server_cursor.as_deref(),
+        Some("commit-valid")
+    );
+    assert!(sync.commit_sync.last_error.is_some());
+
+    std::fs::remove_file(std::path::Path::new(&installed_root).join("manifest.json")).unwrap();
+    let corrupted = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: "prj_atomic".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(!corrupted.ready);
+    assert_eq!(corrupted.commit_id.as_deref(), Some("commit-valid"));
+    assert_eq!(corrupted.root_path, None);
+}
+
 async fn wait_for_create_request(server: &FakeServer) {
     for _ in 0..50 {
         if !server.create_requests.lock().unwrap().is_empty() {
@@ -1092,6 +1195,196 @@ struct FakeServer {
     delete_requests: Arc<Mutex<Vec<(String, String)>>>,
 }
 
+struct AtomicCommitServer {
+    url: String,
+    revision: Arc<AtomicUsize>,
+}
+
+impl AtomicCommitServer {
+    async fn start() -> Self {
+        let revision = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/api/v1/org/commit-state", get(atomic_org_commit_state))
+            .route(
+                "/api/v1/projects/{project_id}/commit-state",
+                get(atomic_project_commit_state),
+            )
+            .route("/api/v1/commits/{commit_id}", get(atomic_commit_payload))
+            .with_state(revision.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        Self {
+            url: format!("http://{addr}"),
+            revision,
+        }
+    }
+
+    fn publish_invalid_commit(&self) {
+        self.revision.store(1, Ordering::Release);
+    }
+}
+
+#[derive(Deserialize)]
+struct AtomicCommitStateQuery {
+    local_commit_id: Option<String>,
+}
+
+async fn atomic_org_commit_state() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": false,
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "org",
+                "org_id": "org_atomic",
+                "project_id": null,
+                "commit_id": null,
+                "updated_at": "2026-07-15T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
+}
+
+async fn atomic_project_commit_state(
+    axum::extract::State(revision): axum::extract::State<Arc<AtomicUsize>>,
+    axum::extract::Path(project_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AtomicCommitStateQuery>,
+) -> impl axum::response::IntoResponse {
+    let invalid = revision.load(Ordering::Acquire) == 1;
+    let commit_id = if invalid {
+        "commit-invalid"
+    } else {
+        "commit-valid"
+    };
+    let tree_id = if invalid {
+        "tree-invalid"
+    } else {
+        "tree-valid"
+    };
+    let parent_commit_id = invalid.then_some("commit-valid");
+    let version = if invalid { 2 } else { 1 };
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::ETAG,
+        axum::http::HeaderValue::from_str(&format!("\"{commit_id}\"")).unwrap(),
+    );
+    (
+        headers,
+        Json(json!({
+            "update_available": query.local_commit_id.as_deref() != Some(commit_id),
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "project",
+                "org_id": "org_atomic",
+                "project_id": project_id,
+                "commit_id": commit_id,
+                "updated_at": "2026-07-15T00:00:00Z"
+            },
+            "latest": {
+                "commit_id": commit_id,
+                "scope": "project",
+                "org_id": "org_atomic",
+                "project_id": "prj_atomic",
+                "tree_id": tree_id,
+                "parent_commit_id": parent_commit_id,
+                "version": version,
+                "created_at": "2026-07-15T00:00:00Z"
+            },
+            "download_url": format!("/api/v1/commits/{commit_id}"),
+            "incremental_supported": false
+        })),
+    )
+}
+
+async fn atomic_commit_payload(
+    axum::extract::Path(commit_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let invalid = commit_id == "commit-invalid";
+    let tree_id = if invalid {
+        "tree-invalid"
+    } else {
+        "tree-valid"
+    };
+    let path = if invalid {
+        "context/invalid.md"
+    } else {
+        "context/valid.md"
+    };
+    let content = if invalid {
+        "Invalid authority"
+    } else {
+        "Valid authority"
+    };
+    let content_blob_id = if invalid {
+        "not-the-content-address".to_owned()
+    } else {
+        test_blob_id(content)
+    };
+    let selection = json!({
+        "project_id": "prj_atomic",
+        "rules": [],
+        "context": [],
+        "workflows": [],
+        "revision": 0
+    });
+    let selection_content = serde_json::to_string(&selection).unwrap();
+    let selection_blob_id = test_blob_id(&selection_content);
+    Json(json!({
+        "commit": {
+            "commit_id": commit_id,
+            "scope": "project",
+            "org_id": "org_atomic",
+            "project_id": "prj_atomic",
+            "tree_id": tree_id,
+            "parent_commit_id": invalid.then_some("commit-valid"),
+            "version": if invalid { 2 } else { 1 },
+            "created_at": "2026-07-15T00:00:00Z"
+        },
+        "tree": {
+            "tree_id": tree_id,
+            "entries": [
+                {
+                    "id": if invalid { "ctx_invalid" } else { "ctx_valid" },
+                    "type": "context",
+                    "scope": "project",
+                    "project_id": "prj_atomic",
+                    "path": path,
+                    "blob_id": content_blob_id,
+                    "source": "project"
+                },
+                {
+                    "id": "project_org_selection",
+                    "type": "project_org_selection",
+                    "scope": "daemon",
+                    "project_id": "prj_atomic",
+                    "path": null,
+                    "blob_id": selection_blob_id,
+                    "source": "config"
+                }
+            ]
+        },
+        "blobs": [
+            { "blob_id": content_blob_id, "content": content },
+            { "blob_id": selection_blob_id, "content": selection_content }
+        ],
+        "project_org_selection": selection
+    }))
+}
+
+fn test_blob_id(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"blob\0");
+    hasher.update(content.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 impl FakeServer {
     async fn start() -> Self {
         let create_requests = Arc::new(Mutex::new(Vec::new()));
@@ -1105,6 +1398,11 @@ impl FakeServer {
         let app = Router::new()
             .route("/api/v1/drafts", post(fake_create_draft))
             .route("/api/v1/draft-events", get(fake_list_draft_events))
+            .route("/api/v1/org/commit-state", get(fake_org_commit_state))
+            .route(
+                "/api/v1/projects/{project_id}/commit-state",
+                get(fake_project_commit_state),
+            )
             .route(
                 "/api/v1/drafts/{draft_id}",
                 get(fake_get_draft).delete(fake_delete_draft),
@@ -1126,6 +1424,48 @@ impl FakeServer {
             delete_requests,
         }
     }
+}
+
+async fn fake_org_commit_state() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": false,
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "org",
+                "org_id": "org_test",
+                "project_id": null,
+                "commit_id": null,
+                "updated_at": "2026-07-08T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
+}
+
+async fn fake_project_commit_state(
+    axum::extract::Path(project_id): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": false,
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "project",
+                "org_id": "org_test",
+                "project_id": project_id,
+                "commit_id": null,
+                "updated_at": "2026-07-08T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
 }
 
 #[derive(Clone)]

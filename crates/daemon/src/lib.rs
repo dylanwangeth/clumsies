@@ -20,13 +20,15 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+mod commit_sync;
 mod ipc;
+pub use commit_sync::{DaemonMemoryCacheRequest, DaemonMemoryCacheStatus};
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 6;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 7;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -511,6 +513,7 @@ struct DaemonInner {
     daemon_installation_id: String,
     sync_notify: Notify,
     sync_running: AtomicBool,
+    commit_sync_running: AtomicBool,
     token_refresh: Mutex<()>,
 }
 
@@ -531,6 +534,7 @@ impl DaemonState {
                 daemon_installation_id,
                 sync_notify: Notify::new(),
                 sync_running: AtomicBool::new(false),
+                commit_sync_running: AtomicBool::new(false),
                 token_refresh: Mutex::new(()),
             }),
         })
@@ -667,6 +671,13 @@ impl DaemonState {
         load_sync_status(self).await
     }
 
+    pub async fn memory_cache(
+        &self,
+        request: DaemonMemoryCacheRequest,
+    ) -> Result<DaemonMemoryCacheStatus, DaemonError> {
+        commit_sync::memory_cache(self, request).await
+    }
+
     pub async fn retry_sync(
         &self,
         request: DaemonSyncRetryRequest,
@@ -683,10 +694,15 @@ impl DaemonState {
         .execute(&self.inner.pool)
         .await?;
 
-        if matches!(
+        let retry_drafts = matches!(
             request.channel,
             SyncRetryChannel::Drafts | SyncRetryChannel::All
-        ) {
+        );
+        let retry_commits = matches!(
+            request.channel,
+            SyncRetryChannel::Commits | SyncRetryChannel::All
+        );
+        if retry_drafts {
             sqlx::query(
                 "UPDATE local_draft_operations
                  SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -694,8 +710,8 @@ impl DaemonState {
             )
             .execute(&self.inner.pool)
             .await?;
-            self.run_sync_cycle().await?;
         }
+        self.run_sync_channels(retry_drafts, retry_commits).await?;
 
         Ok(DaemonRetryResponse {
             retry_id,
@@ -712,13 +728,24 @@ impl DaemonState {
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);
         let operation_json = serde_json::to_string(&request.op)?;
+        let base_commit_id = match request.base_commit_id {
+            Some(commit_id) => Some(commit_id),
+            None => {
+                commit_sync::current_base_commit_id(
+                    &self.inner.pool,
+                    &request.project_id,
+                    request.scope,
+                )
+                .await?
+            }
+        };
         let mut tx = self.inner.pool.begin().await?;
 
         let draft_id = resolve_local_draft(
             &mut tx,
             request.draft_id.as_deref(),
             &request.project_id,
-            request.base_commit_id.as_deref(),
+            base_commit_id.as_deref(),
             request.scope,
             request.resource,
             &request.op,
@@ -803,6 +830,14 @@ impl DaemonState {
     }
 
     async fn run_sync_cycle(&self) -> Result<(), DaemonError> {
+        self.run_sync_channels(true, true).await
+    }
+
+    async fn run_sync_channels(
+        &self,
+        sync_drafts: bool,
+        sync_commits: bool,
+    ) -> Result<(), DaemonError> {
         if self.inner.sync_running.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -810,10 +845,30 @@ impl DaemonState {
             if !self.project_config().readiness().ready {
                 return Ok(());
             }
-            upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT).await?;
-            self.drain_draft_queue().await?;
-            self.pull_draft_events().await?;
-            upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_SUCCESS_AT).await
+            let mut first_error = None;
+            if sync_drafts {
+                let draft_result = async {
+                    upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT)
+                        .await?;
+                    self.drain_draft_queue().await?;
+                    self.pull_draft_events().await?;
+                    upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_SUCCESS_AT).await
+                }
+                .await;
+                if let Err(error) = draft_result {
+                    first_error = Some(error);
+                }
+            }
+            if sync_commits
+                && let Err(error) = commit_sync::run(self).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
         .await;
         self.inner.sync_running.store(false, Ordering::Release);
@@ -848,6 +903,13 @@ impl DaemonIpcService {
 
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         self.state.sync_status().await
+    }
+
+    pub async fn memory_cache(
+        &self,
+        request: DaemonMemoryCacheRequest,
+    ) -> Result<DaemonMemoryCacheStatus, DaemonError> {
+        self.state.memory_cache(request).await
     }
 
     pub async fn retry_sync(
@@ -907,6 +969,17 @@ impl DaemonIpcService {
                 .sync_status()
                 .await
                 .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+            "memory_cache" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .memory_cache(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
             "retry_sync" => {
                 let payload =
                     self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
@@ -1310,6 +1383,13 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     } else {
         SyncState::Idle
     };
+    let commit_sync = commit_sync::status(state).await?;
+    let overall_last_success_at = match (&last_success_at, &commit_sync.last_success_at) {
+        (Some(draft), Some(commit)) => Some(std::cmp::max(draft, commit).clone()),
+        (Some(draft), None) => Some(draft.clone()),
+        (None, Some(commit)) => Some(commit.clone()),
+        (None, None) => None,
+    };
 
     Ok(DaemonSyncStatus {
         draft_sync: SyncChannelStatus {
@@ -1326,17 +1406,11 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
                 })
             }),
         },
-        commit_sync: SyncChannelStatus {
-            state: SyncState::Idle,
-            server_cursor: None,
-            last_attempt_at: None,
-            last_success_at: None,
-            last_error: None,
-        },
+        commit_sync,
         pending_operation_count,
         failed_operation_count,
         conflict_count: 0,
-        last_success_at,
+        last_success_at: overall_last_success_at,
     })
 }
 
@@ -2449,6 +2523,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     )
     .execute(pool)
     .await?;
+    commit_sync::migrate(pool).await?;
     sqlx::query(
         "INSERT INTO daemon_meta (key, value)
          VALUES ('schema_version', $1)

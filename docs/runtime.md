@@ -13,6 +13,8 @@ The database currently stores:
 - access and refresh tokens
 - local drafts and ordered operations
 - synchronization status, failures, and Server draft identity
+- immutable Blob, Tree, and Commit metadata
+- installed organization and project Refs
 
 File permissions are owner-only. Token storage must move to macOS Keychain
 before production release; SQLite token persistence is not the desired final
@@ -58,25 +60,42 @@ current bound project ID and project scope before sending the operation to
 daemon. The Rust daemon test suite consumes a literal Zig MCP envelope to keep
 that cross-language contract executable.
 
+When the caller omits `base_commit_id`, daemon reads it from the installed
+project Ref before creating the local draft. A missing Ref produces a draft
+with no base; daemon never invents a Commit ID.
+
 MCP does not currently expose organization scope in `store`; interpreting the
 same call as a Hub write would be ambiguous. Hub writes are explicit in Desktop.
 
-The retained Zig cache does not yet record the Server `base_commit_id`. That
-must be solved by Commit materialization before MCP drafts can preserve a
-provably correct base while offline.
+Local drafts and authority generations are currently separate read models.
+`store` persists and synchronizes a draft, but MCP `activate` and `retrieve`
+continue to read the installed authority generation until a later effective
+local view overlays open drafts.
 
 ## Commit synchronization
 
-The daemon contract has a `commit_sync` status channel, but no Commit download
-worker exists yet. It reports idle with no fabricated cursor or success time.
-The required future path is:
+The daemon synchronizes both organization and project Refs on its background
+interval and through explicit retry:
 
 ```text
-Server Ref -> Commit -> Tree/Blobs -> atomic local materialization -> MCP reads
+Server commit-state + ETag
+  -> validate Ref identity
+  -> download Commit payload
+  -> verify Blob addresses and Tree ownership
+  -> build an immutable project generation
+  -> move the local SQLite Ref
+  -> MCP asks daemon for that exact generation
 ```
 
-It must preserve the exact Commit ID consumed by MCP so a later local draft can
-use that value as `base_commit_id`.
+The generation is built under a temporary directory and renamed before the Ref
+transaction commits. A failed download, invalid payload, or incomplete
+generation leaves the previous Ref and MCP-visible files unchanged. The
+`commit_sync.server_cursor` is the installed project Commit ID, not a fabricated
+timestamp or independent revision.
+
+Server currently publishes full Commit payloads, so incremental object transfer
+is not implemented. Cached immutable objects are retained for restart and
+integrity checks; type-aware diff and merge remain separate work.
 
 ## Diagnostics
 

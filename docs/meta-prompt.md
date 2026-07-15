@@ -22,7 +22,7 @@ First, rules, workflows, and context are not supposed to be discovered by crawli
 
 Second, `retrieve` returns structured rule and workflow metadata, including constraints, but the current MCP surface no longer has a separate reference-reporting tool.
 
-Third, `store` is the only MCP write path for managed agent memory. It writes local drafts that shadow the synced cache; it does not directly edit authoritative cache files.
+Third, `store` is the only MCP write path for managed agent memory. It writes a local daemon draft and queues automatic synchronization; it does not directly edit authoritative cache files. Activation and retrieval continue to read the installed authority Commit until the draft is merged.
 
 Fourth, the adapter owns part of the protocol lifecycle. Session bootstrap is injected by the installed host adapter rather than being left to the model to remember ad hoc.
 
@@ -48,17 +48,17 @@ but take priority when they conflict.
    descriptions to decide what is relevant.
 2. **Retrieve.** Call `retrieve()` with the ids you need and a `knownHashes`
    entry for every id. Retrieve only selected relevant items from activation,
-   or retrieve directly when the user provides an exact Server id, local draft id,
-   alias, or path. Use a remembered hash when available, otherwise pass an
+   or retrieve directly when the user provides an exact Server id, alias, or
+   path. Use a remembered hash when available, otherwise pass an
    empty string. Loaded content includes parsed rule ids.
 3. **Apply.** Follow loaded rules in your work. Rules override your defaults.
    Use loaded context as project background, but trust code and observable
    runtime state when they conflict.
 4. **Refine.** Use `store()` as the only MCP write path when the user asks
    you to create, update, rename, delete, or discard agent memory for rule,
-   context, or MPF artifacts. `store()` writes a local draft that shadows the
-   synced cache; it does not directly edit the authoritative cache file. Use a
-   `resource` value and exactly one tagged `op` object.
+   context, or MPF artifacts. `store()` writes a local daemon draft and queues
+   automatic synchronization; it does not directly edit the authoritative
+   cache file. Use a `resource` value and exactly one tagged `op` object.
 
 ## Resource types
 

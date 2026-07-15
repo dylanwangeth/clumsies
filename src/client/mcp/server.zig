@@ -10,24 +10,22 @@ const tool_names = @import("tool_names.zig");
 const tools = @import("tools.zig");
 
 pub const State = struct {
-    workspace_root: []const u8,
+    memory_root_override: ?[]const u8 = null,
     session: *session_mod.Session,
     initialized: bool = false,
     initialize_seen: bool = false,
 };
 
-pub fn runWithRoot(
+pub fn run(
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     allocator: std.mem.Allocator,
     version: []const u8,
-    workspace_root: []const u8,
     session: *session_mod.Session,
 ) !void {
     _ = stderr;
 
     var state: State = .{
-        .workspace_root = workspace_root,
         .session = session,
     };
 
@@ -114,7 +112,7 @@ fn processMessage(allocator: std.mem.Allocator, state: *State, version: []const 
     }
 
     if (std.mem.eql(u8, method, "tools/call")) {
-        const result = tools.handleCall(allocator, state.workspace_root, state.session, params) catch |e| {
+        const result = tools.handleCall(allocator, state.memory_root_override, state.session, params) catch |e| {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Unexpected system error: {s}", .{@errorName(e)}) catch "Unexpected system error";
             return try protocol.buildErrorAlloc(allocator, id.?, .internal_error, msg);
@@ -161,7 +159,7 @@ test "processLine: initialize then tools list" {
     defer session.deinit(testing.allocator);
 
     var state: State = .{
-        .workspace_root = "/tmp/workspace",
+        .memory_root_override = "/tmp/workspace",
         .session = &session,
     };
 

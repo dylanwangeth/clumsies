@@ -45,7 +45,7 @@ const retrieve_schema =
 
 const store_schema =
     "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\"," ++
-    "\"description\":\"The only MCP write path for managed agent memory. Use store whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including META_PROMPT. Store writes a local draft that shadows the synced cache; it does not directly edit the authoritative cache file. Store is not part of the mandatory activation loop. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+    "\"description\":\"The only MCP write path for managed agent memory. Use store whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including META_PROMPT. Store writes a local daemon draft and queues automatic Server synchronization; it does not directly edit the authoritative cache file. Store is not part of the mandatory activation loop. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"],\"description\":\"The resource type: 'context', 'rule', or 'mpf'.\"}," ++
     "\"op\":{\"type\":\"object\",\"description\":\"The draft operation details, containing exactly one of create, update, rename, delete, or discard.\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
@@ -87,7 +87,7 @@ pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
 
 pub fn handleCall(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
+    memory_root_override: ?[]const u8,
     session: *session_mod.Session,
     params: std.json.Value,
 ) ![]u8 {
@@ -109,8 +109,17 @@ pub fn handleCall(
         else => return try tool_result.buildErrorResult(allocator, "invalid request: arguments must be a JSON object"),
     };
 
+    var owned_memory_root: ?[]u8 = null;
+    defer if (owned_memory_root) |root| allocator.free(root);
+
     if (std.mem.eql(u8, name, tool_names.retrieve)) {
-        return handleRetrieve(allocator, workspace_root, session, args_obj) catch |err| switch (err) {
+        const memory_root = resolveMemoryRoot(
+            allocator,
+            memory_root_override,
+            session.ws_id,
+            &owned_memory_root,
+        ) catch |err| return memoryCacheErr(allocator, err);
+        return handleRetrieve(allocator, memory_root, session, args_obj) catch |err| switch (err) {
             error.UnknownRuleId => try tool_result.buildErrorResult(
                 allocator,
                 "Unknown rule id",
@@ -130,13 +139,47 @@ pub fn handleCall(
         );
     }
     if (is_activate) {
-        return try handleActivate(allocator, workspace_root, session, args_obj);
+        const memory_root = resolveMemoryRoot(
+            allocator,
+            memory_root_override,
+            session.ws_id,
+            &owned_memory_root,
+        ) catch |err| return memoryCacheErr(allocator, err);
+        return try handleActivate(allocator, memory_root, session, args_obj);
     }
     if (is_store) {
-        return handleStore(allocator, workspace_root, session, args_obj) catch |err| storeErr(allocator, err);
+        return handleStore(allocator, session, args_obj) catch |err| storeErr(allocator, err);
     }
 
     unreachable;
+}
+
+fn resolveMemoryRoot(
+    allocator: std.mem.Allocator,
+    memory_root_override: ?[]const u8,
+    project_id: []const u8,
+    owned_memory_root: *?[]u8,
+) ![]const u8 {
+    if (memory_root_override) |memory_root| return memory_root;
+    const memory_root = try daemon_ipc.memoryCacheRootAlloc(allocator, project_id);
+    owned_memory_root.* = memory_root;
+    return memory_root;
+}
+
+fn memoryCacheErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
+    return tool_result.buildErrorResult(allocator, switch (err) {
+        error.MemoryCacheNotReady => "local authoritative memory cache is not ready",
+        error.XpcUnavailable => "local daemon IPC is only implemented on macOS",
+        error.XpcReturnedNullConnection,
+        error.XpcReturnedNullObject,
+        error.XpcReturnedErrorObject,
+        error.XpcExpectedDictionary,
+        error.XpcMissingResponseJson,
+        error.InvalidDaemonIpcResponse,
+        error.DaemonIpcRejected,
+        => "local daemon is unavailable or did not provide the memory cache",
+        else => "failed to read the local authoritative memory cache",
+    }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
 }
 
 fn handleRetrieve(
@@ -505,7 +548,6 @@ const DraftOp = enum {
 
 fn handleStore(
     allocator: std.mem.Allocator,
-    _: []const u8,
     session: *session_mod.Session,
     args: std.json.ObjectMap,
 ) ![]u8 {
@@ -869,23 +911,4 @@ test "discoverResultNames caps recorded bytes" {
 
     try testing.expect(names.len <= DISCOVER_RESULT_NAMES_MAX_BYTES);
     try testing.expect(std.mem.indexOf(u8, names, "... (+") != null);
-}
-
-// The next three tests exercise full handleCall flows against
-// synthetic .rules fixtures. They were added before the test
-// aggregator was wired into client/main.zig, so they never ran — and
-// silently drifted out of sync with handleCall's actual response
-// format. Skipping them keeps CI honest while the mismatch is
-// resolved; they should be re-enabled once the MCP activate / retrieve
-// contract is re-audited.
-test "handleCall: activate returns rule metadata" {
-    return error.SkipZigTest;
-}
-
-test "handleCall: retrieve returns content" {
-    return error.SkipZigTest;
-}
-
-test "handleCall: retrieve returns structured error when no workspace binding" {
-    return error.SkipZigTest;
 }

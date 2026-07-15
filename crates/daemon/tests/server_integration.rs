@@ -1,8 +1,13 @@
 use daemon::{
     DaemonConfig, DaemonCreateDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
-    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonState,
-    DaemonSyncRetryRequest, SyncRetryChannel,
+    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonMemoryCacheRequest,
+    DaemonState, DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
+};
+use server::api::{
+    CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    DraftOperationAction, DraftOperationInput, DraftResourceKind, DraftResourceRef, ResourceScope,
+    ReviewDecision,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -358,6 +363,242 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
     let after_restart = restarted_a.get_draft(&first.draft_id).await.unwrap();
     assert_eq!(after_restart.draft.server_version, 2);
     assert_eq!(after_restart.operations.len(), 2);
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
+    let postgres = Postgres::default().start().await.unwrap();
+    let port = postgres.get_host_port_ipv4(5432).await.unwrap();
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let repository = ServerRepository::new(pool.clone());
+    let bootstrap = repository
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Commit Convergence",
+        )
+        .await
+        .unwrap();
+
+    let access_token = "daemon-commit-convergence-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_commit_convergence', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_commit_convergence', 'ses_daemon_commit_convergence', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(pool))
+            .await
+            .unwrap();
+    });
+
+    let root_a = tempfile::tempdir().unwrap();
+    let mut config_a = DaemonConfig::for_root(root_a.path());
+    config_a.project.server_url = format!("http://{server_address}");
+    config_a.project.project_id = Some(bootstrap.project_id.clone());
+    config_a.project.access_token = Some(access_token.to_owned());
+    let service_a = DaemonIpcService::new(DaemonState::initialize(config_a.clone()).await.unwrap());
+
+    let root_b = tempfile::tempdir().unwrap();
+    let mut config_b = DaemonConfig::for_root(root_b.path());
+    config_b.project.server_url = format!("http://{server_address}");
+    config_b.project.project_id = Some(bootstrap.project_id.clone());
+    config_b.project.access_token = Some(access_token.to_owned());
+    let service_b = DaemonIpcService::new(DaemonState::initialize(config_b).await.unwrap());
+
+    for service in [&service_a, &service_b] {
+        service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Commits,
+            })
+            .await
+            .unwrap();
+        let empty = service
+            .memory_cache(DaemonMemoryCacheRequest {
+                project_id: bootstrap.project_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(empty.ready);
+        assert_eq!(empty.commit_id, None);
+    }
+
+    let draft = repository
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_commit_origin".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Add synchronized context".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/commit-sync.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Project,
+                        kind: DraftResourceKind::Context,
+                        id: None,
+                        path: Some("context/commit-sync.md".to_owned()),
+                    },
+                    base_hash: None,
+                    body: Some("# Commit sync\n\nInstalled from an immutable Commit.".to_owned()),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let review = repository
+        .create_review(CreateReviewRequest {
+            draft_id: draft.draft.draft_id,
+            expected_draft_version: draft.draft.version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    let approved = repository
+        .create_review_decision(
+            &review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    let merge = repository
+        .create_review_merge(
+            &approved.review_id,
+            None,
+            CreateReviewMergeRequest {
+                expected_review_version: approved.version,
+            },
+        )
+        .await
+        .unwrap();
+    let commit_id = merge.commit_id.unwrap();
+
+    let mut roots = Vec::new();
+    for service in [&service_a, &service_b] {
+        service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Commits,
+            })
+            .await
+            .unwrap();
+        let cache = service
+            .memory_cache(DaemonMemoryCacheRequest {
+                project_id: bootstrap.project_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(cache.ready);
+        assert_eq!(cache.commit_id.as_deref(), Some(commit_id.as_str()));
+        let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(cache_root.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["project_id"], bootstrap.project_id);
+        assert_eq!(manifest["commit_id"], commit_id);
+        assert_eq!(
+            std::fs::read_to_string(cache_root.join("cache/context/context/commit-sync.md"))
+                .unwrap(),
+            "# Commit sync\n\nInstalled from an immutable Commit."
+        );
+        let sync = service.sync_status().await.unwrap();
+        assert_eq!(sync.commit_sync.state, SyncState::Idle);
+        assert_eq!(
+            sync.commit_sync.server_cursor.as_deref(),
+            Some(commit_id.as_str())
+        );
+        assert!(sync.commit_sync.last_error.is_none());
+        roots.push(cache_root);
+    }
+    assert_ne!(roots[0], roots[1]);
+    assert_eq!(
+        roots[0].file_name().unwrap().to_str(),
+        roots[1].file_name().unwrap().to_str()
+    );
+
+    drop(service_a);
+    let restarted_a = DaemonIpcService::new(DaemonState::initialize(config_a).await.unwrap());
+    let cache_after_restart = restarted_a
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(cache_after_restart.ready);
+    assert_eq!(
+        cache_after_restart.commit_id.as_deref(),
+        Some(commit_id.as_str())
+    );
+    assert_eq!(
+        cache_after_restart.root_path.as_deref(),
+        Some(roots[0].to_str().unwrap())
+    );
+
+    let next_draft = restarted_a
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/next.md".to_owned(),
+                    body: "Uses the installed Ref as its base.".to_owned(),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    let next_draft = restarted_a.get_draft(&next_draft.draft_id).await.unwrap();
+    assert_eq!(
+        next_draft.draft.base_commit_id.as_deref(),
+        Some(commit_id.as_str())
+    );
 
     server_task.abort();
 }

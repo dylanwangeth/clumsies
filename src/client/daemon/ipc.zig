@@ -15,6 +15,35 @@ pub fn healthPayloadJson(allocator: std.mem.Allocator) ![]u8 {
     return try payloadJsonFromResponse(allocator, response_json);
 }
 
+pub fn memoryCacheRootAlloc(allocator: std.mem.Allocator, project_id: []const u8) ![]u8 {
+    const request_json = try memoryCacheRequestJsonAlloc(allocator, project_id);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    const payload_json = try payloadJsonFromResponse(allocator, response_json);
+    defer allocator.free(payload_json);
+
+    const parsed = try std.json.parseFromSlice(
+        struct {
+            project_id: []const u8,
+            commit_id: ?[]const u8,
+            root_path: ?[]const u8,
+            ready: bool,
+        },
+        allocator,
+        payload_json,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+    if (!parsed.value.ready) return error.MemoryCacheNotReady;
+    const root_path = parsed.value.root_path orelse return error.InvalidDaemonIpcResponse;
+    return try allocator.dupe(u8, root_path);
+}
+
+pub fn memoryCacheRequestJsonAlloc(allocator: std.mem.Allocator, project_id: []const u8) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "memory_cache", .{ .project_id = project_id });
+}
+
 pub fn callEmpty(allocator: std.mem.Allocator, service_name: []const u8, method: []const u8) ![]u8 {
     const request_json = try requestJsonAlloc(allocator, method);
     defer allocator.free(request_json);
@@ -222,6 +251,15 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"META_PROMPT.md\"") != null);
+}
+
+test "memoryCacheRequestJsonAlloc builds daemon cache envelope" {
+    const json = try memoryCacheRequestJsonAlloc(std.testing.allocator, "project_test");
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expectEqualStrings(
+        \\{"method":"memory_cache","payload":{"project_id":"project_test"}}
+    , json);
 }
 
 test "payloadJsonFromResponse returns successful payload JSON" {

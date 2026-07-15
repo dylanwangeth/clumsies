@@ -91,7 +91,7 @@ Calling `activate()` with no arguments performs broad activation. Add filters on
 
 | Call shape | Meaning |
 | --- | --- |
-| `activate()` | broad activation across rules, workflows, context, and draft-aware items |
+| `activate()` | broad activation across authority rules, workflows, and context |
 | `activate({kind: "rule"})` | only rule candidates |
 | `activate({kind: "workflow"})` | only workflow candidates |
 | `activate({kind: "context"})` | only context candidates |
@@ -128,26 +128,26 @@ Each item can include:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | stable object ID or local `tmp-*` draft ID |
+| `id` | stable authority object ID |
 | `kind` | `rule`, `workflow`, or `context` |
 | `path` | current workspace-relative path |
 | `name` | display name derived from the path |
 | `group` | optional group value |
 | `hash` | current content hash |
 | `description` | optional metadata description when present |
-| `hasDraft` | whether the object currently has a local draft |
+| `hasDraft` | reserved draft-overlay field; currently `false` for authority generations |
 
 ## `retrieve` For Content
 
 When `ids` is present and `session_id` is absent, `retrieve` resolves full content for the selected IDs. This is the old load parameter structure under the new tool name.
 
-Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Server id, local draft id, alias, or path, retrieve that reference directly without a broad activation search.
+Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Server id, alias, or path, retrieve that reference directly without a broad activation search.
 
 ### Input
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `ids` | string array | yes | one or more rule, workflow, context, path, alias, or local `tmp-*` IDs |
+| `ids` | string array | yes | one or more authority rule, workflow, context, path, or alias IDs |
 | `knownHashes` | object map | yes | `{id: hash}` map for delta loading; include every requested id |
 
 Each `ids` entry must also be present in `knownHashes`. Pass the remembered hash when available. Pass an empty string when the caller explicitly does not know the hash yet.
@@ -185,8 +185,8 @@ Important item fields are:
 | --- | --- |
 | `changed` | whether the current hash differs from the caller's `knownHashes` entry |
 | `hash` | current content hash |
-| `hasDraft` | whether the loaded result resolves to draft-aware state |
-| `draftBaseHash` | optional base hash when draft-aware content is involved |
+| `hasDraft` | reserved draft-overlay field; currently `false` for authority generations |
+| `draftBaseHash` | reserved base hash for a future effective draft overlay |
 | `content` | full text content, or `null` when unchanged under delta loading |
 | `constraints` | parsed rule/workflow constraint entries returned as metadata |
 
@@ -196,7 +196,7 @@ The content no longer includes a footer telling the agent to call a reference-re
 
 `store` is the only MCP write path for managed agent memory. Use it whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including `META_PROMPT.md`.
 
-`store` does not directly edit the synced cache or authoritative server state. It writes a local draft that shadows the cached memory until the draft enters review or is applied. It is not part of the mandatory activation loop.
+`store` does not directly edit the synced cache or authoritative Server state. It writes a local daemon draft and queues automatic Server synchronization. `activate` and `retrieve` keep reading the installed authority Commit until that draft is reviewed and merged; an effective draft overlay is not implemented yet. `store` is not part of the mandatory activation loop.
 
 The input is still the tagged command object used by the previous draft tool. This phase does not introduce text-fragment replacement or multi-patch operations; `update.body` is the complete replacement draft body.
 
@@ -266,7 +266,6 @@ The input is still the tagged command object used by the previous draft tool. Th
 | `retrieve` bootstrap omits `knownHashes.META_PROMPT.md` | `isError: true` with an invalid params error |
 | `retrieve` content load omits `knownHashes` or an entry for a requested ID | `isError: true` with an invalid params error |
 | `retrieve` content load receives an unknown rule ID | `Unknown rule id` |
-| `store` path is unsafe | `unsafe path` |
-| `store` target is missing | `memory artifact or draft not found` |
-| `store` update conflicts with a non-update local draft | `memory artifact already has an incompatible local change` |
-| `store` create collides with an existing draft | `draft already exists` |
+| daemon has no installed authority generation | `local authoritative memory cache is not ready` |
+| daemon XPC is unavailable during `activate` or `retrieve` | `local daemon is unavailable or did not provide the memory cache` |
+| daemon XPC rejects `store` | `local daemon is unavailable or did not accept the draft operation` |

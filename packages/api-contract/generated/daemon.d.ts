@@ -59,6 +59,15 @@ export interface components {
             access_token: string | null;
             refresh_token: string | null;
         };
+        DaemonMemoryCacheRequest: {
+            project_id: string;
+        };
+        DaemonMemoryCacheStatus: {
+            project_id: string;
+            commit_id: string | null;
+            root_path: string | null;
+            ready: boolean;
+        };
         DaemonServerRequest: {
             /** @enum {string} */
             method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

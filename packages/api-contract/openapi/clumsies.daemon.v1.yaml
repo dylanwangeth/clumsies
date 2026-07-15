@@ -132,6 +132,24 @@ components:
           type: [string, "null"]
         refresh_token:
           type: [string, "null"]
+    DaemonMemoryCacheRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+    DaemonMemoryCacheStatus:
+      type: object
+      required: [project_id, commit_id, root_path, ready]
+      properties:
+        project_id:
+          type: string
+        commit_id:
+          type: [string, "null"]
+        root_path:
+          type: [string, "null"]
+        ready:
+          type: boolean
     DaemonServerRequest:
       type: object
       required: [method, path, headers, body]
