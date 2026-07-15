@@ -22,6 +22,18 @@ The WebView renderer never receives the access token or refresh token. All
 authenticated product requests are sent through daemon, which injects the
 bearer token outside renderer JavaScript.
 
+## Provider verification
+
+Server discovers provider metadata and JWKS from the configured issuer and
+requires the discovery document to return that exact issuer. Authorization
+code exchange failures use `oidc_code_exchange_failed`; issuer, audience,
+nonce, expiry, and signature failures use `oidc_id_token_invalid`.
+
+When an ID Token references an unknown signing key, Server refreshes discovery
+and JWKS once, then verifies the already received token again. It does not
+redeem the one-time provider authorization code a second time. A signature
+failure against a matching key is rejected without a refresh retry.
+
 ## Member admission
 
 An organization owner or admin creates a member admission record through the

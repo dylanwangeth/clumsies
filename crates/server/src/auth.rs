@@ -1,5 +1,5 @@
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -7,9 +7,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openidconnect::core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata};
 use openidconnect::reqwest;
 use openidconnect::{
-    AccessTokenHash, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet,
-    EndpointNotSet, EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, Scope, TokenResponse as _,
+    AccessTokenHash, AuthorizationCode, ClaimsVerificationError, ClientId, ClientSecret, CsrfToken,
+    EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl, Nonce, OAuth2TokenResponse,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RequestTokenError, Scope,
+    SignatureVerificationError, TokenResponse as _,
 };
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -77,7 +78,10 @@ pub trait OidcIdentityProvider: Send + Sync {
 
 pub struct DiscoveredOidcProvider {
     issuer: String,
-    client: DiscoveredCoreClient,
+    client_id: String,
+    client_secret: String,
+    callback_url: String,
+    client: RwLock<DiscoveredCoreClient>,
     http_client: reqwest::Client,
 }
 
@@ -89,30 +93,74 @@ impl DiscoveredOidcProvider {
         callback_url: String,
     ) -> Result<Self, AuthError> {
         let issuer = IssuerUrl::new(issuer.to_owned())
-            .map_err(|error| AuthError::Configuration(error.to_string()))?;
-        let issuer_identity = issuer.to_string();
+            .map_err(|error| AuthError::Configuration(error.to_string()))?
+            .to_string();
         let http_client = reqwest::ClientBuilder::new()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| AuthError::ProviderUnavailable(error.to_string()))?;
-        let metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
-            .await
-            .map_err(|error| AuthError::ProviderUnavailable(error.to_string()))?;
-        let client = CoreClient::from_provider_metadata(
-            metadata,
-            ClientId::new(client_id),
-            Some(ClientSecret::new(client_secret)),
+        let client = discover_oidc_client(
+            &issuer,
+            &client_id,
+            &client_secret,
+            &callback_url,
+            &http_client,
         )
-        .set_redirect_uri(
-            RedirectUrl::new(callback_url)
-                .map_err(|error| AuthError::Configuration(error.to_string()))?,
-        );
+        .await?;
         Ok(Self {
-            issuer: issuer_identity,
-            client,
+            issuer,
+            client_id,
+            client_secret,
+            callback_url,
+            client: RwLock::new(client),
             http_client,
         })
     }
+
+    fn client(&self) -> Result<DiscoveredCoreClient, AuthError> {
+        self.client
+            .read()
+            .map_err(|_| AuthError::ProviderUnavailable("OIDC client lock is poisoned".to_owned()))
+            .map(|client| client.clone())
+    }
+
+    async fn refresh_client(&self) -> Result<DiscoveredCoreClient, AuthError> {
+        let client = discover_oidc_client(
+            &self.issuer,
+            &self.client_id,
+            &self.client_secret,
+            &self.callback_url,
+            &self.http_client,
+        )
+        .await?;
+        *self.client.write().map_err(|_| {
+            AuthError::ProviderUnavailable("OIDC client lock is poisoned".to_owned())
+        })? = client.clone();
+        Ok(client)
+    }
+}
+
+async fn discover_oidc_client(
+    issuer: &str,
+    client_id: &str,
+    client_secret: &str,
+    callback_url: &str,
+    http_client: &reqwest::Client,
+) -> Result<DiscoveredCoreClient, AuthError> {
+    let issuer = IssuerUrl::new(issuer.to_owned())
+        .map_err(|error| AuthError::Configuration(error.to_string()))?;
+    let metadata = CoreProviderMetadata::discover_async(issuer, http_client)
+        .await
+        .map_err(|error| AuthError::ProviderUnavailable(error.to_string()))?;
+    Ok(CoreClient::from_provider_metadata(
+        metadata,
+        ClientId::new(client_id.to_owned()),
+        Some(ClientSecret::new(client_secret.to_owned())),
+    )
+    .set_redirect_uri(
+        RedirectUrl::new(callback_url.to_owned())
+            .map_err(|error| AuthError::Configuration(error.to_string()))?,
+    ))
 }
 
 #[async_trait]
@@ -126,8 +174,8 @@ impl OidcIdentityProvider for DiscoveredOidcProvider {
     ) -> Result<String, AuthError> {
         let state = provider_state.to_owned();
         let nonce = nonce.to_owned();
-        let mut request = self
-            .client
+        let client = self.client()?;
+        let mut request = client
             .authorize_url(
                 CoreAuthenticationFlow::AuthorizationCode,
                 move || CsrfToken::new(state),
@@ -149,20 +197,38 @@ impl OidcIdentityProvider for DiscoveredOidcProvider {
         nonce: &str,
         provider_pkce_verifier: &str,
     ) -> Result<OidcIdentity, AuthError> {
-        let response = self
-            .client
+        let client = self.client()?;
+        let response = client
             .exchange_code(AuthorizationCode::new(code.to_owned()))
-            .map_err(|error| AuthError::ProviderInvalid(error.to_string()))?
+            .map_err(|error| AuthError::ProviderCodeExchangeFailed(error.to_string()))?
             .set_pkce_verifier(PkceCodeVerifier::new(provider_pkce_verifier.to_owned()))
             .request_async(&self.http_client)
             .await
-            .map_err(|error| AuthError::ProviderUnavailable(error.to_string()))?;
+            .map_err(|error| match error {
+                RequestTokenError::Request(error) => {
+                    AuthError::ProviderUnavailable(error.to_string())
+                }
+                RequestTokenError::ServerResponse(error) => {
+                    AuthError::ProviderCodeExchangeFailed(error.to_string())
+                }
+                RequestTokenError::Parse(error, _) => {
+                    AuthError::ProviderCodeExchangeFailed(error.to_string())
+                }
+                RequestTokenError::Other(error) => AuthError::ProviderCodeExchangeFailed(error),
+            })?;
         let id_token = response.id_token().ok_or_else(|| {
             AuthError::ProviderInvalid("provider returned no ID token".to_owned())
         })?;
-        let verifier = self.client.id_token_verifier();
+        let nonce = Nonce::new(nonce.to_owned());
+        let initial_verifier = client.id_token_verifier();
+        let verification_client = match id_token.claims(&initial_verifier, &nonce) {
+            Ok(_) => client.clone(),
+            Err(error) if needs_jwks_refresh(&error) => self.refresh_client().await?,
+            Err(error) => return Err(AuthError::ProviderInvalid(error.to_string())),
+        };
+        let verifier = verification_client.id_token_verifier();
         let claims = id_token
-            .claims(&verifier, &Nonce::new(nonce.to_owned()))
+            .claims(&verifier, &nonce)
             .map_err(|error| AuthError::ProviderInvalid(error.to_string()))?;
         if let Some(expected_hash) = claims.access_token_hash() {
             let actual_hash = AccessTokenHash::from_token(
@@ -204,6 +270,13 @@ impl OidcIdentityProvider for DiscoveredOidcProvider {
             avatar_url,
         })
     }
+}
+
+fn needs_jwks_refresh(error: &ClaimsVerificationError) -> bool {
+    matches!(
+        error,
+        ClaimsVerificationError::SignatureVerification(SignatureVerificationError::NoMatchingKey)
+    )
 }
 
 #[derive(Clone)]
@@ -988,6 +1061,8 @@ pub enum AuthError {
     RedirectNotAllowed,
     #[error("OIDC provider is unavailable: {0}")]
     ProviderUnavailable(String),
+    #[error("OIDC authorization code exchange failed: {0}")]
+    ProviderCodeExchangeFailed(String),
     #[error("OIDC identity response is invalid: {0}")]
     ProviderInvalid(String),
     #[error("OIDC login transaction is expired or already consumed")]
@@ -1016,6 +1091,7 @@ impl AuthError {
             Self::InvalidRequest(_) => "validation_failed",
             Self::RedirectNotAllowed => "redirect_uri_not_allowed",
             Self::ProviderUnavailable(_) => "oidc_provider_unavailable",
+            Self::ProviderCodeExchangeFailed(_) => "oidc_code_exchange_failed",
             Self::ProviderInvalid(_) => "oidc_id_token_invalid",
             Self::LoginTransactionExpired => "login_transaction_expired",
             Self::EmailNotVerified => "email_not_verified",
