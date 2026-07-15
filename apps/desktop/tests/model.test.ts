@@ -3,6 +3,7 @@ import {
   applyDraft,
   createBlankDraft,
   createDraftFromResource,
+  documentValidationError,
   globalSearch,
   initialBundles,
   initialDrafts,
@@ -10,8 +11,10 @@ import {
   initialReviews,
   listLocalResources,
   listResources,
+  listWorkflowRuleOptions,
   resourceWorkingState,
   reviewDiff,
+  workflowStepValidationError,
 } from "../src/model";
 
 describe("memory draft lifecycle", () => {
@@ -65,6 +68,65 @@ describe("memory draft lifecycle", () => {
       draft: null,
     });
     expect(inherited?.document.body).toBe(hubResource.document.body);
+  });
+
+  test("Workflow rule options follow the current effective memory", () => {
+    const hubRule = initialResources.find(
+      (entry) => entry.id === "hub-rule-compatibility",
+    )!;
+    const unselectedHubRule = initialResources.find(
+      (entry) => entry.id === "hub-rule-ui-product",
+    )!;
+    const projectRule = initialResources.find(
+      (entry) => entry.id === "project-rule-testing",
+    )!;
+    const otherProjectRule = {
+      ...projectRule,
+      id: "other-project-rule",
+      projectId: "other",
+      projectName: "Other",
+    };
+    const resources = [hubRule, unselectedHubRule, projectRule, otherProjectRule];
+
+    expect(
+      listWorkflowRuleOptions(resources, "Hub", null).map((rule) => rule.id),
+    ).toEqual([hubRule.id, unselectedHubRule.id]);
+    expect(
+      listWorkflowRuleOptions(resources, "Project", "koal", [hubRule.id]).map(
+        (rule) => rule.id,
+      ),
+    ).toEqual([projectRule.id, hubRule.id]);
+  });
+
+  test("preview Workflow preserves a published Rule reference", () => {
+    const workflow = initialResources.find(
+      (entry) => entry.id === "hub-workflow-coding",
+    );
+
+    expect(workflow?.document.steps[0]).toEqual({
+      ruleId: "hub-rule-compatibility",
+      body: null,
+    });
+  });
+
+  test("Workflow validation rejects incomplete steps", () => {
+    const workflow = createBlankDraft(
+      "Project",
+      "Workflows",
+      "koal",
+      "Koal",
+    ).document;
+
+    expect(documentValidationError("Workflows", workflow)).toBeNull();
+    expect(workflowStepValidationError({ ruleId: null, body: "" })).toBe(
+      "Choose a published Rule or write an instruction.",
+    );
+    expect(
+      workflowStepValidationError({ ruleId: "rule-one", body: "Duplicate" }),
+    ).toBe("Choose a published Rule or write an instruction.");
+    expect(
+      documentValidationError("Workflows", { ...workflow, steps: [] }),
+    ).toBe("A Workflow needs at least one step.");
   });
 
   test("new Workflow and Metaprompt drafts use materializable canonical paths", () => {

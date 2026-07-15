@@ -1558,6 +1558,41 @@ async fn invalid_memory_paths_are_rejected_before_draft_storage() {
         StatusCode::BAD_REQUEST
     );
 
+    let empty_workflow = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id.clone(),
+        base_commit_id: None,
+        title: "Empty Workflow".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Workflow,
+            id: None,
+            path: Some("workflow/empty".to_owned()),
+        },
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Workflow,
+                id: None,
+                path: Some("workflow/empty".to_owned()),
+            },
+            content: Some(DraftResourceContent::Workflow {
+                name: Some("Empty Workflow".to_owned()),
+                description: String::new(),
+                steps: Vec::new(),
+            }),
+            new_path: None,
+        }],
+    };
+    assert_eq!(
+        post_response(app.clone(), "/api/v1/drafts", &empty_workflow)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
     let invalid_metaprompt = CreateDraftRequest {
         daemon_installation_id: "daemon_paths".to_owned(),
         project_id: bootstrap.project_id,

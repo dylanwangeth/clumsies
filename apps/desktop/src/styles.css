@@ -1696,6 +1696,7 @@ pre {
 .labeled-field textarea,
 .workflow-purpose,
 .workflow-steps textarea,
+.workflow-step-rule,
 .bundle-description,
 .comment-composer textarea,
 .settings-row input {
@@ -1765,6 +1766,56 @@ pre {
 .workflow-steps textarea {
   min-height: 54px;
   resize: vertical;
+}
+
+.workflow-step-content {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.workflow-step-kind {
+  display: inline-flex;
+  width: max-content;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  padding: 2px;
+}
+
+.workflow-step-kind button {
+  height: 22px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 0 7px;
+}
+
+.workflow-step-kind button.active {
+  background: var(--bg-raised);
+  box-shadow: 0 1px 2px rgba(31, 24, 28, 0.12);
+  color: var(--text);
+}
+
+.workflow-step-kind button:disabled {
+  opacity: 0.45;
+}
+
+.workflow-step-rule {
+  height: 32px;
+}
+
+.workflow-step-content [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.workflow-step-error {
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .step-actions {

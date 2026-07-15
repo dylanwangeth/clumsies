@@ -1440,6 +1440,7 @@ components:
           type: string
         steps:
           type: array
+          minItems: 1
           items:
             $ref: "#/components/schemas/WorkflowStep"
     WorkflowStep:
@@ -1652,6 +1653,7 @@ components:
           type: string
         steps:
           type: array
+          minItems: 1
           items:
             $ref: "#/components/schemas/WorkflowStepInput"
     MetapromptDraftContent:

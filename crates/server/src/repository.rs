@@ -3912,6 +3912,11 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
 }
 
 fn validate_workflow_step_shapes(steps: &[WorkflowStepInput]) -> Result<(), ServerError> {
+    if steps.is_empty() {
+        return Err(ServerError::InvalidRequest(
+            "workflow must contain at least one step".to_owned(),
+        ));
+    }
     for step in steps {
         let has_rule = step
             .rule_id
@@ -5559,5 +5564,43 @@ fn tree_entry_source(value: &str) -> Result<TreeEntrySource, ServerError> {
         other => Err(ServerError::InvalidRequest(format!(
             "unknown tree entry source: {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_steps_require_non_empty_exclusive_content() {
+        assert!(validate_workflow_step_shapes(&[]).is_err());
+        assert!(
+            validate_workflow_step_shapes(&[WorkflowStepInput {
+                rule_id: None,
+                body: None,
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_workflow_step_shapes(&[WorkflowStepInput {
+                rule_id: Some("rule-one".to_owned()),
+                body: Some("duplicate".to_owned()),
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_workflow_step_shapes(&[WorkflowStepInput {
+                rule_id: Some("rule-one".to_owned()),
+                body: None,
+            }])
+            .is_ok()
+        );
+        assert!(
+            validate_workflow_step_shapes(&[WorkflowStepInput {
+                rule_id: None,
+                body: Some("Run the step.".to_owned()),
+            }])
+            .is_ok()
+        );
     }
 }

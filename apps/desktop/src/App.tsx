@@ -85,18 +85,21 @@ import {
   cloneDocument,
   createBlankDraft,
   createDraftFromResource,
+  documentValidationError,
   findListItem,
   globalSearch,
   initialBundles,
   initialDrafts,
   initialResources,
   initialReviews,
-  listResources,
   listLocalResources,
+  listResources,
+  listWorkflowRuleOptions,
   memoryKinds,
   reviewChangeFromDraft,
   reviewDiff,
   resourceWorkingState,
+  workflowStepValidationError,
   type AuthorityResource,
   type DraftRecord,
   type MemoryDocument,
@@ -359,6 +362,7 @@ export function App() {
 
   const searchRef = useRef<HTMLInputElement>(null);
   const draftSyncTimers = useRef(new Map<string, number>());
+  const draftSyncGenerations = useRef(new Map<string, number>());
   const bundleSyncTimers = useRef(new Map<string, number>());
   const undoTimer = useRef<number | null>(null);
   const noticeTimer = useRef<number | null>(null);
@@ -695,12 +699,30 @@ export function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [searchOpen]);
 
+  const invalidateDraftSync = useCallback((draftId: string) => {
+    const timer = draftSyncTimers.current.get(draftId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+    draftSyncTimers.current.delete(draftId);
+    draftSyncGenerations.current.set(
+      draftId,
+      (draftSyncGenerations.current.get(draftId) ?? 0) + 1,
+    );
+  }, []);
+
   const queueDraftSync = useCallback((draft: DraftRecord, resource: AuthorityResource | null) => {
     const previous = draftSyncTimers.current.get(draft.id);
     if (previous !== undefined) {
       window.clearTimeout(previous);
     }
+    const generation = (draftSyncGenerations.current.get(draft.id) ?? 0) + 1;
+    draftSyncGenerations.current.set(draft.id, generation);
+    const isCurrent = () => draftSyncGenerations.current.get(draft.id) === generation;
     const timer = window.setTimeout(async () => {
+      if (!isCurrent()) {
+        return;
+      }
       const backend = backendRef.current;
       if (!backend) {
         setDrafts((current) =>
@@ -717,6 +739,9 @@ export function App() {
         let localId = draft.localId ?? null;
         for (const request of daemonOperationsForDraft(draft, resource)) {
           const response = await backend.daemon.storeDraftOperation(request);
+          if (!isCurrent()) {
+            return;
+          }
           localId = response.draft_id;
         }
         if (!localId) {
@@ -733,8 +758,14 @@ export function App() {
 
         const poll = (attempt: number) => {
           const pollTimer = window.setTimeout(async () => {
+            if (!isCurrent()) {
+              return;
+            }
             try {
               const detail = await backend.daemon.draft(localId);
+              if (!isCurrent()) {
+                return;
+              }
               const syncState = syncStateForDaemonDraft(detail);
               setDrafts((current) =>
                 current.map((item) =>
@@ -756,6 +787,9 @@ export function App() {
                 draftSyncTimers.current.delete(draft.id);
               }
             } catch {
+              if (!isCurrent()) {
+                return;
+              }
               setDrafts((current) =>
                 current.map((item) =>
                   item.id === draft.id ? { ...item, syncState: "failed" } : item,
@@ -768,6 +802,9 @@ export function App() {
         };
         poll(0);
       } catch {
+        if (!isCurrent()) {
+          return;
+        }
         setDrafts((current) =>
           current.map((item) =>
             item.id === draft.id ? { ...item, syncState: "failed" } : item,
@@ -932,6 +969,64 @@ export function App() {
       ),
     [drafts, projectKind, resources, selectedOrgResourceIds, selectedProjectId],
   );
+  const hubWorkflowRules = useMemo(
+    () => listWorkflowRuleOptions(resources, "Hub", null),
+    [resources],
+  );
+  const projectWorkflowRules = useMemo(
+    () =>
+      listWorkflowRuleOptions(
+        resources,
+        "Project",
+        selectedProjectId,
+        selectedOrgResourceIds,
+      ),
+    [resources, selectedOrgResourceIds, selectedProjectId],
+  );
+  const changeHubKind = useCallback(
+    (kind: MemoryKind) => {
+      const next = listResources(resources, drafts, "Hub", null, kind)[0] ?? null;
+      setHubKind(kind);
+      if (next) {
+        openMemoryWorkspaceTab("Hub", next.selectionId, kind, null);
+      } else {
+        setSelectedHubId(null);
+        setActiveTabKey(null);
+      }
+    },
+    [drafts, openMemoryWorkspaceTab, resources],
+  );
+  const changeProjectKind = useCallback(
+    (kind: MemoryKind) => {
+      const next =
+        listLocalResources(
+          resources,
+          drafts,
+          selectedProjectId,
+          kind,
+          selectedOrgResourceIds,
+        )[0] ?? null;
+      setProjectKind(kind);
+      if (next) {
+        openMemoryWorkspaceTab(
+          "Local",
+          next.selectionId,
+          kind,
+          selectedProjectId,
+        );
+      } else {
+        setSelectedProjectResourceId(null);
+        setActiveTabKey(null);
+      }
+    },
+    [
+      drafts,
+      openMemoryWorkspaceTab,
+      resources,
+      selectedOrgResourceIds,
+      selectedProjectId,
+    ],
+  );
   const selectedHubItem = findListItem(hubItems, selectedHubId);
   const selectedProjectItem = findListItem(
     projectItems,
@@ -986,21 +1081,33 @@ export function App() {
           "source",
         ),
       );
+      const document = update(cloneDocument(startingDraft.document));
+      const validationError = documentValidationError(item.kind, document);
       const updated: DraftRecord = {
         ...startingDraft,
         operation: "upsert",
-        syncState: "syncing",
+        syncState: validationError ? "local" : "syncing",
         updatedAt: "just now",
-        document: update(cloneDocument(startingDraft.document)),
+        document,
       };
       setDrafts((current) =>
         current.some((draft) => draft.id === draftId)
           ? current.map((draft) => (draft.id === draftId ? updated : draft))
           : [updated, ...current],
       );
-      queueDraftSync(updated, item.resource);
+      if (!validationError) {
+        queueDraftSync(updated, item.resource);
+      } else {
+        invalidateDraftSync(updated.id);
+      }
     },
-    [pinWorkspaceTabByKey, projects, queueDraftSync, selectedProjectId],
+    [
+      invalidateDraftSync,
+      pinWorkspaceTabByKey,
+      projects,
+      queueDraftSync,
+      selectedProjectId,
+    ],
   );
 
   const createMemoryDraft = useCallback(
@@ -2438,10 +2545,11 @@ export function App() {
               orgSelection={orgSelectionControls}
               sourceWidth={sourceWidth}
               tabStrip={contentTabStrip}
+              workflowRules={hubWorkflowRules}
               onCreate={(kind) => createMemoryDraft("Hub", kind)}
               onDiscardDraft={discardDraft}
               onDocumentChange={updateDocument}
-              onKindChange={setHubKind}
+              onKindChange={changeHubKind}
               onOpenSearch={() => setSearchOpen(true)}
               onOpenMarkdownPreview={openMarkdownPreview}
               onOpenReview={openReviewForDraft}
@@ -2475,10 +2583,11 @@ export function App() {
               orgSelection={orgSelectionControls}
               sourceWidth={sourceWidth}
               tabStrip={contentTabStrip}
+              workflowRules={projectWorkflowRules}
               onCreate={(kind) => createMemoryDraft("Project", kind)}
               onDiscardDraft={discardDraft}
               onDocumentChange={updateDocument}
-              onKindChange={setProjectKind}
+              onKindChange={changeProjectKind}
               onOpenSearch={() => setSearchOpen(true)}
               onOpenMarkdownPreview={openMarkdownPreview}
               onOpenReview={openReviewForDraft}
@@ -3184,6 +3293,7 @@ function MemoryWorkspace({
   sourceWidth,
   surface,
   tabStrip,
+  workflowRules,
 }: {
   counts: Record<MemoryKind, number>;
   item: ResourceListItem | null;
@@ -3209,6 +3319,7 @@ function MemoryWorkspace({
   sourceWidth: number;
   surface: MemoryTabSurface;
   tabStrip: ReactNode;
+  workflowRules: AuthorityResource[];
 }) {
   const canCreate =
     kind !== "Metaprompt" || !items.some((candidate) => !candidate.inherited);
@@ -3275,6 +3386,7 @@ function MemoryWorkspace({
             onProposeDeletion={() => onProposeDeletion(item)}
             onSubmit={() => onSubmitReview(item)}
             orgSelection={orgSelection}
+            workflowRules={workflowRules}
           />
         )
       ) : (
@@ -3506,6 +3618,7 @@ function MemoryEditor({
   onProposeDeletion,
   onSubmit,
   orgSelection,
+  workflowRules,
 }: {
   item: ResourceListItem;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
@@ -3515,10 +3628,15 @@ function MemoryEditor({
   onProposeDeletion: () => void;
   onSubmit: () => void;
   orgSelection: OrgSelectionControls;
+  workflowRules: AuthorityResource[];
 }) {
   const draft = item.draft;
   const locked = item.inherited || draft?.status === "in_review";
   const deleting = draft?.operation === "delete";
+  const availableWorkflowRules =
+    item.scope === "Hub"
+      ? workflowRules.filter((rule) => rule.scope === "Hub")
+      : workflowRules;
   return (
     <section className="editor-surface">
       <MemoryItemToolbar
@@ -3537,7 +3655,12 @@ function MemoryEditor({
       ) : item.kind === "Rules" ? (
         <RuleEditor document={item.document} disabled={locked} onChange={onChange} />
       ) : item.kind === "Workflows" ? (
-        <WorkflowEditor document={item.document} disabled={locked} onChange={onChange} />
+        <WorkflowEditor
+          availableRules={availableWorkflowRules}
+          document={item.document}
+          disabled={locked}
+          onChange={onChange}
+        />
       ) : (
         <TextDocumentEditor
           document={item.document}
@@ -3949,21 +4072,43 @@ function RuleEditor({
 }
 
 function WorkflowEditor({
+  availableRules,
   disabled,
   document,
   onChange,
 }: {
+  availableRules: AuthorityResource[];
   disabled: boolean;
   document: MemoryDocument;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
 }) {
-  const updateStep = (index: number, value: string) =>
+  const updateStep = (
+    index: number,
+    update: (
+      step: MemoryDocument["steps"][number],
+    ) => MemoryDocument["steps"][number],
+  ) =>
     onChange((current) => ({
       ...current,
       steps: current.steps.map((step, stepIndex) =>
-        stepIndex === index ? { ruleId: null, body: value } : step,
+        stepIndex === index ? update(step) : step,
       ),
     }));
+  const setStepMode = (index: number, mode: "rule" | "instruction") => {
+    if (mode === "rule") {
+      updateStep(index, (step) => {
+        const ruleId = availableRules.some((rule) => rule.id === step.ruleId)
+          ? step.ruleId
+          : availableRules[0]?.id ?? null;
+        return ruleId ? { ruleId, body: null } : step;
+      });
+      return;
+    }
+    updateStep(index, (step) => ({
+      ruleId: null,
+      body: step.body ?? "",
+    }));
+  };
   const moveStep = (index: number, direction: -1 | 1) =>
     onChange((current) => {
       const target = index + direction;
@@ -3974,6 +4119,8 @@ function WorkflowEditor({
       [steps[index], steps[target]] = [steps[target], steps[index]];
       return { ...current, steps };
     });
+  const projectRules = availableRules.filter((rule) => rule.scope === "Project");
+  const hubRules = availableRules.filter((rule) => rule.scope === "Hub");
   return (
     <div className="workflow-editor">
       <input
@@ -3997,44 +4144,135 @@ function WorkflowEditor({
         value={document.body}
       />
       <ol className="workflow-steps">
-        {document.steps.map((step, index) => (
-          <li key={`${index}-${(step.body ?? step.ruleId ?? "").slice(0, 16)}`}>
-            <span>{index + 1}</span>
-            <textarea
-              aria-label={`Step ${index + 1}`}
-              disabled={disabled}
-              onChange={(event) => updateStep(index, event.target.value)}
-              rows={2}
-              value={step.body ?? (step.ruleId ? `Apply rule ${step.ruleId}` : "")}
-            />
-            <div className="step-actions">
-              <IconButton
-                disabled={disabled || index === 0}
-                icon={ArrowUp}
-                label="Move step up"
-                onClick={() => moveStep(index, -1)}
-              />
-              <IconButton
-                disabled={disabled || index === document.steps.length - 1}
-                icon={ArrowDown}
-                label="Move step down"
-                onClick={() => moveStep(index, 1)}
-              />
-              <IconButton
-                disabled={disabled}
-                icon={Trash2}
-                label="Remove step"
-                tone="danger"
-                onClick={() =>
-                  onChange((current) => ({
-                    ...current,
-                    steps: current.steps.filter((_, stepIndex) => stepIndex !== index),
-                  }))
-                }
-              />
-            </div>
-          </li>
-        ))}
+        {document.steps.map((step, index) => {
+          const referencesRule = step.ruleId !== null;
+          const referencedRuleAvailable = availableRules.some(
+            (rule) => rule.id === step.ruleId,
+          );
+          const validationError = workflowStepValidationError(step);
+          return (
+            <li key={index}>
+              <span>{index + 1}</span>
+              <div className="workflow-step-content">
+                <div
+                  aria-label={`Step ${index + 1} type`}
+                  className="workflow-step-kind"
+                  role="group"
+                >
+                  <button
+                    aria-pressed={referencesRule}
+                    className={referencesRule ? "active" : ""}
+                    disabled={
+                      disabled || (!referencesRule && availableRules.length === 0)
+                    }
+                    onClick={() => setStepMode(index, "rule")}
+                    title={
+                      availableRules.length === 0
+                        ? "No published rules are available"
+                        : "Use a published rule"
+                    }
+                    type="button"
+                  >
+                    Rule
+                  </button>
+                  <button
+                    aria-pressed={!referencesRule}
+                    className={referencesRule ? "" : "active"}
+                    disabled={disabled}
+                    onClick={() => setStepMode(index, "instruction")}
+                    type="button"
+                  >
+                    Instruction
+                  </button>
+                </div>
+                {referencesRule ? (
+                  <select
+                    aria-invalid={Boolean(validationError)}
+                    aria-label={`Step ${index + 1} rule`}
+                    className="workflow-step-rule"
+                    disabled={disabled}
+                    onChange={(event) =>
+                      updateStep(index, () => ({
+                        ruleId: event.target.value,
+                        body: null,
+                      }))
+                    }
+                    value={step.ruleId ?? ""}
+                  >
+                    {!referencedRuleAvailable && step.ruleId ? (
+                      <option value={step.ruleId}>
+                        Unavailable rule · {step.ruleId}
+                      </option>
+                    ) : null}
+                    {projectRules.length ? (
+                      <optgroup label="Project">
+                        {projectRules.map((rule) => (
+                          <option key={rule.id} value={rule.id}>
+                            {rule.document.title} · {rule.document.path}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    {hubRules.length ? (
+                      <optgroup label="Hub">
+                        {hubRules.map((rule) => (
+                          <option key={rule.id} value={rule.id}>
+                            {rule.document.title} · {rule.document.path}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                  </select>
+                ) : (
+                  <textarea
+                    aria-invalid={Boolean(validationError)}
+                    aria-label={`Step ${index + 1} instruction`}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      updateStep(index, () => ({
+                        ruleId: null,
+                        body: event.target.value,
+                      }))
+                    }
+                    rows={2}
+                    value={step.body ?? ""}
+                  />
+                )}
+                {validationError ? (
+                  <small className="workflow-step-error">{validationError}</small>
+                ) : null}
+              </div>
+              <div className="step-actions">
+                <IconButton
+                  disabled={disabled || index === 0}
+                  icon={ArrowUp}
+                  label="Move step up"
+                  onClick={() => moveStep(index, -1)}
+                />
+                <IconButton
+                  disabled={disabled || index === document.steps.length - 1}
+                  icon={ArrowDown}
+                  label="Move step down"
+                  onClick={() => moveStep(index, 1)}
+                />
+                <IconButton
+                  disabled={disabled || document.steps.length === 1}
+                  icon={Trash2}
+                  label="Remove step"
+                  tone="danger"
+                  onClick={() =>
+                    onChange((current) => ({
+                      ...current,
+                      steps: current.steps.filter(
+                        (_, stepIndex) => stepIndex !== index,
+                      ),
+                    }))
+                  }
+                />
+              </div>
+            </li>
+          );
+        })}
       </ol>
       <button
         className="button add-step"

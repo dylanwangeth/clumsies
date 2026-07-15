@@ -361,6 +361,63 @@ export function listLocalResources(
   );
 }
 
+export function listWorkflowRuleOptions(
+  resources: AuthorityResource[],
+  scope: MemoryScope,
+  projectId: string | null,
+  selectedOrgResourceIds: readonly string[] = [],
+): AuthorityResource[] {
+  const selectedOrgIds = new Set(selectedOrgResourceIds);
+  return resources
+    .filter((resource) => {
+      if (resource.kind !== "Rules") {
+        return false;
+      }
+      if (scope === "Hub") {
+        return resource.scope === "Hub";
+      }
+      return (
+        (resource.scope === "Project" && resource.projectId === projectId) ||
+        (resource.scope === "Hub" && selectedOrgIds.has(resource.id))
+      );
+    })
+    .sort((left, right) => {
+      if (left.scope !== right.scope) {
+        return left.scope === "Project" ? -1 : 1;
+      }
+      return left.document.title.localeCompare(right.document.title);
+    });
+}
+
+export function workflowStepValidationError(
+  step: WorkflowStepDocument,
+): string | null {
+  const hasRule = Boolean(step.ruleId?.trim());
+  const hasInstruction = Boolean(step.body?.trim());
+  return hasRule === hasInstruction
+    ? "Choose a published Rule or write an instruction."
+    : null;
+}
+
+export function documentValidationError(
+  kind: MemoryKind,
+  document: MemoryDocument,
+): string | null {
+  if (kind !== "Workflows") {
+    return null;
+  }
+  if (document.steps.length === 0) {
+    return "A Workflow needs at least one step.";
+  }
+  for (const [index, step] of document.steps.entries()) {
+    const error = workflowStepValidationError(step);
+    if (error) {
+      return `Step ${index + 1}: ${error}`;
+    }
+  }
+  return null;
+}
+
 export function findListItem(
   items: ResourceListItem[],
   selectedId: string | null,
@@ -596,14 +653,16 @@ const workflow = (
   title: string,
   path: string,
   body: string,
-  steps: string[],
+  steps: Array<string | WorkflowStepDocument>,
 ): MemoryDocument => ({
   title,
   path,
   body,
   appliesWhen: "",
   tags: [],
-  steps: steps.map((step) => ({ ruleId: null, body: step })),
+  steps: steps.map((step) =>
+    typeof step === "string" ? { ruleId: null, body: step } : { ...step },
+  ),
 });
 
 const koalResource = (
@@ -697,6 +756,7 @@ export const initialResources: AuthorityResource[] = [
       "workflow/CODING",
       "Implement repository changes with loaded rules and proportional verification.",
       [
+        { ruleId: "hub-rule-compatibility", body: null },
         "Activate relevant rules and context",
         "Inspect the existing implementation",
         "Implement the smallest coherent change",

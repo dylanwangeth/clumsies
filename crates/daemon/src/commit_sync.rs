@@ -1091,6 +1091,11 @@ fn materialized_resource_content(
                     decoded.format
                 )));
             }
+            if decoded.content.steps.is_empty() {
+                return Err(DaemonError::Server(
+                    "Workflow Blob must contain at least one step".to_owned(),
+                ));
+            }
             let mut lines = vec![
                 format!("# {}", decoded.content.name),
                 String::new(),
@@ -1321,6 +1326,21 @@ mod tests {
         assert!(validate_relative_path("spec/API.md").is_ok());
         assert!(validate_relative_path("../secrets").is_err());
         assert!(validate_relative_path("/absolute").is_err());
+    }
+
+    #[test]
+    fn rejects_workflow_blobs_without_steps() {
+        let error = materialized_resource_content(
+            ServerTreeEntryKind::Workflow,
+            r#"{"format":"clumsies.workflow.v1","content":{"name":"Empty","description":"Invalid","steps":[]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Workflow Blob must contain at least one step")
+        );
     }
 
     #[test]
