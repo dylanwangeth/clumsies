@@ -403,6 +403,18 @@ export class ClumsiesApi {
     );
   }
 
+  createReviewSubmission(
+    reviewId: string,
+    request: Schema<"CreateReviewSubmissionRequest">,
+  ) {
+    return unwrap(
+      this.raw.POST("/api/v1/reviews/{review_id}/submissions", {
+        params: { path: { review_id: reviewId } },
+        body: request,
+      }),
+    );
+  }
+
   createReviewConflictResolution(
     reviewId: string,
     refEtag: string,

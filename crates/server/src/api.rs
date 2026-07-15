@@ -514,6 +514,7 @@ pub enum DraftEventType {
     OperationAppended,
     Discarded,
     Submitted,
+    Reopened,
     Conflicted,
 }
 
@@ -545,6 +546,14 @@ pub struct CreateReviewRequest {
     pub description: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateReviewSubmissionRequest {
+    pub expected_review_version: i64,
+    pub expected_draft_version: i64,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
@@ -564,6 +573,7 @@ pub struct Review {
     pub description: String,
     pub status: ReviewStatus,
     pub version: i64,
+    pub decision_body: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -923,6 +933,7 @@ impl DraftEventType {
             Self::OperationAppended => "operation_appended",
             Self::Discarded => "discarded",
             Self::Submitted => "submitted",
+            Self::Reopened => "reopened",
             Self::Conflicted => "conflicted",
         }
     }

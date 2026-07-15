@@ -169,6 +169,18 @@ export class DesktopBackend {
       runtime: { bootstrap, health, projectConfig, syncStatus, mcpStatus },
     };
   }
+
+  async syncDraftProjection(
+    draftId: string,
+    projects: ProjectOption[],
+    resources: AuthorityResource[],
+  ): Promise<DraftRecord> {
+    const retry = await this.daemon.retrySync({ channel: "drafts" });
+    if (!retry.started) {
+      throw new Error("daemon did not start the draft synchronization");
+    }
+    return mapDaemonDraft(await this.daemon.draft(draftId), projects, resources);
+  }
 }
 
 export function createDaemonFetch(daemon: DaemonApiClient): typeof fetch {
@@ -551,7 +563,7 @@ export function mapReview(detail: PublicSchema<"ReviewDetail">): ReviewRecord {
         }
       : null,
     createdAt: formatDate(detail.review.created_at),
-    decisionNote: null,
+    decisionNote: detail.review.decision_body,
     comments: detail.comments.map((comment) => ({
       id: comment.comment_id,
       author: comment.author.display_name ?? comment.author.email,
@@ -605,23 +617,6 @@ function commitResourceContent(
     return null;
   }
   return payload.blobs.find((blob) => blob.blob_id === entry.blob_id)?.content ?? null;
-}
-
-export function mapReviewSummary(
-  review: PublicSchema<"Review">,
-): ReviewRecord {
-  return {
-    id: review.review_id,
-    draftId: review.draft_id,
-    title: review.title,
-    author: review.author.display_name ?? review.author.email,
-    status: review.status,
-    version: review.version,
-    conflict: null,
-    createdAt: formatDate(review.created_at),
-    decisionNote: null,
-    comments: [],
-  };
 }
 
 export function daemonOperationsForDraft(

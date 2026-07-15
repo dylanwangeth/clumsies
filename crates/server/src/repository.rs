@@ -11,16 +11,16 @@ use crate::api::{
     CommitPayload, CommitScope, CommitStateResponse, ContextDetail, ContextListResponse,
     ContextMeta, CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest,
     CreateProjectRequest, CreateReviewCommentRequest, CreateReviewConflictResolutionRequest,
-    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest, DeleteResult,
-    Draft, DraftConflict, DraftDetail, DraftEvent, DraftEventListResponse, DraftEventType,
-    DraftListResponse, DraftOperation, DraftOperationAction, DraftOperationBatchRequest,
-    DraftOperationBatchResponse, DraftOperationInput, DraftResourceKind, DraftResourceRef,
-    DraftStatus, DraftSyncState, DraftSyncStatus, MeResponse, Member, MemberListResponse,
-    MemberStatus, MetapromptDetail, MetapromptMeta, OrgRef, OrgRole, PageInfo,
-    PersonalBundleDetail, PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
-    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
-    ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole, Ref,
-    ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    CreateReviewSubmissionRequest, DeleteResult, Draft, DraftConflict, DraftDetail, DraftEvent,
+    DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperation,
+    DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
+    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState,
+    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MetapromptDetail,
+    MetapromptMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail, PersonalBundleListResponse,
+    PersonalBundleMeta, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
+    ProjectListResponse, ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef,
+    ProjectRole, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
     ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
     ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry, TreeEntryKind,
     TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
@@ -1727,7 +1727,10 @@ impl ServerRepository {
         })
     }
 
-    pub async fn create_review(&self, request: CreateReviewRequest) -> Result<Review, ServerError> {
+    pub async fn create_review(
+        &self,
+        request: CreateReviewRequest,
+    ) -> Result<ReviewDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             "SELECT draft_id, project_id, author_user_id, title, description, status, version
@@ -1800,8 +1803,9 @@ impl ServerRepository {
         .execute(&mut *tx)
         .await?;
 
+        let detail = load_review_detail(&mut tx, &review_id).await?;
         tx.commit().await?;
-        self.get_review(&review_id).await
+        Ok(detail)
     }
 
     pub async fn list_reviews(
@@ -1813,7 +1817,7 @@ impl ServerRepository {
             sqlx::query(
                 "SELECT
                     r.review_id, r.project_id, r.draft_id, r.title, r.description,
-                    r.status, r.version, r.created_at, r.updated_at,
+                    r.status, r.version, r.decision_body, r.created_at, r.updated_at,
                     u.user_id, u.email, u.display_name, u.avatar_url, u.role
                  FROM reviews r
                  JOIN users u ON u.user_id = r.author_user_id
@@ -1832,7 +1836,7 @@ impl ServerRepository {
             sqlx::query(
                 "SELECT
                     r.review_id, r.project_id, r.draft_id, r.title, r.description,
-                    r.status, r.version, r.created_at, r.updated_at,
+                    r.status, r.version, r.decision_body, r.created_at, r.updated_at,
                     u.user_id, u.email, u.display_name, u.avatar_url, u.role
                  FROM reviews r
                  JOIN users u ON u.user_id = r.author_user_id
@@ -1865,17 +1869,9 @@ impl ServerRepository {
 
     pub async fn get_review_detail(&self, review_id: &str) -> Result<ReviewDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
-        let review = load_review(&mut tx, review_id).await?;
-        let draft = load_draft_detail(&mut tx, &review.draft_id).await?;
-        let comments = load_review_comments(&mut tx, review_id).await?;
+        let detail = load_review_detail(&mut tx, review_id).await?;
         tx.commit().await?;
-        Ok(ReviewDetail {
-            review,
-            draft: draft.draft,
-            operations: draft.operations,
-            comments,
-            conflict: draft.conflict,
-        })
+        Ok(detail)
     }
 
     pub async fn list_review_comments(
@@ -1930,20 +1926,22 @@ impl ServerRepository {
         &self,
         review_id: &str,
         request: CreateReviewDecisionRequest,
-    ) -> Result<Review, ServerError> {
+    ) -> Result<ReviewDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT status, version
-             FROM reviews
-             WHERE review_id = $1
-             FOR UPDATE",
+            "SELECT r.draft_id, r.status AS review_status, r.version AS review_version,
+                    d.project_id, d.status AS draft_status
+             FROM reviews r
+             JOIN drafts d ON d.draft_id = r.draft_id
+             WHERE r.review_id = $1
+             FOR UPDATE OF r, d",
         )
         .bind(review_id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ServerError::not_found("review", review_id))?;
-        let status: String = row.try_get("status")?;
-        let version: i64 = row.try_get("version")?;
+        let status: String = row.try_get("review_status")?;
+        let version: i64 = row.try_get("review_version")?;
 
         if status != "open" {
             return Err(ServerError::invalid_transition(
@@ -1957,11 +1955,41 @@ impl ServerRepository {
                 version,
             ));
         }
+        let draft_status: String = row.try_get("draft_status")?;
+        if draft_status != "submitted" {
+            return Err(ServerError::invalid_transition(
+                "draft",
+                &draft_status,
+                "review_decided",
+            ));
+        }
 
         let next_status = match request.decision {
             ReviewDecision::Approved => "approved",
             ReviewDecision::Rejected => "rejected",
         };
+        if request.decision == ReviewDecision::Rejected {
+            let draft_id: String = row.try_get("draft_id")?;
+            let project_id: String = row.try_get("project_id")?;
+            let next_draft_version: i64 = sqlx::query_scalar(
+                "UPDATE drafts
+                 SET status = 'open', version = version + 1, updated_at = now()
+                 WHERE draft_id = $1
+                 RETURNING version",
+            )
+            .bind(&draft_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            insert_draft_event(
+                &mut tx,
+                &draft_id,
+                &project_id,
+                DraftEventType::Reopened,
+                next_draft_version,
+                None,
+            )
+            .await?;
+        }
         sqlx::query(
             "UPDATE reviews
              SET status = $2, version = version + 1, decision_body = $3, updated_at = now()
@@ -1973,8 +2001,107 @@ impl ServerRepository {
         .execute(&mut *tx)
         .await?;
 
+        let detail = load_review_detail(&mut tx, review_id).await?;
         tx.commit().await?;
-        self.get_review(review_id).await
+        Ok(detail)
+    }
+
+    pub async fn create_review_submission(
+        &self,
+        review_id: &str,
+        author_user_id: &str,
+        request: CreateReviewSubmissionRequest,
+    ) -> Result<ReviewDetail, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT r.draft_id, r.status AS review_status, r.version AS review_version,
+                    d.project_id, d.author_user_id, d.status AS draft_status,
+                    d.version AS draft_version
+             FROM reviews r
+             JOIN drafts d ON d.draft_id = r.draft_id
+             WHERE r.review_id = $1
+             FOR UPDATE OF r, d",
+        )
+        .bind(review_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ServerError::not_found("review", review_id))?;
+
+        let draft_author_user_id: String = row.try_get("author_user_id")?;
+        if draft_author_user_id != author_user_id {
+            return Err(ServerError::Forbidden(
+                "only the draft author can resubmit its review".to_owned(),
+            ));
+        }
+        let review_status: String = row.try_get("review_status")?;
+        if review_status != "rejected" {
+            return Err(ServerError::invalid_transition(
+                "review",
+                &review_status,
+                "resubmitted",
+            ));
+        }
+        let review_version: i64 = row.try_get("review_version")?;
+        if review_version != request.expected_review_version {
+            return Err(ServerError::version_conflict(
+                "review",
+                request.expected_review_version,
+                review_version,
+            ));
+        }
+        let draft_status: String = row.try_get("draft_status")?;
+        if draft_status != "open" {
+            return Err(ServerError::invalid_transition(
+                "draft",
+                &draft_status,
+                "submitted",
+            ));
+        }
+        let draft_version: i64 = row.try_get("draft_version")?;
+        if draft_version != request.expected_draft_version {
+            return Err(ServerError::version_conflict(
+                "draft",
+                request.expected_draft_version,
+                draft_version,
+            ));
+        }
+
+        let draft_id: String = row.try_get("draft_id")?;
+        let project_id: String = row.try_get("project_id")?;
+        let next_draft_version: i64 = sqlx::query_scalar(
+            "UPDATE drafts
+             SET status = 'submitted', version = version + 1, updated_at = now()
+             WHERE draft_id = $1
+             RETURNING version",
+        )
+        .bind(&draft_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE reviews
+             SET status = 'open', version = version + 1, decision_body = NULL,
+                 title = COALESCE($2, title), description = COALESCE($3, description),
+                 updated_at = now()
+             WHERE review_id = $1",
+        )
+        .bind(review_id)
+        .bind(request.title)
+        .bind(request.description)
+        .execute(&mut *tx)
+        .await?;
+        insert_draft_event(
+            &mut tx,
+            &draft_id,
+            &project_id,
+            DraftEventType::Submitted,
+            next_draft_version,
+            None,
+        )
+        .await?;
+
+        let detail = load_review_detail(&mut tx, review_id).await?;
+        tx.commit().await?;
+        Ok(detail)
     }
 
     pub async fn create_review_merge(
@@ -2262,8 +2389,9 @@ impl ServerRepository {
             None,
         )
         .await?;
+        let detail = load_review_detail(&mut tx, review_id).await?;
         tx.commit().await?;
-        self.get_review_detail(review_id).await
+        Ok(detail)
     }
 
     pub async fn list_project_commits(
@@ -3246,7 +3374,7 @@ async fn load_review(
     let row = sqlx::query(
         "SELECT
             r.review_id, r.project_id, r.draft_id, r.title, r.description,
-            r.status, r.version, r.created_at, r.updated_at,
+            r.status, r.version, r.decision_body, r.created_at, r.updated_at,
             u.user_id, u.email, u.display_name, u.avatar_url, u.role
          FROM reviews r
          JOIN users u ON u.user_id = r.author_user_id
@@ -3260,6 +3388,22 @@ async fn load_review(
     review_from_row(&row)
 }
 
+async fn load_review_detail(
+    tx: &mut Transaction<'_, Postgres>,
+    review_id: &str,
+) -> Result<ReviewDetail, ServerError> {
+    let review = load_review(tx, review_id).await?;
+    let draft = load_draft_detail(tx, &review.draft_id).await?;
+    let comments = load_review_comments(tx, review_id).await?;
+    Ok(ReviewDetail {
+        review,
+        draft: draft.draft,
+        operations: draft.operations,
+        comments,
+        conflict: draft.conflict,
+    })
+}
+
 fn review_from_row(row: &sqlx::postgres::PgRow) -> Result<Review, ServerError> {
     Ok(Review {
         review_id: row.try_get("review_id")?,
@@ -3270,6 +3414,7 @@ fn review_from_row(row: &sqlx::postgres::PgRow) -> Result<Review, ServerError> {
         description: row.try_get("description")?,
         status: review_status(row.try_get::<String, _>("status")?.as_str())?,
         version: row.try_get("version")?,
+        decision_body: row.try_get("decision_body")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -4689,6 +4834,7 @@ fn draft_event_type(value: &str) -> Result<DraftEventType, ServerError> {
         "operation_appended" => Ok(DraftEventType::OperationAppended),
         "discarded" => Ok(DraftEventType::Discarded),
         "submitted" => Ok(DraftEventType::Submitted),
+        "reopened" => Ok(DraftEventType::Reopened),
         "conflicted" => Ok(DraftEventType::Conflicted),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown draft event type: {other}"

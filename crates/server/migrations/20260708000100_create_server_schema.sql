@@ -257,7 +257,7 @@ CREATE TABLE draft_events (
     event_id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL REFERENCES drafts(draft_id) ON DELETE CASCADE,
     project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-    event_type TEXT NOT NULL CHECK (event_type IN ('created', 'updated', 'operation_appended', 'discarded', 'submitted', 'conflicted')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('created', 'updated', 'operation_appended', 'discarded', 'submitted', 'reopened', 'conflicted')),
     version BIGINT NOT NULL,
     daemon_installation_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

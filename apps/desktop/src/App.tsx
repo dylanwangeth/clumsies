@@ -26,8 +26,8 @@ import {
   daemonOperationsForDraft,
   DesktopBackend,
   mapBundle,
+  mapReview,
   mapReviewWithConflict,
-  mapReviewSummary,
   syncStateForDaemonDraft,
   type DesktopAccount,
   type DesktopOrganization,
@@ -137,7 +137,12 @@ type ConfirmState = {
   message: string;
   confirmLabel: string;
   tone?: "danger";
-  onConfirm: () => void;
+  input?: {
+    ariaLabel: string;
+    placeholder: string;
+    required?: boolean;
+  };
+  onConfirm: (input?: string) => void | Promise<void>;
 };
 
 type UndoState = { message: string; run: () => void };
@@ -880,9 +885,21 @@ export function App() {
         return;
       }
       const backend = backendRef.current;
+      const existingReview = reviews.find(
+        (review) =>
+          review.status === "rejected" &&
+          (review.draftId === item.draft?.serverId || review.draftId === item.draft?.id),
+      );
+      const existingReviewVersion = existingReview?.version;
       let review: ReviewRecord;
+      let projectedDraft: DraftRecord | null = null;
+      let projectionError: unknown = null;
       if (backend) {
-        if (!backend.api || !item.draft.serverId || item.draft.serverVersion === undefined) {
+        if (
+          !backend.api ||
+          !item.draft.serverId ||
+          item.draft.serverVersion === undefined
+        ) {
           setDrafts((current) =>
             current.map((draft) =>
               draft.id === item.draft?.id ? { ...draft, syncState: "failed" } : draft,
@@ -891,41 +908,91 @@ export function App() {
           return;
         }
         try {
-          review = mapReviewSummary(
-            await backend.api.createReview({
+          let detail;
+          if (existingReview) {
+            if (existingReviewVersion === undefined) {
+              throw new Error("Rejected Review has no Server version");
+            }
+            detail = await backend.api.createReviewSubmission(existingReview.id, {
+              expected_review_version: existingReviewVersion,
+              expected_draft_version: item.draft.serverVersion,
+              title: item.draft.document.title,
+            });
+          } else {
+            detail = await backend.api.createReview({
               draft_id: item.draft.serverId,
               expected_draft_version: item.draft.serverVersion,
               title: item.draft.document.title,
-            }),
-          );
-        } catch {
+            });
+          }
+          review = mapReview(detail);
+        } catch (error) {
           setDrafts((current) =>
             current.map((draft) =>
               draft.id === item.draft?.id ? { ...draft, syncState: "failed" } : draft,
             ),
           );
+          setLoadState({
+            status: "failed",
+            message: error instanceof Error ? error.message : "Review submission failed.",
+          });
           return;
         }
+        try {
+          projectedDraft = await backend.syncDraftProjection(
+            item.draft.localId ?? item.draft.id,
+            projects,
+            resources,
+          );
+        } catch (error) {
+          projectionError = error;
+        }
       } else {
-        review = {
-          id: `review-${Date.now().toString(36)}`,
-          draftId: item.draft.id,
-          title: item.draft.document.title,
-          author: "weiwang",
-          status: "open",
-          createdAt: "just now",
-          decisionNote: null,
-          comments: [],
-        };
+        review = existingReview
+          ? {
+              ...existingReview,
+              title: item.draft.document.title,
+              status: "open",
+              decisionNote: null,
+            }
+          : {
+              id: `review-${Date.now().toString(36)}`,
+              draftId: item.draft.id,
+              title: item.draft.document.title,
+              author: "weiwang",
+              status: "open",
+              createdAt: "just now",
+              decisionNote: null,
+              comments: [],
+            };
       }
       setDrafts((current) =>
         current.map((draft) =>
           draft.id === item.draft?.id
-            ? { ...draft, status: "in_review", syncState: "synced" }
+            ? projectedDraft
+              ? { ...projectedDraft, id: draft.id }
+              : {
+                  ...draft,
+                  status: "in_review",
+                  syncState: projectionError ? "failed" : "synced",
+                }
             : draft,
         ),
       );
-      setReviews((current) => [review, ...current]);
+      setReviews((current) =>
+        current.some((entry) => entry.id === review.id)
+          ? current.map((entry) => (entry.id === review.id ? review : entry))
+          : [review, ...current],
+      );
+      if (projectionError) {
+        setLoadState({
+          status: "failed",
+          message:
+            projectionError instanceof Error
+              ? `Review submitted, but local Draft synchronization failed: ${projectionError.message}`
+              : "Review submitted, but local Draft synchronization failed.",
+        });
+      }
       setReviewFilter("open");
       setSelectedReviewId(review.id);
       setSelectedView("Reviews");
@@ -939,7 +1006,7 @@ export function App() {
         true,
       );
     },
-    [showWorkspaceTab],
+    [projects, resources, reviews, showWorkspaceTab],
   );
 
   const openReviewForDraft = useCallback(
@@ -1069,6 +1136,8 @@ export function App() {
       }
       const backend = backendRef.current;
       let saved = { ...review, status, decisionNote: note };
+      let projectedDraft: DraftRecord | null = null;
+      let projectionError: unknown = null;
       if (backend) {
         if (!backend.api || review.version === undefined || status === "merged") {
           return;
@@ -1079,11 +1148,25 @@ export function App() {
             expected_review_version: review.version,
             body: note ?? undefined,
           });
-          saved = {
-            ...mapReviewSummary(response),
-            comments: review.comments,
-            decisionNote: note,
-          };
+          saved = mapReview(response);
+          if (status === "rejected") {
+            const draft = drafts.find(
+              (item) => item.id === review.draftId || item.serverId === review.draftId,
+            );
+            if (draft) {
+              try {
+                projectedDraft = await backend.syncDraftProjection(
+                  draft.localId ?? draft.id,
+                  projects,
+                  resources,
+                );
+              } catch (error) {
+                projectionError = error;
+              }
+            } else {
+              projectionError = new Error("Rejected Review has no local Draft projection");
+            }
+          }
         } catch (error) {
           setLoadState({
             status: "failed",
@@ -1098,21 +1181,34 @@ export function App() {
         ),
       );
       if (status === "rejected") {
-        if (!backend) {
-          setDrafts((current) =>
-            current.map((draft) =>
-              draft.id === review.draftId || draft.serverId === review.draftId
-                ? { ...draft, status: "editing" }
-                : draft,
-            ),
-          );
+        setDrafts((current) =>
+          current.map((draft) =>
+            draft.id === review.draftId || draft.serverId === review.draftId
+              ? projectedDraft
+                ? { ...projectedDraft, id: draft.id }
+                : {
+                    ...draft,
+                    status: backend ? "in_review" : "editing",
+                    syncState: projectionError ? "failed" : draft.syncState,
+                  }
+              : draft,
+          ),
+        );
+        if (projectionError) {
+          setLoadState({
+            status: "failed",
+            message:
+              projectionError instanceof Error
+                ? `Review rejected, but local Draft synchronization failed: ${projectionError.message}`
+                : "Review rejected, but local Draft synchronization failed.",
+          });
         }
         setReviewFilter("rejected");
       } else if (status === "approved") {
         setReviewFilter("approved");
       }
     },
-    [reviews],
+    [drafts, projects, resources, reviews],
   );
 
   const mergeReview = useCallback(
@@ -2111,6 +2207,11 @@ export function App() {
               onDiscardConflict={discardReviewConflict}
               onFilterChange={setReviewFilter}
               onMerge={mergeReview}
+              onOpenDraft={() => {
+                if (currentReviewDraft) {
+                  openDraft(currentReviewDraft);
+                }
+              }}
               onOpenSearch={() => setSearchOpen(true)}
               onPin={(id) => {
                 setSelectedReviewId(id);
@@ -2131,7 +2232,27 @@ export function App() {
               selectedId={selectedReviewId}
               onResolveConflict={resolveReviewConflict}
               onSourceWidthChange={setSourceWidth}
-              onUpdateStatus={updateReviewStatus}
+              onUpdateStatus={(reviewId, status, note) => {
+                if (status !== "rejected") {
+                  void updateReviewStatus(reviewId, status, note);
+                  return;
+                }
+                setConfirmState({
+                  title: "Request changes?",
+                  message: "The Draft will return to Local for editing and can be resubmitted.",
+                  confirmLabel: "Request Changes",
+                  tone: "danger",
+                  input: {
+                    ariaLabel: "Requested changes",
+                    placeholder: "Describe what needs to change",
+                    required: true,
+                  },
+                  onConfirm: (reason) => {
+                    setConfirmState(null);
+                    void updateReviewStatus(reviewId, "rejected", reason?.trim() || null);
+                  },
+                });
+              }}
             />
               ) : selectedView === "Diagnostics" ? (
                 <DiagnosticsView
@@ -3780,6 +3901,7 @@ function ReviewsWorkspace({
   onDiscardConflict,
   onFilterChange,
   onMerge,
+  onOpenDraft,
   onOpenSearch,
   onPin,
   onSelect,
@@ -3800,6 +3922,7 @@ function ReviewsWorkspace({
   onDiscardConflict: (reviewId: string) => void;
   onFilterChange: (filter: ReviewFilter) => void;
   onMerge: (reviewId: string) => void;
+  onOpenDraft: () => void;
   onOpenSearch: () => void;
   onPin: (id: string) => void;
   onSelect: (id: string) => void;
@@ -3858,9 +3981,8 @@ function ReviewsWorkspace({
           onApprove={() => onUpdateStatus(review.id, "approved", "Approved for merge.")}
           onDiscardConflict={() => onDiscardConflict(review.id)}
           onMerge={() => onMerge(review.id)}
-          onReject={() =>
-            onUpdateStatus(review.id, "rejected", "Changes requested before resubmission.")
-          }
+          onOpenDraft={onOpenDraft}
+          onReject={() => onUpdateStatus(review.id, "rejected", null)}
           onResolveConflict={(content) => onResolveConflict(review.id, content)}
         />
       ) : (
@@ -3913,6 +4035,7 @@ function ReviewEditor({
   onApprove,
   onDiscardConflict,
   onMerge,
+  onOpenDraft,
   onReject,
   onResolveConflict,
   resource,
@@ -3923,6 +4046,7 @@ function ReviewEditor({
   onApprove: () => void;
   onDiscardConflict: () => void;
   onMerge: () => void;
+  onOpenDraft: () => void;
   onReject: () => void;
   onResolveConflict: (resolvedContent: string | null) => void;
   resource: AuthorityResource | null;
@@ -3960,6 +4084,8 @@ function ReviewEditor({
             </>
           ) : review.status === "approved" ? (
             <IconButton icon={GitMerge} label="Merge Review" onClick={onMerge} />
+          ) : review.status === "rejected" ? (
+            <IconButton icon={FilePenLine} label="Open Draft" onClick={onOpenDraft} />
           ) : null}
         </div>
       </div>
@@ -3967,6 +4093,9 @@ function ReviewEditor({
         <header className="review-heading">
           <h1>{review.title}</h1>
           <p>{draft.document.path}</p>
+          {review.status === "rejected" && review.decisionNote ? (
+            <blockquote className="review-decision">{review.decisionNote}</blockquote>
+          ) : null}
         </header>
         {review.conflict ? (
           <ReviewConflictResolver
@@ -4450,6 +4579,8 @@ function ConfirmDialog({
   onCancel: () => void;
   state: ConfirmState;
 }) {
+  const [input, setInput] = useState("");
+  const inputRequired = state.input?.required ?? false;
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
       <section
@@ -4467,13 +4598,25 @@ function ConfirmDialog({
           <h2 id="confirm-title">{state.title}</h2>
           <p id="confirm-message">{state.message}</p>
         </div>
+        {state.input ? (
+          <textarea
+            aria-label={state.input.ariaLabel}
+            autoFocus
+            className="confirm-input"
+            onChange={(event) => setInput(event.target.value)}
+            placeholder={state.input.placeholder}
+            rows={3}
+            value={input}
+          />
+        ) : null}
         <div className="confirm-actions">
-          <button autoFocus className="button" onClick={onCancel} type="button">
+          <button autoFocus={!state.input} className="button" onClick={onCancel} type="button">
             Cancel
           </button>
           <button
             className={state.tone === "danger" ? "button danger" : "button primary"}
-            onClick={state.onConfirm}
+            disabled={inputRequired && !input.trim()}
+            onClick={() => void state.onConfirm(state.input ? input.trim() : undefined)}
             type="button"
           >
             {state.confirmLabel}

@@ -616,6 +616,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reviews/{review_id}/submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: components["parameters"]["ReviewId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resubmit an edited draft to its existing rejected review. */
+        post: operations["createReviewSubmission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{review_id}/conflict-resolutions": {
         parameters: {
             query?: never;
@@ -965,7 +984,7 @@ export interface components {
             draft_id: string;
             project_id: string;
             /** @enum {string} */
-            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "conflicted";
+            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "reopened" | "conflicted";
             version: number;
             daemon_installation_id: string | null;
             /** Format: date-time */
@@ -995,6 +1014,12 @@ export interface components {
             title?: string;
             description?: string;
         };
+        CreateReviewSubmissionRequest: {
+            expected_review_version: number;
+            expected_draft_version: number;
+            title?: string;
+            description?: string;
+        };
         ReviewDetail: {
             review: components["schemas"]["Review"];
             draft: components["schemas"]["Draft"];
@@ -1011,6 +1036,7 @@ export interface components {
             description: string;
             status: components["schemas"]["ReviewStatus"];
             version: number;
+            decision_body: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -2329,7 +2355,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Review"];
+                    "application/json": components["schemas"]["ReviewDetail"];
                 };
             };
             default: components["responses"]["Error"];
@@ -2426,13 +2452,40 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Review after decision. */
+            /** @description Review and draft after the decision. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Review"];
+                    "application/json": components["schemas"]["ReviewDetail"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createReviewSubmission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: components["parameters"]["ReviewId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReviewSubmissionRequest"];
+            };
+        };
+        responses: {
+            /** @description Reopened review and resubmitted draft. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewDetail"];
                 };
             };
             default: components["responses"]["Error"];

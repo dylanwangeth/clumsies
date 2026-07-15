@@ -85,6 +85,10 @@ describe("Clumsies API", () => {
       decision: "approved",
       expected_review_version: 1,
     });
+    await api.createReviewSubmission("review", {
+      expected_review_version: 2,
+      expected_draft_version: 3,
+    });
     await api.createReviewConflictResolution("review", '"commit"', {
       expected_review_version: 2,
       expected_draft_version: 3,
@@ -148,6 +152,7 @@ describe("Clumsies API", () => {
       "GET /api/v1/reviews/review/comments",
       "POST /api/v1/reviews/review/comments",
       "POST /api/v1/reviews/review/decisions",
+      "POST /api/v1/reviews/review/submissions",
       "POST /api/v1/reviews/review/conflict-resolutions",
       "POST /api/v1/reviews/review/merges",
       "GET /api/v1/org/commits",

@@ -3,13 +3,13 @@ mod common;
 use daemon::{
     DaemonConfig, DaemonCreateDraftOperation, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
-    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonMemoryCacheRequest,
-    DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
+    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus,
+    DaemonMemoryCacheRequest, DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
-    DraftOperationAction, DraftOperationInput, DraftResourceKind, DraftResourceRef, ResourceScope,
-    ReviewDecision,
+    CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceKind,
+    DraftResourceRef, ResourceScope, ReviewDecision,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -81,7 +81,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     .await;
     let service = DaemonIpcService::new(state);
 
-    service
+    let local_draft = service
         .store_draft_operation(DaemonDraftOperationRequest {
             draft_id: None,
             base_commit_id: None,
@@ -148,6 +148,102 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
         draft.operations[0].input.body.as_deref(),
         Some("# Synced\n\nCreated through the local daemon.")
     );
+
+    let review = repository
+        .create_review(CreateReviewRequest {
+            draft_id: draft.draft.draft_id.clone(),
+            expected_draft_version: draft.draft.version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projected = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(projected.draft.status, DaemonLocalDraftStatus::Submitted);
+    assert_eq!(projected.draft.server_version, review.draft.version);
+
+    let rejected = repository
+        .create_review_decision(
+            &review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Rejected,
+                expected_review_version: review.review.version,
+                body: Some("Revise the context.".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projected = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(projected.draft.status, DaemonLocalDraftStatus::Open);
+    assert_eq!(projected.draft.server_version, rejected.draft.version);
+
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(local_draft.draft_id.clone()),
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/from-daemon.md".to_owned(),
+                    body: "# Revised\n\nEdited after the rejected review.".to_owned(),
+                    description: Some("Rejected review revision".to_owned()),
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let edited = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(edited.draft.status, DaemonLocalDraftStatus::Open);
+    assert_eq!(edited.draft.server_version, rejected.draft.version + 1);
+
+    let resubmitted = repository
+        .create_review_submission(
+            &rejected.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewSubmissionRequest {
+                expected_review_version: rejected.review.version,
+                expected_draft_version: edited.draft.server_version,
+                title: Some("Revised daemon context".to_owned()),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projected = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(projected.draft.status, DaemonLocalDraftStatus::Submitted);
+    assert_eq!(projected.draft.server_version, resubmitted.draft.version);
+    assert_eq!(resubmitted.review.review_id, review.review.review_id);
 
     server_task.abort();
 }
@@ -504,10 +600,10 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         .unwrap();
     let approved = repository
         .create_review_decision(
-            &review.review_id,
+            &review.review.review_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
-                expected_review_version: review.version,
+                expected_review_version: review.review.version,
                 body: None,
             },
         )
@@ -515,10 +611,10 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         .unwrap();
     let merge = repository
         .create_review_merge(
-            &approved.review_id,
+            &approved.review.review_id,
             None,
             CreateReviewMergeRequest {
-                expected_review_version: approved.version,
+                expected_review_version: approved.review.version,
             },
         )
         .await

@@ -1776,6 +1776,16 @@ pre {
   white-space: nowrap;
 }
 
+.review-decision {
+  overflow-wrap: anywhere;
+  margin-top: 8px;
+  border-left: 2px solid var(--danger);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  padding-left: 10px;
+}
+
 .diff-viewer {
   min-width: 0;
   min-height: 220px;
@@ -2490,6 +2500,12 @@ pre {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.confirm-input {
+  grid-column: 2;
+  min-height: 68px;
+  resize: vertical;
 }
 
 .confirm-actions {

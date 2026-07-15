@@ -7,14 +7,14 @@ use server::api::{
     CommitListResponse, CommitPayload, CommitStateResponse, ContextDetail, ContextListResponse,
     CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
     CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, DeleteResult, DraftDetail, DraftEventListResponse, DraftEventType,
-    DraftListResponse, DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest,
-    DraftOperationBatchResponse, DraftOperationInput, DraftResourceKind, DraftResourceRef,
-    DraftStatus, MeResponse, PersonalBundleDetail, PersonalBundleRequest,
-    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
-    ReplaceProjectOrgSelectionRequest, ResourceScope, Review, ReviewComment,
-    ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
-    ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
+    CreateReviewRequest, CreateReviewSubmissionRequest, DeleteResult, DraftDetail,
+    DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperationAction,
+    DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationBatchResponse,
+    DraftOperationInput, DraftResourceKind, DraftResourceRef, DraftStatus, MeResponse,
+    PersonalBundleDetail, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
+    ProjectListResponse, ProjectOrgSelection, ReplaceProjectOrgSelectionRequest, ResourceScope,
+    Review, ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail,
+    ReviewListResponse, ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -340,7 +340,7 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert!(deleted_draft.deleted);
 
-    let review: Review = post_json(
+    let review_detail: ReviewDetail = post_json(
         app.clone(),
         "/api/v1/reviews",
         &CreateReviewRequest {
@@ -351,7 +351,9 @@ async fn draft_review_merge_produces_project_commit() {
         },
     )
     .await;
+    let review = review_detail.review;
     assert_eq!(review.status, ReviewStatus::Open);
+    assert_eq!(review_detail.draft.status, DraftStatus::Submitted);
 
     let review_page: ReviewListResponse = get_json(
         app.clone(),
@@ -386,7 +388,7 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert_eq!(review_detail.comments, comments.items);
 
-    let review: Review = post_json(
+    let review_detail: ReviewDetail = post_json(
         app.clone(),
         &format!("/api/v1/reviews/{}/decisions", review.review_id),
         &CreateReviewDecisionRequest {
@@ -396,6 +398,7 @@ async fn draft_review_merge_produces_project_commit() {
         },
     )
     .await;
+    let review = review_detail.review;
     assert_eq!(review.status, ReviewStatus::Approved);
 
     let merge: ReviewMergeResult = post_json_with_etag(
@@ -654,7 +657,7 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         },
     )
     .await;
-    let review: Review = post_json(
+    let review: ReviewDetail = post_json(
         app.clone(),
         "/api/v1/reviews",
         &CreateReviewRequest {
@@ -665,22 +668,22 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         },
     )
     .await;
-    let review: Review = post_json(
+    let review: ReviewDetail = post_json(
         app.clone(),
-        &format!("/api/v1/reviews/{}/decisions", review.review_id),
+        &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
         &CreateReviewDecisionRequest {
             decision: ReviewDecision::Approved,
-            expected_review_version: review.version,
+            expected_review_version: review.review.version,
             body: None,
         },
     )
     .await;
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
-        &format!("/api/v1/reviews/{}/merges", review.review_id),
+        &format!("/api/v1/reviews/{}/merges", review.review.review_id),
         &org_ref_etag,
         &CreateReviewMergeRequest {
-            expected_review_version: review.version,
+            expected_review_version: review.review.version,
         },
     )
     .await;
@@ -702,6 +705,248 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
     )
     .await;
     assert_eq!(project_state.reference.commit_id, None);
+}
+
+#[tokio::test]
+async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Review Lifecycle",
+        )
+        .await
+        .unwrap();
+    let member_id = repo
+        .create_user("member@example.com", Some("Member"), "member")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'member')",
+    )
+    .bind(&bootstrap.project_id)
+    .bind(&member_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    let (owner_app, _) = common::authenticated_router(postgres.pool.clone()).await;
+    let (member_app, _) = common::authenticated_router_as(
+        postgres.pool.clone(),
+        "member@example.com",
+        "oidc-subject-member",
+        "Member",
+    )
+    .await;
+
+    let draft: DraftDetail = post_json(
+        owner_app.clone(),
+        "/api/v1/drafts",
+        &CreateDraftRequest {
+            daemon_installation_id: "daemon_review_lifecycle".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: None,
+            title: "Create review lifecycle context".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Context,
+                id: None,
+                path: Some("context/review-lifecycle.md".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/review-lifecycle.md".to_owned()),
+                },
+                base_hash: None,
+                body: Some("# First submission".to_owned()),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let submitted: ReviewDetail = post_json(
+        owner_app.clone(),
+        "/api/v1/reviews",
+        &CreateReviewRequest {
+            draft_id: draft.draft.draft_id.clone(),
+            expected_draft_version: draft.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(submitted.review.status, ReviewStatus::Open);
+    assert_eq!(submitted.review.decision_body, None);
+    assert_eq!(submitted.draft.status, DraftStatus::Submitted);
+    assert_eq!(submitted.draft.version, 2);
+
+    let stale_decision = post_response(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Rejected,
+            expected_review_version: 0,
+            body: Some("Stale decision".to_owned()),
+        },
+    )
+    .await;
+    assert_eq!(stale_decision.status(), StatusCode::CONFLICT);
+    let unchanged: ReviewDetail = get_json(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}", submitted.review.review_id),
+    )
+    .await;
+    assert_eq!(unchanged.review.status, ReviewStatus::Open);
+    assert_eq!(unchanged.draft.status, DraftStatus::Submitted);
+    assert_eq!(unchanged.draft.version, 2);
+
+    let rejected: ReviewDetail = post_json(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Rejected,
+            expected_review_version: submitted.review.version,
+            body: Some("Add the operational constraint.".to_owned()),
+        },
+    )
+    .await;
+    assert_eq!(rejected.review.status, ReviewStatus::Rejected);
+    assert_eq!(rejected.review.version, 2);
+    assert_eq!(
+        rejected.review.decision_body.as_deref(),
+        Some("Add the operational constraint.")
+    );
+    assert_eq!(rejected.draft.status, DraftStatus::Open);
+    assert_eq!(rejected.draft.version, 3);
+
+    let edited: DraftDetail = post_json_with_if_match(
+        owner_app.clone(),
+        &format!("/api/v1/drafts/{}/operations", rejected.draft.draft_id),
+        rejected.draft.version,
+        &DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: rejected.draft.resource.clone(),
+            base_hash: None,
+            body: Some("# Revised submission\n\nApply the operational constraint.".to_owned()),
+            new_path: None,
+        },
+    )
+    .await;
+    assert_eq!(edited.draft.status, DraftStatus::Open);
+    assert_eq!(edited.draft.version, 4);
+
+    let stale_review_submission = post_response(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &CreateReviewSubmissionRequest {
+            expected_review_version: 1,
+            expected_draft_version: edited.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(stale_review_submission.status(), StatusCode::CONFLICT);
+
+    let stale_draft_submission = post_response(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &CreateReviewSubmissionRequest {
+            expected_review_version: rejected.review.version,
+            expected_draft_version: edited.draft.version - 1,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(stale_draft_submission.status(), StatusCode::CONFLICT);
+
+    let member_submission = post_response(
+        member_app,
+        &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &CreateReviewSubmissionRequest {
+            expected_review_version: rejected.review.version,
+            expected_draft_version: edited.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(member_submission.status(), StatusCode::FORBIDDEN);
+    let still_rejected: ReviewDetail = get_json(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}", rejected.review.review_id),
+    )
+    .await;
+    assert_eq!(still_rejected.review.status, ReviewStatus::Rejected);
+    assert_eq!(still_rejected.review.version, rejected.review.version);
+    assert_eq!(still_rejected.draft.status, DraftStatus::Open);
+    assert_eq!(still_rejected.draft.version, edited.draft.version);
+
+    let resubmitted: ReviewDetail = post_json(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &CreateReviewSubmissionRequest {
+            expected_review_version: rejected.review.version,
+            expected_draft_version: edited.draft.version,
+            title: Some("Revised review lifecycle context".to_owned()),
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(resubmitted.review.review_id, submitted.review.review_id);
+    assert_eq!(resubmitted.review.status, ReviewStatus::Open);
+    assert_eq!(resubmitted.review.version, 3);
+    assert_eq!(resubmitted.review.title, "Revised review lifecycle context");
+    assert_eq!(resubmitted.review.decision_body, None);
+    assert_eq!(resubmitted.draft.status, DraftStatus::Submitted);
+    assert_eq!(resubmitted.draft.version, 5);
+    assert_eq!(resubmitted.operations.len(), 2);
+
+    let duplicate_submission = post_response(
+        owner_app.clone(),
+        &format!(
+            "/api/v1/reviews/{}/submissions",
+            resubmitted.review.review_id
+        ),
+        &CreateReviewSubmissionRequest {
+            expected_review_version: resubmitted.review.version,
+            expected_draft_version: resubmitted.draft.version,
+            title: None,
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(duplicate_submission.status(), StatusCode::BAD_REQUEST);
+
+    let review_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reviews WHERE draft_id = $1")
+        .bind(&resubmitted.draft.draft_id)
+        .fetch_one(&postgres.pool)
+        .await
+        .unwrap();
+    assert_eq!(review_count, 1);
+    let events: DraftEventListResponse = get_json(owner_app, "/api/v1/draft-events").await;
+    let draft_events = events
+        .events
+        .iter()
+        .filter(|event| event.draft_id == resubmitted.draft.draft_id)
+        .collect::<Vec<_>>();
+    assert!(draft_events.iter().any(|event| {
+        event.event_type == DraftEventType::Reopened && event.version == rejected.draft.version
+    }));
+    let submitted_versions = draft_events
+        .iter()
+        .filter(|event| event.event_type == DraftEventType::Submitted)
+        .map(|event| event.version)
+        .collect::<Vec<_>>();
+    assert_eq!(submitted_versions, vec![2, 5]);
 }
 
 #[tokio::test]
@@ -976,7 +1221,7 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     );
     assert_eq!(resolved.conflict, None);
 
-    let approved: Review = post_json(
+    let approved: ReviewDetail = post_json(
         app.clone(),
         &format!("/api/v1/reviews/{}/decisions", stale.review_id),
         &CreateReviewDecisionRequest {
@@ -991,7 +1236,7 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         &format!("/api/v1/reviews/{}/merges", stale.review_id),
         &format!("\"{first_commit_id}\""),
         &CreateReviewMergeRequest {
-            expected_review_version: approved.version,
+            expected_review_version: approved.review.version,
         },
     )
     .await;
@@ -1038,7 +1283,7 @@ async fn create_approved_context_review(
         },
     )
     .await;
-    let review: Review = post_json(
+    let review: ReviewDetail = post_json(
         app.clone(),
         "/api/v1/reviews",
         &CreateReviewRequest {
@@ -1049,16 +1294,17 @@ async fn create_approved_context_review(
         },
     )
     .await;
-    post_json(
+    let approved: ReviewDetail = post_json(
         app,
-        &format!("/api/v1/reviews/{}/decisions", review.review_id),
+        &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
         &CreateReviewDecisionRequest {
             decision: ReviewDecision::Approved,
-            expected_review_version: review.version,
+            expected_review_version: review.review.version,
             body: None,
         },
     )
-    .await
+    .await;
+    approved.review
 }
 
 async fn post_json<TRequest, TResponse>(
@@ -1084,6 +1330,26 @@ where
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     decode_json(response).await
+}
+
+async fn post_response<TRequest>(
+    app: axum::Router,
+    uri: &str,
+    request: &TRequest,
+) -> axum::response::Response
+where
+    TRequest: Serialize,
+{
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(request).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn get_json_with_etag<TResponse>(app: axum::Router, uri: &str) -> (TResponse, String)

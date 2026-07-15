@@ -3,6 +3,7 @@ import {
   AuthenticationRequiredError,
   createDaemonFetch,
   daemonOperationsForDraft,
+  DesktopBackend,
   mapReviewWithConflict,
   syncStateForDaemonDraft,
 } from "../src/backend";
@@ -217,6 +218,7 @@ describe("Desktop backend mapping", () => {
         description: "",
         status: "approved",
         version: 4,
+        decision_body: "Approved after conflict resolution.",
         created_at: "2026-07-15T00:00:00Z",
         updated_at: "2026-07-15T00:02:00Z",
       },
@@ -296,6 +298,7 @@ describe("Desktop backend mapping", () => {
     expect(review.version).toBe(4);
     expect(review.draftVersion).toBe(3);
     expect(review.operations?.[0]?.body).toBe("# Draft");
+    expect(review.decisionNote).toBe("Approved after conflict resolution.");
     expect(review.conflict).toEqual({
       baseCommitId,
       currentCommitId,
@@ -303,5 +306,53 @@ describe("Desktop backend mapping", () => {
       baseContent: "# Base",
       currentContent: "# Current",
     });
+  });
+
+  test("synchronizes and reads the daemon projection before unlocking a rejected draft", async () => {
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const detail = {
+      draft: {
+        draft_id: "draft_local",
+        project_id: "prj_test",
+        server_draft_id: "drf_server",
+        server_version: 4,
+        base_commit_id: null,
+        scope: "project" as const,
+        resource_kind: "context" as const,
+        target_id: "ctx_existing",
+        path: "context/existing.md",
+        conflict: null,
+        status: "open" as const,
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-15T00:02:00Z",
+        pending_operation_count: 0,
+        failed_operation_count: 0,
+      },
+      operations: [],
+    } as DaemonDraftDetail;
+    const backend = new DesktopBackend(async <T>(command: string, args?: Record<string, unknown>) => {
+      calls.push({ command, args });
+      if (command === "retry_daemon_sync") {
+        return { retry_id: "retry_test", started: true } as T;
+      }
+      if (command === "read_daemon_draft") {
+        return detail as T;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const projected = await backend.syncDraftProjection(
+      "draft_local",
+      [{ id: "prj_test", name: "Test", refCommitId: null }],
+      [resource],
+    );
+
+    expect(calls).toEqual([
+      { command: "retry_daemon_sync", args: { request: { channel: "drafts" } } },
+      { command: "read_daemon_draft", args: { draftId: "draft_local" } },
+    ]);
+    expect(projected.status).toBe("editing");
+    expect(projected.serverVersion).toBe(4);
+    expect(projected.document.body).toBe("# Existing");
   });
 });

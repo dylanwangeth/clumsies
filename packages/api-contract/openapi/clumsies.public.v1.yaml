@@ -777,7 +777,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Review"
+                $ref: "#/components/schemas/ReviewDetail"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/reviews/{review_id}:
@@ -845,11 +845,32 @@ paths:
               $ref: "#/components/schemas/CreateReviewDecisionRequest"
       responses:
         "200":
-          description: Review after decision.
+          description: Review and draft after the decision.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Review"
+                $ref: "#/components/schemas/ReviewDetail"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/reviews/{review_id}/submissions:
+    parameters:
+      - $ref: "#/components/parameters/ReviewId"
+    post:
+      operationId: createReviewSubmission
+      summary: Resubmit an edited draft to its existing rejected review.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewSubmissionRequest"
+      responses:
+        "200":
+          description: Reopened review and resubmitted draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewDetail"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/reviews/{review_id}/conflict-resolutions:
@@ -1615,7 +1636,7 @@ components:
           type: string
         event_type:
           type: string
-          enum: [created, updated, operation_appended, discarded, submitted, conflicted]
+          enum: [created, updated, operation_appended, discarded, submitted, reopened, conflicted]
         version:
           type: integer
         daemon_installation_id:
@@ -1677,6 +1698,18 @@ components:
           type: string
         description:
           type: string
+    CreateReviewSubmissionRequest:
+      type: object
+      required: [expected_review_version, expected_draft_version]
+      properties:
+        expected_review_version:
+          type: integer
+        expected_draft_version:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
     ReviewDetail:
       type: object
       required: [review, draft, operations, comments, conflict]
@@ -1708,6 +1741,7 @@ components:
         - description
         - status
         - version
+        - decision_body
         - created_at
         - updated_at
       properties:
@@ -1727,6 +1761,8 @@ components:
           $ref: "#/components/schemas/ReviewStatus"
         version:
           type: integer
+        decision_body:
+          type: [string, "null"]
         created_at:
           type: string
           format: date-time

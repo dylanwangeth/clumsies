@@ -13,11 +13,11 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::api::{
     CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
     CreateReviewCommentRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
-    CreateReviewMergeRequest, CreateReviewRequest, DraftOperationBatchRequest, DraftOperationInput,
-    OidcAuthorizationRequest, OidcCallbackRequest, OrgRole, PersonalBundleRequest,
-    PersonalBundleUpdateRequest, ProjectRole, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest, UpdateMemberRequest,
-    UpdateProjectMemberRequest, UpdateProjectRequest,
+    CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
+    DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
+    OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
+    ReplaceProjectOrgSelectionRequest, ResourceScope, TokenRequest, UpdateAdminOrgRequest,
+    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService};
 use crate::repository::{ServerError, ServerRepository};
@@ -152,6 +152,7 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         post: create_review_comment,
     };
     "/api/v1/reviews/{review_id}/decisions" => { post: create_review_decision };
+    "/api/v1/reviews/{review_id}/submissions" => { post: create_review_submission };
     "/api/v1/reviews/{review_id}/conflict-resolutions" => {
         post: create_review_conflict_resolution,
     };
@@ -1104,7 +1105,7 @@ async fn create_review(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
     Json(request): Json<CreateReviewRequest>,
-) -> Result<Json<crate::api::Review>, HttpError> {
+) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
     state
         .repository
         .ensure_draft_owner(&principal, &request.draft_id)
@@ -1179,7 +1180,7 @@ async fn create_review_decision(
     Extension(principal): Extension<AuthPrincipal>,
     Path(review_id): Path<String>,
     Json(request): Json<CreateReviewDecisionRequest>,
-) -> Result<Json<crate::api::Review>, HttpError> {
+) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
     state
         .repository
         .ensure_review_member(&principal, &review_id)
@@ -1188,6 +1189,24 @@ async fn create_review_decision(
         state
             .repository
             .create_review_decision(&review_id, request)
+            .await?,
+    ))
+}
+
+async fn create_review_submission(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(review_id): Path<String>,
+    Json(request): Json<CreateReviewSubmissionRequest>,
+) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
+    state
+        .repository
+        .ensure_review_member(&principal, &review_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .create_review_submission(&review_id, &principal.user_id, request)
             .await?,
     ))
 }
