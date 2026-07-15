@@ -1,6 +1,7 @@
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction, types::Json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -1003,6 +1004,22 @@ impl ServerRepository {
         resource_id: &str,
     ) -> Result<(), ServerError> {
         let mut tx = self.pool.begin().await?;
+        let org_id = project_org_id(&mut tx, project_id).await?;
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM resources
+                WHERE resource_id = $1 AND org_id = $2
+                  AND scope = 'org' AND status = 'active'
+             )",
+        )
+        .bind(resource_id)
+        .bind(&org_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Err(ServerError::not_found("org_resource", resource_id));
+        }
         let current_revision = current_project_org_selection_revision(&mut tx, project_id).await?;
         let next_revision = current_revision + 1;
         sqlx::query(
@@ -1017,6 +1034,7 @@ impl ServerRepository {
         .bind(next_revision)
         .execute(&mut *tx)
         .await?;
+        validate_project_effective_memory(&mut tx, project_id, &org_id).await?;
         update_project_org_selection_revision(&mut tx, project_id, next_revision).await?;
         tx.commit().await?;
         Ok(())
@@ -1029,7 +1047,7 @@ impl ServerRepository {
         request: ReplaceProjectOrgSelectionRequest,
     ) -> Result<ProjectOrgSelection, ServerError> {
         let mut tx = self.pool.begin().await?;
-        project_org_id(&mut tx, project_id).await?;
+        let org_id = project_org_id(&mut tx, project_id).await?;
         let parent_commit_id = current_project_ref(&mut tx, project_id).await?;
         let current_revision = current_project_org_selection_revision(&mut tx, project_id).await?;
         if current_revision != expected_revision {
@@ -1047,6 +1065,7 @@ impl ServerRepository {
         insert_project_org_selection_items(
             &mut tx,
             project_id,
+            &org_id,
             "rule",
             next_revision,
             &request.rule_ids,
@@ -1055,6 +1074,7 @@ impl ServerRepository {
         insert_project_org_selection_items(
             &mut tx,
             project_id,
+            &org_id,
             "context",
             next_revision,
             &request.context_ids,
@@ -1063,6 +1083,7 @@ impl ServerRepository {
         insert_project_org_selection_items(
             &mut tx,
             project_id,
+            &org_id,
             "workflow",
             next_revision,
             &request.workflow_ids,
@@ -1399,6 +1420,7 @@ impl ServerRepository {
                 }
             }
         }
+        validate_draft_resource(&request.resource)?;
         for operation in &request.operations {
             validate_draft_operation_resource(&request.resource, operation)?;
         }
@@ -2584,6 +2606,7 @@ fn validate_draft_operation_resource(
     draft_resource: &DraftResourceRef,
     operation: &DraftOperationInput,
 ) -> Result<(), ServerError> {
+    validate_draft_resource(draft_resource)?;
     if operation.resource.scope != draft_resource.scope
         || operation.resource.kind != draft_resource.kind
     {
@@ -2599,6 +2622,19 @@ fn validate_draft_operation_resource(
         return Err(ServerError::InvalidRequest(
             "draft content kind does not match its resource".to_owned(),
         ));
+    }
+    if operation.resource.kind == DraftResourceKind::Metaprompt
+        && operation.action == DraftOperationAction::Rename
+    {
+        return Err(ServerError::InvalidRequest(
+            "metaprompt does not support rename".to_owned(),
+        ));
+    }
+    if let Some(path) = operation.resource.path.as_deref() {
+        validate_resource_path(operation.resource.kind.as_str(), path)?;
+    }
+    if let Some(path) = operation.new_path.as_deref() {
+        validate_resource_path(operation.resource.kind.as_str(), path)?;
     }
     let valid = match operation.action {
         DraftOperationAction::Create => {
@@ -2628,6 +2664,37 @@ fn validate_draft_operation_resource(
         Err(ServerError::InvalidRequest(
             "draft operation fields do not match its action".to_owned(),
         ))
+    }
+}
+
+fn validate_draft_resource(resource: &DraftResourceRef) -> Result<(), ServerError> {
+    if let Some(path) = resource.path.as_deref() {
+        validate_resource_path(resource.kind.as_str(), path)?;
+    }
+    Ok(())
+}
+
+fn validate_resource_path(resource_kind: &str, path: &str) -> Result<(), ServerError> {
+    if path.is_empty()
+        || Path::new(path)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ServerError::InvalidRequest(format!(
+            "resource path is not a normalized relative path: {path}"
+        )));
+    }
+    match resource_kind {
+        "workflow" if !path.starts_with("workflow/") => Err(ServerError::InvalidRequest(
+            "workflow path must use the workflow/ namespace".to_owned(),
+        )),
+        "rule" if path.starts_with("workflow/") => Err(ServerError::InvalidRequest(
+            "rule path cannot use the workflow/ namespace".to_owned(),
+        )),
+        "metaprompt" if path != "META_PROMPT.md" => Err(ServerError::InvalidRequest(
+            "metaprompt path must be META_PROMPT.md".to_owned(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -2822,23 +2889,32 @@ async fn update_project_org_selection_revision(
 async fn insert_project_org_selection_items(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
+    org_id: &str,
     resource_kind: &str,
     revision: i64,
     resource_ids: &[String],
 ) -> Result<(), ServerError> {
+    let mut seen = BTreeSet::new();
     for resource_id in resource_ids {
+        if !seen.insert(resource_id) {
+            return Err(ServerError::InvalidRequest(format!(
+                "project org selection contains duplicate resource: {resource_id}"
+            )));
+        }
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (
                 SELECT 1
                 FROM resources
                 WHERE resource_id = $1
                   AND resource_kind = $2
+                  AND org_id = $3
                   AND scope = 'org'
                   AND status = 'active'
             )",
         )
         .bind(resource_id)
         .bind(resource_kind)
+        .bind(org_id)
         .fetch_one(&mut **tx)
         .await?;
         if !exists {
@@ -4040,12 +4116,131 @@ async fn apply_metaprompt_operation(
     Ok(())
 }
 
+async fn validate_project_effective_memory(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+) -> Result<(), ServerError> {
+    let cross_org_resource = sqlx::query_scalar::<_, String>(
+        "SELECT s.resource_id
+         FROM project_org_resource_selections s
+         JOIN resources r ON r.resource_id = s.resource_id
+         WHERE s.project_id = $1 AND r.org_id <> $2
+         LIMIT 1",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(resource_id) = cross_org_resource {
+        return Err(ServerError::InvalidRequest(format!(
+            "project cannot select a resource from another organization: {resource_id}"
+        )));
+    }
+
+    let rows = sqlx::query(
+        "SELECT r.resource_id, r.resource_kind, r.path
+         FROM resources r
+         WHERE r.status = 'active'
+           AND (
+             (r.scope = 'project' AND r.project_id = $1)
+             OR (
+               r.scope = 'org' AND r.org_id = $2
+               AND EXISTS(
+                 SELECT 1
+                 FROM project_org_resource_selections s
+                 WHERE s.project_id = $1 AND s.resource_id = r.resource_id
+               )
+             )
+           )
+         ORDER BY r.resource_kind, r.path, r.resource_id",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut output_paths = BTreeMap::<String, String>::new();
+    for row in rows {
+        let resource_id: String = row.try_get("resource_id")?;
+        let resource_kind: String = row.try_get("resource_kind")?;
+        let path: String = row.try_get("path")?;
+        validate_resource_path(&resource_kind, &path)?;
+        let output_path = match resource_kind.as_str() {
+            "context" => format!("cache/context/{path}"),
+            "rule" | "workflow" => format!("cache/rule/{path}"),
+            other => {
+                return Err(ServerError::InvalidRequest(format!(
+                    "unknown effective resource kind: {other}"
+                )));
+            }
+        };
+        if let Some(existing_id) = output_paths.insert(output_path.clone(), resource_id.clone()) {
+            return Err(ServerError::InvalidRequest(format!(
+                "project effective memory materializes {existing_id} and {resource_id} at {output_path}"
+            )));
+        }
+    }
+
+    let missing_rule = sqlx::query(
+        "SELECT w.name, ws.rule_id
+         FROM resources w
+         JOIN workflow_steps ws ON ws.resource_id = w.resource_id
+         WHERE w.resource_kind = 'workflow' AND w.status = 'active'
+           AND ws.rule_id IS NOT NULL
+           AND (
+             (w.scope = 'project' AND w.project_id = $1)
+             OR (
+               w.scope = 'org' AND w.org_id = $2
+               AND EXISTS(
+                 SELECT 1
+                 FROM project_org_resource_selections selected_workflow
+                 WHERE selected_workflow.project_id = $1
+                   AND selected_workflow.resource_id = w.resource_id
+               )
+             )
+           )
+           AND NOT EXISTS(
+             SELECT 1
+             FROM resources r
+             WHERE r.resource_id = ws.rule_id
+               AND r.resource_kind = 'rule' AND r.status = 'active'
+               AND (
+                 (r.scope = 'project' AND r.project_id = $1)
+                 OR (
+                   r.scope = 'org' AND r.org_id = $2
+                   AND EXISTS(
+                     SELECT 1
+                     FROM project_org_resource_selections selected_rule
+                     WHERE selected_rule.project_id = $1
+                       AND selected_rule.resource_id = r.resource_id
+                   )
+                 )
+               )
+           )
+         ORDER BY w.resource_id, ws.step_order
+         LIMIT 1",
+    )
+    .bind(project_id)
+    .bind(org_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = missing_rule {
+        let workflow_name: String = row.try_get("name")?;
+        let rule_id: String = row.try_get("rule_id")?;
+        return Err(ServerError::InvalidRequest(format!(
+            "workflow {workflow_name} references rule {rule_id}, which is not available in project effective memory"
+        )));
+    }
+    Ok(())
+}
+
 async fn create_project_commit(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
     parent_commit_id: Option<&str>,
 ) -> Result<String, ServerError> {
     let org_id = project_org_id(tx, project_id).await?;
+    validate_project_effective_memory(tx, project_id, &org_id).await?;
     let version = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT max(version)
          FROM commits
@@ -4195,6 +4390,8 @@ async fn pending_resource_entry(
     let resource_id: String = row.try_get("resource_id")?;
     let body: String = row.try_get("body")?;
     let resource_kind: String = row.try_get("resource_kind")?;
+    let path: String = row.try_get("path")?;
+    validate_resource_path(&resource_kind, &path)?;
     let blob_content = match resource_kind.as_str() {
         "context" => body,
         "rule" => rule_blob_content(
@@ -4223,7 +4420,7 @@ async fn pending_resource_entry(
         resource_kind,
         scope: scope.to_owned(),
         project_id: project_id.map(ToOwned::to_owned),
-        path: Some(row.try_get("path")?),
+        path: Some(path),
         blob_id: store_blob(tx, &blob_content).await?,
         source: source.to_owned(),
     })

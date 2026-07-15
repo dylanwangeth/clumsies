@@ -209,7 +209,7 @@ describe("Desktop backend mapping", () => {
       "prj_test",
       "Test",
     );
-    workflowDraft.document.path = "workflows/coding";
+    workflowDraft.document.path = "workflow/coding";
     workflowDraft.document.title = "Coding workflow";
     workflowDraft.document.body = "Prepare a production change.";
     workflowDraft.document.steps = [
@@ -540,5 +540,104 @@ describe("Desktop backend mapping", () => {
     expect(projected.status).toBe("editing");
     expect(projected.serverVersion).toBe(4);
     expect(projected.document.body).toBe("# Existing");
+  });
+
+  test("switches the daemon project without replacing credentials and publishes Hub selection", async () => {
+    const daemonCalls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const backend = new DesktopBackend(async <T>(command: string, args?: Record<string, unknown>) => {
+      daemonCalls.push({ command, args });
+      if (command === "select_daemon_project") {
+        return {
+          server_url: "https://clumsies.example.com",
+          project_id: "prj_test",
+          has_access_token: true,
+          has_refresh_token: true,
+          ready: true,
+          missing_fields: [],
+        } as T;
+      }
+      if (command === "retry_daemon_sync") {
+        return { retry_id: "retry_commits", started: true } as T;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const apiCalls: unknown[] = [];
+    backend.api = {
+      replaceProjectOrgSelection: async (
+        projectId: string,
+        revision: number,
+        request: unknown,
+      ) => {
+        apiCalls.push({ projectId, revision, request });
+        return {
+          project_id: projectId,
+          revision: revision + 1,
+          rules: [],
+          context: [{
+            context_id: "ctx_hub",
+            scope: "org",
+            project_id: null,
+            kind: "file",
+            path: "context/hub.md",
+            content_hash: "hash",
+            size: 10,
+            updated_at: "2026-07-15T00:00:00Z",
+          }],
+          workflows: [],
+        };
+      },
+      projectCommitState: async () => ({
+        state: { ref: { commit_id: "commit_next" } },
+      }),
+    } as unknown as ClumsiesApi;
+    const hubContext: AuthorityResource = {
+      ...resource,
+      id: "ctx_hub",
+      scope: "Hub",
+      projectId: null,
+      projectName: null,
+      document: { ...resource.document, path: "context/hub.md" },
+    };
+
+    await backend.selectProject("prj_test");
+    const result = await backend.replaceProjectOrgSelection(
+      {
+        projectId: "prj_test",
+        ruleIds: [],
+        contextIds: [],
+        workflowIds: [],
+        revision: 2,
+      },
+      [hubContext.id],
+      [hubContext],
+    );
+
+    expect(daemonCalls).toEqual([
+      {
+        command: "select_daemon_project",
+        args: { request: { project_id: "prj_test" } },
+      },
+      {
+        command: "retry_daemon_sync",
+        args: { request: { channel: "commits" } },
+      },
+    ]);
+    expect(apiCalls).toEqual([{
+      projectId: "prj_test",
+      revision: 2,
+      request: {
+        rule_ids: [],
+        context_ids: ["ctx_hub"],
+        workflow_ids: [],
+      },
+    }]);
+    expect(result.selection).toEqual({
+      projectId: "prj_test",
+      ruleIds: [],
+      contextIds: ["ctx_hub"],
+      workflowIds: [],
+      revision: 3,
+    });
+    expect(result.refCommitId).toBe("commit_next");
   });
 });

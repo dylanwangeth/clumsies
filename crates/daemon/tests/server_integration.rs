@@ -4,13 +4,14 @@ use daemon::{
     DaemonConfig, DaemonCreateDraftOperation, DaemonDraftContent, DaemonDraftListQuery,
     DaemonDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
     DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService,
-    DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonSyncRetryRequest, SyncRetryChannel,
-    SyncState,
+    DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonProjectSelectionRequest,
+    DaemonSyncRetryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
-    DraftResourceKind, DraftResourceRef, ResourceScope, ReviewDecision,
+    DraftResourceKind, DraftResourceRef, ReplaceProjectOrgSelectionRequest, ResourceScope,
+    ReviewDecision,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -53,6 +54,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     .execute(&pool)
     .await
     .unwrap();
+
     sqlx::query(
         "INSERT INTO access_tokens (
             token_id, session_id, user_id, kind, token_hash, expires_at
@@ -527,6 +529,54 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     .await
     .unwrap();
 
+    let secondary_project_id = repository
+        .create_project(&bootstrap.org_id, "Secondary Memory", "")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO project_members (project_id, user_id, role)
+         VALUES ($1, $2, 'admin')",
+    )
+    .bind(&secondary_project_id)
+    .bind(&bootstrap.user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, content_hash, body, context_kind
+         ) VALUES (
+            'ctx_secondary_project', $1, $2, 'project', 'context',
+            'context/secondary.md', 'Secondary', 'active', 'secondary-hash',
+            '# Secondary project', 'file'
+         )",
+    )
+    .bind(&bootstrap.org_id)
+    .bind(&secondary_project_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    repository
+        .replace_project_org_selection(
+            &secondary_project_id,
+            0,
+            ReplaceProjectOrgSelectionRequest {
+                rule_ids: Vec::new(),
+                context_ids: Vec::new(),
+                workflow_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let secondary_commit_id = repository
+        .get_project_commit_state(&secondary_project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let server_address = listener.local_addr().unwrap();
     let server_task = tokio::spawn(async move {
@@ -629,7 +679,35 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         )
         .await
         .unwrap();
-    let commit_id = merge.commit_id.unwrap();
+    let project_commit_id = merge.commit_id.unwrap();
+    let org_context_id = repository
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/shared-from-hub.md",
+            "# Shared from Hub\n\nSelected by the project.",
+        )
+        .await
+        .unwrap();
+    repository
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            0,
+            ReplaceProjectOrgSelectionRequest {
+                rule_ids: Vec::new(),
+                context_ids: vec![org_context_id],
+                workflow_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let commit_id = repository
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+    assert_ne!(commit_id, project_commit_id);
 
     let mut roots = Vec::new();
     for service in [&service_a, &service_b] {
@@ -657,6 +735,11 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             std::fs::read_to_string(cache_root.join("cache/context/context/commit-sync.md"))
                 .unwrap(),
             "# Commit sync\n\nInstalled from an immutable Commit."
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache_root.join("cache/context/context/shared-from-hub.md"))
+                .unwrap(),
+            "# Shared from Hub\n\nSelected by the project."
         );
         let sync = service.sync_status().await.unwrap();
         assert_eq!(sync.commit_sync.state, SyncState::Idle);
@@ -719,6 +802,41 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     assert_eq!(
         next_draft.draft.base_commit_id.as_deref(),
         Some(commit_id.as_str())
+    );
+
+    let selected = restarted_a
+        .select_project(DaemonProjectSelectionRequest {
+            project_id: secondary_project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        selected.project_id.as_deref(),
+        Some(secondary_project_id.as_str())
+    );
+    restarted_a
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+    let secondary_cache = restarted_a
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: secondary_project_id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        secondary_cache.commit_id.as_deref(),
+        Some(secondary_commit_id.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            std::path::PathBuf::from(secondary_cache.root_path.unwrap())
+                .join("cache/context/context/secondary.md")
+        )
+        .unwrap(),
+        "# Secondary project"
     );
 
     server_task.abort();

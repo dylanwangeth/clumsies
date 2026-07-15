@@ -29,6 +29,7 @@ describe("daemon API client", () => {
       access_token: null,
       refresh_token: null,
     });
+    await client.selectProject({ project_id: "prj_other" });
     await client.syncStatus();
     await client.retrySync({ channel: "all" });
     await client.mcpStatus();
@@ -63,6 +64,7 @@ describe("daemon API client", () => {
       "read_daemon_health",
       "read_daemon_project_config",
       "replace_daemon_project_config",
+      "select_daemon_project",
       "read_daemon_sync_status",
       "retry_daemon_sync",
       "read_daemon_mcp_status",
@@ -79,9 +81,12 @@ describe("daemon API client", () => {
         refresh_token: null,
       },
     });
-    expect(calls[11]?.args).toEqual({
+    expect(calls[8]?.args).toEqual({
+      request: { project_id: "prj_other" },
+    });
+    expect(calls[12]?.args).toEqual({
       query: { resource: "context", limit: 20 },
     });
-    expect(calls[12]?.args).toEqual({ draftId: "draft_test" });
+    expect(calls[13]?.args).toEqual({ draftId: "draft_test" });
   });
 });

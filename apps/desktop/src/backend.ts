@@ -29,11 +29,20 @@ import {
   type ReviewRecord,
   type SyncState,
 } from "./model";
+import { ensureDaemonReady } from "./daemon-readiness";
 
 export type ProjectOption = {
   id: string;
   name: string;
   refCommitId: string | null;
+};
+
+export type ProjectOrgSelectionState = {
+  projectId: string;
+  ruleIds: string[];
+  contextIds: string[];
+  workflowIds: string[];
+  revision: number;
 };
 
 export type DesktopAccount = {
@@ -61,6 +70,7 @@ export type DesktopBackendState = {
   account: DesktopAccount;
   organization: DesktopOrganization;
   projects: ProjectOption[];
+  projectOrgSelections: ProjectOrgSelectionState[];
   orgRefCommitId: string | null;
   activeProjectId: string | null;
   resources: AuthorityResource[];
@@ -92,7 +102,7 @@ export class DesktopBackend {
   }
 
   async load(): Promise<DesktopBackendState> {
-    const bootstrap = await ensureDaemon(this.daemon);
+    const bootstrap = await ensureDaemonReady(this.daemon);
     let [health, projectConfig] = await Promise.all([
       waitForDaemonHealth(this.daemon),
       this.daemon.projectConfig(),
@@ -120,16 +130,23 @@ export class DesktopBackend {
       api.me(),
       api.orgCommitState(),
     ]);
-    const projects = await Promise.all(
+    const projectStates = await Promise.all(
       me.projects.map(async (project) => {
-        const commitState = await api.projectCommitState(project.project_id);
+        const [commitState, orgSelection] = await Promise.all([
+          api.projectCommitState(project.project_id),
+          api.projectOrgSelection(project.project_id),
+        ]);
         return {
-          id: project.project_id,
-          name: project.name,
-          refCommitId: commitState.state.ref.commit_id,
+          project: {
+            id: project.project_id,
+            name: project.name,
+            refCommitId: commitState.state.ref.commit_id,
+          },
+          orgSelection: mapProjectOrgSelection(orgSelection),
         };
       }),
     );
+    const projects = projectStates.map((state) => state.project);
     const activeProjectId = selectActiveProject(projectConfig, projects);
 
     const [resources, bundlePage, reviewPage, draftDetails] = await Promise.all([
@@ -174,6 +191,7 @@ export class DesktopBackend {
         name: me.org.name,
       },
       projects,
+      projectOrgSelections: projectStates.map((state) => state.orgSelection),
       orgRefCommitId: orgCommitState.state.ref.commit_id,
       activeProjectId,
       resources,
@@ -201,6 +219,54 @@ export class DesktopBackend {
     }
     return mapDaemonDraft(await this.daemon.draft(draftId), projects, resources);
   }
+
+  selectProject(projectId: string): Promise<DaemonProjectConfig> {
+    return this.daemon.selectProject({ project_id: projectId });
+  }
+
+  async replaceProjectOrgSelection(
+    selection: ProjectOrgSelectionState,
+    resourceIds: readonly string[],
+    resources: AuthorityResource[],
+  ): Promise<{ selection: ProjectOrgSelectionState; refCommitId: string | null }> {
+    if (!this.api) {
+      throw new Error("Server API is unavailable");
+    }
+    const selected = resources.filter(
+      (resource) => resource.scope === "Hub" && resourceIds.includes(resource.id),
+    );
+    const updated = await this.api.replaceProjectOrgSelection(
+      selection.projectId,
+      selection.revision,
+      {
+        rule_ids: selected.filter((resource) => resource.kind === "Rules").map((resource) => resource.id),
+        context_ids: selected.filter((resource) => resource.kind === "Context").map((resource) => resource.id),
+        workflow_ids: selected
+          .filter((resource) => resource.kind === "Workflows")
+          .map((resource) => resource.id),
+      },
+    );
+    const [commitState] = await Promise.all([
+      this.api.projectCommitState(selection.projectId),
+      this.daemon.retrySync({ channel: "commits" }),
+    ]);
+    return {
+      selection: mapProjectOrgSelection(updated),
+      refCommitId: commitState.state.ref.commit_id,
+    };
+  }
+}
+
+function mapProjectOrgSelection(
+  selection: PublicSchema<"ProjectOrgSelection">,
+): ProjectOrgSelectionState {
+  return {
+    projectId: selection.project_id,
+    ruleIds: selection.rules.map((resource) => resource.rule_id),
+    contextIds: selection.context.map((resource) => resource.context_id),
+    workflowIds: selection.workflows.map((resource) => resource.workflow_id),
+    revision: selection.revision,
+  };
 }
 
 export function createDaemonFetch(daemon: DaemonApiClient): typeof fetch {
@@ -249,12 +315,6 @@ function serverMethod(method: string): "GET" | "POST" | "PUT" | "PATCH" | "DELET
     return normalized;
   }
   throw new Error(`Unsupported Server request method: ${method}`);
-}
-
-async function ensureDaemon(
-  daemon: DaemonApiClient,
-): Promise<DaemonBootstrapStatus> {
-  return daemon.start();
 }
 
 async function waitForDaemonHealth(
@@ -1094,7 +1154,7 @@ function defaultPath(kind: MemoryKind): string {
     return "rules/untitled";
   }
   if (kind === "Workflows") {
-    return "workflows/untitled";
+    return "workflow/untitled";
   }
   if (kind === "Metaprompt") {
     return "META_PROMPT.md";

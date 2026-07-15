@@ -8,6 +8,7 @@ import {
   initialDrafts,
   initialResources,
   initialReviews,
+  listLocalResources,
   listResources,
   resourceWorkingState,
   reviewDiff,
@@ -34,6 +35,45 @@ describe("memory draft lifecycle", () => {
     expect(visible?.document.body).toBe("Updated in a personal draft.");
     expect(resource!.document.body).not.toBe("Updated in a personal draft.");
     expect(resource!.version).toBe(9);
+  });
+
+  test("Local combines project work with selected authoritative Hub resources", () => {
+    const projectResource = initialResources.find(
+      (entry) => entry.id === "project-context-daemon",
+    )!;
+    const hubResource = initialResources.find(
+      (entry) => entry.id === "hub-context-external-memory",
+    )!;
+    const hubDraft = createDraftFromResource(hubResource);
+    hubDraft.document.body = "Unpublished Hub draft";
+
+    const items = listLocalResources(
+      [projectResource, hubResource],
+      [hubDraft],
+      "koal",
+      "Context",
+      [hubResource.id],
+    );
+    const inherited = items.find((item) => item.selectionId === hubResource.id);
+
+    expect(items.map((item) => item.selectionId)).toContain(projectResource.id);
+    expect(inherited).toMatchObject({
+      scope: "Hub",
+      workspaceView: "Local",
+      workspaceProjectId: "koal",
+      inherited: true,
+      draft: null,
+    });
+    expect(inherited?.document.body).toBe(hubResource.document.body);
+  });
+
+  test("new Workflow and Metaprompt drafts use materializable canonical paths", () => {
+    expect(
+      createBlankDraft("Project", "Workflows", "koal", "Koal").document.path,
+    ).toMatch(/^workflow\/untitled-/);
+    expect(
+      createBlankDraft("Project", "Metaprompt", "koal", "Koal").document.path,
+    ).toBe("META_PROMPT.md");
   });
 
   test("merging an update creates the next authoritative version", () => {

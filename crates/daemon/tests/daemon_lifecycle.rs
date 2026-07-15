@@ -13,9 +13,10 @@ use daemon::{
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonState, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController,
-    LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel, SyncState,
+    DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
+    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, ServerCredentials,
+    SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -673,6 +674,66 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(!signed_out.has_access_token);
     assert!(!signed_out.has_refresh_token);
     assert!(credential_store.credentials().is_none());
+}
+
+#[tokio::test]
+async fn selecting_a_project_preserves_credentials_and_persists_the_active_project() {
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    let service = DaemonIpcService::new(state);
+
+    service
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: "https://clumsies.example.com".to_owned(),
+            project_id: Some("prj_first".to_owned()),
+            access_token: Some("access-token".to_owned()),
+            refresh_token: Some("refresh-token".to_owned()),
+        })
+        .await
+        .unwrap();
+
+    let selected = service
+        .select_project(DaemonProjectSelectionRequest {
+            project_id: "prj_second".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(selected.project_id.as_deref(), Some("prj_second"));
+    assert_eq!(selected.server_url, "https://clumsies.example.com");
+    assert!(selected.has_access_token);
+    assert!(selected.has_refresh_token);
+    assert_eq!(
+        credential_store.credentials().unwrap(),
+        ServerCredentials {
+            server_url: "https://clumsies.example.com".to_owned(),
+            access_token: "access-token".to_owned(),
+            refresh_token: Some("refresh-token".to_owned()),
+        }
+    );
+
+    let restarted = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    assert_eq!(
+        restarted.project_config_status().project_id.as_deref(),
+        Some("prj_second")
+    );
+
+    let error = DaemonIpcService::new(restarted)
+        .select_project(DaemonProjectSelectionRequest {
+            project_id: "  ".to_owned(),
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("project_id must not be empty"));
 }
 
 #[tokio::test]

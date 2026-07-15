@@ -2608,6 +2608,10 @@ pre {
   padding: 7px 8px 7px 12px;
 }
 
+.toast.error {
+  border-color: rgba(235, 110, 125, 0.55);
+}
+
 .toast-action {
   display: inline-flex;
   min-height: 27px;

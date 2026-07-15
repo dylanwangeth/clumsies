@@ -753,6 +753,26 @@ impl DaemonState {
         Ok(self.project_config_view())
     }
 
+    pub async fn select_project(
+        &self,
+        request: DaemonProjectSelectionRequest,
+    ) -> Result<DaemonProjectConfig, DaemonError> {
+        let project_id = non_empty_string(request.project_id).ok_or_else(|| {
+            DaemonError::InvalidRequest("project_id must not be empty".to_owned())
+        })?;
+        let mut project_config = self.project_config();
+        project_config.project_id = Some(project_id);
+        project_config.validate()?;
+        save_project_metadata(&self.inner.pool, &project_config.metadata()).await?;
+        *self
+            .inner
+            .project_config
+            .write()
+            .expect("project config rwlock poisoned") = project_config;
+        self.request_sync();
+        Ok(self.project_config_view())
+    }
+
     pub async fn server_request(
         &self,
         request: DaemonServerRequest,
@@ -1073,6 +1093,13 @@ impl DaemonIpcService {
         self.state.replace_project_config(request).await
     }
 
+    pub async fn select_project(
+        &self,
+        request: DaemonProjectSelectionRequest,
+    ) -> Result<DaemonProjectConfig, DaemonError> {
+        self.state.select_project(request).await
+    }
+
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         self.state.sync_status().await
     }
@@ -1132,6 +1159,17 @@ impl DaemonIpcService {
                 match payload {
                     Ok(payload) => self
                         .replace_project_config(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "select_project" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .select_project(payload)
                         .await
                         .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
                     Err(error) => Err(error),
@@ -3153,6 +3191,11 @@ pub struct DaemonProjectConfigUpdateRequest {
     pub project_id: Option<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectSelectionRequest {
+    pub project_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

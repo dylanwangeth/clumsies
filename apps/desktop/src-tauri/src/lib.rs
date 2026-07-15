@@ -8,9 +8,9 @@ use daemon::{
     DaemonBootstrapStatus, DaemonConfig, DaemonDraftDetail, DaemonDraftListQuery,
     DaemonDraftListResponse, DaemonDraftOperationRequest, DaemonDraftOperationResponse,
     DaemonError, DaemonHealth, DaemonIpcClient, DaemonMcpStatus, DaemonProjectConfig,
-    DaemonProjectConfigUpdateRequest, DaemonRetryResponse, DaemonServerRequest,
-    DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, LaunchAgentConfig,
-    LaunchAgentController,
+    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonRetryResponse,
+    DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus,
+    LaunchAgentConfig, LaunchAgentController,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -79,6 +79,13 @@ async fn replace_daemon_project_config(
     request: DaemonProjectConfigUpdateRequest,
 ) -> Result<DaemonProjectConfig, String> {
     call_daemon(move |client| client.replace_project_config(request)).await
+}
+
+#[tauri::command]
+async fn select_daemon_project(
+    request: DaemonProjectSelectionRequest,
+) -> Result<DaemonProjectConfig, String> {
+    call_daemon(move |client| client.select_project(request)).await
 }
 
 #[tauri::command]
@@ -512,6 +519,7 @@ pub fn run() {
             read_daemon_health,
             read_daemon_project_config,
             replace_daemon_project_config,
+            select_daemon_project,
             read_daemon_sync_status,
             retry_daemon_sync,
             read_daemon_mcp_status,

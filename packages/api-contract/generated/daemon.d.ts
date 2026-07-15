@@ -63,6 +63,9 @@ export interface components {
             /** @description Written atomically with the access token to macOS Keychain and never returned. */
             refresh_token: string | null;
         };
+        DaemonProjectSelectionRequest: {
+            project_id: string;
+        };
         DaemonMemoryCacheRequest: {
             project_id: string;
         };

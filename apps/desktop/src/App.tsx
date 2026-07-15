@@ -32,6 +32,7 @@ import {
   syncStateForDaemonDraft,
   type DesktopAccount,
   type DesktopOrganization,
+  type ProjectOrgSelectionState,
   type ProjectOption,
 } from "./backend";
 import {
@@ -43,6 +44,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  ArrowUpRight,
   ArrowDown,
   ArrowUp,
   Bot,
@@ -61,6 +63,7 @@ import {
   FolderKanban,
   GitMerge,
   GitPullRequest,
+  Link2,
   ListChecks,
   LoaderCircle,
   MoreHorizontal,
@@ -72,6 +75,7 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Unlink2,
   Undo2,
   X,
 } from "lucide-react";
@@ -88,6 +92,7 @@ import {
   initialResources,
   initialReviews,
   listResources,
+  listLocalResources,
   memoryKinds,
   reviewChangeFromDraft,
   reviewDiff,
@@ -149,6 +154,7 @@ type ConfirmState = {
 };
 
 type UndoState = { message: string; run: () => void };
+type NoticeState = { message: string; tone?: "error" };
 
 type SoftwareUpdateState =
   | { status: "idle" }
@@ -169,6 +175,15 @@ type AgentTarget = {
   proposal: string;
   applyLabel: string;
   onApply: () => void;
+};
+
+type OrgSelectionControls = {
+  canManage: boolean;
+  projectName: string | null;
+  selectedResourceIds: readonly string[];
+  updatingResourceId: string | null;
+  onOpenHub: (item: ResourceListItem) => void;
+  onToggle: (item: ResourceListItem) => void;
 };
 
 type NavigationItem = {
@@ -192,7 +207,13 @@ const previewAccount: DesktopAccount = {
   email: "weiwang@example.com",
   displayName: "Wei Wang",
   avatarUrl: null,
-  capabilities: ["memory:read", "draft:write", "review:write", "review:merge"],
+  capabilities: [
+    "memory:read",
+    "draft:write",
+    "review:write",
+    "review:merge",
+    "admin:write",
+  ],
 };
 
 const primaryNavigation: NavigationItem[] = [
@@ -210,6 +231,16 @@ const previewProjects: ProjectOption[] = [
   { id: "aider", name: "Aider", refCommitId: null },
   { id: "okra", name: "Okra", refCommitId: null },
   { id: "hands-on-os", name: "Hands on OS", refCommitId: null },
+];
+
+const previewProjectOrgSelections: ProjectOrgSelectionState[] = [
+  {
+    projectId: "koal",
+    contextIds: ["hub-context-external-memory"],
+    ruleIds: ["hub-rule-compatibility"],
+    workflowIds: ["hub-workflow-coding"],
+    revision: 3,
+  },
 ];
 
 const projectPreviewLimit = 3;
@@ -263,6 +294,9 @@ export function App() {
   const [projects, setProjects] = useState<ProjectOption[]>(
     previewMode ? previewProjects : [],
   );
+  const [projectOrgSelections, setProjectOrgSelections] = useState<
+    ProjectOrgSelectionState[]
+  >(previewMode ? previewProjectOrgSelections : []);
   const [account, setAccount] = useState<DesktopAccount | null>(
     previewMode ? previewAccount : null,
   );
@@ -318,13 +352,18 @@ export function App() {
   const [sourceWidth, setSourceWidth] = useState(244);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [undoState, setUndoState] = useState<UndoState | null>(null);
+  const [noticeState, setNoticeState] = useState<NoticeState | null>(null);
   const [bundlePickerOpen, setBundlePickerOpen] = useState(false);
+  const [selectionUpdatingId, setSelectionUpdatingId] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
 
   const searchRef = useRef<HTMLInputElement>(null);
   const draftSyncTimers = useRef(new Map<string, number>());
   const bundleSyncTimers = useRef(new Map<string, number>());
   const undoTimer = useRef<number | null>(null);
+  const noticeTimer = useRef<number | null>(null);
+  const daemonProjectId = useRef<string | null>(previewMode ? "koal" : null);
+  const projectSwitchQueue = useRef<Promise<void>>(Promise.resolve());
 
   const refreshBackend = useCallback(async (
     options: { preserveWorkspace?: boolean } = {},
@@ -337,9 +376,11 @@ export function App() {
     setLoadState({ status: "loading" });
     try {
       const backendState = await backend.load();
+      daemonProjectId.current = backendState.activeProjectId;
       setAccount(backendState.account);
       setOrganization(backendState.organization);
       setProjects(backendState.projects);
+      setProjectOrgSelections(backendState.projectOrgSelections);
       setHubRefCommitId(backendState.orgRefCommitId);
       setResources(backendState.resources);
       setDrafts(backendState.drafts);
@@ -358,26 +399,28 @@ export function App() {
       }
 
       if (!options.preserveWorkspace) {
-        const firstProjectItem = backendState.resources.find(
-          (resource) =>
-            resource.scope === "Project" &&
-            resource.projectId === backendState.activeProjectId,
+        const activeSelection = backendState.projectOrgSelections.find(
+          (selection) => selection.projectId === backendState.activeProjectId,
         );
-        const firstDraft = backendState.drafts.find(
-          (draft) => draft.projectId === backendState.activeProjectId,
-        );
-        const initialItem = firstProjectItem ?? firstDraft ?? null;
+        const selectedOrgIds = projectOrgSelectionResourceIds(activeSelection ?? null);
+        const initialItem = memoryKinds
+          .flatMap((kind) =>
+            listLocalResources(
+              backendState.resources,
+              backendState.drafts,
+              backendState.activeProjectId,
+              kind,
+              selectedOrgIds,
+            ),
+          )[0] ?? null;
         if (initialItem) {
-          const targetId =
-            "baseResourceId" in initialItem
-              ? (initialItem.baseResourceId ?? initialItem.id)
-              : initialItem.id;
+          const targetId = initialItem.selectionId;
           const tab: WorkspaceTab = {
             key: memoryTabKey("Local", targetId, "source"),
             view: "Local",
             targetId,
             kind: initialItem.kind,
-            projectId: initialItem.projectId,
+            projectId: backendState.activeProjectId,
             surface: "source",
             pinned: true,
           };
@@ -542,6 +585,9 @@ export function App() {
       if (undoTimer.current !== null) {
         window.clearTimeout(undoTimer.current);
       }
+      if (noticeTimer.current !== null) {
+        window.clearTimeout(noticeTimer.current);
+      }
     },
     [],
   );
@@ -550,9 +596,57 @@ export function App() {
     if (undoTimer.current !== null) {
       window.clearTimeout(undoTimer.current);
     }
+    setNoticeState(null);
     setUndoState(state);
     undoTimer.current = window.setTimeout(() => setUndoState(null), 7000);
   }, []);
+
+  const showNotice = useCallback((state: NoticeState) => {
+    if (noticeTimer.current !== null) {
+      window.clearTimeout(noticeTimer.current);
+    }
+    setUndoState(null);
+    setNoticeState(state);
+    noticeTimer.current = window.setTimeout(() => setNoticeState(null), 7000);
+  }, []);
+
+  useEffect(() => {
+    const backend = backendRef.current;
+    if (
+      !backend ||
+      !selectedProjectId ||
+      selectedProjectId === daemonProjectId.current
+    ) {
+      return;
+    }
+    const requestedProjectId = selectedProjectId;
+    const switchProject = projectSwitchQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (daemonProjectId.current === requestedProjectId) {
+          return;
+        }
+        const projectConfig = await backend.selectProject(requestedProjectId);
+        daemonProjectId.current = requestedProjectId;
+        setLoadState((current) =>
+          current.status === "ready"
+            ? { ...current, projectConfig }
+            : current,
+        );
+      });
+    projectSwitchQueue.current = switchProject.catch(() => undefined);
+    void switchProject.catch((error) => {
+      setSelectedProjectId((current) =>
+        current === requestedProjectId && daemonProjectId.current
+          ? daemonProjectId.current
+          : current,
+      );
+      showNotice({
+        message: error instanceof Error ? error.message : "Project switch failed.",
+        tone: "error",
+      });
+    });
+  }, [selectedProjectId, showNotice]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -782,7 +876,9 @@ export function App() {
         setHubKind(kind);
         setSelectedHubId(targetId);
       } else {
-        setSelectedProjectId(projectId ?? "koal");
+        if (projectId) {
+          setSelectedProjectId(projectId);
+        }
         setProjectKind(kind);
         setSelectedProjectResourceId(targetId);
       }
@@ -793,14 +889,14 @@ export function App() {
 
   const openMarkdownPreview = useCallback(
     (item: ResourceListItem) => {
-      const view = item.scope === "Hub" ? "Hub" : "Local";
+      const view = item.workspaceView;
       showWorkspaceTab(
         {
           key: memoryTabKey(view, item.selectionId, "markdown-preview"),
           view,
           targetId: item.selectionId,
           kind: item.kind,
-          projectId: item.projectId,
+          projectId: item.workspaceProjectId,
           surface: "markdown-preview",
           pinned: true,
         },
@@ -814,16 +910,36 @@ export function App() {
     () => listResources(resources, drafts, "Hub", null, hubKind),
     [drafts, hubKind, resources],
   );
+  const activeProjectOrgSelection = useMemo(
+    () =>
+      projectOrgSelections.find(
+        (selection) => selection.projectId === selectedProjectId,
+      ) ?? null,
+    [projectOrgSelections, selectedProjectId],
+  );
+  const selectedOrgResourceIds = useMemo(
+    () => projectOrgSelectionResourceIds(activeProjectOrgSelection),
+    [activeProjectOrgSelection],
+  );
   const projectItems = useMemo(
     () =>
-      listResources(resources, drafts, "Project", selectedProjectId, projectKind),
-    [drafts, projectKind, resources, selectedProjectId],
+      listLocalResources(
+        resources,
+        drafts,
+        selectedProjectId,
+        projectKind,
+        selectedOrgResourceIds,
+      ),
+    [drafts, projectKind, resources, selectedOrgResourceIds, selectedProjectId],
   );
   const selectedHubItem = findListItem(hubItems, selectedHubId);
   const selectedProjectItem = findListItem(
     projectItems,
     selectedProjectResourceId,
   );
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ?? null;
+  const canManageOrgSelection = account?.capabilities.includes("admin:write") ?? false;
 
   useEffect(() => {
     if (selectedHubItem && selectedHubItem.selectionId !== selectedHubId) {
@@ -845,7 +961,7 @@ export function App() {
       item: ResourceListItem,
       update: (document: MemoryDocument) => MemoryDocument,
     ) => {
-      if (item.draft?.status === "in_review") {
+      if (item.inherited || item.draft?.status === "in_review") {
         return;
       }
       const baseDraft = item.draft
@@ -865,7 +981,7 @@ export function App() {
       const draftId = startingDraft.id;
       pinWorkspaceTabByKey(
         memoryTabKey(
-          item.scope === "Hub" ? "Hub" : "Local",
+          item.workspaceView,
           item.selectionId,
           "source",
         ),
@@ -1763,11 +1879,11 @@ export function App() {
     workspaceTabs.find((tab) => tab.key === activeTabKey) ?? null;
   const currentHubItem =
     activeWorkspaceTab?.view === "Hub"
-      ? findMemoryTabItem(activeWorkspaceTab, resources, drafts)
+      ? findMemoryTabItem(activeWorkspaceTab, resources, drafts, projectOrgSelections)
       : null;
   const currentProjectItem =
     activeWorkspaceTab?.view === "Local"
-      ? findMemoryTabItem(activeWorkspaceTab, resources, drafts)
+      ? findMemoryTabItem(activeWorkspaceTab, resources, drafts, projectOrgSelections)
       : null;
   const currentBundle =
     activeWorkspaceTab?.view === "Bundles"
@@ -1799,7 +1915,7 @@ export function App() {
     () =>
       workspaceTabs.map((tab) => {
         if (tab.view === "Hub" || tab.view === "Local") {
-          const item = findMemoryTabItem(tab, resources, drafts);
+          const item = findMemoryTabItem(tab, resources, drafts, projectOrgSelections);
           const path = item?.document.path;
           const preview = tab.surface === "markdown-preview";
           return {
@@ -1833,7 +1949,7 @@ export function App() {
           syncState: draft?.syncState,
         };
       }),
-    [bundles, drafts, resources, reviews, workspaceTabs],
+    [bundles, drafts, projectOrgSelections, resources, reviews, workspaceTabs],
   );
 
   const activateWorkspaceTab = useCallback(
@@ -1844,7 +1960,9 @@ export function App() {
         setHubKind(tab.kind);
         setSelectedHubId(tab.targetId);
       } else if (tab.view === "Local") {
-        setSelectedProjectId(tab.projectId ?? "koal");
+        if (tab.projectId) {
+          setSelectedProjectId(tab.projectId);
+        }
         setProjectKind(tab.kind);
         setSelectedProjectResourceId(tab.targetId);
       } else if (tab.view === "Bundles") {
@@ -1908,7 +2026,7 @@ export function App() {
             "Local",
             item.selectionId,
             item.kind,
-            item.projectId,
+            item.workspaceProjectId,
           );
           return;
         }
@@ -1951,12 +2069,18 @@ export function App() {
   const selectProject = useCallback(
     (projectId: string) => {
       setUserMenuOpen(false);
-      const item = listResources(
+      setWorkspaceTabs((current) =>
+        current.filter((tab) => tab.view !== "Local" || tab.projectId === projectId),
+      );
+      const selection = projectOrgSelections.find(
+        (entry) => entry.projectId === projectId,
+      );
+      const item = listLocalResources(
         resources,
         drafts,
-        "Project",
         projectId,
         projectKind,
+        projectOrgSelectionResourceIds(selection ?? null),
       )[0];
       if (item) {
         openMemoryWorkspaceTab(
@@ -1972,7 +2096,166 @@ export function App() {
       setSelectedView("Local");
       setActiveTabKey(null);
     },
-    [drafts, openMemoryWorkspaceTab, projectKind, resources],
+    [drafts, openMemoryWorkspaceTab, projectKind, projectOrgSelections, resources],
+  );
+
+  const toggleProjectOrgResource = useCallback(
+    async (item: ResourceListItem) => {
+      const resource = item.resource;
+      if (
+        !resource ||
+        resource.scope !== "Hub" ||
+        resource.kind === "Metaprompt" ||
+        !selectedProjectId
+      ) {
+        return;
+      }
+      if (!canManageOrgSelection) {
+        showNotice({
+          message: "Organization owners and admins manage project Hub resources.",
+          tone: "error",
+        });
+        return;
+      }
+      const selection = activeProjectOrgSelection ?? {
+        projectId: selectedProjectId,
+        ruleIds: [],
+        contextIds: [],
+        workflowIds: [],
+        revision: 0,
+      };
+      const selectedIds = projectOrgSelectionResourceIds(selection);
+      const included = selectedIds.includes(resource.id);
+      if (included && resource.kind === "Rules") {
+        const dependents = effectiveWorkflowDependents(
+          resource.id,
+          selectedProjectId,
+          selection,
+          resources,
+        );
+        if (dependents.length > 0) {
+          showNotice({
+            message: `${resource.document.title} is used by ${dependents.join(", ")}. Remove or edit those Workflows first.`,
+            tone: "error",
+          });
+          return;
+        }
+      }
+
+      const nextIds = new Set(selectedIds);
+      if (included) {
+        nextIds.delete(resource.id);
+      } else {
+        nextIds.add(resource.id);
+        if (resource.kind === "Workflows") {
+          for (const step of resource.document.steps) {
+            if (
+              step.ruleId &&
+              resources.some(
+                (candidate) =>
+                  candidate.id === step.ruleId &&
+                  candidate.scope === "Hub" &&
+                  candidate.kind === "Rules",
+              )
+            ) {
+              nextIds.add(step.ruleId);
+            }
+          }
+        }
+      }
+
+      setSelectionUpdatingId(resource.id);
+      try {
+        const backend = backendRef.current;
+        let updatedSelection: ProjectOrgSelectionState;
+        let refCommitId: string | null = null;
+        if (backend) {
+          const result = await backend.replaceProjectOrgSelection(
+            selection,
+            [...nextIds],
+            resources,
+          );
+          updatedSelection = result.selection;
+          refCommitId = result.refCommitId;
+        } else {
+          updatedSelection = projectOrgSelectionFromResourceIds(
+            selection,
+            [...nextIds],
+            resources,
+          );
+        }
+        setProjectOrgSelections((current) => [
+          ...current.filter((entry) => entry.projectId !== selectedProjectId),
+          updatedSelection,
+        ]);
+        if (refCommitId) {
+          setProjects((current) =>
+            current.map((project) =>
+              project.id === selectedProjectId
+                ? { ...project, refCommitId }
+                : project,
+            ),
+          );
+          setResources((current) =>
+            current.map((candidate) =>
+              candidate.scope === "Project" &&
+              candidate.projectId === selectedProjectId
+                ? { ...candidate, refCommitId }
+                : candidate,
+            ),
+          );
+        }
+        if (included) {
+          removeMemoryWorkspaceTabs("Local", resource.id);
+        }
+        showNotice({
+          message: included
+            ? `Removed ${resource.document.title} from ${selectedProject?.name ?? "the project"}.`
+            : `Added ${resource.document.title} to ${selectedProject?.name ?? "the project"}.`,
+        });
+      } catch (error) {
+        showNotice({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Project Hub selection could not be updated.",
+          tone: "error",
+        });
+      } finally {
+        setSelectionUpdatingId(null);
+      }
+    },
+    [
+      activeProjectOrgSelection,
+      canManageOrgSelection,
+      removeMemoryWorkspaceTabs,
+      resources,
+      selectedProject,
+      selectedProjectId,
+      showNotice,
+    ],
+  );
+
+  const orgSelectionControls = useMemo<OrgSelectionControls>(
+    () => ({
+      canManage: canManageOrgSelection,
+      projectName: selectedProject?.name ?? null,
+      selectedResourceIds: selectedOrgResourceIds,
+      updatingResourceId: selectionUpdatingId,
+      onOpenHub: (item) =>
+        openMemoryWorkspaceTab("Hub", item.selectionId, item.kind, null, true),
+      onToggle: (item) => {
+        void toggleProjectOrgResource(item);
+      },
+    }),
+    [
+      canManageOrgSelection,
+      openMemoryWorkspaceTab,
+      selectedOrgResourceIds,
+      selectedProject,
+      selectionUpdatingId,
+      toggleProjectOrgResource,
+    ],
   );
 
   const applyAgentToMemory = useCallback(
@@ -2000,6 +2283,17 @@ export function App() {
       const item = selectedView === "Hub" ? currentHubItem : currentProjectItem;
       if (!item) {
         return null;
+      }
+      if (item.inherited) {
+        return {
+          key: `memory-${item.selectionId}`,
+          label: item.document.title,
+          quickActions: ["Summarize context", "Find related memory", "Review retrieval cues"],
+          proposal:
+            "This resource is inherited from Hub and remains read-only in Local. Open its authority view before creating a personal Hub Draft.",
+          applyLabel: "Open in Hub",
+          onApply: () => orgSelectionControls.onOpenHub(item),
+        };
       }
       return {
         key: `memory-${item.selectionId}`,
@@ -2057,6 +2351,7 @@ export function App() {
     currentHubItem,
     currentProjectItem,
     currentReview,
+    orgSelectionControls,
     resources,
     selectedView,
     updateBundle,
@@ -2140,7 +2435,7 @@ export function App() {
                   : "source"
               }
               selectedId={selectedHubId}
-              scope="Hub"
+              orgSelection={orgSelectionControls}
               sourceWidth={sourceWidth}
               tabStrip={contentTabStrip}
               onCreate={(kind) => createMemoryDraft("Hub", kind)}
@@ -2162,7 +2457,12 @@ export function App() {
             />
               ) : selectedView === "Local" ? (
                 <MemoryWorkspace
-              counts={kindCounts(resources, drafts, "Project", selectedProjectId)}
+              counts={localKindCounts(
+                resources,
+                drafts,
+                selectedProjectId,
+                selectedOrgResourceIds,
+              )}
               item={currentProjectItem}
               items={projectItems}
               kind={projectKind}
@@ -2172,7 +2472,7 @@ export function App() {
                   : "source"
               }
               selectedId={selectedProjectResourceId}
-              scope="Project"
+              orgSelection={orgSelectionControls}
               sourceWidth={sourceWidth}
               tabStrip={contentTabStrip}
               onCreate={(kind) => createMemoryDraft("Project", kind)}
@@ -2367,6 +2667,15 @@ export function App() {
 
       {confirmState ? (
         <ConfirmDialog state={confirmState} onCancel={() => setConfirmState(null)} />
+      ) : null}
+
+      {noticeState ? (
+        <div
+          className={noticeState.tone === "error" ? "toast error" : "toast"}
+          role="status"
+        >
+          <span>{noticeState.message}</span>
+        </div>
       ) : null}
 
       {undoState ? (
@@ -2870,7 +3179,7 @@ function MemoryWorkspace({
   onSelectItem,
   onSourceWidthChange,
   onSubmitReview,
-  scope,
+  orgSelection,
   selectedId,
   sourceWidth,
   surface,
@@ -2895,12 +3204,14 @@ function MemoryWorkspace({
   onSelectItem: (id: string) => void;
   onSourceWidthChange: (width: number) => void;
   onSubmitReview: (item: ResourceListItem) => void;
-  scope: MemoryScope;
+  orgSelection: OrgSelectionControls;
   selectedId: string | null;
   sourceWidth: number;
   surface: MemoryTabSurface;
   tabStrip: ReactNode;
 }) {
+  const canCreate =
+    kind !== "Metaprompt" || !items.some((candidate) => !candidate.inherited);
   return (
     <PageLayout
       sourceWidth={sourceWidth}
@@ -2918,19 +3229,21 @@ function MemoryWorkspace({
           </div>
           {kind === "Context" ? (
             <FileTree
-              createLabel={`New ${kind}`}
+              createLabel={canCreate ? `New ${kind}` : undefined}
               items={items}
               selectedId={selectedId}
-              onCreate={() => onCreate(kind)}
+              onCreate={canCreate ? () => onCreate(kind) : undefined}
               onPin={onPinItem}
               onSelect={onSelectItem}
             />
           ) : (
             <ResourceList
-              createLabel={`New ${kind === "Rules" ? "Rule" : kind}`}
+              createLabel={
+                canCreate ? `New ${kind === "Rules" ? "Rule" : kind}` : undefined
+              }
               items={items}
               selectedId={selectedId}
-              onCreate={() => onCreate(kind)}
+              onCreate={canCreate ? () => onCreate(kind) : undefined}
               onPin={onPinItem}
               onSelect={onSelectItem}
             />
@@ -2949,6 +3262,7 @@ function MemoryWorkspace({
             onOpenSource={() => onPinItem(item.selectionId)}
             onProposeDeletion={() => onProposeDeletion(item)}
             onSubmit={() => onSubmitReview(item)}
+            orgSelection={orgSelection}
           />
         ) : (
           <MemoryEditor
@@ -2960,14 +3274,19 @@ function MemoryWorkspace({
             onOpenReview={() => item.draft && onOpenReview(item.draft.id)}
             onProposeDeletion={() => onProposeDeletion(item)}
             onSubmit={() => onSubmitReview(item)}
+            orgSelection={orgSelection}
           />
         )
       ) : (
         <EmptyState
           icon={FileText}
           title={items.length ? "No open tab" : `No ${kind.toLowerCase()} here`}
-          actionLabel={items.length ? undefined : `Create ${kind === "Rules" ? "Rule" : kind}`}
-          onAction={items.length ? undefined : () => onCreate(kind)}
+          actionLabel={
+            items.length || !canCreate
+              ? undefined
+              : `Create ${kind === "Rules" ? "Rule" : kind}`
+          }
+          onAction={items.length || !canCreate ? undefined : () => onCreate(kind)}
         />
       )}
     </PageLayout>
@@ -3135,7 +3454,11 @@ function TreeBranch({
         style={{ paddingLeft: 8 + depth * 14 }}
         type="button"
       >
-        <FileText aria-hidden="true" size={13} />
+        {node.item.inherited ? (
+          <Link2 aria-hidden="true" size={13} />
+        ) : (
+          <FileText aria-hidden="true" size={13} />
+        )}
         <span className={resourceNameClass(node.item)}>{node.name}</span>
       </button>
     );
@@ -3182,6 +3505,7 @@ function MemoryEditor({
   onOpenReview,
   onProposeDeletion,
   onSubmit,
+  orgSelection,
 }: {
   item: ResourceListItem;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
@@ -3190,9 +3514,10 @@ function MemoryEditor({
   onOpenReview: () => void;
   onProposeDeletion: () => void;
   onSubmit: () => void;
+  orgSelection: OrgSelectionControls;
 }) {
   const draft = item.draft;
-  const locked = draft?.status === "in_review";
+  const locked = item.inherited || draft?.status === "in_review";
   const deleting = draft?.operation === "delete";
   return (
     <section className="editor-surface">
@@ -3204,6 +3529,7 @@ function MemoryEditor({
         onOpenReview={onOpenReview}
         onProposeDeletion={onProposeDeletion}
         onSubmit={onSubmit}
+        orgSelection={orgSelection}
         surface="source"
       />
       {deleting ? (
@@ -3231,6 +3557,7 @@ function MarkdownPreviewItem({
   onOpenSource,
   onProposeDeletion,
   onSubmit,
+  orgSelection,
 }: {
   item: ResourceListItem;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
@@ -3239,6 +3566,7 @@ function MarkdownPreviewItem({
   onOpenSource: () => void;
   onProposeDeletion: () => void;
   onSubmit: () => void;
+  orgSelection: OrgSelectionControls;
 }) {
   return (
     <section className="editor-surface">
@@ -3250,6 +3578,7 @@ function MarkdownPreviewItem({
         onOpenSource={onOpenSource}
         onProposeDeletion={onProposeDeletion}
         onSubmit={onSubmit}
+        orgSelection={orgSelection}
         surface="markdown-preview"
       />
       {isMarkdownPath(item.document.path) ? (
@@ -3282,6 +3611,7 @@ function MemoryItemToolbar({
   onOpenSource,
   onProposeDeletion,
   onSubmit,
+  orgSelection,
   surface,
 }: {
   item: ResourceListItem;
@@ -3292,13 +3622,14 @@ function MemoryItemToolbar({
   onOpenSource?: () => void;
   onProposeDeletion: () => void;
   onSubmit: () => void;
+  orgSelection: OrgSelectionControls;
   surface: MemoryTabSurface;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nextPath, setNextPath] = useState(item.document.path);
   const draft = item.draft;
-  const locked = draft?.status === "in_review";
+  const locked = item.inherited || draft?.status === "in_review";
   const deleting = draft?.operation === "delete";
   const workingState = resourceWorkingState(item);
   const stateLabel = workingStateLabel(workingState);
@@ -3354,6 +3685,34 @@ function MemoryItemToolbar({
         onClick: onOpenSource,
       });
     }
+    if (item.inherited) {
+      toolbarActions.push({
+        icon: ArrowUpRight,
+        label: "Open in Hub",
+        onClick: () => orgSelection.onOpenHub(item),
+      });
+      if (orgSelection.canManage) {
+        toolbarActions.push({
+          disabled: orgSelection.updatingResourceId === item.selectionId,
+          icon: Unlink2,
+          label: `Remove from ${orgSelection.projectName ?? "Project"}`,
+          onClick: () => orgSelection.onToggle(item),
+        });
+      }
+    } else if (
+      item.scope === "Hub" &&
+      item.kind !== "Metaprompt" &&
+      orgSelection.canManage &&
+      orgSelection.projectName
+    ) {
+      const included = orgSelection.selectedResourceIds.includes(item.selectionId);
+      toolbarActions.push({
+        disabled: orgSelection.updatingResourceId === item.selectionId,
+        icon: included ? Unlink2 : Link2,
+        label: `${included ? "Remove from" : "Add to"} ${orgSelection.projectName}`,
+        onClick: () => orgSelection.onToggle(item),
+      });
+    }
     if (draft?.status === "editing") {
       toolbarActions.push({
         disabled: draft.syncState !== "synced",
@@ -3371,7 +3730,7 @@ function MemoryItemToolbar({
   }
 
   const menuActions: ItemToolAction[] = [];
-  if (!locked) {
+  if (!locked && item.kind !== "Metaprompt") {
     menuActions.push({
       icon: FilePenLine,
       label: "Rename / Move",
@@ -3392,7 +3751,7 @@ function MemoryItemToolbar({
       },
       tone: "danger",
     });
-  } else if (!draft && item.resource) {
+  } else if (!draft && item.resource && !item.inherited) {
     menuActions.push({
       icon: Trash2,
       label: "Propose Deletion",
@@ -3442,7 +3801,7 @@ function MemoryItemToolbar({
         {toolbarActions.map((action) => (
           <IconButton key={action.label} {...action} />
         ))}
-        {!renaming ? (
+        {!renaming && menuActions.length > 0 ? (
             <div className="item-menu-anchor">
               <button
                 aria-expanded={menuOpen}
@@ -5066,6 +5425,26 @@ function kindCounts(
   ) as Record<MemoryKind, number>;
 }
 
+function localKindCounts(
+  resources: AuthorityResource[],
+  drafts: DraftRecord[],
+  projectId: string | null,
+  selectedOrgResourceIds: readonly string[],
+): Record<MemoryKind, number> {
+  return Object.fromEntries(
+    memoryKinds.map((kind) => [
+      kind,
+      listLocalResources(
+        resources,
+        drafts,
+        projectId,
+        kind,
+        selectedOrgResourceIds,
+      ).length,
+    ]),
+  ) as Record<MemoryKind, number>;
+}
+
 function buildTree(items: ResourceListItem[]): TreeNode[] {
   const root: TreeNode = { name: "", path: "", children: [] };
   for (const item of items) {
@@ -5127,13 +5506,15 @@ function moveListFocus(event: KeyboardEvent<HTMLDivElement>) {
 }
 
 function resourceSecondaryText(item: ResourceListItem): string {
+  let detail: string;
   if (item.kind === "Rules") {
-    return item.document.appliesWhen;
+    detail = item.document.appliesWhen;
+  } else if (item.kind === "Workflows") {
+    detail = `${item.document.steps.length} steps`;
+  } else {
+    detail = item.document.path;
   }
-  if (item.kind === "Workflows") {
-    return `${item.document.steps.length} steps`;
-  }
-  return item.document.path;
+  return item.inherited ? `Hub · ${detail}` : detail;
 }
 
 function workingStateLabel(state: ResourceWorkingState): string | null {
@@ -5162,7 +5543,8 @@ function resourceNameClass(item: ResourceListItem): string {
 
 function resourceStateAriaLabel(item: ResourceListItem, name: string): string {
   const state = workingStateLabel(resourceWorkingState(item));
-  return state ? `${name}, ${state}` : name;
+  const origin = item.inherited ? ", from Hub" : "";
+  return state ? `${name}${origin}, ${state}` : `${name}${origin}`;
 }
 
 function fileNameFromPath(path: string): string {
@@ -5222,13 +5604,71 @@ function findMemoryTabItem(
   tab: Extract<WorkspaceTab, { view: "Hub" | "Local" }>,
   resources: AuthorityResource[],
   drafts: DraftRecord[],
+  projectOrgSelections: ProjectOrgSelectionState[],
 ): ResourceListItem | null {
-  const scope = tab.view === "Hub" ? "Hub" : "Project";
+  const items = tab.view === "Hub"
+    ? listResources(resources, drafts, "Hub", null, tab.kind)
+    : listLocalResources(
+        resources,
+        drafts,
+        tab.projectId,
+        tab.kind,
+        projectOrgSelectionResourceIds(
+          projectOrgSelections.find(
+            (selection) => selection.projectId === tab.projectId,
+          ) ?? null,
+        ),
+      );
   return (
-    listResources(resources, drafts, scope, tab.projectId, tab.kind).find(
-      (item) => item.selectionId === tab.targetId,
-    ) ?? null
+    items.find((item) => item.selectionId === tab.targetId) ?? null
   );
+}
+
+function projectOrgSelectionResourceIds(
+  selection: ProjectOrgSelectionState | null,
+): string[] {
+  return selection
+    ? [...selection.ruleIds, ...selection.contextIds, ...selection.workflowIds]
+    : [];
+}
+
+function projectOrgSelectionFromResourceIds(
+  selection: ProjectOrgSelectionState,
+  resourceIds: readonly string[],
+  resources: AuthorityResource[],
+): ProjectOrgSelectionState {
+  const selected = resources.filter(
+    (resource) => resource.scope === "Hub" && resourceIds.includes(resource.id),
+  );
+  return {
+    projectId: selection.projectId,
+    ruleIds: selected.filter((resource) => resource.kind === "Rules").map((resource) => resource.id),
+    contextIds: selected
+      .filter((resource) => resource.kind === "Context")
+      .map((resource) => resource.id),
+    workflowIds: selected
+      .filter((resource) => resource.kind === "Workflows")
+      .map((resource) => resource.id),
+    revision: selection.revision + 1,
+  };
+}
+
+function effectiveWorkflowDependents(
+  ruleId: string,
+  projectId: string,
+  selection: ProjectOrgSelectionState,
+  resources: AuthorityResource[],
+): string[] {
+  const names = resources
+    .filter(
+      (resource) =>
+        resource.kind === "Workflows" &&
+        ((resource.scope === "Hub" && selection.workflowIds.includes(resource.id)) ||
+          (resource.scope === "Project" && resource.projectId === projectId)) &&
+        resource.document.steps.some((step) => step.ruleId === ruleId),
+    )
+    .map((resource) => resource.document.title);
+  return Array.from(new Set(names));
 }
 
 function refEtag(commitId: string | null): string {

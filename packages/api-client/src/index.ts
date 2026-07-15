@@ -29,6 +29,8 @@ export type DaemonBootstrapStatus = DaemonComponents["schemas"]["DaemonBootstrap
 export type DaemonProjectConfig = DaemonComponents["schemas"]["DaemonProjectConfig"];
 export type DaemonProjectConfigUpdateRequest =
   DaemonComponents["schemas"]["DaemonProjectConfigUpdateRequest"];
+export type DaemonProjectSelectionRequest =
+  DaemonComponents["schemas"]["DaemonProjectSelectionRequest"];
 export type DaemonHealth = DaemonComponents["schemas"]["DaemonHealth"];
 export type DaemonSyncStatus = DaemonComponents["schemas"]["DaemonSyncStatus"];
 export type DaemonSyncRetryRequest =
@@ -94,6 +96,8 @@ export function createDaemonApiClient(invoke: NativeInvoke) {
       invoke<DaemonProjectConfig>("read_daemon_project_config"),
     replaceProjectConfig: (request: DaemonProjectConfigUpdateRequest) =>
       invoke<DaemonProjectConfig>("replace_daemon_project_config", { request }),
+    selectProject: (request: DaemonProjectSelectionRequest) =>
+      invoke<DaemonProjectConfig>("select_daemon_project", { request }),
     syncStatus: () => invoke<DaemonSyncStatus>("read_daemon_sync_status"),
     retrySync: (request: DaemonSyncRetryRequest) =>
       invoke<DaemonRetryResponse>("retry_daemon_sync", { request }),

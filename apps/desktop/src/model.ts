@@ -153,6 +153,9 @@ export type ResourceListItem = {
   scope: MemoryScope;
   projectId: string | null;
   projectName: string | null;
+  workspaceView: "Hub" | "Local";
+  workspaceProjectId: string | null;
+  inherited: boolean;
 };
 
 export type SearchResult =
@@ -169,8 +172,8 @@ const blankDocument = (kind: MemoryKind, suffix: string): MemoryDocument => ({
       : kind === "Rules"
         ? `rules/untitled-${suffix}`
         : kind === "Workflows"
-          ? `workflows/untitled-${suffix}`
-          : `META_PROMPT-${suffix}.md`,
+          ? `workflow/untitled-${suffix}`
+          : "META_PROMPT.md",
   body:
     kind === "Rules"
       ? "State the durable constraint here."
@@ -296,6 +299,9 @@ export function listResources(
       scope,
       projectId: resource.projectId,
       projectName: resource.projectName,
+      workspaceView: scope === "Hub" ? "Hub" : "Local",
+      workspaceProjectId: scope === "Project" ? projectId : null,
+      inherited: false,
     };
   });
 
@@ -312,10 +318,47 @@ export function listResources(
       scope,
       projectId: draft.projectId,
       projectName: draft.projectName,
+      workspaceView: scope === "Hub" ? "Hub" : "Local",
+      workspaceProjectId: scope === "Project" ? projectId : null,
+      inherited: false,
     });
   }
 
   return items.sort((left, right) => left.document.path.localeCompare(right.document.path));
+}
+
+export function listLocalResources(
+  resources: AuthorityResource[],
+  drafts: DraftRecord[],
+  projectId: string | null,
+  kind: MemoryKind,
+  selectedOrgResourceIds: readonly string[],
+): ResourceListItem[] {
+  const projectItems = listResources(resources, drafts, "Project", projectId, kind);
+  const selectedIds = new Set(selectedOrgResourceIds);
+  const inheritedItems = resources
+    .filter(
+      (resource) =>
+        resource.scope === "Hub" &&
+        resource.kind === kind &&
+        selectedIds.has(resource.id),
+    )
+    .map((resource): ResourceListItem => ({
+      selectionId: resource.id,
+      resource,
+      draft: null,
+      document: resource.document,
+      kind,
+      scope: resource.scope,
+      projectId: resource.projectId,
+      projectName: resource.projectName,
+      workspaceView: "Local",
+      workspaceProjectId: projectId,
+      inherited: true,
+    }));
+  return [...projectItems, ...inheritedItems].sort((left, right) =>
+    left.document.path.localeCompare(right.document.path),
+  );
 }
 
 export function findListItem(

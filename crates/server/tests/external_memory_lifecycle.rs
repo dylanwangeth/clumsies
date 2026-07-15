@@ -1252,6 +1252,352 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
 }
 
 #[tokio::test]
+async fn project_org_selection_rejects_foreign_and_colliding_resources_atomically() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Effective Memory",
+        )
+        .await
+        .unwrap();
+    let collision_id = repo
+        .create_org_context(&bootstrap.org_id, "context/shared.md", "# Shared from Hub")
+        .await
+        .unwrap();
+    let valid_id = repo
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/org-only.md",
+            "# Organization only",
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, content_hash, body, context_kind
+         ) VALUES ($1, $2, $3, 'project', 'context', $4, $5, 'active', $6, $7, 'file')",
+    )
+    .bind("ctx_project_shared")
+    .bind(&bootstrap.org_id)
+    .bind(&bootstrap.project_id)
+    .bind("context/shared.md")
+    .bind("Project shared")
+    .bind("project-shared-hash")
+    .bind("# Shared from Project")
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    let foreign_org_id = repo.create_org("Foreign Memory").await.unwrap();
+    let foreign_context_id = repo
+        .create_org_context(
+            &foreign_org_id,
+            "context/foreign.md",
+            "# Foreign organization",
+        )
+        .await
+        .unwrap();
+    let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
+    let selection_uri = format!("/api/v1/projects/{}/org-selections", bootstrap.project_id);
+    let before: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
+    let before_state: CommitStateResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+
+    let collision_response = put_response_with_if_match(
+        app.clone(),
+        &selection_uri,
+        before.revision,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: vec![collision_id],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(collision_response.status(), StatusCode::BAD_REQUEST);
+    let collision_error: serde_json::Value = decode_json(collision_response).await;
+    assert!(
+        collision_error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("materializes")
+    );
+
+    let foreign_response = put_response_with_if_match(
+        app.clone(),
+        &selection_uri,
+        before.revision,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: vec![foreign_context_id],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(foreign_response.status(), StatusCode::NOT_FOUND);
+
+    let after_failures: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
+    assert_eq!(after_failures.revision, before.revision);
+    assert!(after_failures.context.is_empty());
+    let state_after_failures: CommitStateResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+    assert_eq!(
+        state_after_failures.reference.commit_id,
+        before_state.reference.commit_id
+    );
+
+    let selected: ProjectOrgSelection = put_json_with_if_match(
+        app.clone(),
+        &selection_uri,
+        before.revision,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: vec![valid_id.clone()],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(selected.revision, before.revision + 1);
+    let selected_state: CommitStateResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+    let commit_id = selected_state.reference.commit_id.unwrap();
+    let commit: CommitPayload = get_json(app, &format!("/api/v1/commits/{commit_id}")).await;
+    assert!(commit.tree.entries.iter().any(|entry| entry.id == valid_id));
+}
+
+#[tokio::test]
+async fn project_org_selection_cannot_remove_a_rule_used_by_effective_workflow() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Workflow Memory",
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, content_hash, body
+         ) VALUES ($1, $2, NULL, 'org', 'rule', $3, $4, 'active', $5, $6)",
+    )
+    .bind("rul_shared_dependency")
+    .bind(&bootstrap.org_id)
+    .bind("rules/shared-dependency")
+    .bind("Shared dependency")
+    .bind("shared-rule-hash")
+    .bind("Use the shared dependency.")
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, content_hash, body
+         ) VALUES ($1, $2, $3, 'project', 'workflow', $4, $5, 'active', $6, $7)",
+    )
+    .bind("wfl_project_dependency")
+    .bind(&bootstrap.org_id)
+    .bind(&bootstrap.project_id)
+    .bind("workflow/dependency")
+    .bind("Dependency workflow")
+    .bind("workflow-hash")
+    .bind("Uses a shared Rule.")
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO workflow_steps (resource_id, step_order, rule_id, body)
+         VALUES ($1, 1, $2, NULL)",
+    )
+    .bind("wfl_project_dependency")
+    .bind("rul_shared_dependency")
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
+    let selection_uri = format!("/api/v1/projects/{}/org-selections", bootstrap.project_id);
+    let selected: ProjectOrgSelection = put_json_with_if_match(
+        app.clone(),
+        &selection_uri,
+        0,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: vec!["rul_shared_dependency".to_owned()],
+            context_ids: Vec::new(),
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    let state_before: CommitStateResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+
+    let response = put_response_with_if_match(
+        app.clone(),
+        &selection_uri,
+        selected.revision,
+        &ReplaceProjectOrgSelectionRequest {
+            rule_ids: Vec::new(),
+            context_ids: Vec::new(),
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: serde_json::Value = decode_json(response).await;
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not available in project effective memory")
+    );
+    let selection_after: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
+    assert_eq!(selection_after.revision, selected.revision);
+    assert_eq!(selection_after.rules.len(), 1);
+    let state_after: CommitStateResponse = get_json(
+        app,
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+    assert_eq!(
+        state_after.reference.commit_id,
+        state_before.reference.commit_id
+    );
+}
+
+#[tokio::test]
+async fn invalid_memory_paths_are_rejected_before_draft_storage() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = repo
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Path Validation",
+        )
+        .await
+        .unwrap();
+    let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
+    let invalid_workflow = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id.clone(),
+        base_commit_id: None,
+        title: "Invalid Workflow path".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Workflow,
+            id: None,
+            path: Some("workflows/invalid".to_owned()),
+        },
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Workflow,
+                id: None,
+                path: Some("workflows/invalid".to_owned()),
+            },
+            content: Some(DraftResourceContent::Workflow {
+                name: Some("Invalid Workflow".to_owned()),
+                description: String::new(),
+                steps: vec![WorkflowStepInput {
+                    rule_id: None,
+                    body: Some("Run the step.".to_owned()),
+                }],
+            }),
+            new_path: None,
+        }],
+    };
+    assert_eq!(
+        post_response(app.clone(), "/api/v1/drafts", &invalid_workflow)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let invalid_empty_draft = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id.clone(),
+        base_commit_id: None,
+        title: "Invalid empty Workflow draft".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Workflow,
+            id: None,
+            path: Some("workflows/empty".to_owned()),
+        },
+        operations: Vec::new(),
+    };
+    assert_eq!(
+        post_response(app.clone(), "/api/v1/drafts", &invalid_empty_draft)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let invalid_metaprompt = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id,
+        base_commit_id: None,
+        title: "Invalid Metaprompt path".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Metaprompt,
+            id: None,
+            path: Some("prompts/META_PROMPT.md".to_owned()),
+        },
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Metaprompt,
+                id: None,
+                path: Some("prompts/META_PROMPT.md".to_owned()),
+            },
+            content: Some(DraftResourceContent::Metaprompt {
+                content: "# Metaprompt".to_owned(),
+            }),
+            new_path: None,
+        }],
+    };
+    assert_eq!(
+        post_response(app, "/api/v1/drafts", &invalid_metaprompt)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drafts")
+        .fetch_one(&postgres.pool)
+        .await
+        .unwrap();
+    assert_eq!(draft_count, 0);
+}
+
+#[tokio::test]
 async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
@@ -1387,7 +1733,7 @@ async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip
                 scope: ResourceScope::Project,
                 kind: DraftResourceKind::Workflow,
                 id: None,
-                path: Some("workflows/coding".to_owned()),
+                path: Some("workflow/coding".to_owned()),
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Create,
@@ -1395,7 +1741,7 @@ async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip
                     scope: ResourceScope::Project,
                     kind: DraftResourceKind::Workflow,
                     id: None,
-                    path: Some("workflows/coding".to_owned()),
+                    path: Some("workflow/coding".to_owned()),
                 },
                 content: Some(DraftResourceContent::Workflow {
                     name: Some("Coding workflow".to_owned()),
@@ -1732,6 +2078,28 @@ where
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     decode_json(response).await
+}
+
+async fn put_response_with_if_match<TRequest>(
+    app: axum::Router,
+    uri: &str,
+    expected_version: i64,
+    request: &TRequest,
+) -> axum::response::Response
+where
+    TRequest: Serialize,
+{
+    app.oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("if-match", expected_version.to_string())
+            .body(Body::from(serde_json::to_vec(request).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn delete_json_with_if_match<TResponse>(

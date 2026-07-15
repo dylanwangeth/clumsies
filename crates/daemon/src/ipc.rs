@@ -2,8 +2,8 @@ use crate::{
     DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
     DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
     DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonProjectConfig,
-    DaemonProjectConfigUpdateRequest, DaemonRetryResponse, DaemonServerRequest,
-    DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus,
+    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonRetryResponse,
+    DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -41,6 +41,17 @@ impl DaemonIpcClient {
     ) -> Result<DaemonProjectConfig, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "replace_project_config",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn select_project(
+        &self,
+        request: DaemonProjectSelectionRequest,
+    ) -> Result<DaemonProjectConfig, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "select_project",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

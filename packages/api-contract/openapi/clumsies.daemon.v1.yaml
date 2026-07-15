@@ -136,6 +136,12 @@ components:
         refresh_token:
           type: [string, "null"]
           description: Written atomically with the access token to macOS Keychain and never returned.
+    DaemonProjectSelectionRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
     DaemonMemoryCacheRequest:
       type: object
       required: [project_id]
