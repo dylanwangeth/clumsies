@@ -482,6 +482,24 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert!(deleted_bundle.deleted);
 
+    let first_event_page: DraftEventListResponse =
+        get_json(app.clone(), "/api/v1/draft-events?limit=1").await;
+    assert_eq!(first_event_page.events.len(), 1);
+    assert!(first_event_page.has_more);
+    let second_event_page: DraftEventListResponse = get_json(
+        app.clone(),
+        &format!(
+            "/api/v1/draft-events?after_cursor={}&limit=1",
+            first_event_page.next_cursor.as_ref().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(second_event_page.events.len(), 1);
+    assert_ne!(
+        second_event_page.events[0].event_id,
+        first_event_page.events[0].event_id
+    );
+
     let events: DraftEventListResponse = get_json(app.clone(), "/api/v1/draft-events").await;
     assert!(events.next_cursor.is_some());
     assert!(
@@ -496,6 +514,9 @@ async fn draft_review_merge_produces_project_commit() {
             .iter()
             .any(|event| event.event_type == DraftEventType::Updated)
     );
+    assert!(events.events.iter().any(|event| {
+        event.event_type == DraftEventType::Updated && event.daemon_installation_id.is_none()
+    }));
     assert!(
         events
             .events
@@ -514,6 +535,9 @@ async fn draft_review_merge_produces_project_commit() {
             .iter()
             .any(|event| event.event_type == DraftEventType::Submitted)
     );
+    assert!(events.events.iter().any(|event| {
+        event.event_type == DraftEventType::Submitted && event.daemon_installation_id.is_none()
+    }));
     assert!(events.events.iter().any(|event| {
         event.event_type == DraftEventType::OperationAppended
             && event.daemon_installation_id.as_deref() == Some("daemon_batch")

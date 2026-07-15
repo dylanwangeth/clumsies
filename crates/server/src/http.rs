@@ -1057,6 +1057,7 @@ async fn append_draft_operation(
 #[derive(Deserialize)]
 struct ListDraftEventsQuery {
     after_cursor: Option<String>,
+    limit: Option<i64>,
 }
 
 async fn list_draft_events(
@@ -1067,7 +1068,11 @@ async fn list_draft_events(
     Ok(Json(
         state
             .repository
-            .list_draft_events(&principal.user_id, query.after_cursor.as_deref())
+            .list_draft_events(
+                &principal.user_id,
+                query.after_cursor.as_deref(),
+                query.limit,
+            )
             .await?,
     ))
 }

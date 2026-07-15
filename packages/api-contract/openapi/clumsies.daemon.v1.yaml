@@ -358,7 +358,7 @@ components:
         operation:
           $ref: "#/components/schemas/DaemonDraftOperation"
         source:
-          $ref: "#/components/schemas/DaemonDraftOperationSource"
+          $ref: "#/components/schemas/DaemonDraftOperationRecordSource"
         sync_status:
           $ref: "#/components/schemas/DraftOperationSyncStatus"
         last_error:
@@ -496,6 +496,9 @@ components:
     DaemonDraftOperationSource:
       type: string
       enum: [desktop, cli, mcp_store]
+    DaemonDraftOperationRecordSource:
+      type: string
+      enum: [desktop, cli, mcp_store, server]
     DraftOperationSyncStatus:
       type: string
       enum: [queued, syncing, synced, failed]

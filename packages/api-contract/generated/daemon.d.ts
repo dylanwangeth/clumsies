@@ -153,7 +153,7 @@ export interface components {
             local_operation_id: string;
             resource_kind: components["schemas"]["DaemonDraftResourceKind"];
             operation: components["schemas"]["DaemonDraftOperation"];
-            source: components["schemas"]["DaemonDraftOperationSource"];
+            source: components["schemas"]["DaemonDraftOperationRecordSource"];
             sync_status: components["schemas"]["DraftOperationSyncStatus"];
             last_error: string | null;
             /** Format: date-time */
@@ -226,6 +226,8 @@ export interface components {
         DaemonLocalDraftStatus: "open" | "submitted" | "discarded" | "conflicted";
         /** @enum {string} */
         DaemonDraftOperationSource: "desktop" | "cli" | "mcp_store";
+        /** @enum {string} */
+        DaemonDraftOperationRecordSource: "desktop" | "cli" | "mcp_store" | "server";
         /** @enum {string} */
         DraftOperationSyncStatus: "queued" | "syncing" | "synced" | "failed";
     };

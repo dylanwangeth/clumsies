@@ -3,18 +3,20 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
     APP_BUNDLE_IDENTIFIER, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
     DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDiscardDraftOperation,
-    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRequest,
-    DaemonDraftOperationSource, DaemonDraftResourceKind, DaemonDraftScope, DaemonError,
-    DaemonHealth, DaemonIpcRequest, DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus,
-    DaemonProjectConfigUpdateRequest, DaemonState, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController,
-    LaunchAgentRuntimeStatus, SyncRetryChannel, SyncState,
+    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
+    DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
+    DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
+    DaemonIpcTransport, DaemonLocalDraftStatus, DaemonProjectConfigUpdateRequest, DaemonState,
+    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, SyncRetryChannel,
+    SyncState,
 };
+use serde::Deserialize;
 use serde_json::json;
 
 #[tokio::test]
@@ -25,7 +27,7 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     let health = service.health().await;
 
     assert!(health.local_db.ready);
-    assert_eq!(health.local_db.schema_version, 5);
+    assert_eq!(health.local_db.schema_version, 6);
     assert_eq!(health.daemon_installation_id, first_id);
     assert!(health.local_db.path.ends_with("local.db"));
     assert!(health.log_dir.ends_with("logs"));
@@ -283,7 +285,7 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
     assert_eq!(draft.operations.len(), 1);
     assert_eq!(
         draft.operations[0].source,
-        DaemonDraftOperationSource::Desktop
+        DaemonDraftOperationRecordSource::Desktop
     );
 }
 
@@ -428,7 +430,7 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
     assert_eq!(detail.operations.len(), 1);
     assert_eq!(
         detail.operations[0].source,
-        DaemonDraftOperationSource::McpStore
+        DaemonDraftOperationRecordSource::McpStore
     );
 }
 
@@ -506,7 +508,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
     assert_eq!(detail.operations.len(), 2);
     assert_eq!(
         detail.operations[0].source,
-        DaemonDraftOperationSource::McpStore
+        DaemonDraftOperationRecordSource::McpStore
     );
     assert_eq!(
         detail.operations[0].sync_status,
@@ -516,7 +518,10 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
         detail.operations[0].operation.create.as_ref().unwrap().body,
         "Local draft"
     );
-    assert_eq!(detail.operations[1].source, DaemonDraftOperationSource::Cli);
+    assert_eq!(
+        detail.operations[1].source,
+        DaemonDraftOperationRecordSource::Cli
+    );
     assert_eq!(
         detail.operations[1].operation.update.as_ref().unwrap().body,
         "Local draft v2"
@@ -626,6 +631,32 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     assert!(status.draft_sync.last_success_at.is_some());
     assert_eq!(status.last_success_at, status.draft_sync.last_success_at);
 
+    let drafts = service
+        .list_drafts(DaemonDraftListQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(drafts.items.len(), 1);
+    assert_eq!(drafts.items[0].server_version, 2);
+    let projected = service.get_draft(&drafts.items[0].draft_id).await.unwrap();
+    assert_eq!(projected.operations.len(), 2);
+    assert_eq!(
+        projected.operations[0].source,
+        DaemonDraftOperationRecordSource::Desktop
+    );
+    assert_eq!(
+        projected.operations[1].source,
+        DaemonDraftOperationRecordSource::Server
+    );
+    assert_eq!(
+        projected.operations[1]
+            .operation
+            .create
+            .as_ref()
+            .unwrap()
+            .body,
+        "Remote revision"
+    );
+
     let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
         .await
         .unwrap();
@@ -660,6 +691,60 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     assert_eq!(requests[0]["resource"]["path"], "docs/sync.md");
     assert_eq!(requests[0]["operations"][0]["action"], "create");
     assert_eq!(requests[0]["operations"][0]["body"], "Sync me");
+}
+
+#[tokio::test]
+async fn failed_remote_projection_does_not_advance_the_event_cursor() {
+    let app = Router::new()
+        .route("/api/v1/draft-events", get(fake_list_draft_events))
+        .route("/api/v1/drafts/{draft_id}", get(fake_stale_draft));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_test".to_owned());
+    config.project.access_token = Some("test-token".to_owned());
+    let state = DaemonState::initialize(config).await.unwrap();
+    let service = DaemonIpcService::new(state.clone());
+
+    let error = service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("inconsistent projection"));
+    assert_eq!(
+        service
+            .sync_status()
+            .await
+            .unwrap()
+            .draft_sync
+            .server_cursor,
+        None
+    );
+    assert!(
+        service
+            .list_drafts(DaemonDraftListQuery::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM remote_draft_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(event_count, 0);
 }
 
 #[tokio::test]
@@ -824,6 +909,16 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        service
+            .sync_status()
+            .await
+            .unwrap()
+            .draft_sync
+            .server_cursor
+            .as_deref(),
+        Some("42")
+    );
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
@@ -854,6 +949,16 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        service
+            .sync_status()
+            .await
+            .unwrap()
+            .draft_sync
+            .server_cursor
+            .as_deref(),
+        Some("42")
+    );
 
     service
         .store_draft_operation(DaemonDraftOperationRequest {
@@ -900,7 +1005,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             .starts_with("daemon_")
     );
     assert_eq!(batches[0]["operations"][0]["draft_id"], "drf_remote");
-    assert_eq!(batches[0]["operations"][0]["expected_draft_version"], 1);
+    assert_eq!(batches[0]["operations"][0]["expected_draft_version"], 2);
     assert_eq!(batches[0]["operations"][0]["operation"]["action"], "create");
     assert_eq!(
         batches[0]["operations"][0]["operation"]["resource"]["path"],
@@ -912,7 +1017,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
     let deletes = server.delete_requests.lock().unwrap();
     assert_eq!(
         deletes.as_slice(),
-        &[("drf_remote".to_owned(), "2".to_owned())]
+        &[("drf_remote".to_owned(), "3".to_owned())]
     );
 }
 
@@ -1000,7 +1105,10 @@ impl FakeServer {
         let app = Router::new()
             .route("/api/v1/drafts", post(fake_create_draft))
             .route("/api/v1/draft-events", get(fake_list_draft_events))
-            .route("/api/v1/drafts/{draft_id}", delete(fake_delete_draft))
+            .route(
+                "/api/v1/drafts/{draft_id}",
+                get(fake_get_draft).delete(fake_delete_draft),
+            )
             .route(
                 "/api/v1/draft-operation-batches",
                 post(fake_create_draft_operation_batch),
@@ -1057,6 +1165,105 @@ async fn fake_create_draft_operation_batch(
     }))
 }
 
+async fn fake_get_draft(
+    axum::extract::State(state): axum::extract::State<FakeServerState>,
+    axum::extract::Path(draft_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let create_request = state
+        .create_requests
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "project_id": "prj_test",
+                "base_commit_id": null,
+                "resource": {
+                    "scope": "project",
+                    "kind": "context",
+                    "id": null,
+                    "path": "docs/remote.md"
+                },
+                "operations": [{
+                    "action": "create",
+                    "resource": {
+                        "scope": "project",
+                        "kind": "context",
+                        "id": null,
+                        "path": "docs/remote.md"
+                    },
+                    "base_hash": null,
+                    "body": "Remote base",
+                    "new_path": null
+                }]
+            })
+        });
+    let resource = create_request["resource"].clone();
+    let initial_operation = create_request["operations"][0].clone();
+    Json(json!({
+        "draft": {
+            "draft_id": draft_id,
+            "project_id": create_request["project_id"],
+            "base_commit_id": create_request["base_commit_id"],
+            "resource": resource,
+            "status": "open",
+            "version": 2,
+            "created_at": "2026-07-08T00:00:00Z",
+            "updated_at": "2026-07-08T00:01:00Z"
+        },
+        "operations": [
+            {
+                "operation_id": "dop_initial",
+                "action": initial_operation["action"],
+                "resource": initial_operation["resource"],
+                "base_hash": initial_operation["base_hash"],
+                "body": initial_operation["body"],
+                "new_path": initial_operation["new_path"],
+                "created_at": "2026-07-08T00:00:00Z"
+            },
+            {
+                "operation_id": "dop_remote",
+                "action": "create",
+                "resource": create_request["resource"],
+                "base_hash": null,
+                "body": "Remote revision",
+                "new_path": null,
+                "created_at": "2026-07-08T00:01:00Z"
+            }
+        ],
+        "sync_state": {
+            "status": "synced",
+            "server_cursor": "draft:drf_remote:2",
+            "daemon_installation_id": "daemon_other",
+            "conflict_count": 0
+        }
+    }))
+}
+
+async fn fake_stale_draft(
+    axum::extract::Path(draft_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    Json(json!({
+        "draft": {
+            "draft_id": draft_id,
+            "project_id": "prj_test",
+            "base_commit_id": null,
+            "resource": {
+                "scope": "project",
+                "kind": "context",
+                "id": null,
+                "path": "docs/remote.md"
+            },
+            "status": "open",
+            "version": 1,
+            "created_at": "2026-07-08T00:00:00Z",
+            "updated_at": "2026-07-08T00:00:00Z"
+        },
+        "operations": []
+    }))
+}
+
 async fn fake_delete_draft(
     axum::extract::State(state): axum::extract::State<FakeServerState>,
     axum::extract::Path(draft_id): axum::extract::Path<String>,
@@ -1075,7 +1282,21 @@ async fn fake_delete_draft(
     Json(json!({ "deleted": true, "id": draft_id }))
 }
 
-async fn fake_list_draft_events() -> Json<serde_json::Value> {
+#[derive(Deserialize)]
+struct FakeDraftEventQuery {
+    after_cursor: Option<String>,
+}
+
+async fn fake_list_draft_events(
+    axum::extract::Query(query): axum::extract::Query<FakeDraftEventQuery>,
+) -> Json<serde_json::Value> {
+    if query.after_cursor.is_some() {
+        return Json(json!({
+            "events": [],
+            "next_cursor": null,
+            "has_more": false
+        }));
+    }
     Json(json!({
         "events": [
             {

@@ -1514,7 +1514,7 @@ impl ServerRepository {
     ) -> Result<DraftDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT title, description, status, version, project_id, daemon_installation_id
+            "SELECT title, description, status, version, project_id
              FROM drafts
              WHERE draft_id = $1
              FOR UPDATE",
@@ -1555,7 +1555,7 @@ impl ServerRepository {
              SET title = $2, description = $3, status = $4,
                  version = version + 1, updated_at = now()
              WHERE draft_id = $1
-             RETURNING project_id, version, daemon_installation_id",
+             RETURNING project_id, version",
         )
         .bind(draft_id)
         .bind(title)
@@ -1574,9 +1574,7 @@ impl ServerRepository {
             &updated.try_get::<String, _>("project_id")?,
             event_type,
             updated.try_get("version")?,
-            updated
-                .try_get::<Option<String>, _>("daemon_installation_id")?
-                .as_deref(),
+            None,
         )
         .await?;
         tx.commit().await?;
@@ -1641,8 +1639,16 @@ impl ServerRepository {
         &self,
         author_user_id: &str,
         after_cursor: Option<&str>,
+        limit: Option<i64>,
     ) -> Result<DraftEventListResponse, ServerError> {
-        let rows = if let Some(after_cursor) = after_cursor {
+        let limit = limit.unwrap_or(50);
+        if !(1..=200).contains(&limit) {
+            return Err(ServerError::InvalidRequest(
+                "draft event limit must be between 1 and 200".to_owned(),
+            ));
+        }
+        let fetch_limit = limit + 1;
+        let mut rows = if let Some(after_cursor) = after_cursor {
             let after_sequence = after_cursor.parse::<i64>().map_err(|_| {
                 ServerError::InvalidRequest("invalid draft event cursor".to_owned())
             })?;
@@ -1653,10 +1659,11 @@ impl ServerRepository {
                  JOIN drafts d ON d.draft_id = e.draft_id
                  WHERE e.server_sequence > $1 AND d.author_user_id = $2
                  ORDER BY e.server_sequence
-                 LIMIT 100",
+                 LIMIT $3",
             )
             .bind(after_sequence)
             .bind(author_user_id)
+            .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
         } else {
@@ -1667,12 +1674,15 @@ impl ServerRepository {
                  JOIN drafts d ON d.draft_id = e.draft_id
                  WHERE d.author_user_id = $1
                  ORDER BY e.server_sequence
-                 LIMIT 100",
+                 LIMIT $2",
             )
             .bind(author_user_id)
+            .bind(fetch_limit)
             .fetch_all(&self.pool)
             .await?
         };
+        let has_more = rows.len() > limit as usize;
+        rows.truncate(limit as usize);
         let next_cursor = rows
             .last()
             .map(|row| {
@@ -1686,7 +1696,7 @@ impl ServerRepository {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DraftEventListResponse {
             next_cursor,
-            has_more: false,
+            has_more,
             events,
         })
     }
@@ -1733,7 +1743,7 @@ impl ServerRepository {
             "UPDATE drafts
              SET status = 'submitted', version = version + 1, updated_at = now()
              WHERE draft_id = $1
-             RETURNING project_id, version, daemon_installation_id",
+             RETURNING project_id, version",
         )
         .bind(&request.draft_id)
         .fetch_one(&mut *tx)
@@ -1744,9 +1754,7 @@ impl ServerRepository {
             &draft_event_row.try_get::<String, _>("project_id")?,
             DraftEventType::Submitted,
             draft_event_row.try_get("version")?,
-            draft_event_row
-                .try_get::<Option<String>, _>("daemon_installation_id")?
-                .as_deref(),
+            None,
         )
         .await?;
 
@@ -2312,21 +2320,18 @@ async fn append_draft_operation_in_tx(
         "UPDATE drafts
          SET version = version + 1, updated_at = now()
          WHERE draft_id = $1
-         RETURNING project_id, version, daemon_installation_id",
+         RETURNING project_id, version",
     )
     .bind(draft_id)
     .fetch_one(&mut **tx)
     .await?;
-    let draft_daemon_installation_id: Option<String> = updated.try_get("daemon_installation_id")?;
-    let daemon_installation_id =
-        event_daemon_installation_id.or(draft_daemon_installation_id.as_deref());
     insert_draft_event(
         tx,
         draft_id,
         &updated.try_get::<String, _>("project_id")?,
         DraftEventType::OperationAppended,
         updated.try_get("version")?,
-        daemon_installation_id,
+        event_daemon_installation_id,
     )
     .await
 }

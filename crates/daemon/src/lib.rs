@@ -26,7 +26,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 6;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -1421,7 +1421,6 @@ async fn sync_one_draft_operation(
             &operation.draft_id,
             &local_operation_id,
             operation.server_version + 1,
-            &response.cursor,
         )
         .await
         .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
@@ -1437,7 +1436,7 @@ async fn sync_one_draft_operation(
         resource: server_operation.resource.clone(),
         operations: vec![server_operation],
     };
-    let response: ServerDraftDetail = post_server_json(state, "/api/v1/drafts", &request)
+    let response: ServerDraftMutationResponse = post_server_json(state, "/api/v1/drafts", &request)
         .await
         .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
     mark_initial_operation_synced(
@@ -1571,7 +1570,6 @@ async fn mark_batch_operation_synced(
     draft_id: &str,
     local_operation_id: &str,
     server_version: i64,
-    cursor: &str,
 ) -> Result<(), DaemonError> {
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1589,15 +1587,6 @@ async fn mark_batch_operation_synced(
          WHERE local_operation_id = $1",
     )
     .bind(local_operation_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO daemon_meta (key, value)
-         VALUES ($1, $2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(META_DRAFT_EVENTS_CURSOR)
-    .bind(cursor)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1966,11 +1955,14 @@ fn local_draft_status_from_str(value: &str) -> Result<DaemonLocalDraftStatus, Da
     }
 }
 
-fn draft_operation_source_from_str(value: &str) -> Result<DaemonDraftOperationSource, DaemonError> {
+fn draft_operation_source_from_str(
+    value: &str,
+) -> Result<DaemonDraftOperationRecordSource, DaemonError> {
     match value {
-        "desktop" => Ok(DaemonDraftOperationSource::Desktop),
-        "cli" => Ok(DaemonDraftOperationSource::Cli),
-        "mcp_store" => Ok(DaemonDraftOperationSource::McpStore),
+        "desktop" => Ok(DaemonDraftOperationRecordSource::Desktop),
+        "cli" => Ok(DaemonDraftOperationRecordSource::Cli),
+        "mcp_store" => Ok(DaemonDraftOperationRecordSource::McpStore),
+        "server" => Ok(DaemonDraftOperationRecordSource::Server),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown draft operation source: {other}"
         ))),
@@ -2001,36 +1993,81 @@ fn draft_title(operation: &QueuedDraftOperation) -> String {
 }
 
 async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
-    let cursor = load_meta_value(&state.inner.pool, META_DRAFT_EVENTS_CURSOR).await?;
-    let path = cursor
-        .as_deref()
-        .map(|cursor| format!("/api/v1/draft-events?after_cursor={cursor}"))
-        .unwrap_or_else(|| "/api/v1/draft-events".to_owned());
-    let response: ServerDraftEventListResponse = get_server_json(state, &path).await?;
+    let mut cursor = load_meta_value(&state.inner.pool, META_DRAFT_EVENTS_CURSOR).await?;
 
-    let mut tx = state.inner.pool.begin().await?;
-    for event in response.events {
-        if event.daemon_installation_id.as_deref() == Some(&state.inner.daemon_installation_id) {
-            continue;
+    loop {
+        let path = cursor
+            .as_deref()
+            .map(|cursor| format!("/api/v1/draft-events?after_cursor={cursor}"))
+            .unwrap_or_else(|| "/api/v1/draft-events".to_owned());
+        let response: ServerDraftEventListResponse = get_server_json(state, &path).await?;
+        if response.events.is_empty() {
+            if response.has_more {
+                return Err(DaemonError::Server(
+                    "Server returned an empty draft event page with has_more=true".to_owned(),
+                ));
+            }
+            return Ok(());
         }
-        sqlx::query(
-            "INSERT INTO remote_draft_events (
-                event_id, draft_id, project_id, event_type, version, daemon_installation_id, created_at
-             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT(event_id) DO NOTHING",
-        )
-        .bind(event.event_id)
-        .bind(event.draft_id)
-        .bind(event.project_id)
-        .bind(event.event_type)
-        .bind(event.version)
-        .bind(event.daemon_installation_id)
-        .bind(event.created_at)
-        .execute(&mut *tx)
-        .await?;
-    }
-    if let Some(next_cursor) = response.next_cursor {
+
+        let next_cursor = response.next_cursor.as_deref().ok_or_else(|| {
+            DaemonError::Server("Server returned draft events without a next cursor".to_owned())
+        })?;
+        if cursor.as_deref() == Some(next_cursor) {
+            return Err(DaemonError::Server(
+                "Server draft event cursor did not advance".to_owned(),
+            ));
+        }
+
+        let remote_events = response
+            .events
+            .iter()
+            .filter(|event| {
+                event.daemon_installation_id.as_deref()
+                    != Some(state.inner.daemon_installation_id.as_str())
+            })
+            .collect::<Vec<_>>();
+        let mut drafts = BTreeMap::new();
+        for event in &remote_events {
+            if drafts.contains_key(&event.draft_id) {
+                continue;
+            }
+            let detail: ServerDraftProjectionDetail =
+                get_server_json(state, &format!("/api/v1/drafts/{}", event.draft_id)).await?;
+            if detail.draft.draft_id != event.draft_id
+                || detail.draft.project_id != event.project_id
+                || detail.draft.version < event.version
+            {
+                return Err(DaemonError::Server(format!(
+                    "Server returned an inconsistent projection for draft {}",
+                    event.draft_id
+                )));
+            }
+            drafts.insert(event.draft_id.clone(), detail);
+        }
+
+        let mut tx = state.inner.pool.begin().await?;
+        for detail in drafts.values() {
+            project_server_draft(&mut tx, detail).await?;
+        }
+        for event in remote_events {
+            sqlx::query(
+                "INSERT INTO remote_draft_events (
+                    event_id, draft_id, project_id, event_type, version, daemon_installation_id, created_at
+                 )
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT(event_id) DO NOTHING",
+            )
+            .bind(&event.event_id)
+            .bind(&event.draft_id)
+            .bind(&event.project_id)
+            .bind(&event.event_type)
+            .bind(event.version)
+            .bind(&event.daemon_installation_id)
+            .bind(&event.created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO daemon_meta (key, value)
              VALUES ($1, $2)
@@ -2040,9 +2077,261 @@ async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
         .bind(next_cursor)
         .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
+
+        cursor = response.next_cursor;
+        if !response.has_more {
+            return Ok(());
+        }
     }
-    tx.commit().await?;
+}
+
+async fn project_server_draft(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    detail: &ServerDraftProjectionDetail,
+) -> Result<(), DaemonError> {
+    let existing = sqlx::query(
+        "SELECT draft_id, server_version
+         FROM local_drafts
+         WHERE server_draft_id = $1",
+    )
+    .bind(&detail.draft.draft_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let local_draft_id = if let Some(row) = existing {
+        let local_draft_id: String = row.try_get("draft_id")?;
+        let server_version: i64 = row.try_get("server_version")?;
+        if detail.draft.version < server_version {
+            return Err(DaemonError::Server(format!(
+                "Server draft {} regressed from version {server_version} to {}",
+                detail.draft.draft_id, detail.draft.version
+            )));
+        }
+        sqlx::query(
+            "UPDATE local_drafts
+             SET project_id = $2, server_version = $3, base_commit_id = $4,
+                 resource_scope = $5, resource_kind = $6, target_id = $7, path = $8,
+                 status = $9, updated_at = $10
+             WHERE draft_id = $1",
+        )
+        .bind(&local_draft_id)
+        .bind(&detail.draft.project_id)
+        .bind(detail.draft.version)
+        .bind(&detail.draft.base_commit_id)
+        .bind(detail.draft.resource.scope.as_str())
+        .bind(detail.draft.resource.kind.as_str())
+        .bind(&detail.draft.resource.id)
+        .bind(&detail.draft.resource.path)
+        .bind(detail.draft.status.as_str())
+        .bind(&detail.draft.updated_at)
+        .execute(&mut **tx)
+        .await?;
+        local_draft_id
+    } else {
+        sqlx::query(
+            "INSERT INTO local_drafts (
+                draft_id, project_id, server_draft_id, server_version, base_commit_id,
+                resource_scope, resource_kind, target_id, path, status, created_at, updated_at
+             )
+             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&detail.draft.draft_id)
+        .bind(&detail.draft.project_id)
+        .bind(detail.draft.version)
+        .bind(&detail.draft.base_commit_id)
+        .bind(detail.draft.resource.scope.as_str())
+        .bind(detail.draft.resource.kind.as_str())
+        .bind(&detail.draft.resource.id)
+        .bind(&detail.draft.resource.path)
+        .bind(detail.draft.status.as_str())
+        .bind(&detail.draft.created_at)
+        .bind(&detail.draft.updated_at)
+        .execute(&mut **tx)
+        .await?;
+        detail.draft.draft_id.clone()
+    };
+
+    let rows = sqlx::query(
+        "SELECT local_operation_id, operation_json
+         FROM local_draft_operations
+         WHERE draft_id = $1
+           AND server_operation_id IS NULL
+           AND source != 'server'
+           AND sync_status = 'synced'
+         ORDER BY rowid",
+    )
+    .bind(&local_draft_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut unlinked_operations = rows
+        .iter()
+        .map(|row| {
+            Ok(UnlinkedLocalOperation {
+                local_operation_id: row.try_get("local_operation_id")?,
+                operation: serde_json::from_str(&row.try_get::<String, _>("operation_json")?)?,
+                linked: false,
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+
+    for server_operation in &detail.operations {
+        if server_operation.resource.scope != detail.draft.resource.scope
+            || server_operation.resource.kind != detail.draft.resource.kind
+        {
+            return Err(DaemonError::Server(format!(
+                "Server operation {} does not match draft {} resource",
+                server_operation.operation_id, detail.draft.draft_id
+            )));
+        }
+        let operation = map_server_operation_to_daemon(server_operation)?;
+        let already_linked: Option<String> = sqlx::query_scalar(
+            "SELECT local_operation_id
+             FROM local_draft_operations
+             WHERE server_operation_id = $1",
+        )
+        .bind(&server_operation.operation_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if already_linked.is_some() {
+            continue;
+        }
+
+        if let Some(local_operation) = unlinked_operations.iter_mut().find(|candidate| {
+            !candidate.linked && draft_operations_match(&candidate.operation, &operation)
+        }) {
+            sqlx::query(
+                "UPDATE local_draft_operations
+                 SET server_operation_id = $2
+                 WHERE local_operation_id = $1",
+            )
+            .bind(&local_operation.local_operation_id)
+            .bind(&server_operation.operation_id)
+            .execute(&mut **tx)
+            .await?;
+            local_operation.linked = true;
+            continue;
+        }
+
+        sqlx::query(
+            "INSERT INTO local_draft_operations (
+                local_operation_id, draft_id, server_operation_id, resource_kind,
+                operation_json, source, sync_status, created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, 'server', 'synced', $6, $6)",
+        )
+        .bind(format!("server_{}", server_operation.operation_id))
+        .bind(&local_draft_id)
+        .bind(&server_operation.operation_id)
+        .bind(detail.draft.resource.kind.as_str())
+        .bind(serde_json::to_string(&operation)?)
+        .bind(&server_operation.created_at)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(())
+}
+
+fn map_server_operation_to_daemon(
+    operation: &ServerDraftProjectionOperation,
+) -> Result<DaemonDraftOperation, DaemonError> {
+    let missing = |field: &str| {
+        DaemonError::Server(format!(
+            "Server operation {} is missing {field}",
+            operation.operation_id
+        ))
+    };
+    let mut mapped = DaemonDraftOperation {
+        create: None,
+        update: None,
+        rename: None,
+        delete: None,
+        discard: None,
+    };
+    match operation.action {
+        ServerDraftOperationAction::Create => {
+            mapped.create = Some(DaemonCreateDraftOperation {
+                path: operation
+                    .resource
+                    .path
+                    .clone()
+                    .ok_or_else(|| missing("path"))?,
+                body: operation.body.clone().unwrap_or_default(),
+                description: None,
+            });
+        }
+        ServerDraftOperationAction::Update => {
+            mapped.update = Some(DaemonUpdateDraftOperation {
+                id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
+                body: operation.body.clone().unwrap_or_default(),
+                description: None,
+            });
+        }
+        ServerDraftOperationAction::Rename => {
+            mapped.rename = Some(DaemonRenameDraftOperation {
+                id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
+                new_path: operation
+                    .new_path
+                    .clone()
+                    .ok_or_else(|| missing("new_path"))?,
+                description: None,
+            });
+        }
+        ServerDraftOperationAction::Delete => {
+            mapped.delete = Some(DaemonDeleteDraftOperation {
+                id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
+                description: None,
+            });
+        }
+    }
+    Ok(mapped)
+}
+
+fn draft_operations_match(left: &DaemonDraftOperation, right: &DaemonDraftOperation) -> bool {
+    match (left, right) {
+        (
+            DaemonDraftOperation {
+                create: Some(left), ..
+            },
+            DaemonDraftOperation {
+                create: Some(right),
+                ..
+            },
+        ) => left.path == right.path && left.body == right.body,
+        (
+            DaemonDraftOperation {
+                update: Some(left), ..
+            },
+            DaemonDraftOperation {
+                update: Some(right),
+                ..
+            },
+        ) => left.id == right.id && left.body == right.body,
+        (
+            DaemonDraftOperation {
+                rename: Some(left), ..
+            },
+            DaemonDraftOperation {
+                rename: Some(right),
+                ..
+            },
+        ) => left.id == right.id && left.new_path == right.new_path,
+        (
+            DaemonDraftOperation {
+                delete: Some(left), ..
+            },
+            DaemonDraftOperation {
+                delete: Some(right),
+                ..
+            },
+        ) => left.id == right.id,
+        _ => false,
+    }
+}
+
+struct UnlinkedLocalOperation {
+    local_operation_id: String,
+    operation: DaemonDraftOperation,
+    linked: bool,
 }
 
 fn prepare_directories(config: &DaemonConfig) -> Result<(), DaemonError> {
@@ -2103,17 +2392,32 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_drafts_server_draft_id
+         ON local_drafts (server_draft_id)
+         WHERE server_draft_id IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS local_draft_operations (
             local_operation_id TEXT PRIMARY KEY,
             draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+            server_operation_id TEXT,
             resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
             operation_json TEXT NOT NULL,
-            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store')),
+            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
             sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'synced', 'failed')),
             last_error TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_draft_operations_server_operation_id
+         ON local_draft_operations (server_operation_id)
+         WHERE server_operation_id IS NOT NULL",
     )
     .execute(pool)
     .await?;
@@ -2637,7 +2941,7 @@ pub struct DaemonLocalDraftOperation {
     pub local_operation_id: String,
     pub resource_kind: DaemonDraftResourceKind,
     pub operation: DaemonDraftOperation,
-    pub source: DaemonDraftOperationSource,
+    pub source: DaemonDraftOperationRecordSource,
     pub sync_status: DraftOperationSyncStatus,
     pub last_error: Option<String>,
     pub created_at: String,
@@ -2734,6 +3038,15 @@ impl DaemonDraftOperationSource {
             Self::McpStore => "mcp_store",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonDraftOperationRecordSource {
+    Desktop,
+    Cli,
+    McpStore,
+    Server,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2868,15 +3181,15 @@ struct ServerDraftOperationBatchItem {
 #[derive(Clone, Debug, Deserialize)]
 struct ServerDraftOperationBatchResponse {
     accepted_operations: Vec<String>,
-    cursor: String,
+    #[serde(rename = "cursor")]
+    _cursor: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct ServerDraftEventListResponse {
     events: Vec<ServerDraftEvent>,
     next_cursor: Option<String>,
-    #[serde(rename = "has_more")]
-    _has_more: bool,
+    has_more: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2897,14 +3210,42 @@ struct ServerTokenRefreshResponse {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ServerDraftDetail {
-    draft: ServerDraft,
+struct ServerDraftMutationResponse {
+    draft: ServerDraftVersion,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ServerDraft {
+struct ServerDraftVersion {
     draft_id: String,
     version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServerDraftProjectionDetail {
+    draft: ServerDraftProjection,
+    operations: Vec<ServerDraftProjectionOperation>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServerDraftProjection {
+    draft_id: String,
+    project_id: String,
+    base_commit_id: Option<String>,
+    resource: ServerDraftResourceRef,
+    status: DaemonLocalDraftStatus,
+    version: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServerDraftProjectionOperation {
+    operation_id: String,
+    action: ServerDraftOperationAction,
+    resource: ServerDraftResourceRef,
+    body: Option<String>,
+    new_path: Option<String>,
+    created_at: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2916,7 +3257,7 @@ struct ServerDraftOperationInput {
     new_path: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ServerDraftOperationAction {
     Create,
@@ -2925,7 +3266,7 @@ enum ServerDraftOperationAction {
     Delete,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ServerDraftResourceRef {
     scope: DaemonDraftScope,
     kind: DaemonDraftResourceKind,
