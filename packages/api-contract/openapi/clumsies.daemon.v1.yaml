@@ -456,6 +456,8 @@ components:
       properties:
         path:
           type: string
+          minLength: 1
+          description: Portable normalized relative resource path using slash separators.
         content:
           $ref: "#/components/schemas/DaemonDraftContent"
         description:
@@ -544,6 +546,8 @@ components:
           type: string
         new_path:
           type: string
+          minLength: 1
+          description: Portable normalized relative path used by the rename operation.
         description:
           type: string
     DaemonDeleteDraftOperation:

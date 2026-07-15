@@ -1268,6 +1268,18 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         .create_org_context(&bootstrap.org_id, "context/shared.md", "# Shared from Hub")
         .await
         .unwrap();
+    let prefix_collision_id = repo
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/manual/chapter.md",
+            "# Manual chapter",
+        )
+        .await
+        .unwrap();
+    let case_collision_id = repo
+        .create_org_context(&bootstrap.org_id, "context/readme.md", "# Lowercase readme")
+        .await
+        .unwrap();
     let valid_id = repo
         .create_org_context(
             &bootstrap.org_id,
@@ -1292,6 +1304,27 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
     .execute(&postgres.pool)
     .await
     .unwrap();
+    for (resource_id, path, name) in [
+        ("ctx_project_manual", "context/manual", "Project manual"),
+        ("ctx_project_readme", "context/README.md", "Project readme"),
+    ] {
+        sqlx::query(
+            "INSERT INTO resources (
+                resource_id, org_id, project_id, scope, resource_kind, path, name,
+                status, content_hash, body, context_kind
+             ) VALUES ($1, $2, $3, 'project', 'context', $4, $5, 'active', $6, $7, 'file')",
+        )
+        .bind(resource_id)
+        .bind(&bootstrap.org_id)
+        .bind(&bootstrap.project_id)
+        .bind(path)
+        .bind(name)
+        .bind(format!("{resource_id}-hash"))
+        .bind(format!("# {name}"))
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    }
 
     let foreign_org_id = repo.create_org("Foreign Memory").await.unwrap();
     let foreign_context_id = repo
@@ -1311,25 +1344,27 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
     )
     .await;
 
-    let collision_response = put_response_with_if_match(
-        app.clone(),
-        &selection_uri,
-        before.revision,
-        &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![collision_id],
-            workflow_ids: Vec::new(),
-        },
-    )
-    .await;
-    assert_eq!(collision_response.status(), StatusCode::BAD_REQUEST);
-    let collision_error: serde_json::Value = decode_json(collision_response).await;
-    assert!(
-        collision_error["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("materializes")
-    );
+    for collision_id in [collision_id, prefix_collision_id, case_collision_id] {
+        let collision_response = put_response_with_if_match(
+            app.clone(),
+            &selection_uri,
+            before.revision,
+            &ReplaceProjectOrgSelectionRequest {
+                rule_ids: Vec::new(),
+                context_ids: vec![collision_id],
+                workflow_ids: Vec::new(),
+            },
+        )
+        .await;
+        assert_eq!(collision_response.status(), StatusCode::BAD_REQUEST);
+        let collision_error: serde_json::Value = decode_json(collision_response).await;
+        assert!(
+            collision_error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("materializes")
+        );
+    }
 
     let foreign_response = put_response_with_if_match(
         app.clone(),
@@ -1624,6 +1659,39 @@ async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
     };
     assert_eq!(
         post_response(app.clone(), "/api/v1/drafts", &empty_rule)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let invalid_context_path = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id.clone(),
+        base_commit_id: None,
+        title: "Invalid Context path".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Context,
+            id: None,
+            path: Some("context//invalid.md".to_owned()),
+        },
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Context,
+                id: None,
+                path: Some("context//invalid.md".to_owned()),
+            },
+            content: Some(DraftResourceContent::Context {
+                content: "# Invalid".to_owned(),
+            }),
+            new_path: None,
+        }],
+    };
+    assert_eq!(
+        post_response(app.clone(), "/api/v1/drafts", &invalid_context_path)
             .await
             .status(),
         StatusCode::BAD_REQUEST

@@ -3492,6 +3492,17 @@ impl DaemonDraftOperation {
                 "draft operation must contain exactly one operation variant".to_owned(),
             ));
         }
+        if let Some(create) = &self.create {
+            validate_draft_resource_path(resource, &create.path)?;
+        }
+        if let Some(rename) = &self.rename {
+            if resource == DaemonDraftResourceKind::Metaprompt {
+                return Err(DaemonError::InvalidRequest(
+                    "metaprompt does not support rename".to_owned(),
+                ));
+            }
+            validate_draft_resource_path(resource, &rename.new_path)?;
+        }
         let content = self
             .create
             .as_ref()
@@ -3515,6 +3526,66 @@ impl DaemonDraftOperation {
             .or_else(|| self.rename.as_ref().map(|operation| operation.id.as_str()))
             .or_else(|| self.delete.as_ref().map(|operation| operation.id.as_str()))
             .or_else(|| self.discard.as_ref().map(|operation| operation.id.as_str()))
+    }
+}
+
+pub(crate) fn is_normalized_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.ends_with('/')
+        && path.split('/').all(is_portable_path_segment)
+}
+
+fn is_portable_path_segment(segment: &str) -> bool {
+    if segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.trim() != segment
+        || segment.ends_with('.')
+        || segment.chars().any(|character| {
+            character.is_control()
+                || matches!(character, '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = segment
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !reserved_numbered_name(&stem, "COM")
+        && !reserved_numbered_name(&stem, "LPT")
+}
+
+fn reserved_numbered_name(stem: &str, prefix: &str) -> bool {
+    stem.strip_prefix(prefix)
+        .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+}
+
+fn validate_draft_resource_path(
+    resource: DaemonDraftResourceKind,
+    path: &str,
+) -> Result<(), DaemonError> {
+    if !is_normalized_relative_path(path) {
+        return Err(DaemonError::InvalidRequest(format!(
+            "resource path is not a portable normalized relative path: {path}"
+        )));
+    }
+    match resource {
+        DaemonDraftResourceKind::Workflow if !path.starts_with("workflow/") => {
+            Err(DaemonError::InvalidRequest(
+                "workflow path must use the workflow/ namespace".to_owned(),
+            ))
+        }
+        DaemonDraftResourceKind::Rule if path.to_ascii_lowercase().starts_with("workflow/") => Err(
+            DaemonError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
+        ),
+        DaemonDraftResourceKind::Metaprompt if path != "META_PROMPT.md" => Err(
+            DaemonError::InvalidRequest("metaprompt path must be META_PROMPT.md".to_owned()),
+        ),
+        _ => Ok(()),
     }
 }
 
@@ -3608,9 +3679,15 @@ mod draft_operation_validation_tests {
     use super::*;
 
     fn create_operation(content: DaemonDraftContent) -> DaemonDraftOperation {
+        let path = match content.resource_kind() {
+            DaemonDraftResourceKind::Context => "context/test.md",
+            DaemonDraftResourceKind::Rule => "rules/test",
+            DaemonDraftResourceKind::Workflow => "workflow/test",
+            DaemonDraftResourceKind::Metaprompt => "META_PROMPT.md",
+        };
         DaemonDraftOperation {
             create: Some(DaemonCreateDraftOperation {
-                path: "memory/test".to_owned(),
+                path: path.to_owned(),
                 content,
                 description: None,
             }),
@@ -3664,6 +3741,49 @@ mod draft_operation_validation_tests {
         });
 
         assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
+    }
+
+    #[test]
+    fn rejects_non_portable_paths_before_storage() {
+        for path in [
+            "../outside.md",
+            "context//test.md",
+            "context/AUX.md",
+            "context/test\\file.md",
+        ] {
+            let mut operation = create_operation(DaemonDraftContent::Context {
+                content: "# Context".to_owned(),
+            });
+            operation.create.as_mut().unwrap().path = path.to_owned();
+
+            assert!(
+                operation
+                    .validate(DaemonDraftResourceKind::Context)
+                    .is_err(),
+                "path should be rejected: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_metaprompt_rename_before_storage() {
+        let operation = DaemonDraftOperation {
+            create: None,
+            update: None,
+            rename: Some(DaemonRenameDraftOperation {
+                id: "metaprompt".to_owned(),
+                new_path: "META_PROMPT.md".to_owned(),
+                description: None,
+            }),
+            delete: None,
+            discard: None,
+        };
+
+        assert!(
+            operation
+                .validate(DaemonDraftResourceKind::Metaprompt)
+                .is_err()
+        );
     }
 }
 

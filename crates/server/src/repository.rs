@@ -1,7 +1,6 @@
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction, types::Json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -2614,14 +2613,13 @@ fn validate_draft_operation_resource(
             "one draft cannot mix resource scopes or kinds".to_owned(),
         ));
     }
-    if operation
-        .content
-        .as_ref()
-        .is_some_and(|content| content.kind() != operation.resource.kind)
-    {
-        return Err(ServerError::InvalidRequest(
-            "draft content kind does not match its resource".to_owned(),
-        ));
+    if let Some(content) = operation.content.as_ref() {
+        if content.kind() != operation.resource.kind {
+            return Err(ServerError::InvalidRequest(
+                "draft content kind does not match its resource".to_owned(),
+            ));
+        }
+        validate_draft_content_shape(content)?;
     }
     if operation.resource.kind == DraftResourceKind::Metaprompt
         && operation.action == DraftOperationAction::Rename
@@ -2667,6 +2665,14 @@ fn validate_draft_operation_resource(
     }
 }
 
+fn validate_draft_content_shape(content: &DraftResourceContent) -> Result<(), ServerError> {
+    match content {
+        DraftResourceContent::Rule { constraint, .. } => validate_rule_constraint(constraint),
+        DraftResourceContent::Workflow { steps, .. } => validate_workflow_step_shapes(steps),
+        DraftResourceContent::Context { .. } | DraftResourceContent::Metaprompt { .. } => Ok(()),
+    }
+}
+
 fn validate_draft_resource(resource: &DraftResourceRef) -> Result<(), ServerError> {
     if let Some(path) = resource.path.as_deref() {
         validate_resource_path(resource.kind.as_str(), path)?;
@@ -2675,27 +2681,102 @@ fn validate_draft_resource(resource: &DraftResourceRef) -> Result<(), ServerErro
 }
 
 fn validate_resource_path(resource_kind: &str, path: &str) -> Result<(), ServerError> {
-    if path.is_empty()
-        || Path::new(path)
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !is_normalized_relative_path(path) {
         return Err(ServerError::InvalidRequest(format!(
-            "resource path is not a normalized relative path: {path}"
+            "resource path is not a portable normalized relative path: {path}"
         )));
     }
     match resource_kind {
         "workflow" if !path.starts_with("workflow/") => Err(ServerError::InvalidRequest(
             "workflow path must use the workflow/ namespace".to_owned(),
         )),
-        "rule" if path.starts_with("workflow/") => Err(ServerError::InvalidRequest(
-            "rule path cannot use the workflow/ namespace".to_owned(),
-        )),
+        "rule" if path.to_ascii_lowercase().starts_with("workflow/") => Err(
+            ServerError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
+        ),
         "metaprompt" if path != "META_PROMPT.md" => Err(ServerError::InvalidRequest(
             "metaprompt path must be META_PROMPT.md".to_owned(),
         )),
         _ => Ok(()),
     }
+}
+
+fn is_normalized_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.ends_with('/')
+        && path.split('/').all(is_portable_path_segment)
+}
+
+fn is_portable_path_segment(segment: &str) -> bool {
+    if segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.trim() != segment
+        || segment.ends_with('.')
+        || segment.chars().any(|character| {
+            character.is_control()
+                || matches!(character, '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+    let stem = segment
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !reserved_numbered_name(&stem, "COM")
+        && !reserved_numbered_name(&stem, "LPT")
+}
+
+fn reserved_numbered_name(stem: &str, prefix: &str) -> bool {
+    stem.strip_prefix(prefix)
+        .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+}
+
+fn materialization_output_path(resource_kind: &str, path: &str) -> Result<String, ServerError> {
+    match resource_kind {
+        "context" => Ok(format!("cache/context/{path}")),
+        "rule" | "workflow" => Ok(format!("cache/rule/{path}")),
+        "metaprompt" => Ok(format!("cache/{path}")),
+        other => Err(ServerError::InvalidRequest(format!(
+            "unknown materialized resource kind: {other}"
+        ))),
+    }
+}
+
+fn insert_materialization_path(
+    paths: &mut BTreeMap<String, (String, String)>,
+    resource_id: &str,
+    output_path: &str,
+    owner: &str,
+) -> Result<(), ServerError> {
+    let normalized = output_path.to_lowercase();
+    if let Some((existing_id, existing_path)) = paths.get(&normalized) {
+        return Err(ServerError::InvalidRequest(format!(
+            "{owner} materializes {existing_id} at {existing_path} and {resource_id} at {output_path}, which conflict"
+        )));
+    }
+    for (index, _) in normalized.rmatch_indices('/') {
+        if let Some((existing_id, existing_path)) = paths.get(&normalized[..index]) {
+            return Err(ServerError::InvalidRequest(format!(
+                "{owner} materializes {existing_id} at {existing_path} and {resource_id} at {output_path}, which conflict"
+            )));
+        }
+    }
+    let descendant_prefix = format!("{normalized}/");
+    if let Some((_, (existing_id, existing_path))) = paths
+        .range(descendant_prefix.clone()..)
+        .next()
+        .filter(|(path, _)| path.starts_with(&descendant_prefix))
+    {
+        return Err(ServerError::InvalidRequest(format!(
+            "{owner} materializes {existing_id} at {existing_path} and {resource_id} at {output_path}, which conflict"
+        )));
+    }
+    paths.insert(normalized, (resource_id.to_owned(), output_path.to_owned()));
+    Ok(())
 }
 
 async fn insert_draft_operation(
@@ -4174,26 +4255,19 @@ async fn validate_project_effective_memory(
     .bind(org_id)
     .fetch_all(&mut **tx)
     .await?;
-    let mut output_paths = BTreeMap::<String, String>::new();
+    let mut output_paths = BTreeMap::new();
     for row in rows {
         let resource_id: String = row.try_get("resource_id")?;
         let resource_kind: String = row.try_get("resource_kind")?;
         let path: String = row.try_get("path")?;
         validate_resource_path(&resource_kind, &path)?;
-        let output_path = match resource_kind.as_str() {
-            "context" => format!("cache/context/{path}"),
-            "rule" | "workflow" => format!("cache/rule/{path}"),
-            other => {
-                return Err(ServerError::InvalidRequest(format!(
-                    "unknown effective resource kind: {other}"
-                )));
-            }
-        };
-        if let Some(existing_id) = output_paths.insert(output_path.clone(), resource_id.clone()) {
-            return Err(ServerError::InvalidRequest(format!(
-                "project effective memory materializes {existing_id} and {resource_id} at {output_path}"
-            )));
-        }
+        let output_path = materialization_output_path(&resource_kind, &path)?;
+        insert_materialization_path(
+            &mut output_paths,
+            &resource_id,
+            &output_path,
+            "project effective memory",
+        )?;
     }
 
     let missing_rule = sqlx::query(
@@ -4329,6 +4403,7 @@ async fn create_project_commit(
         source: "config".to_owned(),
     });
 
+    validate_tree_materialization_paths(&entries)?;
     let tree_id = store_tree(tx, &entries).await?;
     create_commit(
         tx,
@@ -4380,6 +4455,7 @@ async fn create_org_commit(
     for row in metaprompt_rows {
         entries.push(pending_metaprompt_entry(tx, &row, "org", None, "org").await?);
     }
+    validate_tree_materialization_paths(&entries)?;
     let tree_id = store_tree(tx, &entries).await?;
     create_commit(tx, "org", org_id, None, &tree_id, parent_commit_id, version).await
 }
@@ -4393,6 +4469,25 @@ struct PendingTreeEntry {
     path: Option<String>,
     blob_id: String,
     source: String,
+}
+
+fn validate_tree_materialization_paths(entries: &[PendingTreeEntry]) -> Result<(), ServerError> {
+    let mut paths = BTreeMap::new();
+    for entry in entries {
+        if entry.resource_kind == "project_org_selection" {
+            continue;
+        }
+        let path = entry.path.as_deref().ok_or_else(|| {
+            ServerError::InvalidRequest(format!(
+                "Commit Tree entry {} is missing a path",
+                entry.item_id
+            ))
+        })?;
+        validate_resource_path(&entry.resource_kind, path)?;
+        let output_path = materialization_output_path(&entry.resource_kind, path)?;
+        insert_materialization_path(&mut paths, &entry.item_id, &output_path, "Commit Tree")?;
+    }
+    Ok(())
 }
 
 async fn pending_resource_entry(
@@ -5581,6 +5676,18 @@ fn tree_entry_source(value: &str) -> Result<TreeEntrySource, ServerError> {
 mod tests {
     use super::*;
 
+    fn pending_context_entry(id: &str, path: &str) -> PendingTreeEntry {
+        PendingTreeEntry {
+            item_id: id.to_owned(),
+            resource_kind: "context".to_owned(),
+            scope: "project".to_owned(),
+            project_id: Some("prj_test".to_owned()),
+            path: Some(path.to_owned()),
+            blob_id: format!("blob_{id}"),
+            source: "project".to_owned(),
+        }
+    }
+
     #[test]
     fn rule_constraint_must_not_be_blank() {
         assert!(validate_rule_constraint("").is_err());
@@ -5617,6 +5724,60 @@ mod tests {
                 rule_id: None,
                 body: Some("Run the step.".to_owned()),
             }])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn resource_paths_follow_the_portable_file_contract() {
+        assert!(validate_resource_path("context", "spec/API.md").is_ok());
+        assert!(validate_resource_path("workflow", "workflow/CODING").is_ok());
+        assert!(validate_resource_path("metaprompt", "META_PROMPT.md").is_ok());
+
+        for path in [
+            "../outside.md",
+            "spec//API.md",
+            "spec/AUX.md",
+            "spec/API.md ",
+            "spec/API\\draft.md",
+        ] {
+            assert!(
+                validate_resource_path("context", path).is_err(),
+                "path should be rejected: {path}"
+            );
+        }
+        assert!(validate_resource_path("rule", "Workflow/CODING").is_err());
+        assert!(validate_resource_path("workflow", "workflows/CODING").is_err());
+    }
+
+    #[test]
+    fn commit_trees_reject_case_and_file_directory_collisions() {
+        assert!(
+            validate_tree_materialization_paths(&[
+                pending_context_entry("one", "spec/API.md"),
+                pending_context_entry("two", "spec/api.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_tree_materialization_paths(&[
+                pending_context_entry("one", "spec/API.md"),
+                pending_context_entry("two", "spec/API.md/examples.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_tree_materialization_paths(&[
+                pending_context_entry("one", "spec/API.md/examples.md"),
+                pending_context_entry("two", "spec/API.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_tree_materialization_paths(&[
+                pending_context_entry("one", "spec/API.md"),
+                pending_context_entry("two", "spec/CLI.md"),
+            ])
             .is_ok()
         );
     }

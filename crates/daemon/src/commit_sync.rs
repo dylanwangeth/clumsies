@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use reqwest::header::ETAG;
@@ -486,10 +486,10 @@ fn validate_commit_payload(
                 ));
             }
         } else {
-            validate_resource_path(entry)?;
             materialized_resource_content(entry.kind, &blobs[entry.blob_id.as_str()].content)?;
         }
     }
+    validate_materialization_paths(&payload.tree.entries)?;
     if referenced_blobs.len() != blobs.len() {
         return Err(DaemonError::Server(
             "Commit payload contains unreferenced Blobs".to_owned(),
@@ -593,7 +593,7 @@ fn validate_resource_path(entry: &ServerTreeEntry) -> Result<(), DaemonError> {
                 entry.id
             )));
         }
-        ServerTreeEntryKind::Rule if path.starts_with("workflow/") => {
+        ServerTreeEntryKind::Rule if path.to_ascii_lowercase().starts_with("workflow/") => {
             return Err(DaemonError::Server(format!(
                 "Rule Tree entry {} cannot use the workflow/ path namespace",
                 entry.id
@@ -610,15 +610,73 @@ fn validate_resource_path(entry: &ServerTreeEntry) -> Result<(), DaemonError> {
 }
 
 fn validate_relative_path(value: &str) -> Result<(), DaemonError> {
-    if value.is_empty()
-        || Path::new(value)
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !is_normalized_relative_path(value) {
         return Err(DaemonError::Server(format!(
-            "Tree path is not a normalized relative path: {value}"
+            "Tree path is not a portable normalized relative path: {value}"
         )));
     }
+    Ok(())
+}
+
+fn validate_materialization_paths(entries: &[ServerTreeEntry]) -> Result<(), DaemonError> {
+    let mut paths = BTreeMap::<String, (String, String)>::new();
+    for entry in entries {
+        if entry.kind == ServerTreeEntryKind::ProjectOrgSelection {
+            continue;
+        }
+        validate_resource_path(entry)?;
+        let output_path = materialization_output_path(entry)?;
+        insert_materialization_path(&mut paths, &entry.id, &output_path)?;
+    }
+    Ok(())
+}
+
+fn materialization_output_path(entry: &ServerTreeEntry) -> Result<String, DaemonError> {
+    let path = entry
+        .path
+        .as_deref()
+        .ok_or_else(|| DaemonError::Server(format!("Tree entry {} is missing a path", entry.id)))?;
+    match entry.kind {
+        ServerTreeEntryKind::Context => Ok(format!("cache/context/{path}")),
+        ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
+            Ok(format!("cache/rule/{path}"))
+        }
+        ServerTreeEntryKind::Metaprompt => Ok(format!("cache/{path}")),
+        ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
+            "organization selection does not materialize as a file".to_owned(),
+        )),
+    }
+}
+
+fn insert_materialization_path(
+    paths: &mut BTreeMap<String, (String, String)>,
+    entry_id: &str,
+    output_path: &str,
+) -> Result<(), DaemonError> {
+    let normalized = output_path.to_lowercase();
+    if let Some((existing_id, existing_path)) = paths.get(&normalized) {
+        return Err(DaemonError::Server(format!(
+            "Tree materializes {existing_id} at {existing_path} and {entry_id} at {output_path}, which conflict"
+        )));
+    }
+    for (index, _) in normalized.rmatch_indices('/') {
+        if let Some((existing_id, existing_path)) = paths.get(&normalized[..index]) {
+            return Err(DaemonError::Server(format!(
+                "Tree materializes {existing_id} at {existing_path} and {entry_id} at {output_path}, which conflict"
+            )));
+        }
+    }
+    let descendant_prefix = format!("{normalized}/");
+    if let Some((_, (existing_id, existing_path))) = paths
+        .range(descendant_prefix.clone()..)
+        .next()
+        .filter(|(path, _)| path.starts_with(&descendant_prefix))
+    {
+        return Err(DaemonError::Server(format!(
+            "Tree materializes {existing_id} at {existing_path} and {entry_id} at {output_path}, which conflict"
+        )));
+    }
+    paths.insert(normalized, (entry_id.to_owned(), output_path.to_owned()));
     Ok(())
 }
 
@@ -939,6 +997,7 @@ fn materialize_payload(
     project_id: &str,
     payload: &ServerCommitPayload,
 ) -> Result<(), DaemonError> {
+    validate_materialization_paths(&payload.tree.entries)?;
     let blobs = payload
         .blobs
         .iter()
@@ -946,7 +1005,6 @@ fn materialize_payload(
         .collect::<HashMap<_, _>>();
     let mut rules = BTreeMap::new();
     let mut context = BTreeMap::new();
-    let mut output_paths = BTreeSet::new();
 
     for entry in &payload.tree.entries {
         if entry.kind == ServerTreeEntryKind::ProjectOrgSelection {
@@ -964,27 +1022,19 @@ fn materialize_payload(
             hash: content_hash(&materialized_content),
             description: "",
         };
-        let relative_output = match entry.kind {
+        match entry.kind {
             ServerTreeEntryKind::Context => {
                 context.insert(entry.id.clone(), manifest_entry);
-                PathBuf::from("cache/context").join(path)
             }
             ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
                 rules.insert(entry.id.clone(), manifest_entry);
-                PathBuf::from("cache/rule").join(path)
             }
             ServerTreeEntryKind::Metaprompt => {
                 rules.insert(entry.id.clone(), manifest_entry);
-                PathBuf::from("cache").join(path)
             }
             ServerTreeEntryKind::ProjectOrgSelection => unreachable!(),
-        };
-        if !output_paths.insert(relative_output.clone()) {
-            return Err(DaemonError::Server(format!(
-                "Tree materializes more than one resource at {}",
-                relative_output.display()
-            )));
         }
+        let relative_output = PathBuf::from(materialization_output_path(entry)?);
         let output = root.join(relative_output);
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
@@ -1331,6 +1381,53 @@ mod tests {
         assert!(validate_relative_path("spec/API.md").is_ok());
         assert!(validate_relative_path("../secrets").is_err());
         assert!(validate_relative_path("/absolute").is_err());
+        assert!(validate_relative_path("spec//API.md").is_err());
+        assert!(validate_relative_path("spec/AUX.md").is_err());
+        assert!(validate_relative_path("spec/API.md ").is_err());
+    }
+
+    #[test]
+    fn rejects_case_and_file_directory_materialization_collisions() {
+        fn context_entry(id: &str, path: &str) -> ServerTreeEntry {
+            ServerTreeEntry {
+                id: id.to_owned(),
+                kind: ServerTreeEntryKind::Context,
+                scope: ServerTreeEntryScope::Project,
+                project_id: Some("prj_test".to_owned()),
+                path: Some(path.to_owned()),
+                blob_id: format!("blob_{id}"),
+                source: ServerTreeEntrySource::Project,
+            }
+        }
+
+        assert!(
+            validate_materialization_paths(&[
+                context_entry("one", "spec/API.md"),
+                context_entry("two", "spec/api.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_materialization_paths(&[
+                context_entry("one", "spec/API.md"),
+                context_entry("two", "spec/API.md/examples.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_materialization_paths(&[
+                context_entry("one", "spec/API.md/examples.md"),
+                context_entry("two", "spec/API.md"),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_materialization_paths(&[
+                context_entry("one", "spec/API.md"),
+                context_entry("two", "spec/CLI.md"),
+            ])
+            .is_ok()
+        );
     }
 
     #[test]

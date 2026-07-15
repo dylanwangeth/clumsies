@@ -1609,6 +1609,8 @@ components:
             - type: "null"
         new_path:
           type: [string, "null"]
+          minLength: 1
+          description: Portable normalized relative path used by a rename operation.
     DraftResourceContent:
       oneOf:
         - $ref: "#/components/schemas/ContextDraftContent"
@@ -1680,6 +1682,8 @@ components:
           type: [string, "null"]
         path:
           type: [string, "null"]
+          minLength: 1
+          description: Portable normalized relative resource path using slash separators.
     DraftSyncState:
       type: object
       required: [status, server_cursor, daemon_installation_id, conflict_count]

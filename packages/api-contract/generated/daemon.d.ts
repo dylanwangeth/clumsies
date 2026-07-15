@@ -201,6 +201,7 @@ export interface components {
             discard?: components["schemas"]["DaemonDiscardDraftOperation"];
         } & (unknown | unknown | unknown | unknown | unknown);
         DaemonCreateDraftOperation: {
+            /** @description Portable normalized relative resource path using slash separators. */
             path: string;
             content: components["schemas"]["DaemonDraftContent"];
             description?: string;
@@ -242,6 +243,7 @@ export interface components {
         };
         DaemonRenameDraftOperation: {
             id: string;
+            /** @description Portable normalized relative path used by the rename operation. */
             new_path: string;
             description?: string;
         };

@@ -418,10 +418,119 @@ export function mergeRuleTags(
     .sort((left, right) => left.localeCompare(right));
 }
 
+export function memoryPathValidationError(
+  kind: MemoryKind,
+  path: string,
+): string | null {
+  if (kind === "Metaprompt") {
+    return path === "META_PROMPT.md"
+      ? null
+      : "Metaprompt must use META_PROMPT.md.";
+  }
+  if (
+    !path ||
+    path.startsWith("/") ||
+    path.endsWith("/") ||
+    path
+      .split("/")
+      .some(
+        (segment) =>
+          !segment ||
+          segment === "." ||
+          segment === ".." ||
+          segment.trim() !== segment,
+      )
+  ) {
+    return "Use a normalized relative path with / separators.";
+  }
+  const invalidCharacters = new Set([
+    "\\",
+    "<",
+    ">",
+    ":",
+    '"',
+    "|",
+    "?",
+    "*",
+  ]);
+  for (const character of path) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      invalidCharacters.has(character)
+    ) {
+      return "The path contains a non-portable character.";
+    }
+  }
+  const reservedName = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+  if (
+    path
+      .split("/")
+      .some(
+        (segment) =>
+          segment.endsWith(" ") || segment.endsWith(".") || reservedName.test(segment),
+      )
+  ) {
+    return "The path contains a non-portable file name.";
+  }
+  if (kind === "Workflows" && !path.startsWith("workflow/")) {
+    return "Workflow paths must use the workflow/ namespace.";
+  }
+  if (kind === "Rules" && path.toLowerCase().startsWith("workflow/")) {
+    return "Rule paths cannot use the workflow/ namespace.";
+  }
+  return null;
+}
+
+export function memoryPathConflictError(
+  kind: MemoryKind,
+  path: string,
+  candidates: readonly {
+    selectionId: string;
+    kind: MemoryKind;
+    document: { path: string };
+  }[],
+  currentSelectionId: string,
+): string | null {
+  const outputPath = materializationPath(kind, path).toLowerCase();
+  const candidate = candidates.find((entry) => {
+    if (entry.selectionId === currentSelectionId) {
+      return false;
+    }
+    const candidatePath = materializationPath(
+      entry.kind,
+      entry.document.path,
+    ).toLowerCase();
+    return (
+      outputPath === candidatePath ||
+      outputPath.startsWith(`${candidatePath}/`) ||
+      candidatePath.startsWith(`${outputPath}/`)
+    );
+  });
+  return candidate
+    ? `Path conflicts with ${candidate.document.path}.`
+    : null;
+}
+
+function materializationPath(kind: MemoryKind, path: string): string {
+  if (kind === "Context") {
+    return `context/${path}`;
+  }
+  if (kind === "Rules" || kind === "Workflows") {
+    return `rule/${path}`;
+  }
+  return `root/${path}`;
+}
+
 export function documentValidationError(
   kind: MemoryKind,
   document: MemoryDocument,
 ): string | null {
+  const pathError = memoryPathValidationError(kind, document.path);
+  if (pathError) {
+    return pathError;
+  }
   if (kind === "Rules") {
     return ruleConstraintValidationError(document);
   }

@@ -970,6 +970,7 @@ export interface components {
             action: components["schemas"]["DraftOperationAction"];
             resource: components["schemas"]["DraftResourceRef"];
             content?: components["schemas"]["DraftResourceContent"] | null;
+            /** @description Portable normalized relative path used by a rename operation. */
             new_path?: string | null;
         };
         DraftResourceContent: components["schemas"]["ContextDraftContent"] | components["schemas"]["RuleDraftContent"] | components["schemas"]["WorkflowDraftContent"] | components["schemas"]["MetapromptDraftContent"];
@@ -1003,6 +1004,7 @@ export interface components {
             scope: "org" | "project";
             kind: components["schemas"]["DraftResourceKind"];
             id: string | null;
+            /** @description Portable normalized relative resource path using slash separators. */
             path: string | null;
         };
         DraftSyncState: {

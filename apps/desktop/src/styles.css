@@ -1292,6 +1292,11 @@ pre {
   padding: 2px 0;
 }
 
+.item-path-editor input[aria-invalid="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .item-state {
   min-width: max-content;
   border-left: 1px solid var(--border);
@@ -1721,6 +1726,10 @@ pre {
 
 .labeled-field.fill textarea {
   min-height: 210px;
+}
+
+.labeled-field [aria-invalid="true"] {
+  border-color: var(--danger);
 }
 
 .structured-field-error {

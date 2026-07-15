@@ -96,6 +96,8 @@ import {
   listLocalResources,
   listResources,
   listWorkflowRuleOptions,
+  memoryPathConflictError,
+  memoryPathValidationError,
   mergeRuleTags,
   memoryKinds,
   reviewChangeFromDraft,
@@ -950,6 +952,13 @@ export function App() {
     () => listResources(resources, drafts, "Hub", null, hubKind),
     [drafts, hubKind, resources],
   );
+  const hubPathCandidates = useMemo(
+    () =>
+      memoryKinds.flatMap((kind) =>
+        listResources(resources, drafts, "Hub", null, kind),
+      ),
+    [drafts, resources],
+  );
   const activeProjectOrgSelection = useMemo(
     () =>
       projectOrgSelections.find(
@@ -971,6 +980,19 @@ export function App() {
         selectedOrgResourceIds,
       ),
     [drafts, projectKind, resources, selectedOrgResourceIds, selectedProjectId],
+  );
+  const projectPathCandidates = useMemo(
+    () =>
+      memoryKinds.flatMap((kind) =>
+        listLocalResources(
+          resources,
+          drafts,
+          selectedProjectId,
+          kind,
+          selectedOrgResourceIds,
+        ),
+      ),
+    [drafts, resources, selectedOrgResourceIds, selectedProjectId],
   );
   const hubWorkflowRules = useMemo(
     () => listWorkflowRuleOptions(resources, "Hub", null),
@@ -2539,6 +2561,7 @@ export function App() {
               item={currentHubItem}
               items={hubItems}
               kind={hubKind}
+              pathCandidates={hubPathCandidates}
               surface={
                 activeWorkspaceTab?.view === "Hub"
                   ? activeWorkspaceTab.surface
@@ -2577,6 +2600,7 @@ export function App() {
               item={currentProjectItem}
               items={projectItems}
               kind={projectKind}
+              pathCandidates={projectPathCandidates}
               surface={
                 activeWorkspaceTab?.view === "Local"
                   ? activeWorkspaceTab.surface
@@ -3292,6 +3316,7 @@ function MemoryWorkspace({
   onSourceWidthChange,
   onSubmitReview,
   orgSelection,
+  pathCandidates,
   selectedId,
   sourceWidth,
   surface,
@@ -3318,6 +3343,7 @@ function MemoryWorkspace({
   onSourceWidthChange: (width: number) => void;
   onSubmitReview: (item: ResourceListItem) => void;
   orgSelection: OrgSelectionControls;
+  pathCandidates: ResourceListItem[];
   selectedId: string | null;
   sourceWidth: number;
   surface: MemoryTabSurface;
@@ -3377,6 +3403,7 @@ function MemoryWorkspace({
             onProposeDeletion={() => onProposeDeletion(item)}
             onSubmit={() => onSubmitReview(item)}
             orgSelection={orgSelection}
+            pathCandidates={pathCandidates}
           />
         ) : (
           <MemoryEditor
@@ -3389,6 +3416,7 @@ function MemoryWorkspace({
             onProposeDeletion={() => onProposeDeletion(item)}
             onSubmit={() => onSubmitReview(item)}
             orgSelection={orgSelection}
+            pathCandidates={pathCandidates}
             workflowRules={workflowRules}
           />
         )
@@ -3621,6 +3649,7 @@ function MemoryEditor({
   onProposeDeletion,
   onSubmit,
   orgSelection,
+  pathCandidates,
   workflowRules,
 }: {
   item: ResourceListItem;
@@ -3631,6 +3660,7 @@ function MemoryEditor({
   onProposeDeletion: () => void;
   onSubmit: () => void;
   orgSelection: OrgSelectionControls;
+  pathCandidates: ResourceListItem[];
   workflowRules: AuthorityResource[];
 }) {
   const draft = item.draft;
@@ -3651,6 +3681,7 @@ function MemoryEditor({
         onProposeDeletion={onProposeDeletion}
         onSubmit={onSubmit}
         orgSelection={orgSelection}
+        pathCandidates={pathCandidates}
         surface="source"
       />
       {deleting ? (
@@ -3684,6 +3715,7 @@ function MarkdownPreviewItem({
   onProposeDeletion,
   onSubmit,
   orgSelection,
+  pathCandidates,
 }: {
   item: ResourceListItem;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
@@ -3693,6 +3725,7 @@ function MarkdownPreviewItem({
   onProposeDeletion: () => void;
   onSubmit: () => void;
   orgSelection: OrgSelectionControls;
+  pathCandidates: ResourceListItem[];
 }) {
   return (
     <section className="editor-surface">
@@ -3705,6 +3738,7 @@ function MarkdownPreviewItem({
         onProposeDeletion={onProposeDeletion}
         onSubmit={onSubmit}
         orgSelection={orgSelection}
+        pathCandidates={pathCandidates}
         surface="markdown-preview"
       />
       {isMarkdownPath(item.document.path) ? (
@@ -3738,6 +3772,7 @@ function MemoryItemToolbar({
   onProposeDeletion,
   onSubmit,
   orgSelection,
+  pathCandidates,
   surface,
 }: {
   item: ResourceListItem;
@@ -3749,16 +3784,28 @@ function MemoryItemToolbar({
   onProposeDeletion: () => void;
   onSubmit: () => void;
   orgSelection: OrgSelectionControls;
+  pathCandidates: ResourceListItem[];
   surface: MemoryTabSurface;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nextPath, setNextPath] = useState(item.document.path);
+  const pathErrorId = useId();
   const draft = item.draft;
   const locked = item.inherited || draft?.status === "in_review";
   const deleting = draft?.operation === "delete";
   const workingState = resourceWorkingState(item);
   const stateLabel = workingStateLabel(workingState);
+  const normalizedNextPath = nextPath.trim();
+  const pathError = renaming
+    ? (memoryPathValidationError(item.kind, normalizedNextPath) ??
+      memoryPathConflictError(
+        item.kind,
+        normalizedNextPath,
+        pathCandidates,
+        item.selectionId,
+      ))
+    : null;
 
   useEffect(() => {
     if (!menuOpen) {
@@ -3774,9 +3821,11 @@ function MemoryItemToolbar({
   }, [menuOpen]);
 
   const commitRename = () => {
-    const path = nextPath.trim();
-    if (path && path !== item.document.path) {
-      onChange((current) => ({ ...current, path }));
+    if (pathError) {
+      return;
+    }
+    if (normalizedNextPath !== item.document.path) {
+      onChange((current) => ({ ...current, path: normalizedNextPath }));
     }
     setRenaming(false);
   };
@@ -3789,7 +3838,12 @@ function MemoryItemToolbar({
   const toolbarActions: ItemToolAction[] = [];
   if (renaming) {
     toolbarActions.push(
-      { icon: Check, label: "Apply path", onClick: commitRename },
+      {
+        disabled: Boolean(pathError),
+        icon: Check,
+        label: "Apply path",
+        onClick: commitRename,
+      },
       { icon: X, label: "Cancel rename", onClick: cancelRename },
     );
   } else {
@@ -3901,6 +3955,8 @@ function MemoryItemToolbar({
             }}
           >
             <input
+              aria-describedby={pathError ? pathErrorId : undefined}
+              aria-invalid={Boolean(pathError)}
               aria-label="New path"
               autoFocus
               onChange={(event) => setNextPath(event.target.value)}
@@ -3911,8 +3967,14 @@ function MemoryItemToolbar({
                 }
               }}
               spellCheck={false}
+              title={pathError ?? undefined}
               value={nextPath}
             />
+            {pathError ? (
+              <span className="sr-only" id={pathErrorId} role="alert">
+                {pathError}
+              </span>
+            ) : null}
           </form>
         ) : (
           <span className="item-breadcrumb" title={item.document.path}>

@@ -12,6 +12,8 @@ import {
   listLocalResources,
   listResources,
   listWorkflowRuleOptions,
+  memoryPathConflictError,
+  memoryPathValidationError,
   mergeRuleTags,
   resourceWorkingState,
   reviewDiff,
@@ -148,6 +150,81 @@ describe("memory draft lifecycle", () => {
       "quality",
       "review",
     ]);
+  });
+
+  test("memory paths use a portable normalized file contract", () => {
+    expect(memoryPathValidationError("Context", "docs/README.md")).toBeNull();
+    expect(memoryPathValidationError("Rules", "rules/coding")).toBeNull();
+    expect(memoryPathValidationError("Workflows", "workflow/CODING")).toBeNull();
+    expect(memoryPathValidationError("Metaprompt", "META_PROMPT.md")).toBeNull();
+
+    for (const path of [
+      "",
+      "/absolute.md",
+      "../outside.md",
+      "docs//readme.md",
+      "docs/",
+      "docs\\readme.md",
+      "docs/AUX.md",
+      " docs/readme.md",
+      "docs/readme.md ",
+      "docs/readme\u007f.md",
+    ]) {
+      expect(memoryPathValidationError("Context", path)).not.toBeNull();
+    }
+    expect(memoryPathValidationError("Rules", "Workflow/coding")).not.toBeNull();
+    expect(memoryPathValidationError("Workflows", "workflows/coding")).not.toBeNull();
+  });
+
+  test("memory paths cannot collide in one materialized workspace", () => {
+    const candidates = [
+      {
+        selectionId: "context-readme",
+        kind: "Context" as const,
+        document: { path: "docs/README.md" },
+      },
+      {
+        selectionId: "rule-coding",
+        kind: "Rules" as const,
+        document: { path: "rules/coding" },
+      },
+    ];
+
+    expect(
+      memoryPathConflictError(
+        "Context",
+        "docs/readme.md",
+        candidates,
+        "current",
+      ),
+    ).not.toBeNull();
+    expect(
+      memoryPathConflictError("Context", "docs", candidates, "current"),
+    ).not.toBeNull();
+    expect(
+      memoryPathConflictError(
+        "Workflows",
+        "rules/coding/verify",
+        candidates,
+        "current",
+      ),
+    ).not.toBeNull();
+    expect(
+      memoryPathConflictError(
+        "Context",
+        "rules/coding",
+        candidates,
+        "current",
+      ),
+    ).toBeNull();
+    expect(
+      memoryPathConflictError(
+        "Context",
+        "docs/README.md",
+        candidates,
+        "context-readme",
+      ),
+    ).toBeNull();
   });
 
   test("new Workflow and Metaprompt drafts use materializable canonical paths", () => {
