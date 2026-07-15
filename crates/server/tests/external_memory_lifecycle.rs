@@ -1486,7 +1486,7 @@ async fn project_org_selection_cannot_remove_a_rule_used_by_effective_workflow()
 }
 
 #[tokio::test]
-async fn invalid_memory_paths_are_rejected_before_draft_storage() {
+async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
     let bootstrap = repo
@@ -1588,6 +1588,42 @@ async fn invalid_memory_paths_are_rejected_before_draft_storage() {
     };
     assert_eq!(
         post_response(app.clone(), "/api/v1/drafts", &empty_workflow)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let empty_rule = CreateDraftRequest {
+        daemon_installation_id: "daemon_paths".to_owned(),
+        project_id: bootstrap.project_id.clone(),
+        base_commit_id: None,
+        title: "Empty Rule".to_owned(),
+        description: None,
+        resource: DraftResourceRef {
+            scope: ResourceScope::Project,
+            kind: DraftResourceKind::Rule,
+            id: None,
+            path: Some("rules/empty".to_owned()),
+        },
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Rule,
+                id: None,
+                path: Some("rules/empty".to_owned()),
+            },
+            content: Some(DraftResourceContent::Rule {
+                name: Some("Empty Rule".to_owned()),
+                applies_when: None,
+                constraint: "  ".to_owned(),
+                tags: None,
+            }),
+            new_path: None,
+        }],
+    };
+    assert_eq!(
+        post_response(app.clone(), "/api/v1/drafts", &empty_rule)
             .await
             .status(),
         StatusCode::BAD_REQUEST

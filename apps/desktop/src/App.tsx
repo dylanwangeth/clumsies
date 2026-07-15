@@ -2,6 +2,7 @@ import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from "reac
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -95,10 +96,12 @@ import {
   listLocalResources,
   listResources,
   listWorkflowRuleOptions,
+  mergeRuleTags,
   memoryKinds,
   reviewChangeFromDraft,
   reviewDiff,
   resourceWorkingState,
+  ruleConstraintValidationError,
   workflowStepValidationError,
   type AuthorityResource,
   type DraftRecord,
@@ -4021,20 +4024,29 @@ function RuleEditor({
   document: MemoryDocument;
   onChange: (update: (document: MemoryDocument) => MemoryDocument) => void;
 }) {
+  const fieldRootId = useId();
+  const nameId = `${fieldRootId}-name`;
+  const appliesWhenId = `${fieldRootId}-applies-when`;
+  const constraintId = `${fieldRootId}-constraint`;
+  const constraintErrorId = `${fieldRootId}-constraint-error`;
+  const tagsId = `${fieldRootId}-tags`;
+  const constraintError = ruleConstraintValidationError(document);
   return (
     <div className="structured-editor">
-      <LabeledField label="Name">
+      <LabeledField label="Name" labelFor={nameId}>
         <input
           disabled={disabled}
+          id={nameId}
           onChange={(event) =>
             onChange((current) => ({ ...current, title: event.target.value }))
           }
           value={document.title}
         />
       </LabeledField>
-      <LabeledField label="Applies when">
+      <LabeledField label="Applies when" labelFor={appliesWhenId}>
         <textarea
           disabled={disabled}
+          id={appliesWhenId}
           onChange={(event) =>
             onChange((current) => ({ ...current, appliesWhen: event.target.value }))
           }
@@ -4042,31 +4054,104 @@ function RuleEditor({
           value={document.appliesWhen}
         />
       </LabeledField>
-      <LabeledField label="Constraint" fill>
+      <LabeledField label="Constraint" labelFor={constraintId} fill>
         <textarea
+          aria-describedby={constraintError ? constraintErrorId : undefined}
+          aria-invalid={Boolean(constraintError)}
           disabled={disabled}
+          id={constraintId}
           onChange={(event) =>
             onChange((current) => ({ ...current, body: event.target.value }))
           }
           value={document.body}
         />
       </LabeledField>
-      <LabeledField label="Tags">
-        <input
+      {constraintError ? (
+        <small
+          className="structured-field-error"
+          id={constraintErrorId}
+          role="alert"
+        >
+          {constraintError}
+        </small>
+      ) : null}
+      <LabeledField label="Tags" labelFor={tagsId}>
+        <RuleTagEditor
           disabled={disabled}
-          onChange={(event) =>
+          id={tagsId}
+          onChange={(tags) =>
             onChange((current) => ({
               ...current,
-              tags: event.target.value
-                .split(",")
-                .map((tag) => tag.trim())
-                .filter(Boolean),
+              tags,
             }))
           }
-          placeholder="coding, migration"
-          value={document.tags.join(", ")}
+          tags={document.tags}
         />
       </LabeledField>
+    </div>
+  );
+}
+
+function RuleTagEditor({
+  disabled,
+  id,
+  onChange,
+  tags,
+}: {
+  disabled: boolean;
+  id: string;
+  onChange: (tags: string[]) => void;
+  tags: string[];
+}) {
+  const [pendingTag, setPendingTag] = useState("");
+  const commitPendingTag = () => {
+    const next = mergeRuleTags(tags, pendingTag);
+    setPendingTag("");
+    const changed =
+      next.length !== tags.length ||
+      next.some((tag, index) => tag !== tags[index]);
+    if (changed) {
+      onChange(next);
+    }
+  };
+  const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      commitPendingTag();
+      return;
+    }
+    if (event.key === "Backspace" && !pendingTag && tags.length > 0) {
+      event.preventDefault();
+      onChange(tags.slice(0, -1));
+    }
+  };
+  return (
+    <div className={disabled ? "rule-tag-editor disabled" : "rule-tag-editor"}>
+      {tags.map((tag) => (
+        <span className="rule-tag" key={tag}>
+          <span>{tag}</span>
+          {!disabled ? (
+            <button
+              aria-label={`Remove ${tag} tag`}
+              onClick={() => onChange(tags.filter((entry) => entry !== tag))}
+              onMouseDown={(event) => event.preventDefault()}
+              title={`Remove ${tag}`}
+              type="button"
+            >
+              <X aria-hidden="true" size={11} />
+            </button>
+          ) : null}
+        </span>
+      ))}
+      <input
+        disabled={disabled}
+        id={id}
+        onBlur={commitPendingTag}
+        onChange={(event) => setPendingTag(event.target.value)}
+        onKeyDown={onInputKeyDown}
+        placeholder={tags.length ? "" : "Add tag"}
+        value={pendingTag}
+      />
     </div>
   );
 }
@@ -4296,16 +4381,18 @@ function LabeledField({
   children,
   fill,
   label,
+  labelFor,
 }: {
   children: ReactNode;
   fill?: boolean;
   label: string;
+  labelFor: string;
 }) {
   return (
-    <label className={fill ? "labeled-field fill" : "labeled-field"}>
-      <span>{label}</span>
+    <div className={fill ? "labeled-field fill" : "labeled-field"}>
+      <label htmlFor={labelFor}>{label}</label>
       {children}
-    </label>
+    </div>
   );
 }
 

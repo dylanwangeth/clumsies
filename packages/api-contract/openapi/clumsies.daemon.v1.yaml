@@ -498,6 +498,7 @@ components:
           type: [string, "null"]
         constraint:
           type: string
+          minLength: 1
         tags:
           type: [array, "null"]
           items:

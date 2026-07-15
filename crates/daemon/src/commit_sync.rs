@@ -1059,6 +1059,11 @@ fn materialized_resource_content(
                     decoded.format
                 )));
             }
+            if decoded.content.constraint.trim().is_empty() {
+                return Err(DaemonError::Server(
+                    "Rule Blob constraint must not be empty".to_owned(),
+                ));
+            }
             Ok([
                 format!("# {}", decoded.content.name),
                 String::new(),
@@ -1340,6 +1345,21 @@ mod tests {
             error
                 .to_string()
                 .contains("Workflow Blob must contain at least one step")
+        );
+    }
+
+    #[test]
+    fn rejects_rule_blobs_without_a_constraint() {
+        let error = materialized_resource_content(
+            ServerTreeEntryKind::Rule,
+            r#"{"format":"clumsies.rule.v1","content":{"name":"Empty","applies_when":"","constraint":"  ","tags":[]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Rule Blob constraint must not be empty")
         );
     }
 

@@ -3840,6 +3840,7 @@ fn prepare_resource_content(
             constraint,
             tags,
         } => {
+            validate_rule_constraint(constraint)?;
             let name = optional_non_empty(name.as_deref())
                 .map(ToOwned::to_owned)
                 .or_else(|| existing.map(|resource| resource.name.clone()))
@@ -3909,6 +3910,15 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+fn validate_rule_constraint(constraint: &str) -> Result<(), ServerError> {
+    if constraint.trim().is_empty() {
+        return Err(ServerError::InvalidRequest(
+            "rule constraint must not be empty".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_workflow_step_shapes(steps: &[WorkflowStepInput]) -> Result<(), ServerError> {
@@ -5570,6 +5580,13 @@ fn tree_entry_source(value: &str) -> Result<TreeEntrySource, ServerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_constraint_must_not_be_blank() {
+        assert!(validate_rule_constraint("").is_err());
+        assert!(validate_rule_constraint("  \n").is_err());
+        assert!(validate_rule_constraint("Run focused tests.").is_ok());
+    }
 
     #[test]
     fn workflow_steps_require_non_empty_exclusive_content() {

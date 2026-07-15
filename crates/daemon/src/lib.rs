@@ -915,7 +915,7 @@ impl DaemonState {
         &self,
         request: DaemonDraftOperationRequest,
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
-        request.op.validate_exactly_one()?;
+        request.op.validate(request.resource)?;
         let source = request
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);
@@ -3476,7 +3476,7 @@ pub struct DaemonDraftOperation {
 }
 
 impl DaemonDraftOperation {
-    fn validate_exactly_one(&self) -> Result<(), DaemonError> {
+    fn validate(&self, resource: DaemonDraftResourceKind) -> Result<(), DaemonError> {
         let count = [
             self.create.is_some(),
             self.update.is_some(),
@@ -3487,13 +3487,25 @@ impl DaemonDraftOperation {
         .into_iter()
         .filter(|present| *present)
         .count();
-        if count == 1 {
-            Ok(())
-        } else {
-            Err(DaemonError::InvalidRequest(
+        if count != 1 {
+            return Err(DaemonError::InvalidRequest(
                 "draft operation must contain exactly one operation variant".to_owned(),
-            ))
+            ));
         }
+        let content = self
+            .create
+            .as_ref()
+            .map(|operation| &operation.content)
+            .or_else(|| self.update.as_ref().map(|operation| &operation.content));
+        if let Some(content) = content {
+            if content.resource_kind() != resource {
+                return Err(DaemonError::InvalidRequest(
+                    "draft content kind does not match its resource".to_owned(),
+                ));
+            }
+            content.validate()?;
+        }
+        Ok(())
     }
 
     fn target_id(&self) -> Option<&str> {
@@ -3542,10 +3554,117 @@ pub enum DaemonDraftContent {
     },
 }
 
+impl DaemonDraftContent {
+    fn resource_kind(&self) -> DaemonDraftResourceKind {
+        match self {
+            Self::Context { .. } => DaemonDraftResourceKind::Context,
+            Self::Rule { .. } => DaemonDraftResourceKind::Rule,
+            Self::Workflow { .. } => DaemonDraftResourceKind::Workflow,
+            Self::Metaprompt { .. } => DaemonDraftResourceKind::Metaprompt,
+        }
+    }
+
+    fn validate(&self) -> Result<(), DaemonError> {
+        match self {
+            Self::Rule { constraint, .. } if constraint.trim().is_empty() => Err(
+                DaemonError::InvalidRequest("rule constraint must not be empty".to_owned()),
+            ),
+            Self::Workflow { steps, .. } => {
+                if steps.is_empty() {
+                    return Err(DaemonError::InvalidRequest(
+                        "workflow must contain at least one step".to_owned(),
+                    ));
+                }
+                for step in steps {
+                    let has_rule = step
+                        .rule_id
+                        .as_deref()
+                        .is_some_and(|rule_id| !rule_id.trim().is_empty());
+                    let has_body = step
+                        .body
+                        .as_deref()
+                        .is_some_and(|body| !body.trim().is_empty());
+                    if has_rule == has_body {
+                        return Err(DaemonError::InvalidRequest(
+                            "workflow step must contain exactly one of rule_id or body".to_owned(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonWorkflowStepInput {
     pub rule_id: Option<String>,
     pub body: Option<String>,
+}
+
+#[cfg(test)]
+mod draft_operation_validation_tests {
+    use super::*;
+
+    fn create_operation(content: DaemonDraftContent) -> DaemonDraftOperation {
+        DaemonDraftOperation {
+            create: Some(DaemonCreateDraftOperation {
+                path: "memory/test".to_owned(),
+                content,
+                description: None,
+            }),
+            update: None,
+            rename: None,
+            delete: None,
+            discard: None,
+        }
+    }
+
+    #[test]
+    fn rejects_blank_rule_constraints_before_storage() {
+        let operation = create_operation(DaemonDraftContent::Rule {
+            name: Some("Empty".to_owned()),
+            applies_when: None,
+            constraint: "  ".to_owned(),
+            tags: None,
+        });
+
+        assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_workflow_steps_before_storage() {
+        let empty = create_operation(DaemonDraftContent::Workflow {
+            name: Some("Empty".to_owned()),
+            description: String::new(),
+            steps: Vec::new(),
+        });
+        let ambiguous = create_operation(DaemonDraftContent::Workflow {
+            name: Some("Ambiguous".to_owned()),
+            description: String::new(),
+            steps: vec![DaemonWorkflowStepInput {
+                rule_id: Some("rule-one".to_owned()),
+                body: Some("Duplicate".to_owned()),
+            }],
+        });
+
+        assert!(empty.validate(DaemonDraftResourceKind::Workflow).is_err());
+        assert!(
+            ambiguous
+                .validate(DaemonDraftResourceKind::Workflow)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_content_that_does_not_match_the_resource() {
+        let operation = create_operation(DaemonDraftContent::Context {
+            content: "# Context".to_owned(),
+        });
+
+        assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

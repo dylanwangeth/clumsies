@@ -12,8 +12,10 @@ import {
   listLocalResources,
   listResources,
   listWorkflowRuleOptions,
+  mergeRuleTags,
   resourceWorkingState,
   reviewDiff,
+  ruleConstraintValidationError,
   workflowStepValidationError,
 } from "../src/model";
 
@@ -127,6 +129,25 @@ describe("memory draft lifecycle", () => {
     expect(
       documentValidationError("Workflows", { ...workflow, steps: [] }),
     ).toBe("A Workflow needs at least one step.");
+  });
+
+  test("Rule validation and tags preserve structured authoring", () => {
+    const rule = createBlankDraft(
+      "Project",
+      "Rules",
+      "koal",
+      "Koal",
+    ).document;
+
+    expect(ruleConstraintValidationError(rule)).toBeNull();
+    expect(
+      documentValidationError("Rules", { ...rule, body: "  " }),
+    ).toBe("A Rule needs a constraint.");
+    expect(mergeRuleTags(["quality"], " coding, quality\nreview ")).toEqual([
+      "coding",
+      "quality",
+      "review",
+    ]);
   });
 
   test("new Workflow and Metaprompt drafts use materializable canonical paths", () => {

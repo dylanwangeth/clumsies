@@ -399,20 +399,41 @@ export function workflowStepValidationError(
     : null;
 }
 
+export function ruleConstraintValidationError(
+  document: MemoryDocument,
+): string | null {
+  return document.body.trim() ? null : "A Rule needs a constraint.";
+}
+
+export function mergeRuleTags(
+  tags: readonly string[],
+  input: string,
+): string[] {
+  return [...tags, ...input.split(/[,\n]/)]
+    .map((tag) => tag.trim())
+    .filter(
+      (tag, index, values) =>
+        tag.length > 0 && values.indexOf(tag) === index,
+    )
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export function documentValidationError(
   kind: MemoryKind,
   document: MemoryDocument,
 ): string | null {
-  if (kind !== "Workflows") {
-    return null;
+  if (kind === "Rules") {
+    return ruleConstraintValidationError(document);
   }
-  if (document.steps.length === 0) {
-    return "A Workflow needs at least one step.";
-  }
-  for (const [index, step] of document.steps.entries()) {
-    const error = workflowStepValidationError(step);
-    if (error) {
-      return `Step ${index + 1}: ${error}`;
+  if (kind === "Workflows") {
+    if (document.steps.length === 0) {
+      return "A Workflow needs at least one step.";
+    }
+    for (const [index, step] of document.steps.entries()) {
+      const error = workflowStepValidationError(step);
+      if (error) {
+        return `Step ${index + 1}: ${error}`;
+      }
     }
   }
   return null;
