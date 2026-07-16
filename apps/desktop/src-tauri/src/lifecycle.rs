@@ -1,3 +1,5 @@
+use std::sync::{Mutex, MutexGuard};
+
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::PageLoadEvent;
@@ -11,6 +13,7 @@ const AUTHENTICATION_WINDOW_LABEL: &str = "authentication";
 const TRAY_ICON_ID: &str = "clumsies";
 const TRAY_SHOW_ID: &str = "clumsies.show";
 const TRAY_QUIT_ID: &str = "clumsies.quit";
+static WINDOW_TRANSITION: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LifecycleAction {
@@ -102,6 +105,7 @@ fn apply_action<R: Runtime>(app: &AppHandle<R>, action: LifecycleAction) {
 }
 
 pub fn present_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _transition = window_transition();
     if let Some(window) = app.get_webview_window(AUTHENTICATION_WINDOW_LABEL) {
         window.destroy()?;
     }
@@ -109,6 +113,7 @@ pub fn present_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> 
 }
 
 pub fn present_authentication_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _transition = window_transition();
     if let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         main.hide()?;
     }
@@ -122,7 +127,7 @@ pub fn present_authentication_window<R: Runtime>(app: &AppHandle<R>) -> tauri::R
     let builder = WebviewWindowBuilder::new(
         app,
         AUTHENTICATION_WINDOW_LABEL,
-        WebviewUrl::App("index.html?surface=authentication".into()),
+        WebviewUrl::App("index.html".into()),
     )
     .title("Clumsies")
     .inner_size(500.0, 560.0)
@@ -151,11 +156,18 @@ pub fn present_authentication_window<R: Runtime>(app: &AppHandle<R>) -> tauri::R
 }
 
 fn show_primary_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _transition = window_transition();
     let label = primary_window_label(
         app.get_webview_window(AUTHENTICATION_WINDOW_LABEL)
             .is_some(),
     );
     show_window(app, label)
+}
+
+fn window_transition() -> MutexGuard<'static, ()> {
+    WINDOW_TRANSITION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn show_window<R: Runtime>(app: &AppHandle<R>, label: &str) -> tauri::Result<()> {
@@ -236,5 +248,4 @@ mod tests {
         assert!(is_managed_window(AUTHENTICATION_WINDOW_LABEL));
         assert!(!is_managed_window("oauth-callback"));
     }
-
 }

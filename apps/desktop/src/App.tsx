@@ -290,6 +290,7 @@ function isTauriRuntime(): boolean {
 export function App() {
   const previewMode = !isTauriRuntime();
   const backendRef = useRef<DesktopBackend | null>(null);
+  const initialBackendLoadStarted = useRef(false);
   const updaterRef = useRef<DesktopUpdater | null>(null);
   if (!previewMode && backendRef.current === null) {
     const nativeInvoke: NativeInvoke = <T,>(
@@ -542,6 +543,10 @@ export function App() {
   }, [refreshBackend]);
 
   useEffect(() => {
+    if (initialBackendLoadStarted.current) {
+      return;
+    }
+    initialBackendLoadStarted.current = true;
     void refreshBackend();
   }, [refreshBackend]);
 

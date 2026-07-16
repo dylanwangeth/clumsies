@@ -1,11 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
 import { AuthenticationWindow } from "./AuthenticationWindow";
 import "./styles.css";
 import { windowSurface } from "./window-surface";
 
-const surface = windowSurface(window.location.search);
+const windowLabel =
+  "__TAURI_INTERNALS__" in window ? getCurrentWindow().label : undefined;
+const surface = windowSurface(window.location.search, windowLabel);
 document.documentElement.dataset.surface = surface;
 const Root = surface === "authentication" ? AuthenticationWindow : App;
 

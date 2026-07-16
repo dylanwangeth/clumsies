@@ -8,4 +8,9 @@ describe("Desktop window surface", () => {
     expect(windowSurface("?surface=unknown")).toBe("main");
     expect(windowSurface("")).toBe("main");
   });
+
+  test("uses the native label for a Tauri secondary window", () => {
+    expect(windowSurface("", "authentication")).toBe("authentication");
+    expect(windowSurface("", "main")).toBe("main");
+  });
 });
