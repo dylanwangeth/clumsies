@@ -8,7 +8,6 @@ name = "clumsiesd"
 path = "src/main.rs"
 
 [dependencies]
-block2 = "0.6.2"
 hex = "0.4.3"
 reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -20,6 +19,7 @@ tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "s
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 security-framework = "3.7.0"
 security-framework-sys = "2.17.0"
 
