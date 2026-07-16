@@ -597,7 +597,7 @@ components:
           additionalProperties: true
     SyncState:
       type: string
-      enum: [idle, queued, syncing, degraded, conflicted, failed]
+      enum: [idle, queued, syncing, retrying, degraded, conflicted, failed]
     DaemonDraftResourceKind:
       type: string
       enum: [context, rule, workflow, metaprompt]
@@ -615,4 +615,4 @@ components:
       enum: [desktop, cli, mcp_store, server]
     DraftOperationSyncStatus:
       type: string
-      enum: [queued, syncing, synced, failed]
+      enum: [queued, syncing, retrying, synced, failed]

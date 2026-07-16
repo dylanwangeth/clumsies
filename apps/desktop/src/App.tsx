@@ -149,6 +149,7 @@ type LoadState =
       projectConfig: DaemonProjectConfig | null;
       syncStatus: DaemonSyncStatus | null;
       mcpStatus: DaemonMcpStatus | null;
+      serverDataSource: "live" | "stale";
     };
 
 type ConfirmState = {
@@ -454,6 +455,7 @@ export function App() {
         projectConfig: backendState.runtime.projectConfig,
         syncStatus: backendState.runtime.syncStatus,
         mcpStatus: backendState.runtime.mcpStatus,
+        serverDataSource: backendState.runtime.serverDataSource,
       });
       await invoke("present_main_window");
       return backendState;
@@ -515,6 +517,7 @@ export function App() {
           projectConfig: null,
           syncStatus: null,
           mcpStatus: null,
+          serverDataSource: "live",
         });
       }
     } catch (error) {
@@ -628,6 +631,16 @@ export function App() {
     setNoticeState(state);
     noticeTimer.current = window.setTimeout(() => setNoticeState(null), 7000);
   }, []);
+
+  const staleServerData =
+    loadState.status === "ready" && loadState.serverDataSource === "stale";
+  useEffect(() => {
+    if (staleServerData) {
+      showNotice({
+        message: "Server is unavailable. Showing the last synced data; local edits will retry automatically.",
+      });
+    }
+  }, [showNotice, staleServerData]);
 
   useEffect(() => {
     const backend = backendRef.current;
@@ -771,7 +784,7 @@ export function App() {
           ),
         );
 
-        const poll = (attempt: number) => {
+        const poll = (attempt: number, delay = 500) => {
           const pollTimer = window.setTimeout(async () => {
             if (!isCurrent()) {
               return;
@@ -812,7 +825,7 @@ export function App() {
               );
               draftSyncTimers.current.delete(draft.id);
             }
-          }, 500);
+          }, delay);
           draftSyncTimers.current.set(draft.id, pollTimer);
         };
         poll(0);
@@ -830,6 +843,62 @@ export function App() {
     }, 650);
     draftSyncTimers.current.set(draft.id, timer);
   }, []);
+
+  const pendingDraftProjectionIds = drafts
+    .filter(
+      (draft) =>
+        draft.localId &&
+        (draft.syncState === "syncing" || draft.syncState === "retrying"),
+    )
+    .map((draft) => draft.localId as string)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    if (!pendingDraftProjectionIds) {
+      return;
+    }
+    let disposed = false;
+    const draftIds = pendingDraftProjectionIds.split(",");
+    const refreshPendingDrafts = async () => {
+      const backend = backendRef.current;
+      if (!backend) {
+        return;
+      }
+      const details = await Promise.all(
+        draftIds.map((draftId) => backend.daemon.draft(draftId).catch(() => null)),
+      );
+      if (disposed) {
+        return;
+      }
+      const detailsById = new Map(
+        details
+          .filter((detail) => detail !== null)
+          .map((detail) => [detail.draft.draft_id, detail]),
+      );
+      setDrafts((current) =>
+        current.map((draft) => {
+          const detail = draft.localId ? detailsById.get(draft.localId) : null;
+          if (!detail) {
+            return draft;
+          }
+          return {
+            ...draft,
+            serverId: detail.draft.server_draft_id,
+            serverVersion: detail.draft.server_version,
+            syncState: syncStateForDaemonDraft(detail),
+          };
+        }),
+      );
+    };
+    void refreshPendingDrafts();
+    const interval = window.setInterval(() => {
+      void refreshPendingDrafts();
+    }, 5000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [pendingDraftProjectionIds]);
 
   const queueBundleSync = useCallback((bundle: PersonalBundle) => {
     const previous = bundleSyncTimers.current.get(bundle.id);
@@ -2149,7 +2218,11 @@ export function App() {
             label: path
               ? `${fileNameFromPath(path)}${preview ? " Preview" : ""}`
               : "Missing resource",
-            title: path ? `${path}${preview ? " · Preview" : ""}` : "Missing resource",
+            title: path
+              ? `${path}${preview ? " · Preview" : ""}${
+                  item?.draft ? ` · ${syncLabel(item.draft.syncState)}` : ""
+                }`
+              : "Missing resource",
             syncState: item?.draft?.syncState,
           };
         }
@@ -3278,6 +3351,8 @@ function WorkspaceTabBar({
                 <LoaderCircle aria-hidden="true" className="spin" size={12} />
               ) : syncState === "conflict" ? (
                 <CloudOff aria-hidden="true" className="tab-conflict" size={12} />
+              ) : syncState === "retrying" ? (
+                <CloudOff aria-hidden="true" size={12} />
               ) : null}
             </button>
             <button
@@ -5881,7 +5956,7 @@ function SyncMark({
       ? LoaderCircle
       : state === "conflict" || state === "failed"
         ? AlertTriangle
-        : state === "local"
+        : state === "local" || state === "retrying"
           ? CloudOff
           : Cloud;
   return (
@@ -6047,6 +6122,9 @@ function syncLabel(state: SyncState): string {
   }
   if (state === "local") {
     return "Saved locally";
+  }
+  if (state === "retrying") {
+    return "Saved locally; retrying automatically";
   }
   return "Synced";
 }

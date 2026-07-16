@@ -100,6 +100,27 @@ describe("Desktop backend mapping", () => {
     ).rejects.toBeInstanceOf(AuthenticationRequiredError);
   });
 
+  test("reports when a Server read came from the daemon stale cache", async () => {
+    let cacheFallbacks = 0;
+    const daemon = {
+      serverRequest: async () => ({
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-clumsies-cache": "stale",
+        },
+        body: '{"cached":true}',
+      }),
+    } as DaemonApiClient;
+
+    const response = await createDaemonFetch(daemon, () => {
+      cacheFallbacks += 1;
+    })("https://server.example/api/v1/me");
+
+    expect(cacheFallbacks).toBe(1);
+    expect(await response.json()).toEqual({ cached: true });
+  });
+
   test("writes repeated new-resource edits to one local draft", () => {
     const draft = createBlankDraft(
       "Project",
@@ -265,6 +286,44 @@ describe("Desktop backend mapping", () => {
     };
 
     expect(syncStateForDaemonDraft(detail)).toBe("failed");
+  });
+
+  test("keeps a transiently unavailable draft in automatic retry state", () => {
+    const detail = {
+      draft: {
+        draft_id: "draft_local",
+        project_id: "prj_test",
+        server_draft_id: null,
+        server_version: 0,
+        base_commit_id: null,
+        scope: "project" as const,
+        resource_kind: "context" as const,
+        target_id: null,
+        path: "context/new.md",
+        status: "open" as const,
+        created_at: "2026-07-16T00:00:00Z",
+        updated_at: "2026-07-16T00:00:00Z",
+        pending_operation_count: 1,
+        failed_operation_count: 0,
+      },
+      operations: [{
+        local_operation_id: "op_retrying",
+        resource_kind: "context" as const,
+        operation: {
+          create: {
+            path: "context/new.md",
+            content: { kind: "context" as const, content: "# New" },
+          },
+        },
+        source: "desktop" as const,
+        sync_status: "retrying" as const,
+        last_error: "Server request failed with status 503",
+        created_at: "2026-07-16T00:00:00Z",
+        updated_at: "2026-07-16T00:00:00Z",
+      }],
+    };
+
+    expect(syncStateForDaemonDraft(detail)).toBe("retrying");
   });
 
   test("builds a review change without the review author's local draft", async () => {

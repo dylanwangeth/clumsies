@@ -1,6 +1,7 @@
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,9 +15,9 @@ use daemon::{
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
-    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus, ServerCredentials,
-    SyncRetryChannel, SyncState,
+    DaemonServerRequest, DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
+    DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
+    ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -1256,6 +1257,354 @@ async fn draft_operation_notifies_auto_sync_worker() {
 }
 
 #[tokio::test]
+async fn transient_server_failure_is_retried_automatically() {
+    let server_state = RecoveringServerState {
+        available: Arc::new(AtomicBool::new(false)),
+        create_request_count: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/api/v1/drafts", post(recovering_create_draft))
+        .route("/api/v1/draft-events", get(empty_draft_events))
+        .route("/api/v1/org/commit-state", get(fake_org_commit_state))
+        .route(
+            "/api/v1/projects/{project_id}/commit-state",
+            get(fake_project_commit_state),
+        )
+        .with_state(server_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_recovery".to_owned());
+    config.sync.enabled = true;
+    config.sync.interval = Duration::from_millis(50);
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let worker = state.start_sync_worker().unwrap();
+    let service = DaemonIpcService::new(state);
+
+    let stored = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_recovery".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/offline.md".to_owned(),
+                    content: context_content("Saved while Server is unavailable"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    let retrying = wait_for_operation_status(
+        &service,
+        &stored.draft_id,
+        DraftOperationSyncStatus::Retrying,
+    )
+    .await;
+    assert_eq!(retrying.draft.pending_operation_count, 1);
+    let status = service.sync_status().await.unwrap();
+    assert_eq!(status.draft_sync.state, SyncState::Retrying);
+    assert_eq!(status.pending_operation_count, 1);
+    assert_eq!(status.failed_operation_count, 0);
+    assert_eq!(status.draft_sync.last_success_at, None);
+
+    server_state.available.store(true, Ordering::Release);
+    let synced =
+        wait_for_operation_status(&service, &stored.draft_id, DraftOperationSyncStatus::Synced)
+            .await;
+    assert_eq!(synced.draft.pending_operation_count, 0);
+    assert_eq!(synced.draft.failed_operation_count, 0);
+    assert!(server_state.create_request_count.load(Ordering::Acquire) >= 2);
+    assert_eq!(
+        service.sync_status().await.unwrap().draft_sync.state,
+        SyncState::Idle
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+async fn successful_new_draft_does_not_hide_an_existing_retrying_operation() {
+    let server_state = RecoveringServerState {
+        available: Arc::new(AtomicBool::new(true)),
+        create_request_count: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/api/v1/drafts", post(recovering_create_draft))
+        .route("/api/v1/draft-events", get(empty_draft_events))
+        .route("/api/v1/org/commit-state", get(fake_org_commit_state))
+        .route(
+            "/api/v1/projects/{project_id}/commit-state",
+            get(fake_project_commit_state),
+        )
+        .with_state(server_state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_retrying".to_owned());
+    config.sync.enabled = true;
+    config.sync.interval = Duration::from_secs(60);
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let worker = state.start_sync_worker().unwrap();
+    let service = DaemonIpcService::new(state.clone());
+
+    let mut baseline_last_success = None;
+    for _ in 0..100 {
+        if let Some(last_success) = service
+            .sync_status()
+            .await
+            .unwrap()
+            .draft_sync
+            .last_success_at
+        {
+            baseline_last_success = Some(last_success);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let baseline_last_success = baseline_last_success.expect("initial sync cycle did not complete");
+
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO local_drafts (
+            draft_id, project_id, resource_scope, resource_kind, status
+         ) VALUES ('draft_retrying', 'prj_retrying', 'project', 'context', 'open')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO local_draft_operations (
+            local_operation_id, draft_id, resource_kind, operation_json, source, sync_status,
+            last_error
+         ) VALUES (
+            'operation_retrying', 'draft_retrying', 'context', '{}', 'desktop', 'retrying',
+            'Server unavailable'
+         )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let stored = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_retrying".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/synced-while-retrying.md".to_owned(),
+                    content: context_content("This operation can sync"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    wait_for_operation_status(&service, &stored.draft_id, DraftOperationSyncStatus::Synced).await;
+
+    let status = service.sync_status().await.unwrap();
+    assert_eq!(status.draft_sync.state, SyncState::Retrying);
+    assert_eq!(status.pending_operation_count, 1);
+    assert_eq!(
+        status.draft_sync.last_success_at.as_deref(),
+        Some(baseline_last_success.as_str())
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+async fn daemon_restart_requeues_an_interrupted_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    let service = DaemonIpcService::new(state.clone());
+    let stored = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_restart".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/restart.md".to_owned(),
+                    content: context_content("Recover after process exit"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
+        .await
+        .unwrap();
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE local_draft_operations SET sync_status = 'syncing' WHERE local_operation_id = $1",
+    )
+    .bind(&stored.local_operation_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    drop(service);
+    drop(state);
+
+    let restarted =
+        common::initialize_daemon(DaemonConfig::for_root(root.path()), credential_store).await;
+    let detail = DaemonIpcService::new(restarted)
+        .get_draft(&stored.draft_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        detail.operations[0].sync_status,
+        DraftOperationSyncStatus::Queued
+    );
+    assert_eq!(detail.draft.pending_operation_count, 1);
+    assert_eq!(detail.draft.failed_operation_count, 0);
+}
+
+#[tokio::test]
+async fn server_proxy_uses_stale_cache_only_for_read_failures() {
+    let proxy_state = CachedProxyState {
+        unavailable: Arc::new(AtomicBool::new(false)),
+    };
+    let app = Router::new()
+        .route(
+            "/api/v1/cache-probe",
+            get(cached_proxy_get).post(cached_proxy_post),
+        )
+        .route("/api/v1/missing-probe", get(cached_missing_get))
+        .with_state(proxy_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_cache".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let get_request = DaemonServerRequest {
+        method: "GET".to_owned(),
+        path: "/api/v1/cache-probe".to_owned(),
+        headers: BTreeMap::new(),
+        body: None,
+    };
+
+    let live = state.server_request(get_request.clone()).await.unwrap();
+    assert_eq!(live.status, 200);
+    assert_eq!(live.body, r#"{"source":"live"}"#);
+    assert_eq!(live.headers.get("x-clumsies-cache"), None);
+
+    let missing_request = DaemonServerRequest {
+        method: "GET".to_owned(),
+        path: "/api/v1/missing-probe".to_owned(),
+        headers: BTreeMap::new(),
+        body: None,
+    };
+    let missing = state.server_request(missing_request.clone()).await.unwrap();
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.headers.get("x-clumsies-cache"), None);
+
+    proxy_state.unavailable.store(true, Ordering::Release);
+    let cached_after_503 = state.server_request(get_request.clone()).await.unwrap();
+    assert_eq!(cached_after_503.status, 200);
+    assert_eq!(cached_after_503.body, live.body);
+    assert_eq!(
+        cached_after_503
+            .headers
+            .get("x-clumsies-cache")
+            .map(String::as_str),
+        Some("stale")
+    );
+    let cached_missing = state.server_request(missing_request).await.unwrap();
+    assert_eq!(cached_missing.status, 404);
+    assert_eq!(
+        cached_missing
+            .headers
+            .get("x-clumsies-cache")
+            .map(String::as_str),
+        Some("stale")
+    );
+
+    let write = state
+        .server_request(DaemonServerRequest {
+            method: "POST".to_owned(),
+            path: "/api/v1/cache-probe".to_owned(),
+            headers: BTreeMap::new(),
+            body: Some("{}".to_owned()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(write.status, 503);
+    assert_eq!(write.headers.get("x-clumsies-cache"), None);
+
+    server.abort();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached_after_disconnect = state.server_request(get_request.clone()).await.unwrap();
+    assert_eq!(cached_after_disconnect.status, 200);
+    assert_eq!(
+        cached_after_disconnect
+            .headers
+            .get("x-clumsies-cache")
+            .map(String::as_str),
+        Some("stale")
+    );
+
+    state
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: format!("http://{address}"),
+            project_id: Some("prj_cache".to_owned()),
+            access_token: Some("replacement-token".to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    assert!(state.server_request(get_request).await.is_err());
+}
+
+#[tokio::test]
 async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
     let server = FakeServer::start().await;
     let root = tempfile::tempdir().unwrap();
@@ -1560,6 +1909,111 @@ async fn wait_for_draft_sync_idle(service: &DaemonIpcService) -> daemon::DaemonS
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("timed out waiting for daemon draft sync");
+}
+
+async fn wait_for_operation_status(
+    service: &DaemonIpcService,
+    draft_id: &str,
+    expected: DraftOperationSyncStatus,
+) -> daemon::DaemonDraftDetail {
+    for _ in 0..100 {
+        let detail = service.get_draft(draft_id).await.unwrap();
+        if detail
+            .operations
+            .iter()
+            .any(|operation| operation.sync_status == expected)
+        {
+            return detail;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for draft operation status {expected:?}");
+}
+
+#[derive(Clone)]
+struct RecoveringServerState {
+    available: Arc<AtomicBool>,
+    create_request_count: Arc<AtomicUsize>,
+}
+
+async fn recovering_create_draft(
+    axum::extract::State(state): axum::extract::State<RecoveringServerState>,
+    Json(_body): Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    state.create_request_count.fetch_add(1, Ordering::AcqRel);
+    if !state.available.load(Ordering::Acquire) {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "temporarily unavailable" })),
+        )
+            .into_response();
+    }
+    Json(json!({
+        "draft": {
+            "draft_id": "drf_recovered",
+            "version": 1
+        }
+    }))
+    .into_response()
+}
+
+async fn empty_draft_events() -> Json<serde_json::Value> {
+    Json(json!({
+        "events": [],
+        "next_cursor": null,
+        "has_more": false
+    }))
+}
+
+#[derive(Clone)]
+struct CachedProxyState {
+    unavailable: Arc<AtomicBool>,
+}
+
+async fn cached_proxy_get(
+    axum::extract::State(state): axum::extract::State<CachedProxyState>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if state.unavailable.load(Ordering::Acquire) {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "temporarily unavailable" })),
+        )
+            .into_response();
+    }
+    Json(json!({ "source": "live" })).into_response()
+}
+
+async fn cached_proxy_post() -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "temporarily unavailable" })),
+    )
+        .into_response()
+}
+
+async fn cached_missing_get(
+    axum::extract::State(state): axum::extract::State<CachedProxyState>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if state.unavailable.load(Ordering::Acquire) {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "temporarily unavailable" })),
+        )
+            .into_response();
+    }
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(json!({ "error": "not found" })),
+    )
+        .into_response()
 }
 
 struct FakeServer {

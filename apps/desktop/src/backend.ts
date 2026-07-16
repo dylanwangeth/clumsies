@@ -64,6 +64,7 @@ export type DesktopBackendRuntime = {
   projectConfig: DaemonProjectConfig;
   syncStatus: DaemonSyncStatus;
   mcpStatus: DaemonMcpStatus;
+  serverDataSource: "live" | "stale";
 };
 
 export type DesktopBackendState = {
@@ -113,11 +114,14 @@ export class DesktopBackend {
     if (!projectConfig.project_id) {
       throw new Error("Authenticated Desktop has no active project");
     }
-    await this.daemon.retrySync({ channel: "all" });
+    await this.daemon.retrySync({ channel: "all" }).catch(() => undefined);
 
+    let serverDataSource: DesktopBackendRuntime["serverDataSource"] = "live";
     const api = new ClumsiesApi(createPublicApiClient({
       baseUrl: projectConfig.server_url,
-      fetch: createDaemonFetch(this.daemon),
+      fetch: createDaemonFetch(this.daemon, () => {
+        serverDataSource = "stale";
+      }),
     }));
     this.api = api;
 
@@ -205,7 +209,14 @@ export class DesktopBackend {
           mapReviewWithConflict(api, detail, projects, resources, loadCommit),
         ),
       ),
-      runtime: { bootstrap, health, projectConfig, syncStatus, mcpStatus },
+      runtime: {
+        bootstrap,
+        health,
+        projectConfig,
+        syncStatus,
+        mcpStatus,
+        serverDataSource,
+      },
     };
   }
 
@@ -270,7 +281,10 @@ function mapProjectOrgSelection(
   };
 }
 
-export function createDaemonFetch(daemon: DaemonApiClient): typeof fetch {
+export function createDaemonFetch(
+  daemon: DaemonApiClient,
+  onCacheFallback?: () => void,
+): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init);
     const url = new URL(request.url);
@@ -296,6 +310,9 @@ export function createDaemonFetch(daemon: DaemonApiClient): typeof fetch {
         throw new AuthenticationRequiredError();
       }
       throw error;
+    }
+    if (response.headers["x-clumsies-cache"] === "stale") {
+      onCacheFallback?.();
     }
     return new Response(response.body, {
       status: response.status,
@@ -925,6 +942,9 @@ function draftSyncState(detail: DaemonDraftDetail): SyncState {
   }
   if (detail.operations.some((operation) => operation.sync_status === "failed")) {
     return "failed";
+  }
+  if (detail.operations.some((operation) => operation.sync_status === "retrying")) {
+    return "retrying";
   }
   if (
     detail.operations.some(

@@ -272,7 +272,7 @@ export interface components {
             };
         };
         /** @enum {string} */
-        SyncState: "idle" | "queued" | "syncing" | "degraded" | "conflicted" | "failed";
+        SyncState: "idle" | "queued" | "syncing" | "retrying" | "degraded" | "conflicted" | "failed";
         /** @enum {string} */
         DaemonDraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
         /** @enum {string} */
@@ -284,7 +284,7 @@ export interface components {
         /** @enum {string} */
         DaemonDraftOperationRecordSource: "desktop" | "cli" | "mcp_store" | "server";
         /** @enum {string} */
-        DraftOperationSyncStatus: "queued" | "syncing" | "synced" | "failed";
+        DraftOperationSyncStatus: "queued" | "syncing" | "retrying" | "synced" | "failed";
     };
     responses: {
         /** @description Error response. */

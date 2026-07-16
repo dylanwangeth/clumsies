@@ -33,7 +33,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 12;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -670,6 +670,7 @@ impl DaemonState {
         prepare_directories(&config)?;
         let pool = connect_local_db(&config.local_db_path()).await?;
         migrate_local_db(&pool).await?;
+        recover_interrupted_operations(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
         let credentials = load_server_credentials(credential_store.clone()).await?;
         let project_config = load_project_config(&pool, &config.project, credentials).await?;
@@ -721,6 +722,7 @@ impl DaemonState {
             refresh_token: request.refresh_token.and_then(non_empty_string),
         };
         project_config.validate()?;
+        clear_server_response_cache(&self.inner.pool).await?;
         let previous_credentials = self.project_config().credentials();
         replace_server_credentials(
             self.inner.credential_store.clone(),
@@ -749,6 +751,7 @@ impl DaemonState {
             .project_config
             .write()
             .expect("project config rwlock poisoned") = project_config;
+        queue_retrying_operations(&self.inner.pool).await?;
         self.request_sync();
         Ok(self.project_config_view())
     }
@@ -803,22 +806,60 @@ impl DaemonState {
             ));
         }
         let headers = filter_proxy_request_headers(request.headers);
-        let response = execute_authenticated_server_request(
+        let server_url = self.project_config().server_url;
+        let cacheable = method == reqwest::Method::GET;
+        let response = match execute_authenticated_server_request(
             self,
             method,
             &request.path,
             &headers,
             request.body.map(String::into_bytes),
         )
-        .await?;
+        .await
+        {
+            Ok(response) => response,
+            Err(error) if cacheable && error.is_retryable() => {
+                if let Some(cached) =
+                    load_cached_server_response(&self.inner.pool, &server_url, &request.path)
+                        .await?
+                {
+                    return Ok(cached);
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let status = response.status().as_u16();
         let headers = filter_proxy_response_headers(response.headers());
-        let body = response.text().await?;
-        Ok(DaemonServerResponse {
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) if cacheable => {
+                if let Some(cached) =
+                    load_cached_server_response(&self.inner.pool, &server_url, &request.path)
+                        .await?
+                {
+                    return Ok(cached);
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let response = DaemonServerResponse {
             status,
             headers,
             body,
-        })
+        };
+        if cacheable && ((200..300).contains(&status) || status == 404) {
+            save_cached_server_response(&self.inner.pool, &server_url, &request.path, &response)
+                .await?;
+        } else if cacheable
+            && is_retryable_http_status(status)
+            && let Some(cached) =
+                load_cached_server_response(&self.inner.pool, &server_url, &request.path).await?
+        {
+            return Ok(cached);
+        }
+        Ok(response)
     }
 
     fn project_config_view(&self) -> DaemonProjectConfig {
@@ -898,12 +939,13 @@ impl DaemonState {
             sqlx::query(
                 "UPDATE local_draft_operations
                  SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                 WHERE sync_status = 'failed'",
+                 WHERE sync_status IN ('retrying', 'failed')",
             )
             .execute(&self.inner.pool)
             .await?;
         }
-        self.run_sync_channels(retry_drafts, retry_commits).await?;
+        self.run_sync_channels(retry_drafts, retry_commits, false)
+            .await?;
 
         Ok(DaemonRetryResponse {
             retry_id,
@@ -989,7 +1031,7 @@ impl DaemonState {
         load_local_draft_detail(&self.inner.pool, draft_id).await
     }
 
-    async fn drain_draft_queue(&self) -> Result<(), DaemonError> {
+    async fn drain_draft_queue(&self) -> Result<bool, DaemonError> {
         drain_draft_queue(self).await
     }
 
@@ -1006,11 +1048,11 @@ impl DaemonState {
         Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(state.inner.config.sync.interval);
             loop {
-                tokio::select! {
-                    _ = interval.tick() => {}
-                    _ = state.inner.sync_notify.notified() => {}
-                }
-                let _ = state.run_sync_cycle().await;
+                let retry_transient_failures = tokio::select! {
+                    _ = interval.tick() => true,
+                    _ = state.inner.sync_notify.notified() => false,
+                };
+                let _ = state.run_sync_cycle(retry_transient_failures).await;
             }
         }))
     }
@@ -1021,14 +1063,16 @@ impl DaemonState {
         }
     }
 
-    async fn run_sync_cycle(&self) -> Result<(), DaemonError> {
-        self.run_sync_channels(true, true).await
+    async fn run_sync_cycle(&self, retry_transient_failures: bool) -> Result<(), DaemonError> {
+        self.run_sync_channels(true, true, retry_transient_failures)
+            .await
     }
 
     async fn run_sync_channels(
         &self,
         sync_drafts: bool,
         sync_commits: bool,
+        retry_transient_failures: bool,
     ) -> Result<(), DaemonError> {
         let _sync_guard = self.inner.sync_lock.lock().await;
         async {
@@ -1038,11 +1082,18 @@ impl DaemonState {
             let mut first_error = None;
             if sync_drafts {
                 let draft_result = async {
+                    if retry_transient_failures {
+                        queue_retrying_operations(&self.inner.pool).await?;
+                    }
                     upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT)
                         .await?;
-                    self.drain_draft_queue().await?;
+                    let queue_converged = self.drain_draft_queue().await?;
                     self.pull_draft_events().await?;
-                    upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_SUCCESS_AT).await
+                    if queue_converged {
+                        upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_SUCCESS_AT)
+                            .await?;
+                    }
+                    Ok::<(), DaemonError>(())
                 }
                 .await;
                 if let Err(error) = draft_result {
@@ -1430,7 +1481,7 @@ async fn list_local_drafts(
             (
                 SELECT COUNT(*)
                 FROM local_draft_operations o
-                WHERE o.draft_id = d.draft_id AND o.sync_status IN ('queued', 'syncing')
+                WHERE o.draft_id = d.draft_id AND o.sync_status IN ('queued', 'syncing', 'retrying')
             ) AS pending_operation_count,
             (
                 SELECT COUNT(*)
@@ -1469,7 +1520,7 @@ async fn load_local_draft_detail(
             (
                 SELECT COUNT(*)
                 FROM local_draft_operations o
-                WHERE o.draft_id = d.draft_id AND o.sync_status IN ('queued', 'syncing')
+                WHERE o.draft_id = d.draft_id AND o.sync_status IN ('queued', 'syncing', 'retrying')
             ) AS pending_operation_count,
             (
                 SELECT COUNT(*)
@@ -1557,7 +1608,7 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     let pending_operation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM local_draft_operations
-         WHERE sync_status IN ('queued', 'syncing')",
+         WHERE sync_status IN ('queued', 'syncing', 'retrying')",
     )
     .fetch_one(pool)
     .await?;
@@ -1565,6 +1616,13 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         "SELECT COUNT(*)
          FROM local_draft_operations
          WHERE sync_status = 'failed'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let retrying_operation_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM local_draft_operations
+         WHERE sync_status = 'retrying'",
     )
     .fetch_one(pool)
     .await?;
@@ -1578,7 +1636,7 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     let last_error: Option<String> = sqlx::query_scalar(
         "SELECT last_error
          FROM local_draft_operations
-         WHERE sync_status = 'failed' AND last_error IS NOT NULL
+         WHERE sync_status IN ('retrying', 'failed') AND last_error IS NOT NULL
          ORDER BY updated_at DESC
          LIMIT 1",
     )
@@ -1601,6 +1659,8 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         SyncState::Degraded
     } else if failed_operation_count > 0 {
         SyncState::Failed
+    } else if retrying_operation_count > 0 {
+        SyncState::Retrying
     } else if pending_operation_count > 0 {
         SyncState::Queued
     } else if conflict_count > 0 {
@@ -1624,7 +1684,11 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
             last_success_at: last_success_at.clone(),
             last_error: config_error.or_else(|| {
                 last_error.map(|message| ApiError {
-                    code: "draft_sync_failed".to_owned(),
+                    code: if retrying_operation_count > 0 {
+                        "draft_sync_retrying".to_owned()
+                    } else {
+                        "draft_sync_failed".to_owned()
+                    },
                     message,
                     request_id: "local".to_owned(),
                     details: json!({}),
@@ -1639,22 +1703,40 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     })
 }
 
-async fn drain_draft_queue(state: &DaemonState) -> Result<(), DaemonError> {
+async fn drain_draft_queue(state: &DaemonState) -> Result<bool, DaemonError> {
+    let mut queue_converged = true;
     loop {
         let Some(operation) = load_next_queued_operation(&state.inner.pool).await? else {
             break;
         };
         mark_operation_syncing(&state.inner.pool, &operation.local_operation_id).await?;
         if let Err(error) = sync_one_draft_operation(state, operation).await {
-            mark_operation_failed(
-                &state.inner.pool,
-                error.local_operation_id(),
-                &error.to_string(),
-            )
-            .await?;
+            queue_converged = false;
+            if error.is_retryable() {
+                mark_operation_retrying(
+                    &state.inner.pool,
+                    error.local_operation_id(),
+                    &error.to_string(),
+                )
+                .await?;
+            } else {
+                mark_operation_failed(
+                    &state.inner.pool,
+                    error.local_operation_id(),
+                    &error.to_string(),
+                )
+                .await?;
+            }
         }
     }
-    Ok(())
+    let unsynced_operation_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM local_draft_operations
+         WHERE sync_status != 'synced'",
+    )
+    .fetch_one(&state.inner.pool)
+    .await?;
+    Ok(queue_converged && unsynced_operation_count == 0)
 }
 
 async fn sync_one_draft_operation(
@@ -1672,7 +1754,9 @@ async fn sync_one_draft_operation(
                 operation.server_version,
             )
             .await
-            .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
+            .map_err(|error| {
+                DraftSyncError::from_daemon_error(local_operation_id.clone(), error)
+            })?;
         }
         mark_operation_synced(&state.inner.pool, &local_operation_id)
             .await
@@ -1703,7 +1787,7 @@ async fn sync_one_draft_operation(
             post_server_json(state, "/api/v1/draft-operation-batches", &request)
                 .await
                 .map_err(|error| {
-                    DraftSyncError::new(local_operation_id.clone(), error.to_string())
+                    DraftSyncError::from_daemon_error(local_operation_id.clone(), error)
                 })?;
         if !response
             .accepted_operations
@@ -1737,7 +1821,7 @@ async fn sync_one_draft_operation(
     };
     let response: ServerDraftMutationResponse = post_server_json(state, "/api/v1/drafts", &request)
         .await
-        .map_err(|error| DraftSyncError::new(local_operation_id.clone(), error.to_string()))?;
+        .map_err(|error| DraftSyncError::from_daemon_error(local_operation_id.clone(), error))?;
     mark_initial_operation_synced(
         &state.inner.pool,
         &operation.draft_id,
@@ -1814,6 +1898,46 @@ async fn mark_operation_failed(
     )
     .bind(local_operation_id)
     .bind(message)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn mark_operation_retrying(
+    pool: &SqlitePool,
+    local_operation_id: &str,
+    message: &str,
+) -> Result<(), DaemonError> {
+    sqlx::query(
+        "UPDATE local_draft_operations
+         SET sync_status = 'retrying', last_error = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE local_operation_id = $1",
+    )
+    .bind(local_operation_id)
+    .bind(message)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn queue_retrying_operations(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query(
+        "UPDATE local_draft_operations
+         SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE sync_status = 'retrying'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn recover_interrupted_operations(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query(
+        "UPDATE local_draft_operations
+         SET sync_status = 'queued', last_error = NULL,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE sync_status = 'syncing'",
+    )
     .execute(pool)
     .await?;
     Ok(())
@@ -2049,9 +2173,10 @@ async fn refresh_server_tokens(
         {
             clear_server_tokens(state).await?;
         }
-        return Err(DaemonError::Server(format!(
-            "Server token refresh failed with status {status}: {body}"
-        )));
+        return Err(DaemonError::ServerResponse {
+            status: status.as_u16(),
+            body,
+        });
     }
     let tokens: ServerTokenRefreshResponse = response.json().await?;
     let mut refreshed = config;
@@ -2073,6 +2198,7 @@ async fn refresh_server_tokens(
 async fn clear_server_tokens(state: &DaemonState) -> Result<(), DaemonError> {
     let mut config = state.project_config();
     replace_server_credentials(state.inner.credential_store.clone(), None).await?;
+    clear_server_response_cache(&state.inner.pool).await?;
     config.access_token = None;
     config.refresh_token = None;
     *state
@@ -2099,9 +2225,10 @@ async fn ensure_server_success(
         return Ok(response);
     }
     let body = response.text().await.unwrap_or_default();
-    Err(DaemonError::Server(format!(
-        "Server request failed with status {status}: {body}"
-    )))
+    Err(DaemonError::ServerResponse {
+        status: status.as_u16(),
+        body,
+    })
 }
 
 fn validate_server_proxy_path(path: &str) -> Result<(), DaemonError> {
@@ -2153,6 +2280,73 @@ fn filter_proxy_response_headers(headers: &reqwest::header::HeaderMap) -> BTreeM
                 .map(|value| (name.to_owned(), value.to_owned()))
         })
         .collect()
+}
+
+fn is_retryable_http_status(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
+}
+
+async fn save_cached_server_response(
+    pool: &SqlitePool,
+    server_url: &str,
+    path: &str,
+    response: &DaemonServerResponse,
+) -> Result<(), DaemonError> {
+    sqlx::query(
+        "INSERT INTO server_response_cache (
+            server_url, path, status, headers_json, body, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         ON CONFLICT(server_url, path) DO UPDATE SET
+            status = excluded.status,
+            headers_json = excluded.headers_json,
+            body = excluded.body,
+            updated_at = excluded.updated_at",
+    )
+    .bind(server_url)
+    .bind(path)
+    .bind(i64::from(response.status))
+    .bind(serde_json::to_string(&response.headers)?)
+    .bind(&response.body)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_cached_server_response(
+    pool: &SqlitePool,
+    server_url: &str,
+    path: &str,
+) -> Result<Option<DaemonServerResponse>, DaemonError> {
+    let Some(row) = sqlx::query(
+        "SELECT status, headers_json, body
+         FROM server_response_cache
+         WHERE server_url = $1 AND path = $2",
+    )
+    .bind(server_url)
+    .bind(path)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let mut headers: BTreeMap<String, String> =
+        serde_json::from_str(&row.try_get::<String, _>("headers_json")?)?;
+    headers.insert("x-clumsies-cache".to_owned(), "stale".to_owned());
+    Ok(Some(DaemonServerResponse {
+        status: row.try_get::<i64, _>("status")?.try_into().map_err(|_| {
+            DaemonError::Server("cached Server response has an invalid status".to_owned())
+        })?,
+        headers,
+        body: row.try_get("body")?,
+    }))
+}
+
+async fn clear_server_response_cache(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query("DELETE FROM server_response_cache")
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 fn map_daemon_operation_to_server(
@@ -2275,6 +2469,7 @@ fn draft_operation_sync_status_from_str(
     match value {
         "queued" => Ok(DraftOperationSyncStatus::Queued),
         "syncing" => Ok(DraftOperationSyncStatus::Syncing),
+        "retrying" => Ok(DraftOperationSyncStatus::Retrying),
         "synced" => Ok(DraftOperationSyncStatus::Synced),
         "failed" => Ok(DraftOperationSyncStatus::Failed),
         other => Err(DaemonError::InvalidRequest(format!(
@@ -2783,10 +2978,23 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
             operation_json TEXT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
-            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'synced', 'failed')),
+            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
             last_error TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS server_response_cache (
+            server_url TEXT NOT NULL,
+            path TEXT NOT NULL,
+            status BIGINT NOT NULL,
+            headers_json TEXT NOT NULL,
+            body TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (server_url, path)
         )",
     )
     .execute(pool)
@@ -3259,6 +3467,7 @@ pub enum SyncState {
     Idle,
     Queued,
     Syncing,
+    Retrying,
     Degraded,
     Conflicted,
     Failed,
@@ -3818,6 +4027,7 @@ pub struct DaemonDraftOperationResponse {
 pub enum DraftOperationSyncStatus {
     Queued,
     Syncing,
+    Retrying,
     Synced,
     Failed,
 }
@@ -3989,6 +4199,10 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
         DaemonError::Reqwest(error) => ("server_request_failed", error.to_string()),
         DaemonError::CredentialStore(error) => ("credential_store_failed", error.to_string()),
         DaemonError::Server(message) => ("server_sync_failed", message),
+        DaemonError::ServerResponse { status, body } => (
+            "server_request_failed",
+            format!("Server request failed with status {status}: {body}"),
+        ),
         DaemonError::Launchctl(message) => ("launchctl_failed", message),
         DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
     };
@@ -4020,16 +4234,29 @@ pub enum DaemonError {
     CredentialStore(#[from] CredentialStoreError),
     #[error("server sync error: {0}")]
     Server(String),
+    #[error("Server request failed with status {status}: {body}")]
+    ServerResponse { status: u16, body: String },
     #[error("launchctl error: {0}")]
     Launchctl(String),
     #[error("daemon IPC error: {0}")]
     Ipc(String),
 }
 
+impl DaemonError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Reqwest(_) => true,
+            Self::ServerResponse { status, .. } => is_retryable_http_status(*status),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct DraftSyncError {
     local_operation_id: String,
     message: String,
+    retryable: bool,
 }
 
 impl DraftSyncError {
@@ -4037,11 +4264,24 @@ impl DraftSyncError {
         Self {
             local_operation_id: local_operation_id.into(),
             message: message.into(),
+            retryable: false,
+        }
+    }
+
+    fn from_daemon_error(local_operation_id: impl Into<String>, error: DaemonError) -> Self {
+        Self {
+            local_operation_id: local_operation_id.into(),
+            retryable: error.is_retryable(),
+            message: error.to_string(),
         }
     }
 
     fn local_operation_id(&self) -> &str {
         &self.local_operation_id
+    }
+
+    fn is_retryable(&self) -> bool {
+        self.retryable
     }
 }
 

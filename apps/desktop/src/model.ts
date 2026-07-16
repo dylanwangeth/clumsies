@@ -4,7 +4,13 @@ export type MemoryKind = (typeof memoryKinds)[number];
 export type MemoryScope = "Hub" | "Project";
 export type DraftOrigin = "Desktop" | "MCP" | "CLI";
 export type DraftStatus = "editing" | "in_review" | "merged";
-export type SyncState = "local" | "syncing" | "synced" | "failed" | "conflict";
+export type SyncState =
+  | "local"
+  | "syncing"
+  | "retrying"
+  | "synced"
+  | "failed"
+  | "conflict";
 export type ReviewStatus = "open" | "approved" | "rejected" | "merged";
 export type ResourceWorkingState =
   | "clean"
