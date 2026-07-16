@@ -1511,6 +1511,7 @@ async fn load_local_draft_detail(
     pool: &SqlitePool,
     draft_id: &str,
 ) -> Result<DaemonDraftDetail, DaemonError> {
+    let mut tx = pool.begin().await?;
     let row = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
@@ -1531,7 +1532,7 @@ async fn load_local_draft_detail(
          WHERE d.draft_id = $1",
     )
     .bind(draft_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| DaemonError::NotFound(format!("local draft not found: {draft_id}")))?;
     let draft = local_draft_summary_from_row(&row)?;
@@ -1544,12 +1545,13 @@ async fn load_local_draft_detail(
          ORDER BY rowid ASC",
     )
     .bind(draft_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let operations = rows
         .iter()
         .map(local_draft_operation_from_row)
         .collect::<Result<Vec<_>, _>>()?;
+    tx.commit().await?;
     Ok(DaemonDraftDetail { draft, operations })
 }
 
