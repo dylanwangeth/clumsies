@@ -47,27 +47,28 @@ store draft refinements through the same system.
 ## Quick start
 
 The current product is run from source while the Desktop distribution is being
-prepared. Configure the organization's OIDC provider in `.env`, then start
-Server and PostgreSQL:
+prepared. The local stack includes Server, PostgreSQL, and a deterministic fake
+OIDC provider:
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
-cp .env.example .env
-docker compose up --build -d
+bun install
+bun run dev:server
 ```
 
-Install the Bun workspace and launch Desktop. Its Tauri build prepares the Rust
-daemon binary automatically:
+This keeps the Rust Server in the foreground and starts PostgreSQL and the fake
+provider in Docker. In another terminal, launch Desktop. Its Tauri build
+prepares the Rust daemon binary automatically:
 
 ```bash
-bun install
-bun run --cwd apps/desktop dev
+bun run dev:desktop
 ```
 
-Desktop opens organization SSO in the system browser. The renderer talks to
-the local daemon; daemon owns automatic draft synchronization and authenticated
-Server transport.
+Desktop opens the fake provider in the system browser and signs in as the local
+bootstrap owner. The renderer talks to the local daemon; daemon owns automatic
+draft synchronization and authenticated Server transport. The fake provider is
+for local development only; production uses the organization's OIDC provider.
 
 For the self-hosted configuration, see the
 [deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/).

@@ -53,24 +53,42 @@ from native Rust to daemon. The renderer never receives bearer or refresh
 tokens. Daemon performs authenticated Server requests, rotates the refresh
 token after a `401`, persists the replacement pair, and retries once.
 
-## Run with Docker Compose
+## Run locally
 
-Copy the environment template and configure the enterprise OIDC values:
+Local development runs PostgreSQL and a deterministic fake OIDC provider in
+Docker, then runs the Rust Server natively for a fast edit-and-run cycle. It
+requires no enterprise identity configuration:
 
 ```bash
-cp .env.example .env
-docker compose up --build -d
+bun run dev:server
 ```
 
 The default endpoints are:
 
 | Service | Address |
 | --- | --- |
-| Server | `http://127.0.0.1:8080` |
+| Server | `http://127.0.0.1:18080` |
 | PostgreSQL | `127.0.0.1:5432` |
-| Health | `http://127.0.0.1:8080/api/v1/admin/health` |
+| Fake OIDC | `http://127.0.0.1:18081/clumsies` |
+| Health | `http://127.0.0.1:18080/api/v1/admin/health` |
 
-For production, expose Server through HTTPS and set
+The stack uses
+[NAV's mock OAuth2 server](https://github.com/navikt/mock-oauth2-server), pinned
+to `4.0.0`. It automatically authenticates `owner@clumsies.local`, matching the
+default bootstrap owner. It still exercises discovery, authorization code and
+PKCE handling, signed ID tokens, JWKS verification, and nonce validation. The
+fake provider is never part of `compose.production.yml`.
+
+Stop the local services with:
+
+```bash
+bun run dev:infra:down
+```
+
+## Run in production
+
+Copy `.env.example` to `.env`, configure the enterprise OIDC values, and start
+`compose.production.yml`. Expose Server through HTTPS and set
 `CLUMSIES_OIDC_CALLBACK_URL` to the public
 `/login/oauth2/code/oidc` URL registered with the organization's IdP.
 

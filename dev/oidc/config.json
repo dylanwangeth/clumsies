@@ -1,0 +1,24 @@
+{
+  "interactiveLogin": false,
+  "httpServer": "NettyWrapper",
+  "tokenCallbacks": [
+    {
+      "issuerId": "clumsies",
+      "requestMappings": [
+        {
+          "requestParam": "code",
+          "match": "*",
+          "claims": {
+            "sub": "local-owner",
+            "aud": [
+              "${clientId}"
+            ],
+            "email": "owner@clumsies.local",
+            "email_verified": true,
+            "name": "Local Owner"
+          }
+        }
+      ]
+    }
+  ]
+}

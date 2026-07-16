@@ -5,6 +5,7 @@ use openidconnect::core::{
     CoreIdToken, CoreIdTokenClaims, CoreJsonWebKeySet, CoreJwsSigningAlgorithm,
     CoreRsaPrivateSigningKey,
 };
+use openidconnect::reqwest;
 use openidconnect::{
     AccessToken, Audience, EmptyAdditionalClaims, EndUserEmail, EndUserName, EndUserPictureUrl,
     IssuerUrl, JsonWebKeyId, Nonce, PkceCodeChallenge, PrivateSigningKey, StandardClaims,
@@ -15,6 +16,9 @@ use rsa::RsaPrivateKey;
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
 use serde_json::{Value, json};
 use server::auth::{AuthError, DiscoveredOidcProvider, OidcIdentityProvider};
+use testcontainers::core::IntoContainerPort;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{GenericImage, ImageExt};
 use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -25,6 +29,81 @@ const CALLBACK_URL: &str = "http://127.0.0.1:8080/login/oauth2/code/oidc";
 const PROVIDER_ACCESS_TOKEN: &str = "provider-access-token";
 const PROVIDER_NONCE: &str = "provider-nonce";
 const PROVIDER_PKCE_VERIFIER: &str = "provider-pkce-verifier";
+const LOCAL_FAKE_OIDC_CONFIG: &str = include_str!("../../../dev/oidc/config.json");
+const LOCAL_FAKE_OIDC_IMAGE: &str = "ghcr.io/navikt/mock-oauth2-server";
+const LOCAL_FAKE_OIDC_TAG: &str = "4.0.0";
+
+#[tokio::test]
+async fn local_fake_provider_completes_the_oidc_protocol() {
+    let container = GenericImage::new(LOCAL_FAKE_OIDC_IMAGE, LOCAL_FAKE_OIDC_TAG)
+        .with_exposed_port(8080.tcp())
+        .with_env_var("JSON_CONFIG", LOCAL_FAKE_OIDC_CONFIG)
+        .start()
+        .await
+        .unwrap();
+    let host = container.get_host().await.unwrap();
+    let port = container.get_host_port_ipv4(8080).await.unwrap();
+    let origin = format!("http://{host}:{port}");
+    wait_for_fake_provider(&origin).await;
+
+    let issuer = format!("{origin}/clumsies");
+    let provider = DiscoveredOidcProvider::discover(
+        &issuer,
+        "clumsies-local".to_owned(),
+        "clumsies-local-secret".to_owned(),
+        CALLBACK_URL.to_owned(),
+    )
+    .await
+    .unwrap();
+    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+    let authorization_url = provider
+        .authorization_url("provider-state", PROVIDER_NONCE, challenge, None)
+        .unwrap();
+    let http = reqwest::ClientBuilder::new()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let response = http.get(authorization_url).send().await.unwrap();
+    assert!(response.status().is_redirection());
+    let callback = Url::parse(
+        response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(query(&callback, "state"), "provider-state");
+
+    let identity = provider
+        .exchange_code(&query(&callback, "code"), PROVIDER_NONCE, verifier.secret())
+        .await
+        .unwrap();
+    assert_eq!(identity.issuer, issuer);
+    assert_eq!(identity.subject, "local-owner");
+    assert_eq!(identity.email, "owner@clumsies.local");
+    assert!(identity.email_verified);
+    assert_eq!(identity.display_name.as_deref(), Some("Local Owner"));
+    assert_eq!(identity.avatar_url, None);
+}
+
+async fn wait_for_fake_provider(origin: &str) {
+    let http = reqwest::Client::new();
+    let health_url = format!("{origin}/isalive");
+    for _ in 0..300 {
+        if http
+            .get(&health_url)
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("local fake OIDC provider did not become ready at {health_url}");
+}
 
 #[tokio::test]
 async fn discovered_provider_completes_the_oidc_protocol() {

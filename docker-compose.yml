@@ -16,6 +16,25 @@ services:
     volumes:
       - clumsies-postgres:/var/lib/postgresql/data
 
+  fake-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:4.0.0
+    restart: unless-stopped
+    hostname: host.docker.internal
+    environment:
+      JSON_CONFIG_PATH: /app/config.json
+      LOG_LEVEL: WARN
+      SERVER_PORT: 8080
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./dev/oidc/config.json:/app/config.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/isalive"]
+      start_period: 5s
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
   server:
     build:
       context: .
@@ -24,21 +43,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      fake-oidc:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://${CLUMSIES_DB_USER:-clumsies}:${CLUMSIES_DB_PASSWORD:-clumsies}@postgres:5432/${CLUMSIES_DB_NAME:-clumsies}
       CLUMSIES_SERVER_ADDR: 0.0.0.0:8080
       CLUMSIES_BOOTSTRAP_ORG_NAME: ${CLUMSIES_BOOTSTRAP_ORG_NAME:-Clumsies Lab}
       CLUMSIES_BOOTSTRAP_OWNER_EMAIL: ${CLUMSIES_BOOTSTRAP_OWNER_EMAIL:-owner@clumsies.local}
-      CLUMSIES_BOOTSTRAP_OWNER_NAME: ${CLUMSIES_BOOTSTRAP_OWNER_NAME:-Owner}
+      CLUMSIES_BOOTSTRAP_OWNER_NAME: ${CLUMSIES_BOOTSTRAP_OWNER_NAME:-Local Owner}
       CLUMSIES_BOOTSTRAP_PROJECT_NAME: ${CLUMSIES_BOOTSTRAP_PROJECT_NAME:-Default}
-      CLUMSIES_OIDC_CLIENT_ID: ${CLUMSIES_OIDC_CLIENT_ID:-}
-      CLUMSIES_OIDC_CLIENT_SECRET: ${CLUMSIES_OIDC_CLIENT_SECRET:-}
-      CLUMSIES_OIDC_CALLBACK_URL: ${CLUMSIES_OIDC_CALLBACK_URL:-}
-      CLUMSIES_OIDC_ISSUER: ${CLUMSIES_OIDC_ISSUER:-}
-      CLUMSIES_CLIENT_REDIRECT_URIS: ${CLUMSIES_CLIENT_REDIRECT_URIS:-}
+      CLUMSIES_OIDC_CLIENT_ID: clumsies-local
+      CLUMSIES_OIDC_CLIENT_SECRET: clumsies-local-secret
+      CLUMSIES_OIDC_CALLBACK_URL: http://127.0.0.1:18080/login/oauth2/code/oidc
+      CLUMSIES_OIDC_ISSUER: http://host.docker.internal:18081/clumsies
+      CLUMSIES_CLIENT_REDIRECT_URIS: http://127.0.0.1/callback
       CLUMSIES_CORS_ORIGINS: ${CLUMSIES_CORS_ORIGINS:-http://127.0.0.1:1420,http://localhost:1420}
     ports:
-      - "${CLUMSIES_SERVER_PORT:-8080}:8080"
+      - "18080:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/v1/admin/health"]
       interval: 5s

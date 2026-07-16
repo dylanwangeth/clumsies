@@ -12,7 +12,7 @@ by an organization owner or admin.
 For local development, the Server URL is usually:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:18080
 ```
 
 Remote URLs must use HTTPS.
