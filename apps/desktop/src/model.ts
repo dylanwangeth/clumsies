@@ -288,6 +288,36 @@ export function cloneDocument(document: MemoryDocument): MemoryDocument {
   };
 }
 
+export function reviewConflictDraftContent(
+  review: ReviewRecord,
+  localDraft: DraftRecord | null,
+): string | null {
+  const operations = review.operations ?? [];
+  const terminalOperation = operations[operations.length - 1] ?? null;
+  if (
+    terminalOperation?.action === "rename"
+    || terminalOperation?.action === "delete"
+  ) {
+    return null;
+  }
+
+  const content = operations
+    .slice()
+    .reverse()
+    .find((operation) => operation.action === "create" || operation.action === "update")
+    ?.content ?? null;
+  if (!content) {
+    return null;
+  }
+  if (localDraft) {
+    return localDraft.document.body;
+  }
+  if (content.kind === "context" || content.kind === "metaprompt") {
+    return content.content;
+  }
+  return content.kind === "rule" ? content.constraint : content.description;
+}
+
 export function listResources(
   resources: AuthorityResource[],
   drafts: DraftRecord[],

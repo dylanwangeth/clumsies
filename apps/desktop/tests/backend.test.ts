@@ -10,6 +10,7 @@ import {
 import type {
   ClumsiesApi,
   DaemonApiClient,
+  DaemonDraftDetail,
   PublicSchema,
 } from "@clumsies/api-client";
 import {
@@ -286,6 +287,51 @@ describe("Desktop backend mapping", () => {
     };
 
     expect(syncStateForDaemonDraft(detail)).toBe("failed");
+  });
+
+  test("keeps a conflicted Draft visible when a local operation also failed", () => {
+    const detail = {
+      draft: {
+        draft_id: "draft_conflicted",
+        project_id: "prj_test",
+        server_draft_id: "drf_server",
+        server_version: 4,
+        base_commit_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        scope: "project",
+        resource_kind: "context",
+        target_id: "ctx_existing",
+        path: "context/existing.md",
+        conflict: {
+          base_commit_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          current_commit_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          detected_at: "2026-07-16T00:01:00Z",
+        },
+        status: "conflicted",
+        created_at: "2026-07-16T00:00:00Z",
+        updated_at: "2026-07-16T00:01:00Z",
+        pending_operation_count: 0,
+        failed_operation_count: 1,
+      },
+      operations: [
+        {
+          local_operation_id: "op_failed",
+          resource_kind: "context",
+          operation: {
+            update: {
+              id: "ctx_existing",
+              content: { kind: "context", content: "# Later offline edit" },
+            },
+          },
+          source: "desktop",
+          sync_status: "failed",
+          last_error: "Draft is no longer open",
+          created_at: "2026-07-16T00:00:30Z",
+          updated_at: "2026-07-16T00:01:00Z",
+        },
+      ],
+    } as DaemonDraftDetail;
+
+    expect(syncStateForDaemonDraft(detail)).toBe("conflict");
   });
 
   test("keeps a transiently unavailable draft in automatic retry state", () => {

@@ -102,6 +102,7 @@ import {
   memoryKinds,
   memoryKindNoun,
   reviewChangeFromDraft,
+  reviewConflictDraftContent,
   reviewDiff,
   reviewTitleForDraft,
   resourceWorkingState,
@@ -1677,12 +1678,20 @@ export function App() {
               }
               setReviewFilter("approved");
             } catch {
-              setLoadState({ status: "failed", message: "Conflict details could not be loaded." });
+              showNotice({
+                message: "Conflict detected, but its details could not be loaded.",
+                tone: "error",
+              });
             }
           } else {
-            setLoadState({
-              status: "failed",
-              message: error instanceof Error ? error.message : "Review merge failed.",
+            showNotice({
+              message:
+                error instanceof ClumsiesApiError && error.status === 412
+                  ? "The current Ref changed. Retry merge to load the latest conflict."
+                  : error instanceof Error
+                    ? error.message
+                    : "Review merge failed.",
+              tone: "error",
             });
           }
           return;
@@ -1777,6 +1786,7 @@ export function App() {
       resources,
       retargetMemoryWorkspaceTabs,
       reviews,
+      showNotice,
     ],
   );
 
@@ -1865,14 +1875,14 @@ export function App() {
           }
           setReviewFilter("open");
         } catch (error) {
-          setLoadState({
-            status: "failed",
+          showNotice({
             message:
               error instanceof ClumsiesApiError && error.status === 412
                 ? "The current Ref changed. Refresh the conflict before resolving it."
                 : error instanceof Error
                   ? error.message
                   : "Conflict resolution failed.",
+            tone: "error",
           });
         }
         return;
@@ -1885,7 +1895,7 @@ export function App() {
       );
       setReviewFilter("open");
     },
-    [drafts, projects, resources, reviews],
+    [drafts, projects, resources, reviews, showNotice],
   );
 
   const discardReviewConflict = useCallback(
@@ -1912,9 +1922,9 @@ export function App() {
             current.map((item) => (item.id === reviewId ? discardedReview : item)),
           );
         } catch (error) {
-          setLoadState({
-            status: "failed",
+          showNotice({
             message: error instanceof Error ? error.message : "Draft discard failed.",
+            tone: "error",
           });
           return;
         }
@@ -1932,7 +1942,7 @@ export function App() {
       }
       setReviewFilter("rejected");
     },
-    [drafts, projects, resources, reviews],
+    [drafts, projects, resources, reviews, showNotice],
   );
 
   const addReviewComment = useCallback(async (reviewId: string, body: string) => {
@@ -4926,6 +4936,7 @@ function ReviewsWorkspace({
           canMerge={canMerge}
           change={review.change}
           canDiscardConflict={canDiscardConflict}
+          localDraft={localDraft}
           resource={resource}
           review={review}
           onAddComment={(body) => onAddComment(review.id, body)}
@@ -4984,6 +4995,7 @@ function ReviewEditor({
   canDiscardConflict,
   canMerge,
   change,
+  localDraft,
   onAddComment,
   onApprove,
   onDiscardConflict,
@@ -4997,6 +5009,7 @@ function ReviewEditor({
   canDiscardConflict: boolean;
   canMerge: boolean;
   change: ReviewChange;
+  localDraft: DraftRecord | null;
   onAddComment: (body: string) => void;
   onApprove: () => void;
   onDiscardConflict: () => void;
@@ -5059,6 +5072,7 @@ function ReviewEditor({
         {review.conflict ? (
           <ReviewConflictResolver
             change={change}
+            localDraft={localDraft}
             onResolve={onResolveConflict}
             review={review}
           />
@@ -5116,25 +5130,16 @@ function ReviewEditor({
 
 function ReviewConflictResolver({
   change,
+  localDraft,
   onResolve,
   review,
 }: {
   change: ReviewChange;
+  localDraft: DraftRecord | null;
   onResolve: (resolvedContent: string | null) => void;
   review: ReviewRecord;
 }) {
-  const draftOperationContent = review.operations
-    ?.slice()
-    .reverse()
-    .find((operation) => operation.action === "create" || operation.action === "update")
-    ?.content ?? null;
-  const draftContent = draftOperationContent
-    ? draftOperationContent.kind === "context" || draftOperationContent.kind === "metaprompt"
-      ? draftOperationContent.content
-      : draftOperationContent.kind === "rule"
-        ? draftOperationContent.constraint
-        : draftOperationContent.description
-    : null;
+  const draftContent = reviewConflictDraftContent(review, localDraft);
   const terminalOperation = review.operations?.[review.operations.length - 1] ?? null;
   const operationOnlyLabel = terminalOperation?.action === "rename"
     ? `Rename to ${terminalOperation.newPath ?? change.document.path}`

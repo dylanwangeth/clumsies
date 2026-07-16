@@ -17,6 +17,7 @@ import {
   memoryPathValidationError,
   mergeRuleTags,
   resourceWorkingState,
+  reviewConflictDraftContent,
   reviewDiff,
   reviewTitleForDraft,
   ruleConstraintValidationError,
@@ -257,6 +258,53 @@ describe("memory draft lifecycle", () => {
     expect(updated?.document.title).toBe("External memory lifecycle");
     expect(updated?.version).toBe(resource!.version + 1);
     expect(resource!.document.title).toBe("External memory model");
+  });
+
+  test("conflict resolution prefers the preserved local Draft overlay", () => {
+    const review = {
+      ...initialReviews[0]!,
+      operations: [
+        {
+          action: "update" as const,
+          resource: {
+            scope: "project" as const,
+            kind: "context" as const,
+            id: "ctx_existing",
+            path: "context/existing.md",
+          },
+          content: { kind: "context" as const, content: "# Server Draft" },
+          newPath: null,
+        },
+      ],
+    };
+    const localDraft = {
+      ...initialDrafts[0]!,
+      document: {
+        ...initialDrafts[0]!.document,
+        body: "# Later offline edit",
+      },
+    };
+
+    expect(reviewConflictDraftContent(review, localDraft)).toBe(
+      "# Later offline edit",
+    );
+    expect(
+      reviewConflictDraftContent(
+        {
+          ...review,
+          operations: [
+            ...review.operations,
+            {
+              action: "rename",
+              resource: review.operations[0]!.resource,
+              content: null,
+              newPath: "context/renamed.md",
+            },
+          ],
+        },
+        localDraft,
+      ),
+    ).toBeNull();
   });
 
   test("merging a new draft publishes a new resource", () => {

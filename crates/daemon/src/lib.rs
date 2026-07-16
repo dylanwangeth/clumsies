@@ -2714,7 +2714,6 @@ async fn project_server_draft(
          WHERE draft_id = $1
            AND server_operation_id IS NULL
            AND source != 'server'
-           AND sync_status = 'synced'
          ORDER BY rowid",
     )
     .bind(&local_draft_id)
@@ -2758,7 +2757,10 @@ async fn project_server_draft(
         }) {
             sqlx::query(
                 "UPDATE local_draft_operations
-                 SET server_operation_id = $2
+                 SET server_operation_id = $2,
+                     sync_status = 'synced',
+                     last_error = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE local_operation_id = $1",
             )
             .bind(&local_operation.local_operation_id)

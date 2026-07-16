@@ -6,13 +6,15 @@ use daemon::{
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DaemonWorkflowStepInput, SyncRetryChannel, SyncState,
+    DaemonUpdateDraftOperation, DaemonWorkflowStepInput, DraftOperationSyncStatus,
+    SyncRetryChannel, SyncState,
 };
 use server::api::{
-    CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
-    CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
-    DraftResourceKind, DraftResourceRef, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    ReviewDecision, ReviewMergeResult,
+    CreateDraftRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
+    CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
+    DraftOperationAction, DraftOperationInput, DraftResourceContent, DraftResourceKind,
+    DraftResourceRef, DraftStatus, ReplaceProjectOrgSelectionRequest, ResourceScope,
+    ReviewDecision, ReviewMergeResult, ReviewStatus,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -767,6 +769,502 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             .unwrap()
             .items
             .is_empty()
+    );
+
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
+    let postgres = common::start_postgres().await;
+    let port = postgres.port;
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let repository = ServerRepository::new(pool.clone());
+    let bootstrap = repository
+        .bootstrap_self_hosted(
+            "Acme Memory",
+            "owner@example.com",
+            Some("Owner"),
+            "Offline Conflict",
+        )
+        .await
+        .unwrap();
+
+    let base_draft = repository
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_conflict_seed".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Seed conflict base".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/base.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Project,
+                        kind: DraftResourceKind::Context,
+                        id: None,
+                        path: Some("context/base.md".to_owned()),
+                    },
+                    content: Some(DraftResourceContent::Context {
+                        content: "# Base\n\nThe offline Draft starts from this Commit.".to_owned(),
+                    }),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let base_merge = approve_and_merge(
+        &repository,
+        &base_draft.draft.draft_id,
+        base_draft.draft.version,
+        None,
+    )
+    .await;
+    let base_commit_id = base_merge.commit_id.unwrap();
+
+    let access_token = "daemon-offline-conflict-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_offline_conflict', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_offline_conflict', 'ses_daemon_offline_conflict', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_url = format!("http://{server_address}");
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(pool))
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = server_url.clone();
+    config.project.project_id = Some(bootstrap.project_id.clone());
+    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    let service = DaemonIpcService::new(state);
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+
+    service
+        .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
+            server_url: "http://127.0.0.1:1".to_owned(),
+            project_id: Some(bootstrap.project_id.clone()),
+            access_token: Some(access_token.to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    let local_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/offline-conflict.md".to_owned(),
+                    content: context_content(
+                        "# Offline conflict\n\nThis content must survive recovery and resolution.",
+                    ),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    assert!(
+        service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Drafts,
+            })
+            .await
+            .is_err()
+    );
+    let retrying = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(
+        retrying.draft.base_commit_id.as_deref(),
+        Some(base_commit_id.as_str())
+    );
+    assert_eq!(
+        retrying.operations[0].sync_status,
+        DraftOperationSyncStatus::Retrying
+    );
+
+    let remote_draft = repository
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_remote_change".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: Some(base_commit_id.clone()),
+                title: "Advance the remote Ref".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: None,
+                    path: Some("context/remote-change.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Project,
+                        kind: DraftResourceKind::Context,
+                        id: None,
+                        path: Some("context/remote-change.md".to_owned()),
+                    },
+                    content: Some(DraftResourceContent::Context {
+                        content: "# Remote change\n\nThis advances the Project Ref.".to_owned(),
+                    }),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let remote_merge = approve_and_merge(
+        &repository,
+        &remote_draft.draft.draft_id,
+        remote_draft.draft.version,
+        Some(&base_commit_id),
+    )
+    .await;
+    let current_commit_id = remote_merge.commit_id.unwrap();
+
+    service
+        .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
+            server_url: server_url.clone(),
+            project_id: Some(bootstrap.project_id.clone()),
+            access_token: Some(access_token.to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let uploaded = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(uploaded.draft.status, DaemonLocalDraftStatus::Open);
+    assert_eq!(
+        uploaded.draft.base_commit_id.as_deref(),
+        Some(base_commit_id.as_str())
+    );
+    assert_eq!(uploaded.operations.len(), 1);
+    assert_eq!(
+        uploaded.operations[0].sync_status,
+        DraftOperationSyncStatus::Synced
+    );
+
+    service
+        .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
+            server_url: "http://127.0.0.1:1".to_owned(),
+            project_id: Some(bootstrap.project_id.clone()),
+            access_token: Some(access_token.to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    let later_offline_content =
+        "# Offline conflict\n\nThis later offline edit must be included in the resolution.";
+    let later_offline_operation = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(local_draft.draft_id.clone()),
+            base_commit_id: None,
+            project_id: bootstrap.project_id.clone(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/offline-conflict.md".to_owned(),
+                    content: context_content(later_offline_content),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    assert!(
+        service
+            .retry_sync(DaemonSyncRetryRequest {
+                channel: SyncRetryChannel::Drafts,
+            })
+            .await
+            .is_err()
+    );
+    let later_offline = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(later_offline.operations.len(), 2);
+    assert_eq!(
+        later_offline
+            .operations
+            .iter()
+            .find(|operation| {
+                operation.local_operation_id == later_offline_operation.local_operation_id
+            })
+            .unwrap()
+            .sync_status,
+        DraftOperationSyncStatus::Retrying
+    );
+
+    let review = repository
+        .create_review(CreateReviewRequest {
+            draft_id: uploaded.draft.server_draft_id.clone().unwrap(),
+            expected_draft_version: uploaded.draft.server_version,
+            title: None,
+            description: None,
+        })
+        .await
+        .unwrap();
+    let approved = repository
+        .create_review_decision(
+            &review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .create_review_merge(
+                &approved.review.review_id,
+                Some(&current_commit_id),
+                CreateReviewMergeRequest {
+                    expected_review_version: approved.review.version,
+                },
+            )
+            .await
+            .is_err()
+    );
+
+    service
+        .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
+            server_url,
+            project_id: Some(bootstrap.project_id.clone()),
+            access_token: Some(access_token.to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projected_conflict = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(
+        projected_conflict.draft.status,
+        DaemonLocalDraftStatus::Conflicted
+    );
+    let conflict = projected_conflict.draft.conflict.as_ref().unwrap();
+    assert_eq!(
+        conflict.base_commit_id.as_deref(),
+        Some(base_commit_id.as_str())
+    );
+    assert_eq!(
+        conflict.current_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    let failed_offline_operation = projected_conflict
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.local_operation_id == later_offline_operation.local_operation_id
+        })
+        .unwrap();
+    assert_eq!(
+        failed_offline_operation.sync_status,
+        DraftOperationSyncStatus::Failed
+    );
+    assert_eq!(
+        failed_offline_operation
+            .operation
+            .create
+            .as_ref()
+            .unwrap()
+            .content,
+        context_content(later_offline_content)
+    );
+    assert_eq!(
+        service.sync_status().await.unwrap().draft_sync.state,
+        SyncState::Failed
+    );
+
+    let conflicted = repository
+        .get_review_detail(&approved.review.review_id)
+        .await
+        .unwrap();
+    assert_eq!(conflicted.review.status, ReviewStatus::Approved);
+    assert_eq!(conflicted.draft.status, DraftStatus::Conflicted);
+    assert_eq!(conflicted.operations.len(), 1);
+    let mut resolved_operations = conflicted
+        .operations
+        .iter()
+        .map(|operation| operation.input.clone())
+        .collect::<Vec<_>>();
+    resolved_operations.last_mut().unwrap().content = Some(DraftResourceContent::Context {
+        content: later_offline_content.to_owned(),
+    });
+    let resolved = repository
+        .create_review_conflict_resolution(
+            &conflicted.review.review_id,
+            &bootstrap.user_id,
+            Some(&current_commit_id),
+            CreateReviewConflictResolutionRequest {
+                expected_review_version: conflicted.review.version,
+                expected_draft_version: conflicted.draft.version,
+                operations: resolved_operations,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolved.review.status, ReviewStatus::Open);
+    assert_eq!(resolved.draft.status, DraftStatus::Submitted);
+    assert_eq!(
+        resolved.draft.base_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    assert!(resolved.conflict.is_none());
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+    let projected_resolution = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(
+        projected_resolution.draft.status,
+        DaemonLocalDraftStatus::Submitted
+    );
+    assert_eq!(
+        projected_resolution.draft.base_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    assert!(projected_resolution.draft.conflict.is_none());
+    assert_eq!(projected_resolution.operations.len(), 1);
+    assert_eq!(
+        projected_resolution.operations[0].local_operation_id,
+        later_offline_operation.local_operation_id
+    );
+    assert_eq!(
+        projected_resolution.operations[0].sync_status,
+        DraftOperationSyncStatus::Synced
+    );
+    assert!(projected_resolution.operations[0].last_error.is_none());
+    assert_eq!(
+        projected_resolution.operations[0]
+            .operation
+            .create
+            .as_ref()
+            .unwrap()
+            .content,
+        context_content(later_offline_content)
+    );
+    let resolved_sync_status = service.sync_status().await.unwrap();
+    assert_eq!(resolved_sync_status.failed_operation_count, 0);
+    assert_eq!(resolved_sync_status.draft_sync.state, SyncState::Idle);
+
+    let reapproved = repository
+        .create_review_decision(
+            &resolved.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: resolved.review.version,
+                body: Some("Resolved against the current Ref.".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    let final_merge = repository
+        .create_review_merge(
+            &reapproved.review.review_id,
+            Some(&current_commit_id),
+            CreateReviewMergeRequest {
+                expected_review_version: reapproved.review.version,
+            },
+        )
+        .await
+        .unwrap();
+    let final_commit_id = final_merge.commit_id.unwrap();
+    assert_ne!(final_commit_id, current_commit_id);
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::All,
+        })
+        .await
+        .unwrap();
+    let merged = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(merged.draft.status, DaemonLocalDraftStatus::Merged);
+    assert!(merged.draft.conflict.is_none());
+    let cache = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: bootstrap.project_id,
+        })
+        .await
+        .unwrap();
+    assert_eq!(cache.commit_id.as_deref(), Some(final_commit_id.as_str()));
+    let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+    assert_eq!(
+        std::fs::read_to_string(cache_root.join("cache/context/context/offline-conflict.md"))
+            .unwrap(),
+        later_offline_content
+    );
+    assert!(
+        cache_root
+            .join("cache/context/context/remote-change.md")
+            .is_file()
     );
 
     server_task.abort();
