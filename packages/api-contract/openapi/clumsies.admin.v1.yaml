@@ -7,6 +7,7 @@ servers:
   - url: https://server.clumsies.local
 security:
   - bearerAuth: []
+  - adminSession: []
 paths:
   /api/v1/setup:
     get:
@@ -92,6 +93,54 @@ paths:
                 $ref: "#/components/schemas/SetupOidcAuthorization"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/admin/session:
+    get:
+      operationId: getAdminSession
+      summary: Read the current Web Admin browser session.
+      security:
+        - adminSession: []
+      responses:
+        "200":
+          description: Current Web Admin session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebAdminSession"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAdminSession
+      summary: Revoke the current Web Admin browser session.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
+      responses:
+        "200":
+          description: Session revocation result. The session cookie is cleared.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRevoked"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/identity-provider:
+    get:
+      operationId: getAdminIdentityProvider
+      summary: Read the safe enterprise identity provider configuration.
+      responses:
+        "200":
+          description: OIDC Provider state without credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OidcProviderStatus"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/org:
     get:
       operationId: getAdminOrg
@@ -110,6 +159,7 @@ paths:
       summary: Update organization settings.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -144,6 +194,8 @@ paths:
     post:
       operationId: createAdminMember
       summary: Create an organization member admission record.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -151,7 +203,7 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateMemberRequest"
       responses:
-        "200":
+        "201":
           description: Created member.
           content:
             application/json:
@@ -167,6 +219,7 @@ paths:
       summary: Update organization member role or status.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -187,6 +240,7 @@ paths:
       summary: Remove or disable an organization member.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -210,6 +264,77 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AdminProjectListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAdminProject
+      summary: Create a project and grant the current administrator project admin access.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: Created project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminProject"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/admin/projects/{project_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getAdminProject
+      summary: Read project metadata for administration.
+      responses:
+        "200":
+          description: Project metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminProject"
+        default:
+          $ref: "#/components/responses/Error"
+    patch:
+      operationId: updateAdminProject
+      summary: Update project metadata.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/AdminCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProjectRequest"
+      responses:
+        "200":
+          description: Updated project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminProject"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAdminProject
+      summary: Delete a project and its governed content.
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/AdminCsrfToken"
+      responses:
+        "200":
+          description: Delete result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
         default:
           $ref: "#/components/responses/Error"
   /api/v1/admin/projects/{project_id}/members:
@@ -237,6 +362,8 @@ paths:
     post:
       operationId: createAdminProjectMember
       summary: Add an organization member to a project.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -244,7 +371,7 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateProjectMemberRequest"
       responses:
-        "200":
+        "201":
           description: Created project membership.
           content:
             application/json:
@@ -259,6 +386,8 @@ paths:
     patch:
       operationId: updateAdminProjectMember
       summary: Update a project member role.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -277,6 +406,8 @@ paths:
     delete:
       operationId: deleteAdminProjectMember
       summary: Remove a member from a project.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -312,6 +443,8 @@ paths:
     delete:
       operationId: deleteAdminToken
       summary: Revoke an access token.
+      parameters:
+        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -365,6 +498,13 @@ components:
         HttpOnly one-time setup session cookie. Local plain-HTTP development
         uses the unprefixed clumsies_setup_session name because __Host-
         cookies require HTTPS.
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: __Host-clumsies_admin_session
+      description: >-
+        HttpOnly Web Admin session cookie. Local plain-HTTP development uses
+        clumsies_admin_session because __Host- cookies require HTTPS.
   parameters:
     Limit:
       name: limit
@@ -401,6 +541,13 @@ components:
       name: X-CSRF-Token
       in: header
       required: true
+      schema:
+        type: string
+    AdminCsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required for state-changing requests authenticated by adminSession.
       schema:
         type: string
   responses:
@@ -489,6 +636,52 @@ components:
         authorization_url:
           type: string
           format: uri
+    WebAdminSession:
+      type: object
+      required: [user, org, capabilities, token_id, csrf_token, expires_at]
+      properties:
+        user:
+          $ref: "#/components/schemas/UserRef"
+        org:
+          $ref: "#/components/schemas/OrgRef"
+        capabilities:
+          type: array
+          items:
+            type: string
+        token_id:
+          type: string
+        csrf_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    SessionRevoked:
+      type: object
+      required: [revoked]
+      properties:
+        revoked:
+          type: boolean
+    OidcProviderStatus:
+      type: object
+      required: [protocol, configured, issuer, callback_url, admission_mode, secret_source]
+      properties:
+        protocol:
+          type: string
+          enum: [oidc]
+        configured:
+          type: boolean
+        issuer:
+          type: [string, "null"]
+          format: uri
+        callback_url:
+          type: [string, "null"]
+          format: uri
+        admission_mode:
+          type: string
+          enum: [invite_only]
+        secret_source:
+          type: string
+          enum: [deployment_environment]
     AdminOrg:
       type: object
       required: [org_id, name, allowed_email_domains, revision, updated_at]
@@ -572,17 +765,45 @@ components:
           $ref: "#/components/schemas/PageInfo"
     AdminProject:
       type: object
-      required: [project_id, name, member_count, updated_at]
+      required: [project_id, name, description, member_count, revision, created_at, updated_at]
       properties:
         project_id:
           type: string
         name:
           type: string
+        description:
+          type: string
         member_count:
           type: integer
+        revision:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
         updated_at:
           type: string
           format: date-time
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 4000
+    UpdateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 4000
     ProjectMemberListResponse:
       type: object
       required: [items, page_info]
@@ -640,7 +861,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [access, refresh, integration]
+          enum: [access, refresh, integration, web_session]
         revoked:
           type: boolean
         expires_at:
@@ -761,4 +982,12 @@ components:
           type: [string, "null"]
           format: uri
         role:
+          type: string
+    OrgRef:
+      type: object
+      required: [org_id, name]
+      properties:
+        org_id:
+          type: string
+        name:
           type: string

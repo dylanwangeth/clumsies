@@ -270,23 +270,30 @@ impl ServerRepository {
         self.get_admin_org(&principal.org_id).await
     }
 
-    pub async fn list_admin_members(&self) -> Result<MemberListResponse, ServerError> {
+    pub async fn list_admin_members(
+        &self,
+        offset: i64,
+        limit: i64,
+    ) -> Result<MemberListResponse, ServerError> {
         let rows = sqlx::query(
             "SELECT u.user_id, u.email, u.display_name, u.role, u.status, u.revision,
                     EXISTS (
                         SELECT 1 FROM external_identities i WHERE i.user_id = u.user_id
                     ) AS external_identity_bound
-             FROM users u ORDER BY u.created_at LIMIT 200",
+             FROM users u
+             ORDER BY u.created_at, u.user_id
+             LIMIT $1 OFFSET $2",
         )
+        .bind(limit + 1)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(MemberListResponse {
-            items: rows
-                .iter()
-                .map(member_from_row)
-                .collect::<Result<Vec<_>, _>>()?,
-            page_info: page_info(),
-        })
+        let items = rows
+            .iter()
+            .map(member_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let (items, page_info) = admin_page(items, offset, limit);
+        Ok(MemberListResponse { items, page_info })
     }
 
     pub async fn create_admin_member(
@@ -345,6 +352,18 @@ impl ServerRepository {
         expected_revision: i64,
         request: UpdateMemberRequest,
     ) -> Result<Member, ServerError> {
+        if user_id == principal.user_id
+            && (request
+                .role
+                .is_some_and(|role| role.as_str() != principal.role)
+                || request
+                    .status
+                    .is_some_and(|status| status != MemberStatus::Active))
+        {
+            return Err(ServerError::InvalidRequest(
+                "the current user cannot change their own role or active status".to_owned(),
+            ));
+        }
         let mut tx = self.pool.begin().await?;
         let row =
             sqlx::query("SELECT role, status, revision FROM users WHERE user_id = $1 FOR UPDATE")
@@ -434,32 +453,202 @@ impl ServerRepository {
     pub async fn list_admin_projects(
         &self,
         org_id: &str,
+        offset: i64,
+        limit: i64,
     ) -> Result<AdminProjectListResponse, ServerError> {
         let rows = sqlx::query(
-            "SELECT p.project_id, p.name, COUNT(m.user_id)::BIGINT AS member_count, p.updated_at
+            "SELECT p.project_id, p.name, p.description, p.revision,
+                    p.created_at, p.updated_at,
+                    COUNT(m.user_id)::BIGINT AS member_count
              FROM projects p
              LEFT JOIN project_members m ON m.project_id = p.project_id
              WHERE p.org_id = $1
              GROUP BY p.project_id
-             ORDER BY p.updated_at DESC
-             LIMIT 200",
+             ORDER BY p.updated_at DESC, p.project_id
+             LIMIT $2 OFFSET $3",
         )
         .bind(org_id)
+        .bind(limit + 1)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(AdminProjectListResponse {
-            items: rows
-                .iter()
-                .map(|row| {
-                    Ok(AdminProject {
-                        project_id: row.try_get("project_id")?,
-                        name: row.try_get("name")?,
-                        member_count: row.try_get("member_count")?,
-                        updated_at: row.try_get("updated_at")?,
-                    })
-                })
-                .collect::<Result<Vec<_>, ServerError>>()?,
-            page_info: page_info(),
+        let items = rows
+            .iter()
+            .map(admin_project_from_row)
+            .collect::<Result<Vec<_>, ServerError>>()?;
+        let (items, page_info) = admin_page(items, offset, limit);
+        Ok(AdminProjectListResponse { items, page_info })
+    }
+
+    pub async fn get_admin_project(
+        &self,
+        org_id: &str,
+        project_id: &str,
+    ) -> Result<AdminProject, ServerError> {
+        let row = sqlx::query(
+            "SELECT p.project_id, p.name, p.description, p.revision,
+                    p.created_at, p.updated_at,
+                    COUNT(m.user_id)::BIGINT AS member_count
+             FROM projects p
+             LEFT JOIN project_members m ON m.project_id = p.project_id
+             WHERE p.org_id = $1 AND p.project_id = $2
+             GROUP BY p.project_id",
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| ServerError::not_found("project", project_id))?;
+        admin_project_from_row(&row)
+    }
+
+    pub async fn create_admin_project(
+        &self,
+        principal: &AuthPrincipal,
+        request: CreateProjectRequest,
+    ) -> Result<AdminProject, ServerError> {
+        let name = normalize_project_name(&request.name)?;
+        let description = normalize_project_description(request.description.as_deref())?;
+        let project_id = prefixed_id("prj");
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO projects (project_id, org_id, name, description)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&project_id)
+        .bind(&principal.org_id)
+        .bind(name)
+        .bind(description)
+        .execute(&mut *tx)
+        .await?;
+        insert_ref(&mut tx, "project", &principal.org_id, Some(&project_id)).await?;
+        sqlx::query("INSERT INTO project_org_selection_states (project_id) VALUES ($1)")
+            .bind(&project_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO project_members (project_id, user_id, role)
+             VALUES ($1, $2, 'admin')",
+        )
+        .bind(&project_id)
+        .bind(&principal.user_id)
+        .execute(&mut *tx)
+        .await?;
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_created",
+            "project",
+            Some(&project_id),
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_admin_project(&principal.org_id, &project_id).await
+    }
+
+    pub async fn update_admin_project(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        expected_revision: i64,
+        request: UpdateProjectRequest,
+    ) -> Result<AdminProject, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT name, description, revision
+             FROM projects
+             WHERE project_id = $1 AND org_id = $2
+             FOR UPDATE",
+        )
+        .bind(project_id)
+        .bind(&principal.org_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ServerError::not_found("project", project_id))?;
+        let current_revision: i64 = row.try_get("revision")?;
+        if current_revision != expected_revision {
+            return Err(ServerError::version_conflict(
+                "project",
+                expected_revision,
+                current_revision,
+            ));
+        }
+        let name = match request.name {
+            Some(name) => normalize_project_name(&name)?,
+            None => row.try_get("name")?,
+        };
+        let description = match request.description {
+            Some(description) => normalize_project_description(Some(&description))?,
+            None => row.try_get("description")?,
+        };
+        sqlx::query(
+            "UPDATE projects
+             SET name = $3, description = $4,
+                 revision = revision + 1, updated_at = now()
+             WHERE project_id = $1 AND org_id = $2",
+        )
+        .bind(project_id)
+        .bind(&principal.org_id)
+        .bind(name)
+        .bind(description)
+        .execute(&mut *tx)
+        .await?;
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_updated",
+            "project",
+            Some(project_id),
+        )
+        .await?;
+        tx.commit().await?;
+        self.get_admin_project(&principal.org_id, project_id).await
+    }
+
+    pub async fn delete_admin_project(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        expected_revision: i64,
+    ) -> Result<DeleteResult, ServerError> {
+        let mut tx = self.pool.begin().await?;
+        let revision = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM projects
+             WHERE project_id = $1 AND org_id = $2
+             FOR UPDATE",
+        )
+        .bind(project_id)
+        .bind(&principal.org_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ServerError::not_found("project", project_id))?;
+        if revision != expected_revision {
+            return Err(ServerError::version_conflict(
+                "project",
+                expected_revision,
+                revision,
+            ));
+        }
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "admin.project_deleted",
+            "project",
+            Some(project_id),
+        )
+        .await?;
+        sqlx::query("DELETE FROM projects WHERE project_id = $1 AND org_id = $2")
+            .bind(project_id)
+            .bind(&principal.org_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(DeleteResult {
+            deleted: true,
+            id: project_id.to_owned(),
         })
     }
 
@@ -468,6 +657,8 @@ impl ServerRepository {
         org_id: &str,
         project_id: &str,
         role: Option<ProjectRole>,
+        offset: i64,
+        limit: i64,
     ) -> Result<ProjectMemberListResponse, ServerError> {
         ensure_project_in_org(&self.pool, org_id, project_id).await?;
         let rows = sqlx::query(
@@ -480,20 +671,21 @@ impl ServerRepository {
                AND p.org_id = $2
                AND ($3::TEXT IS NULL OR m.role = $3)
              ORDER BY m.joined_at, u.user_id
-             LIMIT 200",
+             LIMIT $4 OFFSET $5",
         )
         .bind(project_id)
         .bind(org_id)
         .bind(role.map(ProjectRole::as_str))
+        .bind(limit + 1)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(ProjectMemberListResponse {
-            items: rows
-                .iter()
-                .map(project_member_from_row)
-                .collect::<Result<Vec<_>, _>>()?,
-            page_info: page_info(),
-        })
+        let items = rows
+            .iter()
+            .map(project_member_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let (items, page_info) = admin_page(items, offset, limit);
+        Ok(ProjectMemberListResponse { items, page_info })
     }
 
     pub async fn create_admin_project_member(
@@ -618,25 +810,28 @@ impl ServerRepository {
     pub async fn list_admin_tokens(
         &self,
         org_id: &str,
+        offset: i64,
+        limit: i64,
     ) -> Result<AccessTokenListResponse, ServerError> {
         let rows = sqlx::query(
             "SELECT t.token_id, t.user_id, t.kind, t.revoked_at, t.expires_at, t.created_at
              FROM access_tokens t
              JOIN auth_sessions s ON s.session_id = t.session_id
              WHERE s.org_id = $1
-             ORDER BY t.created_at DESC
-             LIMIT 200",
+             ORDER BY t.created_at DESC, t.token_id
+             LIMIT $2 OFFSET $3",
         )
         .bind(org_id)
+        .bind(limit + 1)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(AccessTokenListResponse {
-            items: rows
-                .iter()
-                .map(access_token_meta_from_row)
-                .collect::<Result<Vec<_>, _>>()?,
-            page_info: page_info(),
-        })
+        let items = rows
+            .iter()
+            .map(access_token_meta_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let (items, page_info) = admin_page(items, offset, limit);
+        Ok(AccessTokenListResponse { items, page_info })
     }
 
     pub async fn delete_admin_token(
@@ -687,33 +882,36 @@ impl ServerRepository {
     pub async fn list_admin_audit_events(
         &self,
         org_id: &str,
+        offset: i64,
+        limit: i64,
     ) -> Result<AuditEventListResponse, ServerError> {
         let rows = sqlx::query(
             "SELECT event_id, actor_user_id, action, target_type, target_id, created_at
              FROM audit_events
              WHERE org_id = $1
-             ORDER BY created_at DESC
-             LIMIT 200",
+             ORDER BY created_at DESC, event_id
+             LIMIT $2 OFFSET $3",
         )
         .bind(org_id)
+        .bind(limit + 1)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        Ok(AuditEventListResponse {
-            items: rows
-                .iter()
-                .map(|row| {
-                    Ok(AuditEvent {
-                        event_id: row.try_get("event_id")?,
-                        actor_user_id: row.try_get("actor_user_id")?,
-                        action: row.try_get("action")?,
-                        target_type: row.try_get("target_type")?,
-                        target_id: row.try_get("target_id")?,
-                        created_at: row.try_get("created_at")?,
-                    })
+        let items = rows
+            .iter()
+            .map(|row| {
+                Ok(AuditEvent {
+                    event_id: row.try_get("event_id")?,
+                    actor_user_id: row.try_get("actor_user_id")?,
+                    action: row.try_get("action")?,
+                    target_type: row.try_get("target_type")?,
+                    target_id: row.try_get("target_id")?,
+                    created_at: row.try_get("created_at")?,
                 })
-                .collect::<Result<Vec<_>, ServerError>>()?,
-            page_info: page_info(),
-        })
+            })
+            .collect::<Result<Vec<_>, ServerError>>()?;
+        let (items, page_info) = admin_page(items, offset, limit);
+        Ok(AuditEventListResponse { items, page_info })
     }
 
     pub async fn create_project(
@@ -3383,6 +3581,21 @@ fn page_info() -> PageInfo {
     }
 }
 
+fn admin_page<T>(mut items: Vec<T>, offset: i64, limit: i64) -> (Vec<T>, PageInfo) {
+    let has_more = items.len() > limit as usize;
+    if has_more {
+        items.truncate(limit as usize);
+    }
+    let next_cursor = has_more.then(|| (offset + limit).to_string());
+    (
+        items,
+        PageInfo {
+            next_cursor,
+            has_more,
+        },
+    )
+}
+
 async fn load_draft_detail(
     tx: &mut Transaction<'_, Postgres>,
     draft_id: &str,
@@ -5262,6 +5475,18 @@ fn admin_org_from_row(row: &sqlx::postgres::PgRow) -> Result<AdminOrg, ServerErr
     })
 }
 
+fn admin_project_from_row(row: &sqlx::postgres::PgRow) -> Result<AdminProject, ServerError> {
+    Ok(AdminProject {
+        project_id: row.try_get("project_id")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        member_count: row.try_get("member_count")?,
+        revision: row.try_get("revision")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
 async fn load_member(pool: &PgPool, user_id: &str) -> Result<Member, ServerError> {
     let row = sqlx::query(
         "SELECT u.user_id, u.email, u.display_name, u.role, u.status, u.revision,
@@ -5300,6 +5525,26 @@ fn access_token_meta_from_row(row: &sqlx::postgres::PgRow) -> Result<AccessToken
         expires_at: row.try_get("expires_at")?,
         created_at: row.try_get("created_at")?,
     })
+}
+
+fn normalize_project_name(name: &str) -> Result<String, ServerError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err(ServerError::InvalidRequest(
+            "project name must contain between 1 and 120 characters".to_owned(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn normalize_project_description(description: Option<&str>) -> Result<String, ServerError> {
+    let description = description.unwrap_or_default().trim();
+    if description.chars().count() > 4_000 {
+        return Err(ServerError::InvalidRequest(
+            "project description must not exceed 4000 characters".to_owned(),
+        ));
+    }
+    Ok(description.to_owned())
 }
 
 fn normalize_email(email: &str) -> Result<String, ServerError> {
@@ -5705,6 +5950,7 @@ fn access_token_kind(value: &str) -> Result<AccessTokenKind, ServerError> {
         "access" => Ok(AccessTokenKind::Access),
         "refresh" => Ok(AccessTokenKind::Refresh),
         "integration" => Ok(AccessTokenKind::Integration),
+        "web_session" => Ok(AccessTokenKind::WebSession),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown access token kind: {other}"
         ))),

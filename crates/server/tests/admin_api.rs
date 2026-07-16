@@ -5,10 +5,11 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde::Serialize;
 use server::api::{
-    AccessTokenKind, AccessTokenListResponse, AdminOrg, AdminProjectListResponse,
-    AuditEventListResponse, CreateMemberRequest, CreateProjectMemberRequest, DeleteResult, Member,
-    MemberListResponse, MemberStatus, OrgRole, ProjectMember, ProjectMemberListResponse,
-    ProjectRole, UpdateAdminOrgRequest, UpdateMemberRequest, UpdateProjectMemberRequest,
+    AccessTokenKind, AccessTokenListResponse, AdminOrg, AdminProject, AdminProjectListResponse,
+    AuditEventListResponse, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
+    DeleteResult, Member, MemberListResponse, MemberStatus, OidcProviderStatus, OrgRole,
+    ProjectMember, ProjectMemberListResponse, ProjectRole, UpdateAdminOrgRequest,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use tower::ServiceExt;
 
@@ -28,6 +29,9 @@ async fn owner_can_operate_the_complete_admin_contract() {
 
     let org: AdminOrg = get_json(app.clone(), "/api/v1/admin/org").await;
     assert_eq!(org.org_id, bootstrap.org_id);
+    let provider: OidcProviderStatus =
+        get_json(app.clone(), "/api/v1/admin/identity-provider").await;
+    assert!(provider.configured);
 
     let org: AdminOrg = patch_json(
         app.clone(),
@@ -41,6 +45,29 @@ async fn owner_can_operate_the_complete_admin_contract() {
     .await;
     assert_eq!(org.name, "Acme Knowledge");
     assert_eq!(org.allowed_email_domains, vec!["example.com"]);
+
+    let project: AdminProject = post_json(
+        app.clone(),
+        "/api/v1/admin/projects",
+        &CreateProjectRequest {
+            name: "Research".to_owned(),
+            description: Some("Shared research memory".to_owned()),
+        },
+    )
+    .await;
+    assert_eq!(project.name, "Research");
+    assert_eq!(project.member_count, 1);
+    let project: AdminProject = patch_json(
+        app.clone(),
+        &format!("/api/v1/admin/projects/{}", project.project_id),
+        project.revision,
+        &UpdateProjectRequest {
+            name: Some("Research Lab".to_owned()),
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(project.name, "Research Lab");
 
     let member: Member = post_json(
         app.clone(),
@@ -148,9 +175,33 @@ async fn owner_can_operate_the_complete_admin_contract() {
     assert_eq!(duplicate_body["error"]["code"], "already_exists");
 
     let projects: AdminProjectListResponse = get_json(app.clone(), "/api/v1/admin/projects").await;
-    assert_eq!(projects.items.len(), 1);
-    assert_eq!(projects.items[0].project_id, bootstrap.project_id);
-    assert_eq!(projects.items[0].member_count, 2);
+    assert_eq!(projects.items.len(), 2);
+    let default_project = projects
+        .items
+        .iter()
+        .find(|item| item.project_id == bootstrap.project_id)
+        .unwrap();
+    assert_eq!(default_project.member_count, 2);
+
+    let first_page: AdminProjectListResponse =
+        get_json(app.clone(), "/api/v1/admin/projects?limit=1").await;
+    assert_eq!(first_page.items.len(), 1);
+    assert!(first_page.page_info.has_more);
+    let cursor = first_page
+        .page_info
+        .next_cursor
+        .expect("a partial page must include the next cursor");
+    let second_page: AdminProjectListResponse = get_json(
+        app.clone(),
+        &format!("/api/v1/admin/projects?limit=1&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(second_page.items.len(), 1);
+    assert!(!second_page.page_info.has_more);
+    assert_ne!(
+        first_page.items[0].project_id,
+        second_page.items[0].project_id
+    );
 
     let tokens: AccessTokenListResponse = get_json(app.clone(), "/api/v1/admin/tokens").await;
     let refresh_token_id = tokens
@@ -179,6 +230,14 @@ async fn owner_can_operate_the_complete_admin_contract() {
     .await;
     assert_eq!(deleted_project_member.id, member.user_id);
 
+    let deleted_project: DeleteResult = delete_json(
+        app.clone(),
+        &format!("/api/v1/admin/projects/{}", project.project_id),
+        Some(project.revision),
+    )
+    .await;
+    assert_eq!(deleted_project.id, project.project_id);
+
     let audit_events: AuditEventListResponse =
         get_json(app.clone(), "/api/v1/admin/audit-events").await;
     assert!(
@@ -204,6 +263,18 @@ async fn owner_can_operate_the_complete_admin_contract() {
             .items
             .iter()
             .any(|event| event.action == "admin.project_member_deleted")
+    );
+    assert!(
+        audit_events
+            .items
+            .iter()
+            .any(|event| event.action == "admin.project_created")
+    );
+    assert!(
+        audit_events
+            .items
+            .iter()
+            .any(|event| event.action == "admin.project_deleted")
     );
 
     let deleted_member: DeleteResult = delete_json(
@@ -242,6 +313,135 @@ async fn unknown_admin_project_is_not_disclosed() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn admin_updates_reject_stale_revisions_and_preserve_the_last_owner() {
+    let postgres = common::migrated_postgres().await;
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Primary",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Primary",
+    )
+    .await;
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+
+    let project: AdminProject = post_json(
+        app.clone(),
+        "/api/v1/admin/projects",
+        &CreateProjectRequest {
+            name: "Stable".to_owned(),
+            description: None,
+        },
+    )
+    .await;
+    let stale_project = json_response(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/admin/projects/{}", project.project_id),
+        Some(project.revision + 1),
+        &UpdateProjectRequest {
+            name: Some("Overwritten".to_owned()),
+            description: None,
+        },
+    )
+    .await;
+    assert_eq!(stale_project.status(), StatusCode::CONFLICT);
+    let stale_body: serde_json::Value = decode_json(stale_project).await;
+    assert_eq!(stale_body["error"]["code"], "version_conflict");
+    let unchanged: AdminProject = get_json(
+        app.clone(),
+        &format!("/api/v1/admin/projects/{}", project.project_id),
+    )
+    .await;
+    assert_eq!(unchanged.name, "Stable");
+
+    let members: MemberListResponse = get_json(app.clone(), "/api/v1/admin/members").await;
+    let owner = members
+        .items
+        .into_iter()
+        .find(|member| member.user_id == bootstrap.user_id)
+        .expect("bootstrap owner must be listed");
+    let demotion = json_response(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/admin/members/{}", owner.user_id),
+        Some(owner.revision),
+        &UpdateMemberRequest {
+            role: Some(OrgRole::Member),
+            status: None,
+        },
+    )
+    .await;
+    assert_eq!(demotion.status(), StatusCode::BAD_REQUEST);
+    let demotion_body: serde_json::Value = decode_json(demotion).await;
+    assert_eq!(demotion_body["error"]["code"], "invalid_request");
+
+    let self_disable = json_response(
+        app.clone(),
+        "PATCH",
+        &format!("/api/v1/admin/members/{}", owner.user_id),
+        Some(owner.revision),
+        &UpdateMemberRequest {
+            role: None,
+            status: Some(MemberStatus::Disabled),
+        },
+    )
+    .await;
+    assert_eq!(self_disable.status(), StatusCode::BAD_REQUEST);
+    let self_disable_body: serde_json::Value = decode_json(self_disable).await;
+    assert_eq!(self_disable_body["error"]["code"], "invalid_request");
+
+    let self_uninvite = json_response(
+        app,
+        "PATCH",
+        &format!("/api/v1/admin/members/{}", owner.user_id),
+        Some(owner.revision),
+        &UpdateMemberRequest {
+            role: None,
+            status: Some(MemberStatus::Invited),
+        },
+    )
+    .await;
+    assert_eq!(self_uninvite.status(), StatusCode::BAD_REQUEST);
+    let self_uninvite_body: serde_json::Value = decode_json(self_uninvite).await;
+    assert_eq!(self_uninvite_body["error"]["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn admin_lists_reject_invalid_pagination() {
+    let postgres = common::migrated_postgres().await;
+    common::initialize_installation(
+        postgres.pool.clone(),
+        "Primary",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Primary",
+    )
+    .await;
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+
+    for uri in [
+        "/api/v1/admin/projects?limit=0",
+        "/api/v1/admin/projects?limit=201",
+        "/api/v1/admin/projects?limit=not-a-number",
+        "/api/v1/admin/projects?cursor=not-a-cursor",
+        "/api/v1/admin/projects?cursor=-1",
+        "/api/v1/admin/projects/prj_unknown/members?role=owner",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let body: serde_json::Value = decode_json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_request", "{uri}");
+    }
+}
+
 async fn get_json<T>(app: Router, uri: &str) -> T
 where
     T: serde::de::DeserializeOwned,
@@ -250,7 +450,7 @@ where
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.status().is_success());
     decode_json(response).await
 }
 
@@ -259,7 +459,9 @@ where
     TRequest: Serialize,
     TResponse: serde::de::DeserializeOwned,
 {
-    request_json(app, "POST", uri, None, request).await
+    let response = json_response(app, "POST", uri, None, request).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    decode_json(response).await
 }
 
 async fn patch_json<TRequest, TResponse>(
@@ -298,6 +500,21 @@ where
     TRequest: Serialize,
     TResponse: serde::de::DeserializeOwned,
 {
+    let response = json_response(app, method, uri, revision, request).await;
+    assert!(response.status().is_success());
+    decode_json(response).await
+}
+
+async fn json_response<TRequest>(
+    app: Router,
+    method: &str,
+    uri: &str,
+    revision: Option<i64>,
+    request: &TRequest,
+) -> axum::response::Response
+where
+    TRequest: Serialize,
+{
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -305,16 +522,13 @@ where
     if let Some(revision) = revision {
         builder = builder.header("if-match", revision.to_string());
     }
-    let response = app
-        .oneshot(
-            builder
-                .body(Body::from(serde_json::to_vec(request).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    decode_json(response).await
+    app.oneshot(
+        builder
+            .body(Body::from(serde_json::to_vec(request).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn delete_json<T>(app: Router, uri: &str, revision: Option<i64>) -> T

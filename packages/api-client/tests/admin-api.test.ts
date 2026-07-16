@@ -22,7 +22,11 @@ describe("Clumsies Admin API", () => {
       });
     };
     const api = new ClumsiesAdminApi(
-      createAdminApiClient({ baseUrl: "http://server.test", fetch }),
+      createAdminApiClient({
+        baseUrl: "http://server.test",
+        csrfToken: "admin-csrf",
+        fetch,
+      }),
     );
 
     await api.setup();
@@ -36,6 +40,8 @@ describe("Clumsies Admin API", () => {
       "csrf-token",
       "http://127.0.0.1:1421/admin/setup/callback",
     );
+    await api.session();
+    await api.identityProvider();
     await api.org();
     await api.updateOrg(1, { name: "Clumsies Lab" });
     await api.listMembers();
@@ -43,6 +49,10 @@ describe("Clumsies Admin API", () => {
     await api.updateMember("user", 2, { role: "admin" });
     await api.deleteMember("user", 3);
     await api.listProjects();
+    await api.createProject({ name: "Project", description: "Description" });
+    await api.project("project");
+    await api.updateProject("project", 4, { name: "Renamed" });
+    await api.deleteProject("project", 5);
     await api.listProjectMembers("project", { role: "member" });
     await api.createProjectMember("project", {
       user_id: "user",
@@ -54,12 +64,15 @@ describe("Clumsies Admin API", () => {
     await api.deleteToken("token");
     await api.listAuditEvents();
     await api.health();
+    await api.deleteSession();
 
     expect(requests).toEqual([
       "GET /api/v1/setup",
       "POST /api/v1/setup/sessions",
       "PUT /api/v1/setup/configuration",
       "POST /api/v1/setup/oidc-authorizations",
+      "GET /api/v1/admin/session",
+      "GET /api/v1/admin/identity-provider",
       "GET /api/v1/admin/org",
       "PATCH /api/v1/admin/org",
       "GET /api/v1/admin/members",
@@ -67,6 +80,10 @@ describe("Clumsies Admin API", () => {
       "PATCH /api/v1/admin/members/user",
       "DELETE /api/v1/admin/members/user",
       "GET /api/v1/admin/projects",
+      "POST /api/v1/admin/projects",
+      "GET /api/v1/admin/projects/project",
+      "PATCH /api/v1/admin/projects/project",
+      "DELETE /api/v1/admin/projects/project",
       "GET /api/v1/admin/projects/project/members",
       "POST /api/v1/admin/projects/project/members",
       "PATCH /api/v1/admin/projects/project/members/user",
@@ -75,13 +92,19 @@ describe("Clumsies Admin API", () => {
       "DELETE /api/v1/admin/tokens/token",
       "GET /api/v1/admin/audit-events",
       "GET /api/v1/admin/health",
+      "DELETE /api/v1/admin/session",
     ]);
     expect(ifMatch.get("PATCH /api/v1/admin/org")).toBe("1");
     expect(ifMatch.get("PATCH /api/v1/admin/members/user")).toBe("2");
     expect(ifMatch.get("DELETE /api/v1/admin/members/user")).toBe("3");
+    expect(ifMatch.get("PATCH /api/v1/admin/projects/project")).toBe("4");
+    expect(ifMatch.get("DELETE /api/v1/admin/projects/project")).toBe("5");
     expect(csrf.get("PUT /api/v1/setup/configuration")).toBe("csrf-token");
     expect(csrf.get("POST /api/v1/setup/oidc-authorizations")).toBe(
       "csrf-token",
     );
+    expect(csrf.get("PATCH /api/v1/admin/org")).toBe("admin-csrf");
+    expect(csrf.get("POST /api/v1/admin/projects")).toBe("admin-csrf");
+    expect(csrf.get("DELETE /api/v1/admin/session")).toBe("admin-csrf");
   });
 });

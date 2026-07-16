@@ -10,6 +10,7 @@ apps/desktop/src-tauri/binaries/clumsiesd-*
 
 # Build artifacts
 dist/
+apps/web-admin/test-results/
 *.o
 *.a
 *.so

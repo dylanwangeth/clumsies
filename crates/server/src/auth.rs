@@ -21,15 +21,19 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::api::{
-    ClientKind, OidcAuthorizationRequest, OidcCallbackRequest, OrgRef, SessionRevoked,
-    TokenGrantType, TokenRequest, TokenResponse, UserRef,
+    AdmissionMode, ClientKind, OidcAuthorizationRequest, OidcCallbackRequest, OidcProviderStatus,
+    OrgRef, SecretSource, SessionRevoked, TokenGrantType, TokenRequest, TokenResponse, UserRef,
+    WebAdminSession,
 };
 use crate::installation::{InstallationError, InstallationService};
 
 const ACCESS_TOKEN_TTL: Duration = Duration::minutes(15);
 const REFRESH_TOKEN_TTL: Duration = Duration::days(30);
+const WEB_SESSION_TTL: Duration = Duration::hours(12);
 const LOGIN_TRANSACTION_TTL: Duration = Duration::minutes(10);
 const AUTHORIZATION_CODE_TTL: Duration = Duration::minutes(2);
+const LOCAL_ADMIN_COOKIE_NAME: &str = "clumsies_admin_session";
+const SECURE_ADMIN_COOKIE_NAME: &str = "__Host-clumsies_admin_session";
 
 type DiscoveredCoreClient = CoreClient<
     EndpointSet,
@@ -47,6 +51,14 @@ pub struct AuthPrincipal {
     pub session_id: String,
     pub token_id: String,
     pub role: String,
+    pub credential_kind: CredentialKind,
+    pub csrf_token: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialKind {
+    Bearer,
+    WebSession,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +297,20 @@ pub struct AuthService {
     pool: PgPool,
     provider: Option<Arc<dyn OidcIdentityProvider>>,
     allowed_redirects: Arc<Vec<Url>>,
+    provider_summary: Option<ProviderSummary>,
+    secure_cookie: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderSummary {
+    issuer: String,
+    callback_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OidcLoginCompletion {
+    pub redirect_uri: String,
+    pub web_session_token: Option<String>,
 }
 
 impl AuthService {
@@ -293,6 +319,8 @@ impl AuthService {
             pool,
             provider: None,
             allowed_redirects: Arc::new(Vec::new()),
+            provider_summary: None,
+            secure_cookie: false,
         }
     }
 
@@ -305,6 +333,8 @@ impl AuthService {
             pool,
             provider: Some(provider),
             allowed_redirects: Arc::new(allowed_redirects),
+            provider_summary: None,
+            secure_cookie: false,
         }
     }
 
@@ -346,32 +376,99 @@ impl AuthService {
                 "CLUMSIES_CLIENT_REDIRECT_URIS must contain at least one URI".to_owned(),
             ));
         }
-        let provider =
-            DiscoveredOidcProvider::discover(&issuer, client_id, client_secret, callback_url)
-                .await?;
-        Ok(Self::with_provider(
+        let provider = DiscoveredOidcProvider::discover(
+            &issuer,
+            client_id,
+            client_secret,
+            callback_url.clone(),
+        )
+        .await?;
+        let secure_cookie = Url::parse(&callback_url)
+            .map_err(|error| AuthError::Configuration(error.to_string()))?
+            .scheme()
+            == "https";
+        Ok(Self {
             pool,
-            Arc::new(provider),
-            allowed_redirects,
-        ))
+            provider: Some(Arc::new(provider)),
+            allowed_redirects: Arc::new(allowed_redirects),
+            provider_summary: Some(ProviderSummary {
+                issuer,
+                callback_url,
+            }),
+            secure_cookie,
+        })
     }
 
     pub fn configured(&self) -> bool {
         self.provider.is_some()
     }
 
+    pub fn admin_cookie_name(&self) -> &'static str {
+        if self.secure_cookie {
+            SECURE_ADMIN_COOKIE_NAME
+        } else {
+            LOCAL_ADMIN_COOKIE_NAME
+        }
+    }
+
+    pub fn admin_cookie_secure(&self) -> bool {
+        self.secure_cookie
+    }
+
+    pub fn web_session_ttl_seconds(&self) -> i64 {
+        WEB_SESSION_TTL.whole_seconds()
+    }
+
+    pub fn provider_status(&self) -> OidcProviderStatus {
+        OidcProviderStatus {
+            protocol: "oidc".to_owned(),
+            configured: self.configured(),
+            issuer: self
+                .provider_summary
+                .as_ref()
+                .map(|summary| summary.issuer.clone()),
+            callback_url: self
+                .provider_summary
+                .as_ref()
+                .map(|summary| summary.callback_url.clone()),
+            admission_mode: AdmissionMode::InviteOnly,
+            secret_source: SecretSource::DeploymentEnvironment,
+        }
+    }
+
     pub async fn begin_login(
         &self,
         request: OidcAuthorizationRequest,
     ) -> Result<String, AuthError> {
+        if request.client_kind == ClientKind::WebAdmin {
+            return self.begin_web_admin_login(request).await;
+        }
+        self.begin_product_login(request).await
+    }
+
+    async fn begin_product_login(
+        &self,
+        request: OidcAuthorizationRequest,
+    ) -> Result<String, AuthError> {
         let provider = self.provider.as_ref().ok_or(AuthError::NotConfigured)?;
-        if request.code_challenge_method != "S256" {
+        let code_challenge_method = request.code_challenge_method.as_deref().ok_or_else(|| {
+            AuthError::InvalidRequest("code_challenge_method is required".to_owned())
+        })?;
+        if code_challenge_method != "S256" {
             return Err(AuthError::InvalidRequest(
                 "code_challenge_method must be S256".to_owned(),
             ));
         }
-        validate_code_challenge(&request.code_challenge)?;
-        let client_redirect = Url::parse(&request.redirect_uri)
+        let code_challenge = request
+            .code_challenge
+            .as_deref()
+            .ok_or_else(|| AuthError::InvalidRequest("code_challenge is required".to_owned()))?;
+        validate_code_challenge(code_challenge)?;
+        let redirect_uri = request
+            .redirect_uri
+            .as_deref()
+            .ok_or_else(|| AuthError::InvalidRequest("redirect_uri is required".to_owned()))?;
+        let client_redirect = Url::parse(redirect_uri)
             .map_err(|error| AuthError::InvalidRequest(error.to_string()))?;
         if !self.redirect_allowed(&client_redirect) {
             return Err(AuthError::RedirectNotAllowed);
@@ -402,8 +499,47 @@ impl AuthService {
         .bind(client_kind(request.client_kind))
         .bind(client_redirect.as_str())
         .bind(request.state)
-        .bind(request.code_challenge)
+        .bind(code_challenge)
         .bind(request.return_to)
+        .bind(OffsetDateTime::now_utc() + LOGIN_TRANSACTION_TTL)
+        .execute(&self.pool)
+        .await?;
+        Ok(authorization_url)
+    }
+
+    async fn begin_web_admin_login(
+        &self,
+        request: OidcAuthorizationRequest,
+    ) -> Result<String, AuthError> {
+        let provider = self.provider.as_ref().ok_or(AuthError::NotConfigured)?;
+        let return_to = request.return_to.as_deref().unwrap_or("/admin");
+        self.validate_admin_return_to(return_to)?;
+
+        let provider_state = random_token();
+        let nonce = random_token();
+        let (provider_pkce_challenge, provider_pkce_verifier) =
+            PkceCodeChallenge::new_random_sha256();
+        let authorization_url = provider.authorization_url(
+            &provider_state,
+            &nonce,
+            provider_pkce_challenge,
+            request.login_hint.as_deref(),
+        )?;
+        sqlx::query(
+            "INSERT INTO oidc_login_transactions (
+                transaction_id, provider_state_hash, nonce, provider_pkce_verifier,
+                client_kind, client_redirect_uri, client_state, client_code_challenge,
+                return_to, expires_at, flow
+             ) VALUES (
+                $1, $2, $3, $4, 'web_admin', $5, NULL, NULL,
+                $5, $6, 'web_admin_login'
+             )",
+        )
+        .bind(prefixed_id("login"))
+        .bind(secret_hash(&provider_state))
+        .bind(nonce)
+        .bind(provider_pkce_verifier.secret())
+        .bind(return_to)
         .bind(OffsetDateTime::now_utc() + LOGIN_TRANSACTION_TTL)
         .execute(&self.pool)
         .await?;
@@ -454,16 +590,17 @@ impl AuthService {
         &self,
         request: OidcCallbackRequest,
         installation: &InstallationService,
-    ) -> Result<String, AuthError> {
+    ) -> Result<OidcLoginCompletion, AuthError> {
         let provider = self.provider.as_ref().ok_or(AuthError::NotConfigured)?;
         let transaction = self.login_transaction(&request.state).await?;
         if let Some(provider_error) = request.error {
             self.consume_login_transaction(&transaction.transaction_id)
                 .await?;
-            return callback_redirect(
+            return callback_completion(
                 &transaction,
                 None,
                 Some((&provider_error, request.error_description.as_deref())),
+                None,
             );
         }
         let code = request.code.ok_or_else(|| {
@@ -496,28 +633,37 @@ impl AuthService {
                 .setup_session_id
                 .as_deref()
                 .ok_or(AuthError::CorruptLoginTransaction)?;
-            if let Err(error) = installation
+            let initialized = match installation
                 .initialize_with_oidc(&mut tx, setup_session_id, &identity)
                 .await
             {
-                tx.rollback().await?;
-                if matches!(
-                    error,
-                    InstallationError::ConfigurationRequired
-                        | InstallationError::OwnerDomainNotAllowed
-                        | InstallationError::InvalidOwnerIdentity
-                ) {
-                    self.consume_login_transaction(&transaction.transaction_id)
-                        .await?;
-                    return callback_redirect(&transaction, None, Some((error.code(), None)));
+                Ok(initialized) => initialized,
+                Err(error) => {
+                    tx.rollback().await?;
+                    if matches!(
+                        error,
+                        InstallationError::ConfigurationRequired
+                            | InstallationError::OwnerDomainNotAllowed
+                            | InstallationError::InvalidOwnerIdentity
+                    ) {
+                        self.consume_login_transaction(&transaction.transaction_id)
+                            .await?;
+                        return callback_completion(
+                            &transaction,
+                            None,
+                            Some((error.code(), None)),
+                            None,
+                        );
+                    }
+                    return Err(error.into());
                 }
-                return Err(error.into());
-            }
+            };
+            let web_session =
+                issue_web_session(&mut tx, &initialized.user_id, &initialized.org_id).await?;
             tx.commit().await?;
-            return callback_redirect(&transaction, None, None);
+            return callback_completion(&transaction, None, None, Some(web_session.token));
         }
 
-        let authorization_code = random_token();
         let org = sqlx::query(
             "SELECT org_id, allowed_email_domains FROM orgs ORDER BY created_at LIMIT 1",
         )
@@ -528,6 +674,37 @@ impl AuthService {
         let allowed_domains: Vec<String> = org.try_get("allowed_email_domains")?;
         enforce_email_domain(&identity.email, &allowed_domains)?;
         let user_id = resolve_external_identity(&mut tx, &identity).await?;
+        if transaction.flow == LoginFlow::WebAdminLogin {
+            let role = sqlx::query_scalar::<_, String>(
+                "SELECT role FROM users WHERE user_id = $1 AND status = 'active'",
+            )
+            .bind(&user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if role != "owner" && role != "admin" {
+                insert_audit_event(
+                    &mut tx,
+                    &org_id,
+                    Some(&user_id),
+                    "auth.web_admin_access_denied",
+                    "user",
+                    Some(&user_id),
+                )
+                .await?;
+                tx.commit().await?;
+                return callback_completion(
+                    &transaction,
+                    None,
+                    Some((AuthError::AdminAccessRequired.code(), None)),
+                    None,
+                );
+            }
+            let web_session = issue_web_session(&mut tx, &user_id, &org_id).await?;
+            tx.commit().await?;
+            return callback_completion(&transaction, None, None, Some(web_session.token));
+        }
+
+        let authorization_code = random_token();
         let client_code_challenge = transaction
             .client_code_challenge
             .as_deref()
@@ -556,7 +733,7 @@ impl AuthService {
         )
         .await?;
         tx.commit().await?;
-        callback_redirect(&transaction, Some(&authorization_code), None)
+        callback_completion(&transaction, Some(&authorization_code), None, None)
     }
 
     pub async fn exchange_token(&self, request: TokenRequest) -> Result<TokenResponse, AuthError> {
@@ -589,6 +766,83 @@ impl AuthService {
             user_id: row.try_get("user_id")?,
             org_id: row.try_get("org_id")?,
             role: row.try_get("role")?,
+            credential_kind: CredentialKind::Bearer,
+            csrf_token: None,
+        })
+    }
+
+    pub async fn authenticate_web_session(
+        &self,
+        session_token: &str,
+    ) -> Result<AuthPrincipal, AuthError> {
+        let row = sqlx::query(
+            "SELECT t.token_id, t.session_id, t.user_id, s.org_id, s.csrf_token, u.role
+             FROM access_tokens t
+             JOIN auth_sessions s ON s.session_id = t.session_id
+             JOIN users u ON u.user_id = t.user_id
+             WHERE t.token_hash = $1
+               AND t.kind = 'web_session'
+               AND t.revoked_at IS NULL
+               AND t.expires_at > now()
+               AND s.revoked_at IS NULL
+               AND u.status = 'active'
+               AND u.role IN ('owner', 'admin')",
+        )
+        .bind(secret_hash(session_token))
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(AuthError::Unauthorized)?;
+        Ok(AuthPrincipal {
+            token_id: row.try_get("token_id")?,
+            session_id: row.try_get("session_id")?,
+            user_id: row.try_get("user_id")?,
+            org_id: row.try_get("org_id")?,
+            role: row.try_get("role")?,
+            credential_kind: CredentialKind::WebSession,
+            csrf_token: row.try_get("csrf_token")?,
+        })
+    }
+
+    pub async fn web_admin_session(
+        &self,
+        principal: &AuthPrincipal,
+    ) -> Result<WebAdminSession, AuthError> {
+        if principal.credential_kind != CredentialKind::WebSession {
+            return Err(AuthError::Unauthorized);
+        }
+        let row = sqlx::query(
+            "SELECT u.user_id, u.email, u.display_name, u.avatar_url, u.role,
+                    o.org_id, o.name, t.expires_at
+             FROM users u
+             JOIN auth_sessions s ON s.user_id = u.user_id
+             JOIN orgs o ON o.org_id = s.org_id
+             JOIN access_tokens t ON t.session_id = s.session_id
+             WHERE s.session_id = $1 AND t.token_id = $2",
+        )
+        .bind(&principal.session_id)
+        .bind(&principal.token_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let role: String = row.try_get("role")?;
+        Ok(WebAdminSession {
+            user: UserRef {
+                user_id: row.try_get("user_id")?,
+                email: row.try_get("email")?,
+                display_name: row.try_get("display_name")?,
+                avatar_url: row.try_get("avatar_url")?,
+                role: role.clone(),
+            },
+            org: OrgRef {
+                org_id: row.try_get("org_id")?,
+                name: row.try_get("name")?,
+            },
+            capabilities: admin_capabilities(),
+            token_id: principal.token_id.clone(),
+            csrf_token: principal
+                .csrf_token
+                .clone()
+                .ok_or(AuthError::CorruptWebSession)?,
+            expires_at: row.try_get("expires_at")?,
         })
     }
 
@@ -762,6 +1016,21 @@ impl AuthService {
             .iter()
             .any(|allowed| redirect_matches(allowed, requested))
     }
+
+    fn validate_admin_return_to(&self, value: &str) -> Result<(), AuthError> {
+        if is_internal_admin_path(value) {
+            return Ok(());
+        }
+        let return_url = Url::parse(value)
+            .map_err(|_| AuthError::InvalidRequest("return_to is not trusted".to_owned()))?;
+        if is_admin_path(return_url.path()) && self.redirect_allowed(&return_url) {
+            Ok(())
+        } else {
+            Err(AuthError::InvalidRequest(
+                "return_to is not trusted".to_owned(),
+            ))
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -781,6 +1050,55 @@ struct LoginTransaction {
 enum LoginFlow {
     ProductLogin,
     InstallationSetup,
+    WebAdminLogin,
+}
+
+#[derive(Debug)]
+struct WebSessionCredential {
+    token: String,
+}
+
+async fn issue_web_session(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: &str,
+    org_id: &str,
+) -> Result<WebSessionCredential, AuthError> {
+    let session_id = prefixed_id("ses");
+    let token = random_token();
+    let csrf_token = random_token();
+    let expires_at = OffsetDateTime::now_utc() + WEB_SESSION_TTL;
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id, csrf_token)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(org_id)
+    .bind(csrf_token)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES ($1, $2, $3, 'web_session', $4, $5)",
+    )
+    .bind(prefixed_id("tok"))
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(secret_hash(&token))
+    .bind(expires_at)
+    .execute(&mut **tx)
+    .await?;
+    insert_audit_event(
+        tx,
+        org_id,
+        Some(user_id),
+        "auth.web_admin_session_created",
+        "session",
+        Some(&session_id),
+    )
+    .await?;
+    Ok(WebSessionCredential { token })
 }
 
 async fn issue_token_pair(
@@ -982,6 +1300,23 @@ async fn insert_audit_event(
     Ok(())
 }
 
+fn callback_completion(
+    transaction: &LoginTransaction,
+    code: Option<&str>,
+    error: Option<(&str, Option<&str>)>,
+    web_session_token: Option<String>,
+) -> Result<OidcLoginCompletion, AuthError> {
+    let redirect_uri = if transaction.flow == LoginFlow::WebAdminLogin {
+        web_admin_redirect(&transaction.client_redirect_uri, error)?
+    } else {
+        callback_redirect(transaction, code, error)?
+    };
+    Ok(OidcLoginCompletion {
+        redirect_uri,
+        web_session_token,
+    })
+}
+
 fn callback_redirect(
     transaction: &LoginTransaction,
     code: Option<&str>,
@@ -1021,6 +1356,45 @@ fn callback_redirect(
     Ok(url.to_string())
 }
 
+fn web_admin_redirect(
+    return_to: &str,
+    error: Option<(&str, Option<&str>)>,
+) -> Result<String, AuthError> {
+    let relative = is_internal_admin_path(return_to);
+    let mut url = if relative {
+        Url::parse("https://clumsies.invalid")
+            .expect("static base URL is valid")
+            .join(return_to)
+            .map_err(|parse_error| AuthError::InvalidRequest(parse_error.to_string()))?
+    } else {
+        let url = Url::parse(return_to)
+            .map_err(|parse_error| AuthError::InvalidRequest(parse_error.to_string()))?;
+        if !is_admin_path(url.path()) {
+            return Err(AuthError::InvalidRequest(
+                "return_to is not an Admin path".to_owned(),
+            ));
+        }
+        url
+    };
+    if let Some((error, description)) = error {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("error", error);
+        if let Some(description) = description {
+            query.append_pair("error_description", description);
+        }
+    }
+    let query = url
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    if relative {
+        Ok(format!("{}{query}", url.path()))
+    } else {
+        url.set_query(query.strip_prefix('?'));
+        Ok(url.to_string())
+    }
+}
+
 fn validate_code_challenge(value: &str) -> Result<(), AuthError> {
     if value.len() != 43
         || !value
@@ -1057,6 +1431,14 @@ fn validate_return_to(value: Option<&str>, client_redirect: &Url) -> Result<(), 
             "return_to is not trusted".to_owned(),
         ))
     }
+}
+
+fn is_internal_admin_path(value: &str) -> bool {
+    is_admin_path(value) && !value.starts_with("//")
+}
+
+fn is_admin_path(value: &str) -> bool {
+    value == "/admin" || value.starts_with("/admin/")
 }
 
 fn redirect_matches(allowed: &Url, requested: &Url) -> bool {
@@ -1106,6 +1488,10 @@ fn capabilities(role: &str) -> Vec<String> {
     capabilities
 }
 
+fn admin_capabilities() -> Vec<String> {
+    vec!["admin:read".to_owned(), "admin:write".to_owned()]
+}
+
 fn client_kind(kind: ClientKind) -> &'static str {
     match kind {
         ClientKind::Desktop => "desktop",
@@ -1118,6 +1504,7 @@ fn login_flow(value: &str) -> Result<LoginFlow, AuthError> {
     match value {
         "product_login" => Ok(LoginFlow::ProductLogin),
         "installation_setup" => Ok(LoginFlow::InstallationSetup),
+        "web_admin_login" => Ok(LoginFlow::WebAdminLogin),
         _ => Err(AuthError::CorruptLoginTransaction),
     }
 }
@@ -1174,6 +1561,8 @@ pub enum AuthError {
     EmailNotVerified,
     #[error("member is not admitted to this Server")]
     MemberNotAllowed,
+    #[error("organization administrator access is required")]
+    AdminAccessRequired,
     #[error("email domain is not allowed")]
     DomainNotAllowed,
     #[error("OIDC identity conflicts with the admitted member")]
@@ -1182,6 +1571,8 @@ pub enum AuthError {
     InvalidGrant,
     #[error("authentication is required")]
     Unauthorized,
+    #[error("stored Web Admin session is corrupt")]
+    CorruptWebSession,
     #[error(transparent)]
     Installation(#[from] InstallationError),
     #[error(transparent)]
@@ -1202,10 +1593,12 @@ impl AuthError {
             Self::CorruptLoginTransaction => "login_transaction_corrupt",
             Self::EmailNotVerified => "email_not_verified",
             Self::MemberNotAllowed => "member_not_allowed",
+            Self::AdminAccessRequired => "admin_access_required",
             Self::DomainNotAllowed => "domain_not_allowed",
             Self::ProviderIdentityConflict => "oidc_identity_conflict",
             Self::InvalidGrant => "invalid_grant",
             Self::Unauthorized => "unauthorized",
+            Self::CorruptWebSession => "web_session_corrupt",
             Self::Installation(error) => error.code(),
             Self::Sqlx(_) => "internal_error",
         }

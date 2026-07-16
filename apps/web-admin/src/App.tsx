@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  ClumsiesApiError,
   ClumsiesAdminApi,
   createAdminApiClient,
   type AdminSchema,
@@ -19,8 +20,10 @@ import {
   type SetupForm,
   type SetupFormErrors,
 } from "./setup-model";
+import { AdminApp } from "./admin/AdminApp";
 
 type SetupStatus = AdminSchema<"SetupStatus">;
+type WebAdminSession = AdminSchema<"WebAdminSession">;
 
 const DEFAULT_FORM: SetupForm = {
   orgName: "Clumsies Lab",
@@ -40,7 +43,87 @@ export function App() {
       ),
     [serverUrl],
   );
-  const [status, setStatus] = useState<SetupStatus | null>(null);
+  const [bootstrap, setBootstrap] = useState<
+    | { state: "loading" }
+    | { state: "setup"; status: SetupStatus }
+    | { state: "login"; notice: string | null }
+    | { state: "admin"; session: WebAdminSession }
+    | { state: "error"; message: string }
+  >({ state: "loading" });
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const status = await api.setup();
+        if (!active) return;
+        if (status.state === "setup_required") {
+          setBootstrap({ state: "setup", status });
+          return;
+        }
+        try {
+          const session = await api.session();
+          if (active) setBootstrap({ state: "admin", session });
+        } catch (error) {
+          if (!active) return;
+          if (error instanceof ClumsiesApiError && error.status === 401) {
+            setBootstrap({ state: "login", notice: loginNotice() });
+          } else {
+            throw error;
+          }
+        }
+      } catch (error) {
+        if (active) {
+          setBootstrap({ state: "error", message: errorMessage(error) });
+        }
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [api]);
+
+  if (bootstrap.state === "loading") {
+    return <AppLoading />;
+  }
+  if (bootstrap.state === "error") {
+    return <FatalState message={bootstrap.message} />;
+  }
+  if (bootstrap.state === "setup") {
+    return (
+      <SetupApp
+        api={api}
+        initialStatus={bootstrap.status}
+        serverUrl={serverUrl}
+      />
+    );
+  }
+  if (bootstrap.state === "login") {
+    return <LoginScreen notice={bootstrap.notice} serverUrl={serverUrl} />;
+  }
+  return (
+    <AdminApp
+      initialSession={bootstrap.session}
+      onSessionEnded={(notice) => {
+        window.history.replaceState(null, "", "/admin");
+        setBootstrap({ state: "login", notice });
+      }}
+      serverUrl={serverUrl}
+    />
+  );
+}
+
+function SetupApp({
+  api,
+  initialStatus,
+  serverUrl,
+}: {
+  api: ClumsiesAdminApi;
+  initialStatus: SetupStatus;
+  serverUrl: string;
+}) {
+  const [status, setStatus] = useState<SetupStatus | null>(initialStatus);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [setupCode, setSetupCode] = useState("");
   const [form, setForm] = useState<SetupForm>(DEFAULT_FORM);
@@ -50,28 +133,15 @@ export function App() {
   const stage = resolveSetupStage(status, csrfToken);
 
   useEffect(() => {
-    let active = true;
-    api
-      .setup()
-      .then((nextStatus) => {
-        if (!active) return;
-        setStatus(nextStatus);
-        const configuration = nextStatus.session?.configuration;
-        if (configuration) {
-          setForm({
-            orgName: configuration.org_name,
-            projectName: configuration.default_project_name,
-            domains: configuration.allowed_email_domains.join(", "),
-          });
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) setNotice(errorMessage(error));
+    const configuration = initialStatus.session?.configuration;
+    if (configuration) {
+      setForm({
+        orgName: configuration.org_name,
+        projectName: configuration.default_project_name,
+        domains: configuration.allowed_email_domains.join(", "),
       });
-    return () => {
-      active = false;
-    };
-  }, [api]);
+    }
+  }, [initialStatus]);
 
   async function claimSetup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -309,6 +379,77 @@ function CompleteStep() {
   );
 }
 
+function LoginScreen({
+  notice,
+  serverUrl,
+}: {
+  notice: string | null;
+  serverUrl: string;
+}) {
+  function beginLogin() {
+    const authorization = new URL("/oauth2/authorization/oidc", serverUrl);
+    const sameOrigin = authorization.origin === window.location.origin;
+    const currentPath = window.location.pathname.startsWith("/admin")
+      ? window.location.pathname
+      : "/admin";
+    const returnTo = sameOrigin
+      ? currentPath
+      : `${window.location.origin}/admin/`;
+    authorization.searchParams.set("client_kind", "web_admin");
+    authorization.searchParams.set("return_to", returnTo);
+    window.location.assign(authorization);
+  }
+
+  return (
+    <main className="login-shell">
+      <div className="login-wordmark wordmark">
+        <img src="/admin/clumsies-mark.svg" alt="" />
+        <span>Clumsies</span>
+      </div>
+      <section className="login-panel" aria-labelledby="login-title">
+        <span className="login-mark">
+          <ShieldCheck aria-hidden="true" />
+        </span>
+        <h1 id="login-title">Organization administration</h1>
+        <p>Sign in with the enterprise identity configured for this Server.</p>
+        {notice && (
+          <div className="notice" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span>{notice}</span>
+          </div>
+        )}
+        <button className="primary-button login-button" onClick={beginLogin} type="button">
+          <KeyRound aria-hidden="true" />
+          Continue with SSO
+        </button>
+        <span className="server-label">{new URL(serverUrl).host}</span>
+      </section>
+    </main>
+  );
+}
+
+function AppLoading() {
+  return (
+    <main className="bootstrap-state" aria-live="polite">
+      <LoaderCircle className="spin" aria-hidden="true" />
+      <span>Connecting to Server</span>
+    </main>
+  );
+}
+
+function FatalState({ message }: { message: string }) {
+  return (
+    <main className="bootstrap-state bootstrap-error">
+      <CircleAlert aria-hidden="true" />
+      <h1>Server unavailable</h1>
+      <p>{message}</p>
+      <button className="secondary-button" onClick={() => window.location.reload()} type="button">
+        Retry
+      </button>
+    </main>
+  );
+}
+
 function LoadingState() {
   return (
     <div className="loading-state">
@@ -347,6 +488,15 @@ function resolveServerUrl(): string {
 function callbackError(): string | null {
   const error = new URLSearchParams(window.location.search).get("error");
   return error ? `Single sign-on did not complete: ${error}` : null;
+}
+
+function loginNotice(): string | null {
+  const error = new URLSearchParams(window.location.search).get("error");
+  if (!error) return null;
+  if (error === "admin_access_required") {
+    return "This account does not have organization administrator access.";
+  }
+  return `Single sign-on did not complete: ${error}`;
 }
 
 function errorMessage(error: unknown): string {

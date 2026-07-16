@@ -8,7 +8,7 @@ use serde::Serialize;
 use server::api::{
     CreateSetupSessionRequest, CreateSetupSessionResponse, InstallationState,
     ReplaceSetupConfigurationRequest, SetupConfiguration, SetupOidcAuthorization,
-    SetupOidcAuthorizationRequest, SetupStatus,
+    SetupOidcAuthorizationRequest, SetupStatus, WebAdminSession,
 };
 use tower::ServiceExt;
 use url::Url;
@@ -95,6 +95,27 @@ async fn setup_claim_creates_one_oidc_bound_installation_and_locks_it() {
     let callback = complete_provider_login(app.clone(), &provider_state).await;
     assert_eq!(callback.status(), StatusCode::FOUND);
     assert_eq!(callback.headers().get(LOCATION).unwrap(), SETUP_CALLBACK);
+    let admin_cookie = callback
+        .headers()
+        .get(SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(admin_cookie.starts_with("clumsies_admin_session="));
+
+    let admin_session: WebAdminSession =
+        get_json(app.clone(), "/api/v1/admin/session", Some(&admin_cookie)).await;
+    assert_eq!(admin_session.user.email, "owner@example.com");
+    assert_eq!(admin_session.user.role, "owner");
+    assert_eq!(admin_session.org.name, "Clumsies Lab");
+    assert_eq!(
+        admin_session.capabilities,
+        vec!["admin:read", "admin:write"]
+    );
 
     let completed: SetupStatus = get_json(app.clone(), "/api/v1/setup", Some(&cookie)).await;
     assert_eq!(completed.state, InstallationState::Initialized);

@@ -1,6 +1,7 @@
 use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::header::{
-    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, ETAG, IF_MATCH, LOCATION, SET_COOKIE,
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, ETAG, HOST, IF_MATCH, LOCATION, ORIGIN,
+    SET_COOKIE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
@@ -11,6 +12,7 @@ use cookie::{Cookie, SameSite};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
+use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -25,11 +27,11 @@ use crate::api::{
     SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest,
     UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
-use crate::auth::{AuthError, AuthPrincipal, AuthService};
+use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
 use crate::installation::{InstallationError, InstallationService};
 use crate::repository::{ServerError, ServerRepository};
 
-const CURRENT_SCHEMA_MIGRATION: i64 = 20260716000100;
+const CURRENT_SCHEMA_MIGRATION: i64 = 20260716000200;
 
 #[derive(Clone)]
 struct AppState {
@@ -91,8 +93,9 @@ define_routes!(public_routes, PUBLIC_OPERATIONS, {
     "/api/v1/auth/token" => { post: exchange_auth_token };
 });
 
-define_routes!(protected_routes, PROTECTED_OPERATIONS, {
-    "/api/v1/auth/session" => { delete: revoke_auth_session };
+define_routes!(admin_routes, ADMIN_OPERATIONS, {
+    "/api/v1/admin/session" => { get: get_admin_session, delete: delete_admin_session };
+    "/api/v1/admin/identity-provider" => { get: get_admin_identity_provider };
     "/api/v1/admin/org" => { get: get_admin_org, patch: update_admin_org };
     "/api/v1/admin/members" => {
         get: list_admin_members,
@@ -102,7 +105,12 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         patch: update_admin_member,
         delete: delete_admin_member,
     };
-    "/api/v1/admin/projects" => { get: list_admin_projects };
+    "/api/v1/admin/projects" => { get: list_admin_projects, post: create_admin_project };
+    "/api/v1/admin/projects/{project_id}" => {
+        get: get_admin_project,
+        patch: update_admin_project,
+        delete: delete_admin_project,
+    };
     "/api/v1/admin/projects/{project_id}/members" => {
         get: list_admin_project_members,
         post: create_admin_project_member,
@@ -114,6 +122,10 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
     "/api/v1/admin/tokens" => { get: list_admin_tokens };
     "/api/v1/admin/tokens/{token_id}" => { delete: delete_admin_token };
     "/api/v1/admin/audit-events" => { get: list_admin_audit_events };
+});
+
+define_routes!(protected_routes, PROTECTED_OPERATIONS, {
+    "/api/v1/auth/session" => { delete: revoke_auth_session };
     "/api/v1/me" => { get: get_me };
     "/api/v1/projects" => { get: list_projects, post: create_project };
     "/api/v1/projects/{project_id}" => {
@@ -202,10 +214,15 @@ pub fn router_with_services(
         version: env!("CARGO_PKG_VERSION"),
     };
     let public_routes = public_routes();
+    let admin_routes = admin_routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_admin_auth,
+    ));
     let protected_routes =
         protected_routes().route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     let mut router = Router::new()
         .merge(public_routes)
+        .merge(admin_routes)
         .merge(protected_routes)
         .route("/setup", get(redirect_to_setup));
     if let Some(directory) = optional_env("CLUMSIES_WEB_ADMIN_DIR") {
@@ -228,7 +245,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
     for (name, value) in [
         (
             "content-security-policy",
-            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'",
         ),
         ("referrer-policy", "no-referrer"),
         ("x-content-type-options", "nosniff"),
@@ -247,13 +264,9 @@ async fn security_headers(request: Request, next: Next) -> Response {
 }
 
 fn cors_layer() -> CorsLayer {
-    let configured = std::env::var("CLUMSIES_CORS_ORIGINS").unwrap_or_else(|_| {
-        "tauri://localhost,http://tauri.localhost,http://127.0.0.1:1420,http://localhost:1420"
-            .to_owned()
-    });
-    let origins = configured
-        .split(',')
-        .filter_map(|origin| origin.trim().parse::<HeaderValue>().ok())
+    let origins = configured_cors_origins()
+        .into_iter()
+        .filter_map(|origin| origin.parse::<HeaderValue>().ok())
         .collect::<Vec<_>>();
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
@@ -272,6 +285,19 @@ fn cors_layer() -> CorsLayer {
         ])
         .expose_headers([ETAG, HeaderName::from_static("x-request-id")])
         .allow_credentials(true)
+}
+
+fn configured_cors_origins() -> Vec<String> {
+    std::env::var("CLUMSIES_CORS_ORIGINS")
+        .unwrap_or_else(|_| {
+            "tauri://localhost,http://tauri.localhost,http://127.0.0.1:1420,http://localhost:1420"
+                .to_owned()
+        })
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn optional_env(name: &str) -> Option<String> {
@@ -293,12 +319,20 @@ async fn complete_oidc(
     State(state): State<AppState>,
     Query(request): Query<OidcCallbackRequest>,
 ) -> Result<Response, HttpError> {
-    redirect_response(
-        state
-            .auth
-            .complete_login(request, &state.installation)
-            .await?,
-    )
+    let completion = state
+        .auth
+        .complete_login(request, &state.installation)
+        .await?;
+    let mut response = redirect_response(completion.redirect_uri)?;
+    if let Some(token) = completion.web_session_token {
+        let cookie = admin_session_cookie(&state.auth, token, false);
+        response.headers_mut().insert(
+            SET_COOKIE,
+            HeaderValue::from_str(&cookie.to_string())
+                .map_err(|_| HttpError::internal("admin cookie contains an invalid value"))?,
+        );
+    }
+    Ok(response)
 }
 
 async fn get_setup(
@@ -389,6 +423,39 @@ async fn revoke_auth_session(
     Ok(Json(state.auth.revoke_session(&principal).await?))
 }
 
+async fn get_admin_session(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<crate::api::WebAdminSession>, HttpError> {
+    Ok(Json(state.auth.web_admin_session(&principal).await?))
+}
+
+async fn delete_admin_session(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Response, HttpError> {
+    if principal.credential_kind != CredentialKind::WebSession {
+        return Err(AuthError::Unauthorized.into());
+    }
+    let revoked = state.auth.revoke_session(&principal).await?;
+    let cookie = admin_session_cookie(&state.auth, String::new(), true);
+    let mut response = Json(revoked).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&cookie.to_string())
+            .map_err(|_| HttpError::internal("admin cookie contains an invalid value"))?,
+    );
+    Ok(response)
+}
+
+async fn get_admin_identity_provider(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<crate::api::OidcProviderStatus>, HttpError> {
+    require_org_admin(&principal)?;
+    Ok(Json(state.auth.provider_status()))
+}
+
 async fn require_auth(
     State(state): State<AppState>,
     mut request: Request,
@@ -404,6 +471,105 @@ async fn require_auth(
     let principal = state.auth.authenticate(bearer_token).await?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
+}
+
+async fn require_admin_auth(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, HttpError> {
+    let bearer_token = bearer_token(request.headers());
+    let principal = match bearer_token {
+        Some(token) => state.auth.authenticate(token).await?,
+        None => {
+            let token = cookie_value(request.headers(), state.auth.admin_cookie_name())
+                .ok_or(AuthError::Unauthorized)?;
+            state.auth.authenticate_web_session(&token).await?
+        }
+    };
+    require_org_admin(&principal)?;
+    if principal.credential_kind == CredentialKind::WebSession
+        && !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        )
+    {
+        validate_admin_csrf(request.headers(), &principal)?;
+        validate_admin_origin(request.headers())?;
+    }
+    request.extensions_mut().insert(principal);
+    Ok(next.run(request).await)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_admin_csrf(headers: &HeaderMap, principal: &AuthPrincipal) -> Result<(), HttpError> {
+    let expected = principal
+        .csrf_token
+        .as_deref()
+        .ok_or_else(|| HttpError::forbidden("Web Admin session has no CSRF binding"))?;
+    let actual = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| HttpError::forbidden("X-CSRF-Token is required"))?;
+    if expected.len() == actual.len()
+        && expected.as_bytes().ct_eq(actual.as_bytes()).unwrap_u8() == 1
+    {
+        Ok(())
+    } else {
+        Err(HttpError::forbidden(
+            "X-CSRF-Token does not match this session",
+        ))
+    }
+}
+
+fn validate_admin_origin(headers: &HeaderMap) -> Result<(), HttpError> {
+    let origin = headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| HttpError::forbidden("Origin is required for Web Admin mutations"))?;
+    if configured_cors_origins()
+        .iter()
+        .any(|allowed| allowed == origin)
+    {
+        return Ok(());
+    }
+    let origin_url =
+        url::Url::parse(origin).map_err(|_| HttpError::forbidden("Origin is not trusted"))?;
+    let request_host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(HOST))
+        .and_then(|value| value.to_str().ok());
+    let forwarded_proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok());
+    let authority_matches = request_host.is_some_and(|host| {
+        origin_url
+            .host_str()
+            .map(|origin_host| {
+                let origin_authority = match origin_url.port() {
+                    Some(port) => format!("{origin_host}:{port}"),
+                    None => origin_host.to_owned(),
+                };
+                origin_authority.eq_ignore_ascii_case(host)
+            })
+            .unwrap_or(false)
+    });
+    let protocol_matches = forwarded_proto
+        .map(|protocol| protocol.eq_ignore_ascii_case(origin_url.scheme()))
+        .unwrap_or(true);
+    if authority_matches && protocol_matches {
+        Ok(())
+    } else {
+        Err(HttpError::forbidden("Origin is not trusted"))
+    }
 }
 
 fn redirect_response(location: String) -> Result<Response, HttpError> {
@@ -435,6 +601,10 @@ fn setup_credentials(
 }
 
 fn setup_session_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    cookie_value(headers, cookie_name)
+}
+
+fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
@@ -443,6 +613,22 @@ fn setup_session_token(headers: &HeaderMap, cookie_name: &str) -> Option<String>
         .filter_map(Result::ok)
         .find(|cookie| cookie.name() == cookie_name)
         .map(|cookie| cookie.value().to_owned())
+}
+
+fn admin_session_cookie(auth: &AuthService, token: String, clear: bool) -> Cookie<'static> {
+    let mut builder = Cookie::build((auth.admin_cookie_name().to_owned(), token))
+        .path("/")
+        .http_only(true)
+        .secure(auth.admin_cookie_secure())
+        .same_site(SameSite::Lax);
+    builder = if clear {
+        builder.max_age(cookie::time::Duration::ZERO)
+    } else {
+        builder.max_age(cookie::time::Duration::seconds(
+            auth.web_session_ttl_seconds(),
+        ))
+    };
+    builder.build()
 }
 
 async fn get_me(
@@ -481,16 +667,23 @@ async fn update_admin_org(
 async fn list_admin_members(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    Query(query): Query<AdminPageQuery>,
 ) -> Result<Json<crate::api::MemberListResponse>, HttpError> {
     require_org_admin(&principal)?;
-    Ok(Json(state.repository.list_admin_members().await?))
+    let page = parse_admin_page(query)?;
+    Ok(Json(
+        state
+            .repository
+            .list_admin_members(page.offset, page.limit)
+            .await?,
+    ))
 }
 
 async fn create_admin_member(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
     Json(request): Json<CreateMemberRequest>,
-) -> Result<Json<crate::api::Member>, HttpError> {
+) -> Result<(StatusCode, Json<crate::api::Member>), HttpError> {
     require_org_admin(&principal)?;
     if request.role == OrgRole::Owner && principal.role != "owner" {
         return Err(ServerError::Forbidden(
@@ -498,11 +691,14 @@ async fn create_admin_member(
         )
         .into());
     }
-    Ok(Json(
-        state
-            .repository
-            .create_admin_member(&principal, request)
-            .await?,
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            state
+                .repository
+                .create_admin_member(&principal, request)
+                .await?,
+        ),
     ))
 }
 
@@ -548,19 +744,87 @@ async fn delete_admin_member(
 async fn list_admin_projects(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    Query(query): Query<AdminPageQuery>,
 ) -> Result<Json<crate::api::AdminProjectListResponse>, HttpError> {
+    require_org_admin(&principal)?;
+    let page = parse_admin_page(query)?;
+    Ok(Json(
+        state
+            .repository
+            .list_admin_projects(&principal.org_id, page.offset, page.limit)
+            .await?,
+    ))
+}
+
+async fn create_admin_project(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Json(request): Json<CreateProjectRequest>,
+) -> Result<(StatusCode, Json<crate::api::AdminProject>), HttpError> {
+    require_org_admin(&principal)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            state
+                .repository
+                .create_admin_project(&principal, request)
+                .await?,
+        ),
+    ))
+}
+
+async fn get_admin_project(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+) -> Result<Json<crate::api::AdminProject>, HttpError> {
     require_org_admin(&principal)?;
     Ok(Json(
         state
             .repository
-            .list_admin_projects(&principal.org_id)
+            .get_admin_project(&principal.org_id, &project_id)
+            .await?,
+    ))
+}
+
+async fn update_admin_project(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProjectRequest>,
+) -> Result<Json<crate::api::AdminProject>, HttpError> {
+    require_org_admin(&principal)?;
+    let expected_revision = parse_if_match(&headers)?;
+    Ok(Json(
+        state
+            .repository
+            .update_admin_project(&principal, &project_id, expected_revision, request)
+            .await?,
+    ))
+}
+
+async fn delete_admin_project(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<crate::api::DeleteResult>, HttpError> {
+    require_org_admin(&principal)?;
+    let expected_revision = parse_if_match(&headers)?;
+    Ok(Json(
+        state
+            .repository
+            .delete_admin_project(&principal, &project_id, expected_revision)
             .await?,
     ))
 }
 
 #[derive(Debug, Deserialize)]
 struct ListAdminProjectMembersQuery {
-    role: Option<ProjectRole>,
+    role: Option<String>,
+    limit: Option<String>,
+    cursor: Option<String>,
 }
 
 async fn list_admin_project_members(
@@ -570,10 +834,21 @@ async fn list_admin_project_members(
     Query(query): Query<ListAdminProjectMembersQuery>,
 ) -> Result<Json<crate::api::ProjectMemberListResponse>, HttpError> {
     require_org_admin(&principal)?;
+    let role = parse_admin_project_role(query.role.as_deref())?;
+    let page = parse_admin_page(AdminPageQuery {
+        limit: query.limit,
+        cursor: query.cursor,
+    })?;
     Ok(Json(
         state
             .repository
-            .list_admin_project_members(&principal.org_id, &project_id, query.role)
+            .list_admin_project_members(
+                &principal.org_id,
+                &project_id,
+                role,
+                page.offset,
+                page.limit,
+            )
             .await?,
     ))
 }
@@ -583,13 +858,16 @@ async fn create_admin_project_member(
     Extension(principal): Extension<AuthPrincipal>,
     Path(project_id): Path<String>,
     Json(request): Json<CreateProjectMemberRequest>,
-) -> Result<Json<crate::api::ProjectMember>, HttpError> {
+) -> Result<(StatusCode, Json<crate::api::ProjectMember>), HttpError> {
     require_org_admin(&principal)?;
-    Ok(Json(
-        state
-            .repository
-            .create_admin_project_member(&principal, &project_id, request)
-            .await?,
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            state
+                .repository
+                .create_admin_project_member(&principal, &project_id, request)
+                .await?,
+        ),
     ))
 }
 
@@ -625,12 +903,14 @@ async fn delete_admin_project_member(
 async fn list_admin_tokens(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    Query(query): Query<AdminPageQuery>,
 ) -> Result<Json<crate::api::AccessTokenListResponse>, HttpError> {
     require_org_admin(&principal)?;
+    let page = parse_admin_page(query)?;
     Ok(Json(
         state
             .repository
-            .list_admin_tokens(&principal.org_id)
+            .list_admin_tokens(&principal.org_id, page.offset, page.limit)
             .await?,
     ))
 }
@@ -652,14 +932,68 @@ async fn delete_admin_token(
 async fn list_admin_audit_events(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    Query(query): Query<AdminPageQuery>,
 ) -> Result<Json<crate::api::AuditEventListResponse>, HttpError> {
     require_org_admin(&principal)?;
+    let page = parse_admin_page(query)?;
     Ok(Json(
         state
             .repository
-            .list_admin_audit_events(&principal.org_id)
+            .list_admin_audit_events(&principal.org_id, page.offset, page.limit)
             .await?,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminPageQuery {
+    limit: Option<String>,
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AdminPage {
+    offset: i64,
+    limit: i64,
+}
+
+fn parse_admin_page(query: AdminPageQuery) -> Result<AdminPage, HttpError> {
+    let limit = match query.limit {
+        Some(limit) => limit.parse::<i64>().map_err(|_| {
+            HttpError::from(ServerError::InvalidRequest(
+                "invalid admin page limit".to_owned(),
+            ))
+        })?,
+        None => 50,
+    };
+    if !(1..=200).contains(&limit) {
+        return Err(ServerError::InvalidRequest(
+            "admin page limit must be between 1 and 200".to_owned(),
+        )
+        .into());
+    }
+    let offset = match query.cursor {
+        Some(cursor) => cursor.parse::<i64>().map_err(|_| {
+            HttpError::from(ServerError::InvalidRequest(
+                "invalid admin page cursor".to_owned(),
+            ))
+        })?,
+        None => 0,
+    };
+    if offset < 0 {
+        return Err(ServerError::InvalidRequest("invalid admin page cursor".to_owned()).into());
+    }
+    Ok(AdminPage { offset, limit })
+}
+
+fn parse_admin_project_role(role: Option<&str>) -> Result<Option<ProjectRole>, HttpError> {
+    match role {
+        Some("member") => Ok(Some(ProjectRole::Member)),
+        Some("admin") => Ok(Some(ProjectRole::Admin)),
+        Some(_) => {
+            Err(ServerError::InvalidRequest("invalid project role filter".to_owned()).into())
+        }
+        None => Ok(None),
+    }
 }
 
 async fn admin_health(State(state): State<AppState>) -> Json<AdminHealth> {
@@ -1583,6 +1917,10 @@ impl HttpError {
     fn internal(message: &str) -> Self {
         Self::Internal(message.to_owned())
     }
+
+    fn forbidden(message: &str) -> Self {
+        Self::Server(ServerError::Forbidden(message.to_owned()))
+    }
 }
 
 impl From<ServerError> for HttpError {
@@ -1666,14 +2004,15 @@ impl IntoResponse for HttpError {
                 let status = match &error {
                     AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
                     AuthError::MemberNotAllowed
+                    | AuthError::AdminAccessRequired
                     | AuthError::DomainNotAllowed
                     | AuthError::ProviderIdentityConflict => StatusCode::FORBIDDEN,
                     AuthError::NotConfigured | AuthError::ProviderUnavailable(_) => {
                         StatusCode::SERVICE_UNAVAILABLE
                     }
-                    AuthError::Configuration(_) | AuthError::Sqlx(_) => {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    }
+                    AuthError::Configuration(_)
+                    | AuthError::CorruptWebSession
+                    | AuthError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
                     AuthError::Installation(error) => installation_error_status(error),
                     _ => StatusCode::BAD_REQUEST,
                 };
@@ -1785,7 +2124,10 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
-    use crate::http::{AdminHealth, HealthStatus, PROTECTED_OPERATIONS, PUBLIC_OPERATIONS, router};
+    use crate::http::{
+        ADMIN_OPERATIONS, AdminHealth, HealthStatus, PROTECTED_OPERATIONS, PUBLIC_OPERATIONS,
+        router,
+    };
 
     #[derive(Debug, Deserialize)]
     struct OpenApiDocument {
@@ -1802,6 +2144,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let server_operations = PUBLIC_OPERATIONS
             .iter()
+            .chain(ADMIN_OPERATIONS)
             .chain(PROTECTED_OPERATIONS)
             .map(|operation| (operation.method.to_owned(), operation.path.to_owned()))
             .collect::<BTreeSet<_>>();

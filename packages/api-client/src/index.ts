@@ -69,6 +69,7 @@ export interface CreateApiClientOptions {
   baseUrl: string;
   accessToken?: string;
   requestId?: string;
+  csrfToken?: string;
   credentials?: RequestCredentials;
   fetch?: typeof fetch;
 }
@@ -136,6 +137,10 @@ function createHeaders(options: CreateApiClientOptions): HeadersInit {
 
   if (options.requestId) {
     headers["X-Clumsies-Request-Id"] = options.requestId;
+  }
+
+  if (options.csrfToken) {
+    headers["X-CSRF-Token"] = options.csrfToken;
   }
 
   return headers;

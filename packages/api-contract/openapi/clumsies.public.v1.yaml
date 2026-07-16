@@ -21,18 +21,18 @@ paths:
             $ref: "#/components/schemas/ClientKind"
         - name: redirect_uri
           in: query
-          required: true
+          description: Required for desktop and CLI clients; omitted for Web Admin.
           schema:
             type: string
             format: uri
         - name: code_challenge
           in: query
-          required: true
+          description: Required for desktop and CLI clients; omitted for Web Admin.
           schema:
             type: string
         - name: code_challenge_method
           in: query
-          required: true
+          description: Required for desktop and CLI clients; omitted for Web Admin.
           schema:
             type: string
             enum: [S256]
@@ -47,6 +47,7 @@ paths:
             format: email
         - name: return_to
           in: query
+          description: For Web Admin, a validated internal path under /admin.
           schema:
             type: string
       responses:
@@ -57,7 +58,6 @@ paths:
               required: true
               schema:
                 type: string
-                format: uri
         default:
           $ref: "#/components/responses/Error"
   /login/oauth2/code/oidc:
@@ -91,7 +91,11 @@ paths:
               required: true
               schema:
                 type: string
-                format: uri
+            Set-Cookie:
+              required: false
+              description: Web Admin login returns an HttpOnly browser session cookie.
+              schema:
+                type: string
         default:
           $ref: "#/components/responses/Error"
   /api/v1/auth/token:

@@ -72,6 +72,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the current Web Admin browser session. */
+        get: operations["getAdminSession"];
+        put?: never;
+        post?: never;
+        /** Revoke the current Web Admin browser session. */
+        delete: operations["deleteAdminSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/identity-provider": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the safe enterprise identity provider configuration. */
+        get: operations["getAdminIdentityProvider"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/org": {
         parameters: {
             query?: never;
@@ -138,11 +173,33 @@ export interface paths {
         /** List project metadata for administration. */
         get: operations["listAdminProjects"];
         put?: never;
-        post?: never;
+        /** Create a project and grant the current administrator project admin access. */
+        post: operations["createAdminProject"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** Read project metadata for administration. */
+        get: operations["getAdminProject"];
+        put?: never;
+        post?: never;
+        /** Delete a project and its governed content. */
+        delete: operations["deleteAdminProject"];
+        options?: never;
+        head?: never;
+        /** Update project metadata. */
+        patch: operations["updateAdminProject"];
         trace?: never;
     };
     "/api/v1/admin/projects/{project_id}/members": {
@@ -295,6 +352,31 @@ export interface components {
             /** Format: uri */
             authorization_url: string;
         };
+        WebAdminSession: {
+            user: components["schemas"]["UserRef"];
+            org: components["schemas"]["OrgRef"];
+            capabilities: string[];
+            token_id: string;
+            csrf_token: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        SessionRevoked: {
+            revoked: boolean;
+        };
+        OidcProviderStatus: {
+            /** @enum {string} */
+            protocol: "oidc";
+            configured: boolean;
+            /** Format: uri */
+            issuer: string | null;
+            /** Format: uri */
+            callback_url: string | null;
+            /** @enum {string} */
+            admission_mode: "invite_only";
+            /** @enum {string} */
+            secret_source: "deployment_environment";
+        };
         AdminOrg: {
             org_id: string;
             name: string;
@@ -337,9 +419,21 @@ export interface components {
         AdminProject: {
             project_id: string;
             name: string;
+            description: string;
             member_count: number;
+            revision: number;
+            /** Format: date-time */
+            created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        CreateProjectRequest: {
+            name: string;
+            description?: string;
+        };
+        UpdateProjectRequest: {
+            name?: string;
+            description?: string;
         };
         ProjectMemberListResponse: {
             items: components["schemas"]["ProjectMember"][];
@@ -367,7 +461,7 @@ export interface components {
             token_id: string;
             user_id: string;
             /** @enum {string} */
-            kind: "access" | "refresh" | "integration";
+            kind: "access" | "refresh" | "integration" | "web_session";
             revoked: boolean;
             /** Format: date-time */
             expires_at: string | null;
@@ -435,6 +529,10 @@ export interface components {
             avatar_url: string | null;
             role: string;
         };
+        OrgRef: {
+            org_id: string;
+            name: string;
+        };
     };
     responses: {
         /** @description Error response. */
@@ -454,6 +552,8 @@ export interface components {
         UserId: string;
         ProjectId: string;
         XCsrfToken: string;
+        /** @description Required for state-changing requests authenticated by adminSession. */
+        AdminCsrfToken: string;
     };
     requestBodies: never;
     headers: never;
@@ -562,6 +662,73 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getAdminSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current Web Admin session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebAdminSession"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteAdminSession: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session revocation result. The session cookie is cleared. */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionRevoked"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAdminIdentityProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OIDC Provider state without credentials. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcProviderStatus"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getAdminOrg: {
         parameters: {
             query?: never;
@@ -588,6 +755,8 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path?: never;
             cookie?: never;
@@ -637,7 +806,10 @@ export interface operations {
     createAdminMember: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -648,7 +820,7 @@ export interface operations {
         };
         responses: {
             /** @description Created member. */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -664,6 +836,8 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 user_id: components["parameters"]["UserId"];
@@ -689,6 +863,8 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 user_id: components["parameters"]["UserId"];
@@ -737,6 +913,115 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    createAdminProject: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Created project. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminProject"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getAdminProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project metadata. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminProject"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteAdminProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delete result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateAdminProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProjectRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated project. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminProject"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listAdminProjectMembers: {
         parameters: {
             query?: {
@@ -767,7 +1052,10 @@ export interface operations {
     createAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
             path: {
                 project_id: components["parameters"]["ProjectId"];
             };
@@ -780,7 +1068,7 @@ export interface operations {
         };
         responses: {
             /** @description Created project membership. */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -794,7 +1082,10 @@ export interface operations {
     deleteAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
             path: {
                 project_id: components["parameters"]["ProjectId"];
                 user_id: components["parameters"]["UserId"];
@@ -818,7 +1109,10 @@ export interface operations {
     updateAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
             path: {
                 project_id: components["parameters"]["ProjectId"];
                 user_id: components["parameters"]["UserId"];
@@ -870,7 +1164,10 @@ export interface operations {
     deleteAdminToken: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required for state-changing requests authenticated by adminSession. */
+                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
+            };
             path: {
                 token_id: string;
             };

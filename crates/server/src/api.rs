@@ -42,9 +42,9 @@ pub enum ClientKind {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct OidcAuthorizationRequest {
     pub client_kind: ClientKind,
-    pub redirect_uri: String,
-    pub code_challenge: String,
-    pub code_challenge_method: String,
+    pub redirect_uri: Option<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
     pub state: Option<String>,
     pub login_hint: Option<String>,
     pub return_to: Option<String>,
@@ -90,6 +90,17 @@ pub struct SessionRevoked {
     pub revoked: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebAdminSession {
+    pub user: UserRef,
+    pub org: OrgRef,
+    pub capabilities: Vec<String>,
+    pub token_id: String,
+    pub csrf_token: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallationState {
@@ -106,6 +117,7 @@ pub struct SetupConfiguration {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetupSessionStatus {
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
     pub configuration: Option<SetupConfiguration>,
 }
@@ -125,6 +137,7 @@ pub struct CreateSetupSessionRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateSetupSessionResponse {
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
     pub csrf_token: String,
 }
@@ -188,6 +201,7 @@ pub struct AdminOrg {
     pub name: String,
     pub allowed_email_domains: Vec<String>,
     pub revision: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -230,7 +244,12 @@ pub struct MemberListResponse {
 pub struct AdminProject {
     pub project_id: String,
     pub name: String,
+    pub description: String,
     pub member_count: i64,
+    pub revision: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -261,6 +280,7 @@ pub struct ProjectMember {
     pub project_id: String,
     pub user: UserRef,
     pub role: ProjectRole,
+    #[serde(with = "time::serde::rfc3339")]
     pub joined_at: OffsetDateTime,
 }
 
@@ -287,6 +307,29 @@ pub enum AccessTokenKind {
     Access,
     Refresh,
     Integration,
+    WebSession,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionMode {
+    InviteOnly,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretSource {
+    DeploymentEnvironment,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OidcProviderStatus {
+    pub protocol: String,
+    pub configured: bool,
+    pub issuer: Option<String>,
+    pub callback_url: Option<String>,
+    pub admission_mode: AdmissionMode,
+    pub secret_source: SecretSource,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -295,7 +338,9 @@ pub struct AccessTokenMeta {
     pub user_id: String,
     pub kind: AccessTokenKind,
     pub revoked: bool,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -312,6 +357,7 @@ pub struct AuditEvent {
     pub action: String,
     pub target_type: String,
     pub target_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -345,7 +391,9 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub revision: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -401,7 +449,9 @@ pub struct PersonalBundleMeta {
     pub context_count: i64,
     pub workflow_count: i64,
     pub revision: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -491,6 +541,7 @@ pub struct DraftOperation {
     #[serde(flatten)]
     pub input: DraftOperationInput,
     pub operation_id: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -505,7 +556,9 @@ pub struct Draft {
     pub resource: DraftResourceRef,
     pub status: DraftStatus,
     pub version: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -530,6 +583,7 @@ pub struct DraftSyncState {
 pub struct DraftConflict {
     pub base_commit_id: Option<String>,
     pub current_commit_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub detected_at: OffsetDateTime,
 }
 
@@ -581,6 +635,7 @@ pub struct DraftEvent {
     pub event_type: DraftEventType,
     pub version: i64,
     pub daemon_installation_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -653,7 +708,9 @@ pub struct Review {
     pub status: ReviewStatus,
     pub version: i64,
     pub decision_body: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -684,6 +741,7 @@ pub struct ReviewComment {
     pub review_id: String,
     pub author: UserRef,
     pub body: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -769,6 +827,7 @@ pub struct Commit {
     pub tree_id: String,
     pub parent_commit_id: Option<String>,
     pub version: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -779,6 +838,7 @@ pub struct Ref {
     pub org_id: String,
     pub project_id: Option<String>,
     pub commit_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -923,6 +983,7 @@ pub struct MetapromptMeta {
     pub path: String,
     pub content_hash: String,
     pub status: ResourceStatus,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -935,6 +996,7 @@ pub struct RuleMeta {
     pub name: String,
     pub content_hash: String,
     pub status: ResourceStatus,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -947,6 +1009,7 @@ pub struct ContextMeta {
     pub path: String,
     pub content_hash: String,
     pub size: i64,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -968,6 +1031,7 @@ pub struct WorkflowMeta {
     pub name: String,
     pub content_hash: String,
     pub status: ResourceStatus,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -1046,5 +1110,28 @@ impl DraftEventType {
             Self::Conflicted => "conflicted",
             Self::Merged => "merged",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_timestamps_use_rfc3339() {
+        let event = AuditEvent {
+            event_id: "evt_test".to_owned(),
+            actor_user_id: None,
+            action: "test.created".to_owned(),
+            target_type: "test".to_owned(),
+            target_id: None,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        };
+
+        let json = serde_json::to_value(&event).expect("serialize audit event");
+        assert_eq!(json["created_at"], "1970-01-01T00:00:00Z");
+
+        let decoded: AuditEvent = serde_json::from_value(json).expect("deserialize audit event");
+        assert_eq!(decoded.created_at, OffsetDateTime::UNIX_EPOCH);
     }
 }

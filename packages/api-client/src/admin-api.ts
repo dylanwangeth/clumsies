@@ -60,6 +60,18 @@ export class ClumsiesAdminApi {
     );
   }
 
+  session() {
+    return unwrap(this.raw.GET("/api/v1/admin/session"));
+  }
+
+  deleteSession() {
+    return unwrap(this.raw.DELETE("/api/v1/admin/session"));
+  }
+
+  identityProvider() {
+    return unwrap(this.raw.GET("/api/v1/admin/identity-provider"));
+  }
+
   org() {
     return unwrap(this.raw.GET("/api/v1/admin/org"));
   }
@@ -113,6 +125,45 @@ export class ClumsiesAdminApi {
   listProjects(query: AdminPageQuery = {}) {
     return unwrap(
       this.raw.GET("/api/v1/admin/projects", { params: { query } }),
+    );
+  }
+
+  createProject(request: Schema<"CreateProjectRequest">) {
+    return unwrap(this.raw.POST("/api/v1/admin/projects", { body: request }));
+  }
+
+  project(projectId: string) {
+    return unwrap(
+      this.raw.GET("/api/v1/admin/projects/{project_id}", {
+        params: { path: { project_id: projectId } },
+      }),
+    );
+  }
+
+  updateProject(
+    projectId: string,
+    revision: number,
+    request: Schema<"UpdateProjectRequest">,
+  ) {
+    return unwrap(
+      this.raw.PATCH("/api/v1/admin/projects/{project_id}", {
+        params: {
+          path: { project_id: projectId },
+          header: { "If-Match": String(revision) },
+        },
+        body: request,
+      }),
+    );
+  }
+
+  deleteProject(projectId: string, revision: number) {
+    return unwrap(
+      this.raw.DELETE("/api/v1/admin/projects/{project_id}", {
+        params: {
+          path: { project_id: projectId },
+          header: { "If-Match": String(revision) },
+        },
+      }),
     );
   }
 
