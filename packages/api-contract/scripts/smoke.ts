@@ -65,6 +65,10 @@ type _publicContract = [
 ];
 
 type _adminContract = [
+  Expect<HasMethod<AdminPaths, "/api/v1/setup", "get">>,
+  Expect<HasMethod<AdminPaths, "/api/v1/setup/sessions", "post">>,
+  Expect<HasMethod<AdminPaths, "/api/v1/setup/configuration", "put">>,
+  Expect<HasMethod<AdminPaths, "/api/v1/setup/oidc-authorizations", "post">>,
   Expect<HasMethod<AdminPaths, "/api/v1/admin/org", "get">>,
   Expect<HasMethod<AdminPaths, "/api/v1/admin/org", "patch">>,
   Expect<HasMethod<AdminPaths, "/api/v1/admin/members", "get">>,

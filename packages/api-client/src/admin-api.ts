@@ -27,6 +27,39 @@ export class ClumsiesAdminApi {
     this.raw = client;
   }
 
+  setup() {
+    return unwrap(this.raw.GET("/api/v1/setup"));
+  }
+
+  createSetupSession(setupCode: string) {
+    return unwrap(
+      this.raw.POST("/api/v1/setup/sessions", {
+        body: { setup_code: setupCode },
+      }),
+    );
+  }
+
+  replaceSetupConfiguration(
+    csrfToken: string,
+    request: Schema<"ReplaceSetupConfigurationRequest">,
+  ) {
+    return unwrap(
+      this.raw.PUT("/api/v1/setup/configuration", {
+        params: { header: { "X-CSRF-Token": csrfToken } },
+        body: request,
+      }),
+    );
+  }
+
+  createSetupOidcAuthorization(csrfToken: string, redirectUri: string) {
+    return unwrap(
+      this.raw.POST("/api/v1/setup/oidc-authorizations", {
+        params: { header: { "X-CSRF-Token": csrfToken } },
+        body: { redirect_uri: redirectUri },
+      }),
+    );
+  }
+
   org() {
     return unwrap(this.raw.GET("/api/v1/admin/org"));
   }

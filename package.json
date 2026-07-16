@@ -10,10 +10,12 @@
   "scripts": {
     "dev": "vitepress dev docs",
     "dev:desktop": "bun run --cwd apps/desktop dev",
+    "dev:web-admin": "bun run --cwd apps/web-admin dev",
     "dev:infra": "docker compose up -d --wait postgres fake-oidc",
     "dev:infra:down": "docker compose down",
     "dev:server": "sh dev/server.sh",
     "build": "vitepress build docs",
+    "build:web-admin": "bun run --cwd apps/web-admin build",
     "preview": "vitepress preview docs",
     "api:generate": "bun run --cwd packages/api-contract generate",
     "api:check": "bun run --cwd packages/api-contract check && bun run --cwd packages/api-client typecheck && bun run --cwd packages/api-client test"

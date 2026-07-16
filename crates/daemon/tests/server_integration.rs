@@ -275,15 +275,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Daemon Integration",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Daemon Integration").await;
 
     let stale_access_token = "expired-daemon-access-token";
     let refresh_token = "daemon-integration-refresh-token";
@@ -510,15 +502,7 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Context Lifecycle",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Context Lifecycle").await;
 
     let seed_draft = repository
         .create_draft(
@@ -782,15 +766,7 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Offline Conflict",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Offline Conflict").await;
 
     let base_draft = repository
         .create_draft(
@@ -1278,15 +1254,7 @@ async fn project_metaprompt_is_independent_from_hub_and_converges_through_delete
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Metaprompt Lifecycle",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Metaprompt Lifecycle").await;
 
     let hub_draft = repository
         .create_draft(
@@ -1622,15 +1590,7 @@ async fn rule_and_workflow_crud_preserve_structured_generations() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Structured Lifecycle",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Structured Lifecycle").await;
 
     let access_token = "daemon-structured-lifecycle-access-token";
     let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
@@ -1960,15 +1920,7 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Selected Hub Lifecycle",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Selected Hub Lifecycle").await;
 
     let access_token = "daemon-selected-hub-lifecycle-access-token";
     let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
@@ -2335,16 +2287,7 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
     let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
-    let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Daemon Convergence",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Daemon Convergence").await;
 
     let access_token = "daemon-convergence-access-token";
     let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
@@ -2563,15 +2506,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
-    let bootstrap = repository
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Commit Convergence",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Commit Convergence").await;
 
     let access_token = "daemon-commit-convergence-access-token";
     let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));

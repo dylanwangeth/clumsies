@@ -40,6 +40,21 @@
         "vite": "^8.0.0",
       },
     },
+    "apps/web-admin": {
+      "name": "@clumsies/web-admin",
+      "dependencies": {
+        "@clumsies/api-client": "workspace:*",
+        "lucide-react": "^1.24.0",
+        "react": "^19.2.7",
+        "react-dom": "^19.2.7",
+      },
+      "devDependencies": {
+        "@types/react": "^19.2.17",
+        "@types/react-dom": "^19.2.3",
+        "@vitejs/plugin-react": "^6.0.3",
+        "vite": "^8.0.0",
+      },
+    },
     "packages/api-client": {
       "name": "@clumsies/api-client",
       "dependencies": {
@@ -117,6 +132,8 @@
     "@clumsies/api-contract": ["@clumsies/api-contract@workspace:packages/api-contract"],
 
     "@clumsies/desktop": ["@clumsies/desktop@workspace:apps/desktop"],
+
+    "@clumsies/web-admin": ["@clumsies/web-admin@workspace:apps/web-admin"],
 
     "@codemirror/autocomplete": ["@codemirror/autocomplete@6.20.3", "", { "dependencies": { "@codemirror/language": "^6.0.0", "@codemirror/state": "^6.0.0", "@codemirror/view": "^6.17.0", "@lezer/common": "^1.0.0" } }, "sha512-tlosUqb+3BbxCxZdu4tKeRghPFC+QM7q4X5YhKV2eCmPG+1r2F3f4AaSz5sCrFqUtX4Jh20VFTKecl16MgiV9g=="],
 

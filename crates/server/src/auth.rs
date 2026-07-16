@@ -24,6 +24,7 @@ use crate::api::{
     ClientKind, OidcAuthorizationRequest, OidcCallbackRequest, OrgRef, SessionRevoked,
     TokenGrantType, TokenRequest, TokenResponse, UserRef,
 };
+use crate::installation::{InstallationError, InstallationService};
 
 const ACCESS_TOKEN_TTL: Duration = Duration::minutes(15);
 const REFRESH_TOKEN_TTL: Duration = Duration::days(30);
@@ -319,18 +320,10 @@ impl AuthService {
         {
             return Ok(Self::unconfigured(pool));
         }
-        let issuer = issuer.ok_or_else(|| {
-            AuthError::Configuration("CLUMSIES_OIDC_ISSUER is required".to_owned())
-        })?;
-        let client_id = client_id.ok_or_else(|| {
-            AuthError::Configuration("CLUMSIES_OIDC_CLIENT_ID is required".to_owned())
-        })?;
-        let client_secret = client_secret.ok_or_else(|| {
-            AuthError::Configuration("CLUMSIES_OIDC_CLIENT_SECRET is required".to_owned())
-        })?;
-        let callback_url = callback_url.ok_or_else(|| {
-            AuthError::Configuration("CLUMSIES_OIDC_CALLBACK_URL is required".to_owned())
-        })?;
+        let issuer = required_oidc_value("CLUMSIES_OIDC_ISSUER", issuer)?;
+        let client_id = required_oidc_value("CLUMSIES_OIDC_CLIENT_ID", client_id)?;
+        let client_secret = required_oidc_value("CLUMSIES_OIDC_CLIENT_SECRET", client_secret)?;
+        let callback_url = required_oidc_value("CLUMSIES_OIDC_CALLBACK_URL", callback_url)?;
         let allowed_redirects = env::var("CLUMSIES_CLIENT_REDIRECT_URIS")
             .map_err(|_| {
                 AuthError::Configuration(
@@ -399,8 +392,8 @@ impl AuthService {
             "INSERT INTO oidc_login_transactions (
                 transaction_id, provider_state_hash, nonce, provider_pkce_verifier,
                 client_kind, client_redirect_uri, client_state, client_code_challenge,
-                return_to, expires_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                return_to, expires_at, flow
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'product_login')",
         )
         .bind(prefixed_id("login"))
         .bind(secret_hash(&provider_state))
@@ -417,7 +410,51 @@ impl AuthService {
         Ok(authorization_url)
     }
 
-    pub async fn complete_login(&self, request: OidcCallbackRequest) -> Result<String, AuthError> {
+    pub async fn begin_setup_login(
+        &self,
+        setup_session_id: &str,
+        redirect_uri: &str,
+    ) -> Result<String, AuthError> {
+        let provider = self.provider.as_ref().ok_or(AuthError::NotConfigured)?;
+        let client_redirect = Url::parse(redirect_uri)
+            .map_err(|error| AuthError::InvalidRequest(error.to_string()))?;
+        if !self.redirect_allowed(&client_redirect) {
+            return Err(AuthError::RedirectNotAllowed);
+        }
+
+        let provider_state = random_token();
+        let nonce = random_token();
+        let (provider_pkce_challenge, provider_pkce_verifier) =
+            PkceCodeChallenge::new_random_sha256();
+        let authorization_url =
+            provider.authorization_url(&provider_state, &nonce, provider_pkce_challenge, None)?;
+        sqlx::query(
+            "INSERT INTO oidc_login_transactions (
+                transaction_id, provider_state_hash, nonce, provider_pkce_verifier,
+                client_kind, client_redirect_uri, client_state, client_code_challenge,
+                return_to, expires_at, flow, setup_session_id
+             ) VALUES (
+                $1, $2, $3, $4, 'web_admin', $5, NULL, NULL,
+                NULL, $6, 'installation_setup', $7
+             )",
+        )
+        .bind(prefixed_id("login"))
+        .bind(secret_hash(&provider_state))
+        .bind(nonce)
+        .bind(provider_pkce_verifier.secret())
+        .bind(client_redirect.as_str())
+        .bind(OffsetDateTime::now_utc() + LOGIN_TRANSACTION_TTL)
+        .bind(setup_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(authorization_url)
+    }
+
+    pub async fn complete_login(
+        &self,
+        request: OidcCallbackRequest,
+        installation: &InstallationService,
+    ) -> Result<String, AuthError> {
         let provider = self.provider.as_ref().ok_or(AuthError::NotConfigured)?;
         let transaction = self.login_transaction(&request.state).await?;
         if let Some(provider_error) = request.error {
@@ -442,7 +479,6 @@ impl AuthService {
         if !identity.email_verified {
             return Err(AuthError::EmailNotVerified);
         }
-        let authorization_code = random_token();
         let mut tx = self.pool.begin().await?;
         let consumed = sqlx::query(
             "UPDATE oidc_login_transactions
@@ -455,6 +491,33 @@ impl AuthService {
         if consumed.rows_affected() != 1 {
             return Err(AuthError::LoginTransactionExpired);
         }
+        if transaction.flow == LoginFlow::InstallationSetup {
+            let setup_session_id = transaction
+                .setup_session_id
+                .as_deref()
+                .ok_or(AuthError::CorruptLoginTransaction)?;
+            if let Err(error) = installation
+                .initialize_with_oidc(&mut tx, setup_session_id, &identity)
+                .await
+            {
+                tx.rollback().await?;
+                if matches!(
+                    error,
+                    InstallationError::ConfigurationRequired
+                        | InstallationError::OwnerDomainNotAllowed
+                        | InstallationError::InvalidOwnerIdentity
+                ) {
+                    self.consume_login_transaction(&transaction.transaction_id)
+                        .await?;
+                    return callback_redirect(&transaction, None, Some((error.code(), None)));
+                }
+                return Err(error.into());
+            }
+            tx.commit().await?;
+            return callback_redirect(&transaction, None, None);
+        }
+
+        let authorization_code = random_token();
         let org = sqlx::query(
             "SELECT org_id, allowed_email_domains FROM orgs ORDER BY created_at LIMIT 1",
         )
@@ -465,6 +528,10 @@ impl AuthService {
         let allowed_domains: Vec<String> = org.try_get("allowed_email_domains")?;
         enforce_email_domain(&identity.email, &allowed_domains)?;
         let user_id = resolve_external_identity(&mut tx, &identity).await?;
+        let client_code_challenge = transaction
+            .client_code_challenge
+            .as_deref()
+            .ok_or(AuthError::CorruptLoginTransaction)?;
         sqlx::query(
             "INSERT INTO authorization_codes (
                 code_id, code_hash, user_id, org_id, redirect_uri, code_challenge, expires_at
@@ -475,7 +542,7 @@ impl AuthService {
         .bind(&user_id)
         .bind(&org_id)
         .bind(&transaction.client_redirect_uri)
-        .bind(&transaction.client_code_challenge)
+        .bind(client_code_challenge)
         .bind(OffsetDateTime::now_utc() + AUTHORIZATION_CODE_TTL)
         .execute(&mut *tx)
         .await?;
@@ -654,7 +721,7 @@ impl AuthService {
     async fn login_transaction(&self, provider_state: &str) -> Result<LoginTransaction, AuthError> {
         let row = sqlx::query(
             "SELECT transaction_id, nonce, provider_pkce_verifier, client_redirect_uri,
-                    client_state, client_code_challenge, return_to
+                    client_state, client_code_challenge, return_to, flow, setup_session_id
              FROM oidc_login_transactions
              WHERE provider_state_hash = $1 AND consumed_at IS NULL AND expires_at > now()",
         )
@@ -670,6 +737,8 @@ impl AuthService {
             client_state: row.try_get("client_state")?,
             client_code_challenge: row.try_get("client_code_challenge")?,
             return_to: row.try_get("return_to")?,
+            flow: login_flow(row.try_get::<String, _>("flow")?.as_str())?,
+            setup_session_id: row.try_get("setup_session_id")?,
         })
     }
 
@@ -702,8 +771,16 @@ struct LoginTransaction {
     provider_pkce_verifier: String,
     client_redirect_uri: String,
     client_state: Option<String>,
-    client_code_challenge: String,
+    client_code_challenge: Option<String>,
     return_to: Option<String>,
+    flow: LoginFlow,
+    setup_session_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoginFlow {
+    ProductLogin,
+    InstallationSetup,
 }
 
 async fn issue_token_pair(
@@ -912,6 +989,13 @@ fn callback_redirect(
 ) -> Result<String, AuthError> {
     let mut url = Url::parse(&transaction.client_redirect_uri)
         .map_err(|parse_error| AuthError::InvalidRequest(parse_error.to_string()))?;
+    let has_query_values = code.is_some()
+        || error.is_some()
+        || transaction.client_state.is_some()
+        || transaction.return_to.is_some();
+    if !has_query_values {
+        return Ok(url.to_string());
+    }
     {
         let mut query = url.query_pairs_mut();
         if let Some(code) = code {
@@ -1030,6 +1114,14 @@ fn client_kind(kind: ClientKind) -> &'static str {
     }
 }
 
+fn login_flow(value: &str) -> Result<LoginFlow, AuthError> {
+    match value {
+        "product_login" => Ok(LoginFlow::ProductLogin),
+        "installation_setup" => Ok(LoginFlow::InstallationSetup),
+        _ => Err(AuthError::CorruptLoginTransaction),
+    }
+}
+
 fn secret_hash(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
@@ -1047,6 +1139,15 @@ fn optional_env(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn required_oidc_value(name: &str, value: Option<String>) -> Result<String, AuthError> {
+    match value {
+        Some(value) if !value.eq_ignore_ascii_case("null") => Ok(value),
+        _ => Err(AuthError::Configuration(format!(
+            "{name} is required and must not be null"
+        ))),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -1067,6 +1168,8 @@ pub enum AuthError {
     ProviderInvalid(String),
     #[error("OIDC login transaction is expired or already consumed")]
     LoginTransactionExpired,
+    #[error("stored OIDC login transaction is corrupt")]
+    CorruptLoginTransaction,
     #[error("OIDC email is not verified")]
     EmailNotVerified,
     #[error("member is not admitted to this Server")]
@@ -1079,6 +1182,8 @@ pub enum AuthError {
     InvalidGrant,
     #[error("authentication is required")]
     Unauthorized,
+    #[error(transparent)]
+    Installation(#[from] InstallationError),
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
 }
@@ -1094,13 +1199,28 @@ impl AuthError {
             Self::ProviderCodeExchangeFailed(_) => "oidc_code_exchange_failed",
             Self::ProviderInvalid(_) => "oidc_id_token_invalid",
             Self::LoginTransactionExpired => "login_transaction_expired",
+            Self::CorruptLoginTransaction => "login_transaction_corrupt",
             Self::EmailNotVerified => "email_not_verified",
             Self::MemberNotAllowed => "member_not_allowed",
             Self::DomainNotAllowed => "domain_not_allowed",
             Self::ProviderIdentityConflict => "oidc_identity_conflict",
             Self::InvalidGrant => "invalid_grant",
             Self::Unauthorized => "unauthorized",
+            Self::Installation(error) => error.code(),
             Self::Sqlx(_) => "internal_error",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oidc_configuration_rejects_null_placeholders() {
+        let error = required_oidc_value("CLUMSIES_OIDC_CLIENT_ID", Some("null".to_owned()))
+            .expect_err("null must not be accepted as an OIDC credential");
+
+        assert!(matches!(error, AuthError::Configuration(_)));
     }
 }

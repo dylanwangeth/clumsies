@@ -11,6 +11,7 @@ path = "src/main.rs"
 async-trait = "0.1.89"
 axum = "0.8.9"
 base64 = "0.22.1"
+cookie = "0.18.1"
 hex = "0.4.3"
 openidconnect = "4.0.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -22,7 +23,7 @@ thiserror = "2.0.18"
 time = { version = "0.3.53", features = ["serde", "serde-human-readable", "macros"] }
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "sync"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.0", features = ["cors"] }
+tower-http = { version = "0.7.0", features = ["cors", "fs"] }
 url = "2.5.8"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 

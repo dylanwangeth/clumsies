@@ -24,15 +24,15 @@ use tower::ServiceExt;
 async fn draft_review_merge_produces_project_commit() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Search Agent",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Search Agent",
+    )
+    .await;
     let org_id = bootstrap.org_id;
     let user_id = bootstrap.user_id;
     let project_id = bootstrap.project_id;
@@ -612,15 +612,15 @@ async fn draft_review_merge_produces_project_commit() {
 async fn org_draft_review_merge_advances_only_the_org_ref() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Project Memory",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Project Memory",
+    )
+    .await;
     let context_id = repo
         .create_org_context(
             &bootstrap.org_id,
@@ -717,15 +717,15 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
 async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Selected Hub Memory",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Selected Hub Memory",
+    )
+    .await;
     let context_id = repo
         .create_org_context(
             &bootstrap.org_id,
@@ -959,15 +959,15 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
 async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Projection Rollback",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Projection Rollback",
+    )
+    .await;
     let context_id = repo
         .create_org_context(&bootstrap.org_id, "context/shared.md", "# Shared authority")
         .await
@@ -1163,15 +1163,15 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
 async fn org_metaprompt_lifecycle_is_independent_from_project_refs() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Metaprompt Isolation",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Metaprompt Isolation",
+    )
+    .await;
     let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
     let project_state_uri = format!("/api/v1/projects/{}/commit-state", bootstrap.project_id);
     let project_before: CommitStateResponse = get_json(app.clone(), &project_state_uri).await;
@@ -1399,20 +1399,24 @@ async fn org_metaprompt_lifecycle_is_independent_from_project_refs() {
 #[tokio::test]
 async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Review Lifecycle",
-        )
-        .await
-        .unwrap();
-    let member_id = repo
-        .create_user("member@example.com", Some("Member"), "member")
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Review Lifecycle",
+    )
+    .await;
+    let member_id = "usr_review_member".to_owned();
+    sqlx::query(
+        "INSERT INTO users (user_id, email, display_name, role, status)
+         VALUES ($1, 'member@example.com', 'Member', 'member', 'active')",
+    )
+    .bind(&member_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'member')",
     )
@@ -1651,16 +1655,15 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
 #[tokio::test]
 async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Concurrent Memory",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Concurrent Memory",
+    )
+    .await;
     let project_id = bootstrap.project_id;
     let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
 
@@ -1949,15 +1952,15 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
 async fn project_org_selection_rejects_foreign_and_colliding_resources_atomically() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Effective Memory",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Effective Memory",
+    )
+    .await;
     let collision_id = repo
         .create_org_context(&bootstrap.org_id, "context/shared.md", "# Shared from Hub")
         .await
@@ -2020,15 +2023,6 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         .unwrap();
     }
 
-    let foreign_org_id = repo.create_org("Foreign Memory").await.unwrap();
-    let foreign_context_id = repo
-        .create_org_context(
-            &foreign_org_id,
-            "context/foreign.md",
-            "# Foreign organization",
-        )
-        .await
-        .unwrap();
     let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
     let selection_uri = format!("/api/v1/projects/{}/org-selections", bootstrap.project_id);
     let before: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
@@ -2060,18 +2054,18 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         );
     }
 
-    let foreign_response = put_response_with_if_match(
+    let unknown_response = put_response_with_if_match(
         app.clone(),
         &selection_uri,
         before.revision,
         &ReplaceProjectOrgSelectionRequest {
             rule_ids: Vec::new(),
-            context_ids: vec![foreign_context_id],
+            context_ids: vec!["ctx_unknown".to_owned()],
             workflow_ids: Vec::new(),
         },
     )
     .await;
-    assert_eq!(foreign_response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(unknown_response.status(), StatusCode::NOT_FOUND);
 
     let after_failures: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
     assert_eq!(after_failures.revision, before.revision);
@@ -2111,16 +2105,15 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
 #[tokio::test]
 async fn project_org_selection_cannot_remove_a_rule_used_by_effective_workflow() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Workflow Memory",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Workflow Memory",
+    )
+    .await;
     sqlx::query(
         "INSERT INTO resources (
             resource_id, org_id, project_id, scope, resource_kind, path, name,
@@ -2217,16 +2210,15 @@ async fn project_org_selection_cannot_remove_a_rule_used_by_effective_workflow()
 #[tokio::test]
 async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Path Validation",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Path Validation",
+    )
+    .await;
     let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
     let invalid_workflow = CreateDraftRequest {
         daemon_installation_id: "daemon_paths".to_owned(),
@@ -2433,16 +2425,15 @@ async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
 #[tokio::test]
 async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Search Agent",
-        )
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Search Agent",
+    )
+    .await;
     let project_id = bootstrap.project_id;
     let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
     let (initial_state, initial_etag): (CommitStateResponse, String) = get_json_with_etag(

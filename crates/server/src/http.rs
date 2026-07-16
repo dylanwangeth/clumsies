@@ -1,34 +1,42 @@
 use axum::extract::{Extension, Path, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_MATCH, LOCATION};
+use axum::http::header::{
+    AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, ETAG, IF_MATCH, LOCATION, SET_COOKIE,
+};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
+use cookie::{Cookie, SameSite};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::{
     CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
     CreateReviewCommentRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
     CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
-    DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
-    OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
-    ReplaceProjectOrgSelectionRequest, ResourceScope, TokenRequest, UpdateAdminOrgRequest,
-    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    CreateSetupSessionRequest, DraftOperationBatchRequest, DraftOperationInput,
+    OidcAuthorizationRequest, OidcCallbackRequest, OrgRole, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, ProjectRole, ReplaceProjectOrgSelectionRequest,
+    ReplaceSetupConfigurationRequest, ResourceScope, SetupOidcAuthorization,
+    SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService};
+use crate::installation::{InstallationError, InstallationService};
 use crate::repository::{ServerError, ServerRepository};
 
-const CURRENT_SCHEMA_MIGRATION: i64 = 20260715000100;
+const CURRENT_SCHEMA_MIGRATION: i64 = 20260716000100;
 
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
     repository: ServerRepository,
     auth: AuthService,
+    installation: InstallationService,
     version: &'static str,
 }
 
@@ -74,6 +82,10 @@ macro_rules! define_routes {
 
 define_routes!(public_routes, PUBLIC_OPERATIONS, {
     "/api/v1/admin/health" => { get: admin_health };
+    "/api/v1/setup" => { get: get_setup };
+    "/api/v1/setup/sessions" => { post: create_setup_session };
+    "/api/v1/setup/configuration" => { put: replace_setup_configuration };
+    "/api/v1/setup/oidc-authorizations" => { post: create_setup_oidc_authorization };
     "/oauth2/authorization/oidc" => { get: begin_oidc };
     "/login/oauth2/code/oidc" => { get: complete_oidc };
     "/api/v1/auth/token" => { post: exchange_auth_token };
@@ -166,24 +178,72 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
 
 pub fn router(pool: PgPool) -> Router {
     let auth = AuthService::unconfigured(pool.clone());
-    router_with_auth(pool, auth)
+    let installation = InstallationService::new(pool.clone(), None, true)
+        .expect("an installation service without a setup code is valid");
+    router_with_services(pool, auth, installation)
 }
 
 pub fn router_with_auth(pool: PgPool, auth: AuthService) -> Router {
+    let installation = InstallationService::new(pool.clone(), None, true)
+        .expect("an installation service without a setup code is valid");
+    router_with_services(pool, auth, installation)
+}
+
+pub fn router_with_services(
+    pool: PgPool,
+    auth: AuthService,
+    installation: InstallationService,
+) -> Router {
     let state = AppState {
         repository: ServerRepository::new(pool.clone()),
         auth,
+        installation,
         pool,
         version: env!("CARGO_PKG_VERSION"),
     };
     let public_routes = public_routes();
     let protected_routes =
         protected_routes().route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
-    Router::new()
+    let mut router = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        .route("/setup", get(redirect_to_setup));
+    if let Some(directory) = optional_env("CLUMSIES_WEB_ADMIN_DIR") {
+        let index = std::path::Path::new(&directory).join("index.html");
+        let service = ServeDir::new(directory).fallback(ServeFile::new(index));
+        router = router.nest_service("/admin", service);
+    }
+    router
         .with_state(state)
+        .layer(middleware::from_fn(security_headers))
         .layer(cors_layer())
+}
+
+async fn redirect_to_setup() -> Redirect {
+    Redirect::temporary("/admin/setup")
+}
+
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    for (name, value) in [
+        (
+            "content-security-policy",
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+        ),
+        ("referrer-policy", "no-referrer"),
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        (
+            "permissions-policy",
+            "camera=(), microphone=(), geolocation=()",
+        ),
+    ] {
+        response.headers_mut().insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+    response
 }
 
 fn cors_layer() -> CorsLayer {
@@ -204,14 +264,28 @@ fn cors_layer() -> CorsLayer {
             Method::PATCH,
             Method::DELETE,
         ])
-        .allow_headers([AUTHORIZATION, CONTENT_TYPE, IF_MATCH])
+        .allow_headers([
+            AUTHORIZATION,
+            CONTENT_TYPE,
+            IF_MATCH,
+            HeaderName::from_static("x-csrf-token"),
+        ])
         .expose_headers([ETAG, HeaderName::from_static("x-request-id")])
+        .allow_credentials(true)
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 async fn begin_oidc(
     State(state): State<AppState>,
     Query(request): Query<OidcAuthorizationRequest>,
 ) -> Result<Response, HttpError> {
+    state.installation.require_initialized().await?;
     redirect_response(state.auth.begin_login(request).await?)
 }
 
@@ -219,7 +293,86 @@ async fn complete_oidc(
     State(state): State<AppState>,
     Query(request): Query<OidcCallbackRequest>,
 ) -> Result<Response, HttpError> {
-    redirect_response(state.auth.complete_login(request).await?)
+    redirect_response(
+        state
+            .auth
+            .complete_login(request, &state.installation)
+            .await?,
+    )
+}
+
+async fn get_setup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<crate::api::SetupStatus>, HttpError> {
+    let session_token = setup_session_token(&headers, state.installation.cookie_name());
+    Ok(Json(
+        state
+            .installation
+            .status(session_token.as_deref(), state.auth.configured())
+            .await?,
+    ))
+}
+
+async fn create_setup_session(
+    State(state): State<AppState>,
+    Json(request): Json<CreateSetupSessionRequest>,
+) -> Result<Response, HttpError> {
+    let credentials = state
+        .installation
+        .create_session(&request.setup_code)
+        .await?;
+    let cookie = Cookie::build((
+        state.installation.cookie_name().to_owned(),
+        credentials.token,
+    ))
+    .path("/")
+    .http_only(true)
+    .secure(state.installation.cookie_secure())
+    .same_site(SameSite::Strict)
+    .max_age(cookie::time::Duration::minutes(15))
+    .build();
+    let mut response = (StatusCode::CREATED, Json(credentials.session)).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&cookie.to_string())
+            .map_err(|_| HttpError::internal("setup cookie contains an invalid value"))?,
+    );
+    Ok(response)
+}
+
+async fn replace_setup_configuration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ReplaceSetupConfigurationRequest>,
+) -> Result<Json<crate::api::SetupConfiguration>, HttpError> {
+    let (session_token, csrf_token) = setup_credentials(&state.installation, &headers)?;
+    Ok(Json(
+        state
+            .installation
+            .replace_configuration(&session_token, &csrf_token, request)
+            .await?,
+    ))
+}
+
+async fn create_setup_oidc_authorization(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupOidcAuthorizationRequest>,
+) -> Result<(StatusCode, Json<SetupOidcAuthorization>), HttpError> {
+    let (session_token, csrf_token) = setup_credentials(&state.installation, &headers)?;
+    let setup_session_id = state
+        .installation
+        .authorize_oidc(&session_token, &csrf_token)
+        .await?;
+    let authorization_url = state
+        .auth
+        .begin_setup_login(&setup_session_id, &request.redirect_uri)
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(SetupOidcAuthorization { authorization_url }),
+    ))
 }
 
 async fn exchange_auth_token(
@@ -264,6 +417,32 @@ fn redirect_response(location: String) -> Result<Response, HttpError> {
         ],
     )
         .into_response())
+}
+
+fn setup_credentials(
+    installation: &InstallationService,
+    headers: &HeaderMap,
+) -> Result<(String, String), HttpError> {
+    let session_token = setup_session_token(headers, installation.cookie_name())
+        .ok_or(InstallationError::InvalidSession)?;
+    let csrf_token = headers
+        .get("x-csrf-token")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .ok_or(InstallationError::CsrfMismatch)?
+        .to_owned();
+    Ok((session_token, csrf_token))
+}
+
+fn setup_session_token(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(Cookie::split_parse)
+        .filter_map(Result::ok)
+        .find(|cookie| cookie.name() == cookie_name)
+        .map(|cookie| cookie.value().to_owned())
 }
 
 async fn get_me(
@@ -1392,11 +1571,17 @@ fn ref_etag(commit_id: Option<&str>) -> String {
 enum HttpError {
     Server(ServerError),
     Auth(AuthError),
+    Installation(InstallationError),
+    Internal(String),
 }
 
 impl HttpError {
     fn bad_request(message: &str) -> Self {
         Self::Server(ServerError::InvalidRequest(message.to_owned()))
+    }
+
+    fn internal(message: &str) -> Self {
+        Self::Internal(message.to_owned())
     }
 }
 
@@ -1409,6 +1594,12 @@ impl From<ServerError> for HttpError {
 impl From<AuthError> for HttpError {
     fn from(error: AuthError) -> Self {
         Self::Auth(error)
+    }
+}
+
+impl From<InstallationError> for HttpError {
+    fn from(error: InstallationError) -> Self {
+        Self::Installation(error)
     }
 }
 
@@ -1483,10 +1674,23 @@ impl IntoResponse for HttpError {
                     AuthError::Configuration(_) | AuthError::Sqlx(_) => {
                         StatusCode::INTERNAL_SERVER_ERROR
                     }
+                    AuthError::Installation(error) => installation_error_status(error),
                     _ => StatusCode::BAD_REQUEST,
                 };
                 (status, error.code(), error.to_string(), json!({}))
             }
+            Self::Installation(error) => (
+                installation_error_status(&error),
+                error.code(),
+                error.to_string(),
+                json!({}),
+            ),
+            Self::Internal(message) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                message,
+                json!({}),
+            ),
         };
         let request_id = format!("req_{}", uuid::Uuid::new_v4().simple());
         let mut response = (
@@ -1507,6 +1711,26 @@ impl IntoResponse for HttpError {
                 .insert(HeaderName::from_static("x-request-id"), value);
         }
         response
+    }
+}
+
+fn installation_error_status(error: &InstallationError) -> StatusCode {
+    match error {
+        InstallationError::SetupRequired | InstallationError::Locked => StatusCode::CONFLICT,
+        InstallationError::SetupUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        InstallationError::InvalidSetupCode | InstallationError::InvalidSession => {
+            StatusCode::UNAUTHORIZED
+        }
+        InstallationError::CsrfMismatch | InstallationError::OwnerDomainNotAllowed => {
+            StatusCode::FORBIDDEN
+        }
+        InstallationError::ConfigurationRequired
+        | InstallationError::InvalidOwnerIdentity
+        | InstallationError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+        InstallationError::Configuration(_)
+        | InstallationError::CorruptSession
+        | InstallationError::CorruptInstallation
+        | InstallationError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

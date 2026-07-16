@@ -11,9 +11,10 @@ use axum::middleware::{self, Next};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use openidconnect::PkceCodeChallenge;
-use server::api::{TokenRequest, TokenResponse};
+use server::api::{ReplaceSetupConfigurationRequest, TokenRequest, TokenResponse};
 use server::auth::{AuthError, AuthService, OidcIdentity, OidcIdentityProvider};
-use server::http::router_with_auth;
+use server::http::{router_with_auth, router_with_services};
+use server::installation::{InitializedInstallation, InstallationService};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
@@ -22,6 +23,9 @@ use testcontainers_modules::postgres::Postgres;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::ServiceExt;
 use url::Url;
+
+pub const TEST_SETUP_CODE: &str = "clumsies-test-setup-code-00000001";
+const TEST_ISSUER: &str = "https://identity.example.test";
 
 pub struct TestPostgres {
     _permit: OwnedSemaphorePermit,
@@ -39,7 +43,7 @@ pub async fn migrated_postgres() -> TestPostgres {
     let container = Postgres::default().start().await.unwrap();
     let mut port = None;
     let mut last_error = None;
-    for _ in 0..20 {
+    for _ in 0..120 {
         match container.get_host_port_ipv4(5432).await {
             Ok(value) => {
                 port = Some(value);
@@ -47,7 +51,7 @@ pub async fn migrated_postgres() -> TestPostgres {
             }
             Err(error) => last_error = Some(error),
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let port = port.unwrap_or_else(|| {
         panic!(
@@ -69,6 +73,68 @@ pub async fn migrated_postgres() -> TestPostgres {
 
 pub async fn authenticated_router(pool: PgPool) -> (Router, TokenResponse) {
     authenticated_router_as(pool, "owner@example.com", "oidc-subject-owner", "Owner").await
+}
+
+pub fn setup_router(pool: PgPool, owner_email: &str, owner_subject: &str) -> Router {
+    let auth = AuthService::with_provider(
+        pool.clone(),
+        Arc::new(FakeOidcProvider {
+            email: owner_email.to_owned(),
+            subject: owner_subject.to_owned(),
+            display_name: "Owner".to_owned(),
+        }),
+        vec![Url::parse("http://127.0.0.1/admin/setup/callback").unwrap()],
+    );
+    let installation =
+        InstallationService::new(pool.clone(), Some(TEST_SETUP_CODE), false).unwrap();
+    router_with_services(pool, auth, installation)
+}
+
+pub async fn initialize_installation(
+    pool: PgPool,
+    org_name: &str,
+    owner_email: &str,
+    owner_display_name: &str,
+    owner_subject: &str,
+    project_name: &str,
+) -> InitializedInstallation {
+    let installation =
+        InstallationService::new(pool.clone(), Some(TEST_SETUP_CODE), false).unwrap();
+    let credentials = installation.create_session(TEST_SETUP_CODE).await.unwrap();
+    installation
+        .replace_configuration(
+            &credentials.token,
+            &credentials.session.csrf_token,
+            ReplaceSetupConfigurationRequest {
+                org_name: org_name.to_owned(),
+                default_project_name: project_name.to_owned(),
+                allowed_email_domains: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let session_id = installation
+        .authorize_oidc(&credentials.token, &credentials.session.csrf_token)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let initialized = installation
+        .initialize_with_oidc(
+            &mut tx,
+            &session_id,
+            &OidcIdentity {
+                issuer: TEST_ISSUER.to_owned(),
+                subject: owner_subject.to_owned(),
+                email: owner_email.to_owned(),
+                email_verified: true,
+                display_name: Some(owner_display_name.to_owned()),
+                avatar_url: Some("https://images.example.test/avatar.png".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    initialized
 }
 
 pub async fn authenticated_router_as(
@@ -222,7 +288,7 @@ impl OidcIdentityProvider for FakeOidcProvider {
             ));
         }
         Ok(OidcIdentity {
-            issuer: "https://identity.example.test".to_owned(),
+            issuer: TEST_ISSUER.to_owned(),
             subject: self.subject.clone(),
             email: self.email.clone(),
             email_verified: true,

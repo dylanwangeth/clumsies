@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use server::auth::AuthService;
 use server::db::{DatabaseConfig, connect, run_migrations};
 use server::http;
-use server::repository::ServerRepository;
+use server::installation::InstallationService;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,24 +17,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_config = DatabaseConfig::from_url(database_url);
     let pool = connect(&database_config).await?;
     run_migrations(&pool).await?;
-    if let Ok(owner_email) = env::var("CLUMSIES_BOOTSTRAP_OWNER_EMAIL") {
-        let org_name =
-            env::var("CLUMSIES_BOOTSTRAP_ORG_NAME").unwrap_or_else(|_| "Clumsies Lab".to_owned());
-        let owner_name = env::var("CLUMSIES_BOOTSTRAP_OWNER_NAME").ok();
-        let project_name =
-            env::var("CLUMSIES_BOOTSTRAP_PROJECT_NAME").unwrap_or_else(|_| "Default".to_owned());
-        ServerRepository::new(pool.clone())
-            .bootstrap_self_hosted(
-                &org_name,
-                &owner_email,
-                owner_name.as_deref(),
-                &project_name,
-            )
-            .await?;
-    }
+    let installation = InstallationService::from_env(pool.clone())?;
     let auth = AuthService::from_env(pool.clone()).await?;
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    axum::serve(listener, http::router_with_auth(pool, auth)).await?;
+    axum::serve(
+        listener,
+        http::router_with_services(pool, auth, installation),
+    )
+    .await?;
     Ok(())
 }

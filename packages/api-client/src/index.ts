@@ -1,5 +1,8 @@
 import createClient from "openapi-fetch";
-import type { paths as AdminPaths } from "@clumsies/api-contract/admin";
+import type {
+  components as AdminComponents,
+  paths as AdminPaths,
+} from "@clumsies/api-contract/admin";
 import type { components as DaemonComponents } from "@clumsies/api-contract/daemon";
 import type {
   components as PublicComponents,
@@ -25,6 +28,8 @@ export type PublicApiClient = ReturnType<typeof createClient<PublicPaths>>;
 export type AdminApiClient = ReturnType<typeof createClient<AdminPaths>>;
 export type PublicSchema<Name extends keyof PublicComponents["schemas"]> =
   PublicComponents["schemas"][Name];
+export type AdminSchema<Name extends keyof AdminComponents["schemas"]> =
+  AdminComponents["schemas"][Name];
 export type DaemonBootstrapStatus = DaemonComponents["schemas"]["DaemonBootstrapStatus"];
 export type DaemonProjectConfig = DaemonComponents["schemas"]["DaemonProjectConfig"];
 export type DaemonProjectConfigUpdateRequest =
@@ -64,6 +69,7 @@ export interface CreateApiClientOptions {
   baseUrl: string;
   accessToken?: string;
   requestId?: string;
+  credentials?: RequestCredentials;
   fetch?: typeof fetch;
 }
 
@@ -71,6 +77,7 @@ export function createPublicApiClient(options: CreateApiClientOptions): PublicAp
   return createClient<PublicPaths>({
     baseUrl: normalizeBaseUrl(options.baseUrl),
     headers: createHeaders(options),
+    credentials: options.credentials,
     fetch: options.fetch,
   });
 }
@@ -79,6 +86,7 @@ export function createAdminApiClient(options: CreateApiClientOptions): AdminApiC
   return createClient<AdminPaths>({
     baseUrl: normalizeBaseUrl(options.baseUrl),
     headers: createHeaders(options),
+    credentials: options.credentials,
     fetch: options.fetch,
   });
 }

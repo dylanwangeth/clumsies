@@ -8,6 +8,90 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /api/v1/setup:
+    get:
+      operationId: getSetup
+      summary: Read the one-time Server setup state.
+      security: []
+      responses:
+        "200":
+          description: Current setup state and any active browser setup session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupStatus"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/setup/sessions:
+    post:
+      operationId: createSetupSession
+      summary: Exchange the deployment Setup Code for a short browser session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSetupSessionRequest"
+      responses:
+        "201":
+          description: Setup session created. The session credential is returned as an HttpOnly cookie.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSetupSessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/setup/configuration:
+    put:
+      operationId: replaceSetupConfiguration
+      summary: Replace the organization and default project configuration for this setup session.
+      security:
+        - setupSession: []
+      parameters:
+        - $ref: "#/components/parameters/XCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceSetupConfigurationRequest"
+      responses:
+        "200":
+          description: Saved setup configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupConfiguration"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/setup/oidc-authorizations:
+    post:
+      operationId: createSetupOidcAuthorization
+      summary: Create the OIDC authorization used to bind the first Owner.
+      security:
+        - setupSession: []
+      parameters:
+        - $ref: "#/components/parameters/XCsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetupOidcAuthorizationRequest"
+      responses:
+        "201":
+          description: OIDC authorization created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetupOidcAuthorization"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/org:
     get:
       operationId: getAdminOrg
@@ -273,6 +357,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: opaque
+    setupSession:
+      type: apiKey
+      in: cookie
+      name: __Host-clumsies_setup_session
+      description: >-
+        HttpOnly one-time setup session cookie. Local plain-HTTP development
+        uses the unprefixed clumsies_setup_session name because __Host-
+        cookies require HTTPS.
   parameters:
     Limit:
       name: limit
@@ -305,6 +397,12 @@ components:
       required: true
       schema:
         type: string
+    XCsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
   responses:
     Error:
       description: Error response.
@@ -313,6 +411,84 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    InstallationState:
+      type: string
+      enum: [setup_required, initialized]
+    SetupConfiguration:
+      type: object
+      required: [org_name, default_project_name, allowed_email_domains]
+      properties:
+        org_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        default_project_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        allowed_email_domains:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+    SetupSessionStatus:
+      type: object
+      required: [expires_at, configuration]
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+        configuration:
+          oneOf:
+            - $ref: "#/components/schemas/SetupConfiguration"
+            - type: "null"
+    SetupStatus:
+      type: object
+      required: [state, setup_code_configured, oidc_configured, session]
+      properties:
+        state:
+          $ref: "#/components/schemas/InstallationState"
+        setup_code_configured:
+          type: boolean
+        oidc_configured:
+          type: boolean
+        session:
+          oneOf:
+            - $ref: "#/components/schemas/SetupSessionStatus"
+            - type: "null"
+    CreateSetupSessionRequest:
+      type: object
+      required: [setup_code]
+      properties:
+        setup_code:
+          type: string
+          minLength: 1
+    CreateSetupSessionResponse:
+      type: object
+      required: [expires_at, csrf_token]
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+        csrf_token:
+          type: string
+    ReplaceSetupConfigurationRequest:
+      allOf:
+        - $ref: "#/components/schemas/SetupConfiguration"
+    SetupOidcAuthorizationRequest:
+      type: object
+      required: [redirect_uri]
+      properties:
+        redirect_uri:
+          type: string
+          format: uri
+    SetupOidcAuthorization:
+      type: object
+      required: [authorization_url]
+      properties:
+        authorization_url:
+          type: string
+          format: uri
     AdminOrg:
       type: object
       required: [org_id, name, allowed_email_domains, revision, updated_at]

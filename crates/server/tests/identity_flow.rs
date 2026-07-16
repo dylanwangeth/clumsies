@@ -1,15 +1,17 @@
 mod common;
 
-use server::repository::ServerRepository;
-
 #[tokio::test]
 async fn oidc_identity_survives_an_email_claim_change() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted("Acme Memory", "owner@example.com", Some("Owner"), "Default")
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "stable-subject",
+        "Default",
+    )
+    .await;
 
     let (_, first_token) = common::authenticated_router_as(
         postgres.pool.clone(),

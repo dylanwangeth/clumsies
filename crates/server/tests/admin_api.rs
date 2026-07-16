@@ -10,17 +10,20 @@ use server::api::{
     MemberListResponse, MemberStatus, OrgRole, ProjectMember, ProjectMemberListResponse,
     ProjectRole, UpdateAdminOrgRequest, UpdateMemberRequest, UpdateProjectMemberRequest,
 };
-use server::repository::ServerRepository;
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn owner_can_operate_the_complete_admin_contract() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted("Acme Memory", "owner@example.com", Some("Owner"), "Default")
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Default",
+    )
+    .await;
     let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
 
     let org: AdminOrg = get_json(app.clone(), "/api/v1/admin/org").await;
@@ -213,23 +216,23 @@ async fn owner_can_operate_the_complete_admin_contract() {
 }
 
 #[tokio::test]
-async fn admin_project_members_are_scoped_to_the_authenticated_org() {
+async fn unknown_admin_project_is_not_disclosed() {
     let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    repo.bootstrap_self_hosted("Primary", "owner@example.com", Some("Owner"), "Primary")
-        .await
-        .unwrap();
-    let other_org_id = repo.create_org("Other").await.unwrap();
-    let other_project_id = repo
-        .create_project(&other_org_id, "Other Project", "")
-        .await
-        .unwrap();
+    common::initialize_installation(
+        postgres.pool.clone(),
+        "Primary",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Primary",
+    )
+    .await;
     let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/v1/admin/projects/{other_project_id}/members"))
+                .uri("/api/v1/admin/projects/prj_unknown/members")
                 .body(Body::empty())
                 .unwrap(),
         )

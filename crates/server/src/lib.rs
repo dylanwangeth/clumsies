@@ -3,4 +3,5 @@ pub mod auth;
 pub mod db;
 pub mod domain;
 pub mod http;
+pub mod installation;
 pub mod repository;

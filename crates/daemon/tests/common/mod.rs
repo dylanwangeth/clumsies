@@ -5,6 +5,9 @@ use daemon::{
     CredentialStore, CredentialStoreError, DaemonConfig, DaemonIpcService, DaemonState,
     ServerCredentials,
 };
+use server::api::ReplaceSetupConfigurationRequest;
+use server::auth::OidcIdentity;
+use server::installation::{InitializedInstallation, InstallationService};
 use tempfile::TempDir;
 use testcontainers::{ContainerAsync, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -44,6 +47,52 @@ pub async fn start_postgres() -> TestPostgres {
         "PostgreSQL test container never exposed port 5432: {}",
         last_error.unwrap()
     );
+}
+
+#[allow(dead_code)]
+pub async fn initialize_installation(
+    pool: sqlx::PgPool,
+    project_name: &str,
+) -> InitializedInstallation {
+    const TEST_SETUP_CODE: &str = "clumsies-test-setup-code-00000001";
+
+    let installation =
+        InstallationService::new(pool.clone(), Some(TEST_SETUP_CODE), false).unwrap();
+    let credentials = installation.create_session(TEST_SETUP_CODE).await.unwrap();
+    installation
+        .replace_configuration(
+            &credentials.token,
+            &credentials.session.csrf_token,
+            ReplaceSetupConfigurationRequest {
+                org_name: "Acme Memory".to_owned(),
+                default_project_name: project_name.to_owned(),
+                allowed_email_domains: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let session_id = installation
+        .authorize_oidc(&credentials.token, &credentials.session.csrf_token)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let initialized = installation
+        .initialize_with_oidc(
+            &mut tx,
+            &session_id,
+            &OidcIdentity {
+                issuer: "https://identity.example.test".to_owned(),
+                subject: "oidc-subject-owner".to_owned(),
+                email: "owner@example.com".to_owned(),
+                email_verified: true,
+                display_name: Some("Owner".to_owned()),
+                avatar_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    initialized
 }
 
 #[derive(Clone, Default)]

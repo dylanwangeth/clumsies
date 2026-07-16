@@ -13,19 +13,24 @@ use tower::ServiceExt;
 async fn bearer_identity_enforces_personal_and_project_boundaries() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = repo
-        .bootstrap_self_hosted(
-            "Acme Memory",
-            "owner@example.com",
-            Some("Owner"),
-            "Shared Project",
-        )
-        .await
-        .unwrap();
-    let member_id = repo
-        .create_user("member@example.com", Some("Member"), "member")
-        .await
-        .unwrap();
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Shared Project",
+    )
+    .await;
+    let member_id = "usr_member".to_owned();
+    sqlx::query(
+        "INSERT INTO users (user_id, email, display_name, role, status)
+         VALUES ($1, 'member@example.com', 'Member', 'member', 'active')",
+    )
+    .bind(&member_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'member')",
     )

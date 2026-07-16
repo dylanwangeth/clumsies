@@ -4,6 +4,74 @@
  */
 
 export interface paths {
+    "/api/v1/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the one-time Server setup state. */
+        get: operations["getSetup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/setup/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Exchange the deployment Setup Code for a short browser session. */
+        post: operations["createSetupSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/setup/configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace the organization and default project configuration for this setup session. */
+        put: operations["replaceSetupConfiguration"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/setup/oidc-authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create the OIDC authorization used to bind the first Owner. */
+        post: operations["createSetupOidcAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/org": {
         parameters: {
             query?: never;
@@ -192,6 +260,41 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        InstallationState: "setup_required" | "initialized";
+        SetupConfiguration: {
+            org_name: string;
+            default_project_name: string;
+            allowed_email_domains: string[];
+        };
+        SetupSessionStatus: {
+            /** Format: date-time */
+            expires_at: string;
+            configuration: components["schemas"]["SetupConfiguration"] | null;
+        };
+        SetupStatus: {
+            state: components["schemas"]["InstallationState"];
+            setup_code_configured: boolean;
+            oidc_configured: boolean;
+            session: components["schemas"]["SetupSessionStatus"] | null;
+        };
+        CreateSetupSessionRequest: {
+            setup_code: string;
+        };
+        CreateSetupSessionResponse: {
+            /** Format: date-time */
+            expires_at: string;
+            csrf_token: string;
+        };
+        ReplaceSetupConfigurationRequest: components["schemas"]["SetupConfiguration"];
+        SetupOidcAuthorizationRequest: {
+            /** Format: uri */
+            redirect_uri: string;
+        };
+        SetupOidcAuthorization: {
+            /** Format: uri */
+            authorization_url: string;
+        };
         AdminOrg: {
             org_id: string;
             name: string;
@@ -350,6 +453,7 @@ export interface components {
         IfMatch: string;
         UserId: string;
         ProjectId: string;
+        XCsrfToken: string;
     };
     requestBodies: never;
     headers: never;
@@ -357,6 +461,107 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current setup state and any active browser setup session. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupStatus"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createSetupSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSetupSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Setup session created. The session credential is returned as an HttpOnly cookie. */
+            201: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateSetupSessionResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    replaceSetupConfiguration: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["XCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceSetupConfigurationRequest"];
+            };
+        };
+        responses: {
+            /** @description Saved setup configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupConfiguration"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createSetupOidcAuthorization: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-CSRF-Token": components["parameters"]["XCsrfToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupOidcAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description OIDC authorization created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupOidcAuthorization"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getAdminOrg: {
         parameters: {
             query?: never;
