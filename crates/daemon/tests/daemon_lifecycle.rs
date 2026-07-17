@@ -2247,7 +2247,10 @@ impl FakeServer {
         };
         let app = Router::new()
             .route("/api/v1/drafts", post(fake_create_draft))
-            .route("/api/v1/draft-events", get(fake_list_draft_events))
+            .route(
+                "/api/v1/draft-events",
+                get(fake_list_draft_events_after_create),
+            )
             .route("/api/v1/org/commit-state", get(fake_org_commit_state))
             .route(
                 "/api/v1/projects/{project_id}/commit-state",
@@ -2490,6 +2493,24 @@ struct FakeConflictProjectionState {
 async fn fake_list_draft_events(
     axum::extract::Query(query): axum::extract::Query<FakeDraftEventQuery>,
 ) -> Json<serde_json::Value> {
+    fake_draft_events_response(query)
+}
+
+async fn fake_list_draft_events_after_create(
+    axum::extract::State(state): axum::extract::State<FakeServerState>,
+    axum::extract::Query(query): axum::extract::Query<FakeDraftEventQuery>,
+) -> Json<serde_json::Value> {
+    if state.create_requests.lock().unwrap().is_empty() {
+        return Json(json!({
+            "events": [],
+            "next_cursor": null,
+            "has_more": false
+        }));
+    }
+    fake_draft_events_response(query)
+}
+
+fn fake_draft_events_response(query: FakeDraftEventQuery) -> Json<serde_json::Value> {
     if query.after_cursor.is_some() {
         return Json(json!({
             "events": [],
