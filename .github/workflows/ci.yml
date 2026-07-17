@@ -25,6 +25,11 @@ jobs:
       - name: Build (native)
         run: zig build
 
+      - name: Check deployment scripts
+        run: |
+          bash -n deploy/server/*.sh
+          shellcheck deploy/server/*.sh
+
   cross-compile:
     runs-on: ubuntu-latest
     strategy:

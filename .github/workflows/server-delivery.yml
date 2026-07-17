@@ -1,0 +1,141 @@
+name: Server Delivery
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Immutable GHCR image reference for a retry or rollback
+        required: true
+        type: string
+      commit:
+        description: Full 40-character commit represented by the image
+        required: true
+        type: string
+
+concurrency:
+  group: production-server
+  cancel-in-progress: false
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/lilhammerfun/clumsies-server
+
+jobs:
+  deliver:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: https://clumsies.puzhen.wang/admin/
+    steps:
+      - name: Check out the verified source
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up QEMU
+        if: github.event_name == 'workflow_run'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: github.event_name == 'workflow_run'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'workflow_run'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish Server image
+        if: github.event_name == 'workflow_run'
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:main
+            ${{ env.IMAGE_NAME }}:sha-${{ github.event.workflow_run.head_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
+
+      - name: Attest Server image provenance
+        if: github.event_name == 'workflow_run'
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Resolve verified delivery target
+        if: github.event_name == 'workflow_run'
+        id: automatic
+        env:
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          printf 'image=%s@%s\n' "$IMAGE_NAME" "$DIGEST" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Validate manual delivery target
+        if: github.event_name == 'workflow_dispatch'
+        id: manual
+        env:
+          COMMIT: ${{ inputs.commit }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          [[ "$IMAGE" =~ ^ghcr\.io/lilhammerfun/clumsies-server@sha256:[a-f0-9]{64}$ ]]
+          [[ "$COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy immutable image
+        if: vars.SERVER_AUTO_DEPLOY_ENABLED == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TARGET_COMMIT: ${{ steps.automatic.outputs.commit || steps.manual.outputs.commit }}
+          TARGET_IMAGE: ${{ steps.automatic.outputs.image || steps.manual.outputs.image }}
+        run: |
+          install -d -m 0700 "$HOME/.ssh"
+          install -m 0600 /dev/null "$HOME/.ssh/deploy_key"
+          install -m 0600 /dev/null "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          ssh \
+            -i "$HOME/.ssh/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $TARGET_IMAGE $TARGET_COMMIT"
+
+      - name: Report publish-only bootstrap
+        if: vars.SERVER_AUTO_DEPLOY_ENABLED != 'true'
+        run: echo "Image published; production deployment is disabled by SERVER_AUTO_DEPLOY_ENABLED."

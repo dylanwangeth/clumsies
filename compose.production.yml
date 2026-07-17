@@ -1,4 +1,4 @@
-version: "3.8"
+name: clumsies
 
 x-proxy-environment: &proxy-environment
   HTTP_PROXY: ${HTTP_PROXY:-}
@@ -29,11 +29,7 @@ services:
       - clumsies
 
   server:
-    build:
-      context: .
-      dockerfile: crates/server/Dockerfile
-      args:
-        <<: *proxy-environment
+    image: ${CLUMSIES_SERVER_IMAGE:?CLUMSIES_SERVER_IMAGE must be set}
     restart: unless-stopped
     depends_on:
       postgres:

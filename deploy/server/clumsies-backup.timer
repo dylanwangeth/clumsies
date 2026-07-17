@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Clumsies PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=clumsies-backup.service
+
+[Install]
+WantedBy=timers.target

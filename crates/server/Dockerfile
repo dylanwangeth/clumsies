@@ -8,7 +8,9 @@ COPY apps/desktop/package.json ./apps/desktop/package.json
 COPY apps/web-admin ./apps/web-admin
 COPY packages/api-client ./packages/api-client
 COPY packages/api-contract ./packages/api-contract
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile \
+    --network-concurrency=1 \
+    --registry=https://registry.npmjs.org
 RUN bun run --cwd apps/web-admin build
 
 FROM rust:1.92-slim-bookworm AS builder
@@ -17,7 +19,10 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY crates/server ./crates/server
 COPY crates/daemon ./crates/daemon
-RUN cargo build --locked --release -p server --bin clumsies-server \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/workspace/target \
+    cargo build --locked --release -p server --bin clumsies-server \
     && cp /workspace/target/release/clumsies-server /tmp/clumsies-server
 
 FROM debian:bookworm-slim AS runtime

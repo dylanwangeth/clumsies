@@ -1,0 +1,11 @@
+[Unit]
+Description=Restore the latest Clumsies backup in an isolated stack
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clumsies-server-release restore-drill
+Nice=10
+IOSchedulingClass=best-effort
+UMask=0077

@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Clumsies PostgreSQL restore drill
+
+[Timer]
+OnCalendar=Sun *-*-* 04:17:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=clumsies-restore-drill.service
+
+[Install]
+WantedBy=timers.target

@@ -1,7 +1,18 @@
 .git
+.agents
+.codex
+.github
 .env
 .env.*
 !.env.example
+assets
+deploy
+dev
+docs
+src
+build.zig
+build.zig.zon
+README.md
 client_secret_*.json
 .zig-cache
 node_modules
@@ -10,6 +21,8 @@ target
 zig-out
 zig-pkg
 apps/desktop/dist
+apps/desktop/*
+!apps/desktop/package.json
 apps/desktop/src-tauri/target
 apps/web-admin/dist
 ._*

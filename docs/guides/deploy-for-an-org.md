@@ -1,100 +1,177 @@
 # Deploy for an organization
 
-This guide deploys the Rust Server and PostgreSQL for one self-hosted
-organization. Hub is the organization-memory view in Desktop; it is not the
-name of the deployed process.
+This guide deploys one self-hosted Clumsies organization. The Rust Server image
+contains Web Admin; Hub remains the organization-memory view in Desktop and is
+not a deployed process.
+
+## Runtime boundary
+
+Production runs three containers:
+
+- PostgreSQL stores every authority, draft, review, identity, audit, Blob,
+  Tree, Commit, and Ref;
+- Server runs migrations, the Public/Admin APIs, OIDC, and Web Admin;
+- Caddy terminates public HTTPS and proxies Server.
+
+Only Caddy publishes host ports. Server and PostgreSQL stay on the Compose
+network.
 
 ## Prerequisites
 
-- Docker Engine with Docker Compose v2
-- a public HTTPS hostname for Server
-- an OIDC confidential client registered with the organization's IdP
-- the Server callback URL registered with that IdP
-
-The registered redirect URI must be:
+- Docker Engine and Docker Compose v2;
+- a public HTTPS hostname;
+- an OIDC confidential client with the callback below registered at the IdP;
+- a published Clumsies Server image pinned by digest.
 
 ```text
 https://memory.example.com/login/oauth2/code/oidc
 ```
 
+Production must not use the legacy Python `docker-compose` command. The release
+script rejects every Compose major version except 2.
+
 ## Configure
 
-```bash
-cp .env.example .env
-```
-
-Set at least these values in `.env`:
+Copy `.env.example` to `.env`, restrict it to the installation administrator,
+and replace every placeholder. In particular:
 
 ```dotenv
+CLUMSIES_SERVER_IMAGE=ghcr.io/lilhammerfun/clumsies-server@sha256:published-digest
 CLUMSIES_SERVER_HOST=memory.example.com
 CLUMSIES_DB_PASSWORD=replace-with-a-random-password
-CLUMSIES_BOOTSTRAP_ORG_NAME=Example
-CLUMSIES_BOOTSTRAP_OWNER_EMAIL=owner@example.com
-CLUMSIES_BOOTSTRAP_OWNER_NAME=Owner
-CLUMSIES_BOOTSTRAP_PROJECT_NAME=Default
+CLUMSIES_SETUP_CODE=replace-with-at-least-32-random-characters
 CLUMSIES_OIDC_ISSUER=https://identity.example.com
 CLUMSIES_OIDC_CLIENT_ID=replace-with-oidc-client-id
 CLUMSIES_OIDC_CLIENT_SECRET=replace-with-oidc-client-secret
 CLUMSIES_OIDC_CALLBACK_URL=https://memory.example.com/login/oauth2/code/oidc
-CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback
+CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback,https://memory.example.com/admin/setup/callback
 ```
 
-`CLUMSIES_CLIENT_REDIRECT_URIS` is the allowlist for clumsies clients after the
-provider callback. The loopback template above accepts Desktop's dynamic port;
-it does not allow arbitrary remote redirects.
+`CLUMSIES_CLIENT_REDIRECT_URIS` is the post-provider allowlist for Clumsies
+clients. The loopback template accepts Desktop's dynamic port only at the exact
+callback path. `CLUMSIES_CORS_ORIGINS` is only for additional browser origins;
+same-origin Web Admin and native Desktop traffic do not require it.
 
-`CLUMSIES_CORS_ORIGINS` is only for Web Admin/browser origins. Desktop requests
-are native and travel through daemon, so Tauri origins do not belong in this
-list.
+When the host requires an outbound proxy, configure Docker Engine and the
+standard proxy variables in `.env`. Deployment-specific proxy or mirror
+addresses are not embedded in the image.
 
-When the host requires an outbound proxy, set the standard `HTTP_PROXY`,
-`HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` variables in its environment. The
-production Compose file passes them to image builds, Server, and Caddy; images
-do not embed deployment-specific mirrors or proxy addresses.
-
-## Start
+## Start and initialize
 
 ```bash
-docker compose -f compose.production.yml up --build -d
-```
-
-Server runs database migrations before listening and bootstraps the first
-organization, owner, project, and organization/project Refs when the database
-is empty.
-
-The production Compose stack exposes only Caddy on ports `80` and `443`.
-Caddy obtains and renews the TLS certificate for `CLUMSIES_SERVER_HOST`; Server
-and PostgreSQL remain reachable only through the Compose network.
-
-## Verify
-
-```bash
+docker compose --project-name clumsies -f compose.production.yml up -d --wait
 curl --fail --silent https://memory.example.com/api/v1/admin/health
-docker compose -f compose.production.yml ps
 ```
 
-A usable deployment reports `ok` for database, schema, commit service, and
-OIDC. If OIDC is `down`, the Server can answer diagnostics but users cannot log
-in.
+Open `https://memory.example.com/admin/setup`. Web Setup consumes the one-time
+Setup Code, creates the organization, first Owner, default Project, external
+identity, and initial Refs in one transaction, then permanently locks the
+installation. Remove `CLUMSIES_SETUP_CODE` from the active `.env` after Setup.
 
-Open Desktop, enter the public Server URL, and continue with organization SSO.
-On first login, the verified OIDC email must match the bootstrap owner or a
-member record created through Web Admin. Later logins use the bound
-`(issuer, subject)` identity.
+Later organization configuration and membership are managed at `/admin/` with
+the configured enterprise identity provider.
+
+## GitHub delivery
+
+`.github/workflows/server-delivery.yml` runs only after the `CI` workflow has
+succeeded on `main`. It builds `linux/amd64` and `linux/arm64`, publishes the
+image to GHCR with OCI source/revision labels, records provenance, and deploys
+the exact manifest digest. A manual dispatch accepts only an existing immutable
+digest and its full commit, so it serves as retry and rollback rather than an
+untested source build.
+
+The GHCR package is linked to this repository through its OCI source label.
+Make the package public once so self-hosted installations can pull it without a
+personal token. GitHub documents both [anonymous pulls for public container
+packages](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
+and the recommended [`GITHUB_TOKEN` publishing
+flow](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images).
+
+Create a GitHub Environment named `production` with these secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | SSH hostname or IP of the installation |
+| `DEPLOY_USER` | `clumsies-deploy` |
+| `DEPLOY_SSH_KEY` | Dedicated Ed25519 private key used only by Actions |
+| `DEPLOY_KNOWN_HOSTS` | Pinned SSH host-key line for `DEPLOY_HOST` |
+
+Set repository variable `SERVER_AUTO_DEPLOY_ENABLED=false` during bootstrap.
+After the image package is public and the restricted deploy identity has been
+tested, set it to `true`. Future green `main` commits then deploy automatically.
+
+Do not upload a personal or root SSH key. Generate a dedicated key, copy the
+public half to the host, install Compose v2, then run the installer from a
+trusted release checkout:
+
+```bash
+sudo apt-get install --yes docker-compose-v2
+sudo deploy/server/install.sh /path/to/github-deploy-key.pub
+```
+
+The installer creates `clumsies-deploy`. Its `authorized_keys` entry disables
+PTY, forwarding, and user rc files and forces `clumsies-github-command`. The
+command accepts only:
+
+```text
+deploy ghcr.io/lilhammerfun/clumsies-server@sha256:<64 hex> <40 hex commit>
+```
+
+The account can invoke only the validated release command through `sudo`; it
+cannot obtain an interactive deployment shell.
+
+## Release transaction
+
+`clumsies-server-release deploy` performs the following operation under an
+exclusive host lock:
+
+1. validate Compose v2, the digest, commit, current configuration, and host;
+2. pull the immutable image and render the Compose configuration;
+3. create a PostgreSQL custom-format backup and verify it with `pg_restore`;
+4. atomically persist the desired image digest;
+5. recreate only Server and wait for its container health;
+6. verify the public HTTPS health endpoint;
+7. record the commit, image, previous image, backup, timestamp, and result.
+
+If container or public health fails, the script restores the previous image and
+verifies it before returning failure to Actions. This application rollback
+depends on the migration policy: a released migration must remain readable by
+the immediately preceding Server image. Destructive schema changes require a
+separate, explicitly rehearsed database migration plan.
+
+To retry or roll back, dispatch `Server Delivery` with a previously published
+digest and its original commit. Production never rebuilds source code.
+
+## Backup and restore
+
+The installer enables:
+
+- `clumsies-backup.timer`: daily custom-format backup, verification, checksum,
+  and 14-day local scheduled-backup retention;
+- `clumsies-restore-drill.timer`: weekly restore into an isolated PostgreSQL and
+  Server stack, followed by the real Server health check and automatic cleanup.
+
+Run either operation explicitly:
+
+```bash
+sudo clumsies-server-release backup manual
+sudo clumsies-server-release restore-drill
+```
+
+Backups and deployment records live under `/opt/clumsies/backups` and
+`/opt/clumsies/releases`. Local retention is not disaster recovery. Configure
+encrypted off-host storage appropriate to the installing organization and test
+restoration from that copy; do not place database dumps in the source
+repository or ordinary GitHub Actions artifacts.
 
 ## Operations
 
-Database state lives in the `clumsies-postgres` volume. Back up PostgreSQL with
-standard PostgreSQL tooling before upgrades. Server Commit, Tree, Blob, Ref,
-draft, review, identity, and audit data are all part of the same transactional
-database and must be backed up together.
-
-To inspect logs and stop the stack:
-
 ```bash
-docker compose -f compose.production.yml logs server
-docker compose -f compose.production.yml down
+sudo clumsies-server-release preflight
+docker compose --project-name clumsies -f compose.production.yml ps
+docker compose --project-name clumsies -f compose.production.yml logs server
+systemctl list-timers 'clumsies-*'
 ```
 
-Do not use `down -v` for an installed organization; it deletes the database
-volume.
+Do not use `docker compose down --volumes` for an installed organization. It
+deletes the PostgreSQL volume.

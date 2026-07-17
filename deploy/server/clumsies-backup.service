@@ -1,0 +1,11 @@
+[Unit]
+Description=Create and verify a Clumsies PostgreSQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clumsies-server-release backup scheduled
+Nice=10
+IOSchedulingClass=best-effort
+UMask=0077
