@@ -48,7 +48,14 @@ read_env_value() {
 }
 
 current_container_image() {
-  docker inspect clumsies_server_1 --format '{{.Config.Image}}' 2>/dev/null || true
+  local container
+
+  container="$(docker ps --all \
+    --filter label=com.docker.compose.project=clumsies \
+    --filter label=com.docker.compose.service=server \
+    --format '{{.ID}}' | sed -n '1p')"
+  [[ -n "$container" ]] || return 0
+  docker inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true
 }
 
 current_image() {
