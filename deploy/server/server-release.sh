@@ -103,6 +103,47 @@ ensure_image_setting() {
   fi
 }
 
+write_runtime_configuration() {
+  local origin="$1"
+  local redirects="$2"
+  local temp
+
+  validate_public_origin "$origin"
+  [[ "$redirects" != *$'\n'* && "$redirects" != *$'\r'* ]] ||
+    die "invalid client redirect URI setting"
+
+  temp="$(mktemp "$CLUMSIES_ROOT/.env.runtime.XXXXXX")"
+  awk -v origin="$origin" -v redirects="$redirects" '
+    BEGIN { origin_replaced = 0; redirects_replaced = 0 }
+    /^CLUMSIES_PUBLIC_ORIGIN=/ {
+      if (!origin_replaced) {
+        print "CLUMSIES_PUBLIC_ORIGIN=" origin
+        origin_replaced = 1
+      }
+      next
+    }
+    /^CLUMSIES_CLIENT_REDIRECT_URIS=/ {
+      if (!redirects_replaced) {
+        print "CLUMSIES_CLIENT_REDIRECT_URIS=" redirects
+        redirects_replaced = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!origin_replaced) {
+        print "CLUMSIES_PUBLIC_ORIGIN=" origin
+      }
+      if (!redirects_replaced) {
+        print "CLUMSIES_CLIENT_REDIRECT_URIS=" redirects
+      }
+    }
+  ' "$ENV_FILE" >"$temp"
+  chmod --reference="$ENV_FILE" "$temp"
+  chown --reference="$ENV_FILE" "$temp"
+  mv "$temp" "$ENV_FILE"
+}
+
 require_environment() {
   local compose_version
 
@@ -128,22 +169,34 @@ validate_target() {
     die "commit must contain 40 lowercase hexadecimal characters"
 }
 
-server_host() {
-  local host
-  host="$(read_env_value CLUMSIES_SERVER_HOST)"
-  [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid CLUMSIES_SERVER_HOST"
-  printf '%s\n' "$host"
+validate_public_origin() {
+  local origin="$1"
+
+  [[ "$origin" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] ||
+    die "CLUMSIES_PUBLIC_ORIGIN must be an HTTPS origin without a path"
+}
+
+public_origin() {
+  local origin
+
+  origin="$(read_env_value CLUMSIES_PUBLIC_ORIGIN)"
+  validate_public_origin "$origin"
+  printf '%s\n' "$origin"
 }
 
 wait_public_health() {
   local attempts="${1:-30}"
-  local host
+  local origin="${2:-}"
   local attempt
 
-  host="$(server_host)"
+  if [[ -z "$origin" ]]; then
+    origin="$(public_origin)"
+  else
+    validate_public_origin "$origin"
+  fi
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
     if curl --fail --silent --show-error --max-time 8 \
-      "https://$host/api/v1/admin/health" >/dev/null; then
+      "$origin/api/v1/admin/health" >/dev/null; then
       return 0
     fi
     sleep 2
@@ -278,6 +331,100 @@ deploy_release() {
   log "deployment healthy: $image"
 }
 
+record_reconfiguration() {
+  local status="$1"
+  local timestamp="$2"
+  local previous_origin="$3"
+  local origin="$4"
+  local backup="$5"
+  local env_backup="$6"
+  local record="$RELEASE_DIR/reconfigure-${timestamp}.env"
+  local temp
+
+  temp="$(mktemp "$RELEASE_DIR/.reconfigure-record.XXXXXX")"
+  {
+    printf 'status=%s\n' "$status"
+    printf 'timestamp=%s\n' "$timestamp"
+    printf 'previous_origin=%s\n' "$previous_origin"
+    printf 'origin=%s\n' "$origin"
+    printf 'backup=%s\n' "$backup"
+    printf 'env_backup=%s\n' "$env_backup"
+  } >"$temp"
+  mv "$temp" "$record"
+  log "reconfiguration record: $record"
+}
+
+rollback_reconfiguration() {
+  local env_backup="$1"
+  local previous_origin="$2"
+
+  log "rolling back runtime configuration to $previous_origin"
+  cp --preserve=mode,ownership,timestamps "$env_backup" "$ENV_FILE"
+  compose config --quiet
+  if ! compose up --detach --no-deps --force-recreate --pull never \
+    --wait --wait-timeout 240 server caddy; then
+    die "runtime configuration rollback failed"
+  fi
+  wait_public_health 30 "$previous_origin" ||
+    die "runtime configuration rollback did not restore public health"
+}
+
+reconfigure_runtime() {
+  local origin="$1"
+  local redirects="${2:-}"
+  local previous_origin
+  local previous_redirects
+  local timestamp
+  local env_backup
+  local backup
+
+  validate_public_origin "$origin"
+  previous_origin="$(public_origin)"
+  previous_redirects="$(read_env_value CLUMSIES_CLIENT_REDIRECT_URIS)"
+  if [[ "$#" -lt 2 ]]; then
+    redirects="$previous_redirects"
+  fi
+
+  if [[ "$previous_origin" == "$origin" && "$previous_redirects" == "$redirects" ]] &&
+    wait_public_health 1 "$origin"; then
+    log "runtime configuration is already healthy: $origin"
+    return 0
+  fi
+
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  env_backup="$RELEASE_DIR/reconfigure-${timestamp}.env.backup"
+  cp --preserve=mode,ownership,timestamps "$ENV_FILE" "$env_backup"
+  write_runtime_configuration "$origin" "$redirects"
+
+  if ! compose config --quiet; then
+    cp --preserve=mode,ownership,timestamps "$env_backup" "$ENV_FILE"
+    die "new runtime configuration is invalid; previous configuration restored"
+  fi
+
+  if ! backup="$(backup_database pre-reconfigure)"; then
+    cp --preserve=mode,ownership,timestamps "$env_backup" "$ENV_FILE"
+    die "database backup failed; previous configuration restored"
+  fi
+  if ! compose up --detach --no-deps --force-recreate --pull never \
+    --wait --wait-timeout 240 server caddy; then
+    rollback_reconfiguration "$env_backup" "$previous_origin"
+    record_reconfiguration rolled-back "$timestamp" "$previous_origin" \
+      "$origin" "$backup" "$env_backup"
+    die "runtime reconfiguration failed; previous configuration restored"
+  fi
+
+  if ! wait_public_health 60 "$origin"; then
+    rollback_reconfiguration "$env_backup" "$previous_origin"
+    record_reconfiguration rolled-back "$timestamp" "$previous_origin" \
+      "$origin" "$backup" "$env_backup"
+    die "new public origin failed health checks; previous configuration restored"
+  fi
+
+  record_reconfiguration success "$timestamp" "$previous_origin" \
+    "$origin" "$backup" "$env_backup"
+  log "runtime configuration healthy: $origin"
+}
+
 latest_backup() {
   local -a candidates
 
@@ -376,13 +523,13 @@ restore_drill() (
 
 preflight() {
   local image
-  local host
+  local origin
 
   image="$(current_image)"
-  host="$(server_host)"
+  origin="$(public_origin)"
   compose config --quiet
   compose ps
-  log "preflight ok: compose=$(docker compose version --short) host=$host image=$image"
+  log "preflight ok: compose=$(docker compose version --short) origin=$origin image=$image"
 }
 
 usage() {
@@ -390,6 +537,7 @@ usage() {
 Usage:
   clumsies-server-release preflight
   clumsies-server-release deploy IMAGE@sha256:DIGEST COMMIT
+  clumsies-server-release reconfigure PUBLIC_ORIGIN [CLIENT_REDIRECT_URIS]
   clumsies-server-release backup [reason]
   clumsies-server-release restore-drill [backup-file]
 EOF
@@ -411,6 +559,14 @@ main() {
     deploy)
       [[ "$#" -eq 3 ]] || usage
       deploy_release "$2" "$3"
+      ;;
+    reconfigure)
+      [[ "$#" -ge 2 && "$#" -le 3 ]] || usage
+      if [[ "$#" -eq 2 ]]; then
+        reconfigure_runtime "$2"
+      else
+        reconfigure_runtime "$2" "$3"
+      fi
       ;;
     backup)
       [[ "$#" -le 2 ]] || usage

@@ -6,7 +6,6 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
-use url::Url;
 use uuid::Uuid;
 
 use crate::api::{
@@ -42,19 +41,8 @@ pub struct InitializedInstallation {
 }
 
 impl InstallationService {
-    pub fn from_env(pool: PgPool) -> Result<Self, InstallationError> {
+    pub fn from_env(pool: PgPool, secure_cookie: bool) -> Result<Self, InstallationError> {
         let setup_code = optional_env("CLUMSIES_SETUP_CODE");
-        let secure_cookie = match optional_env("CLUMSIES_OIDC_CALLBACK_URL") {
-            Some(callback_url) => {
-                let callback_url = Url::parse(&callback_url).map_err(|error| {
-                    InstallationError::Configuration(format!(
-                        "CLUMSIES_OIDC_CALLBACK_URL is invalid: {error}"
-                    ))
-                })?;
-                callback_url.scheme() == "https"
-            }
-            None => true,
-        };
         Self::new(pool, setup_code.as_deref(), secure_cookie)
     }
 

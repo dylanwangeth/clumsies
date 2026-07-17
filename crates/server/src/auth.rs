@@ -25,6 +25,7 @@ use crate::api::{
     OrgRef, SecretSource, SessionRevoked, TokenGrantType, TokenRequest, TokenResponse, UserRef,
     WebAdminSession,
 };
+use crate::config::PublicOrigin;
 use crate::installation::{InstallationError, InstallationService};
 
 const ACCESS_TOKEN_TTL: Duration = Duration::minutes(15);
@@ -338,43 +339,33 @@ impl AuthService {
         }
     }
 
-    pub async fn from_env(pool: PgPool) -> Result<Self, AuthError> {
+    pub async fn from_env(pool: PgPool, public_origin: &PublicOrigin) -> Result<Self, AuthError> {
         let issuer = optional_env("CLUMSIES_OIDC_ISSUER");
         let client_id = optional_env("CLUMSIES_OIDC_CLIENT_ID");
         let client_secret = optional_env("CLUMSIES_OIDC_CLIENT_SECRET");
-        let callback_url = optional_env("CLUMSIES_OIDC_CALLBACK_URL");
-        if issuer.is_none()
-            && client_id.is_none()
-            && client_secret.is_none()
-            && callback_url.is_none()
-        {
+        if issuer.is_none() && client_id.is_none() && client_secret.is_none() {
             return Ok(Self::unconfigured(pool));
         }
         let issuer = required_oidc_value("CLUMSIES_OIDC_ISSUER", issuer)?;
         let client_id = required_oidc_value("CLUMSIES_OIDC_CLIENT_ID", client_id)?;
         let client_secret = required_oidc_value("CLUMSIES_OIDC_CLIENT_SECRET", client_secret)?;
-        let callback_url = required_oidc_value("CLUMSIES_OIDC_CALLBACK_URL", callback_url)?;
-        let allowed_redirects = env::var("CLUMSIES_CLIENT_REDIRECT_URIS")
-            .map_err(|_| {
-                AuthError::Configuration(
-                    "CLUMSIES_CLIENT_REDIRECT_URIS is required when OIDC is configured".to_owned(),
-                )
-            })?
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                Url::parse(value).map_err(|error| {
+        let callback_url = public_origin.oidc_callback_url();
+        let mut allowed_redirects = vec![public_origin.admin_setup_callback_url()];
+        if let Some(configured_redirects) = optional_env("CLUMSIES_CLIENT_REDIRECT_URIS") {
+            for value in configured_redirects
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let redirect = Url::parse(value).map_err(|error| {
                     AuthError::Configuration(format!(
                         "invalid client redirect URI {value}: {error}"
                     ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if allowed_redirects.is_empty() {
-            return Err(AuthError::Configuration(
-                "CLUMSIES_CLIENT_REDIRECT_URIS must contain at least one URI".to_owned(),
-            ));
+                })?;
+                if !allowed_redirects.contains(&redirect) {
+                    allowed_redirects.push(redirect);
+                }
+            }
         }
         let provider = DiscoveredOidcProvider::discover(
             &issuer,
@@ -383,10 +374,6 @@ impl AuthService {
             callback_url.clone(),
         )
         .await?;
-        let secure_cookie = Url::parse(&callback_url)
-            .map_err(|error| AuthError::Configuration(error.to_string()))?
-            .scheme()
-            == "https";
         Ok(Self {
             pool,
             provider: Some(Arc::new(provider)),
@@ -395,7 +382,7 @@ impl AuthService {
                 issuer,
                 callback_url,
             }),
-            secure_cookie,
+            secure_cookie: public_origin.secure_cookies(),
         })
     }
 

@@ -63,11 +63,16 @@ clears local credentials.
 
 | Variable | Meaning |
 | --- | --- |
+| `CLUMSIES_PUBLIC_ORIGIN` | canonical HTTPS Server origin; loopback HTTP is allowed for local development |
 | `CLUMSIES_OIDC_ISSUER` | exact organization OIDC issuer |
 | `CLUMSIES_OIDC_CLIENT_ID` | OIDC confidential client ID |
 | `CLUMSIES_OIDC_CLIENT_SECRET` | OIDC confidential client secret |
-| `CLUMSIES_OIDC_CALLBACK_URL` | public Server callback ending in `/login/oauth2/code/oidc` |
-| `CLUMSIES_CLIENT_REDIRECT_URIS` | comma-separated trusted client callbacks |
+| `CLUMSIES_CLIENT_REDIRECT_URIS` | comma-separated additional trusted client callbacks |
+
+Server derives the provider callback at `/login/oauth2/code/oidc` and the
+same-origin Web Admin setup callback from `CLUMSIES_PUBLIC_ORIGIN`. This keeps
+TLS, OIDC, and Admin on one authority and prevents independently configured
+hostnames from drifting apart.
 
 For Desktop dynamic loopback ports, configure
 `CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback`. The missing port is a

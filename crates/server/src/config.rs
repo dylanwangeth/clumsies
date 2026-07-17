@@ -1,0 +1,130 @@
+use std::env;
+
+use thiserror::Error;
+use url::{Host, Url};
+
+pub const PUBLIC_ORIGIN_ENV: &str = "CLUMSIES_PUBLIC_ORIGIN";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicOrigin {
+    url: Url,
+}
+
+impl PublicOrigin {
+    pub fn from_env() -> Result<Self, PublicOriginError> {
+        let value = env::var(PUBLIC_ORIGIN_ENV)
+            .map_err(|_| PublicOriginError::Missing(PUBLIC_ORIGIN_ENV))?;
+        Self::parse(&value)
+    }
+
+    pub fn parse(value: &str) -> Result<Self, PublicOriginError> {
+        let value = value.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("null") {
+            return Err(PublicOriginError::Missing(PUBLIC_ORIGIN_ENV));
+        }
+
+        let url = Url::parse(value).map_err(PublicOriginError::InvalidUrl)?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(PublicOriginError::UnsupportedScheme);
+        }
+        if url.host().is_none() {
+            return Err(PublicOriginError::MissingHost);
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(PublicOriginError::CredentialsNotAllowed);
+        }
+        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+            return Err(PublicOriginError::OriginOnly);
+        }
+        if url.scheme() == "http" && !is_loopback(&url) {
+            return Err(PublicOriginError::HttpsRequired);
+        }
+
+        Ok(Self { url })
+    }
+
+    pub fn oidc_callback_url(&self) -> String {
+        self.url
+            .join("/login/oauth2/code/oidc")
+            .expect("OIDC callback path is valid")
+            .to_string()
+    }
+
+    pub fn admin_setup_callback_url(&self) -> Url {
+        self.url
+            .join("/admin/setup/callback")
+            .expect("Admin setup callback path is valid")
+    }
+
+    pub fn secure_cookies(&self) -> bool {
+        self.url.scheme() == "https"
+    }
+}
+
+fn is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum PublicOriginError {
+    #[error("{0} is required and must not be null")]
+    Missing(&'static str),
+    #[error("{PUBLIC_ORIGIN_ENV} is invalid: {0}")]
+    InvalidUrl(url::ParseError),
+    #[error("{PUBLIC_ORIGIN_ENV} must use http or https")]
+    UnsupportedScheme,
+    #[error("{PUBLIC_ORIGIN_ENV} must include a host")]
+    MissingHost,
+    #[error("{PUBLIC_ORIGIN_ENV} must not include credentials")]
+    CredentialsNotAllowed,
+    #[error("{PUBLIC_ORIGIN_ENV} must contain only an origin without a path, query, or fragment")]
+    OriginOnly,
+    #[error("{PUBLIC_ORIGIN_ENV} must use HTTPS unless it is a loopback development origin")]
+    HttpsRequired,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_origin_derives_server_callbacks() {
+        let origin = PublicOrigin::parse("https://app.clumsies.ai").unwrap();
+
+        assert_eq!(
+            origin.oidc_callback_url(),
+            "https://app.clumsies.ai/login/oauth2/code/oidc"
+        );
+        assert_eq!(
+            origin.admin_setup_callback_url().as_str(),
+            "https://app.clumsies.ai/admin/setup/callback"
+        );
+        assert!(origin.secure_cookies());
+    }
+
+    #[test]
+    fn loopback_http_origin_is_allowed_for_development() {
+        let origin = PublicOrigin::parse("http://127.0.0.1:18080").unwrap();
+
+        assert!(!origin.secure_cookies());
+    }
+
+    #[test]
+    fn remote_http_origin_is_rejected() {
+        let error = PublicOrigin::parse("http://memory.example.com").unwrap_err();
+
+        assert!(matches!(error, PublicOriginError::HttpsRequired));
+    }
+
+    #[test]
+    fn origin_with_path_is_rejected() {
+        let error = PublicOrigin::parse("https://memory.example.com/admin").unwrap_err();
+
+        assert!(matches!(error, PublicOriginError::OriginOnly));
+    }
+}

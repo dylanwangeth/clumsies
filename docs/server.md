@@ -88,9 +88,10 @@ bun run dev:infra:down
 ## Run in production
 
 Copy `.env.example` to `.env`, configure the enterprise OIDC values, and start
-`compose.production.yml`. Expose Server through HTTPS and set
-`CLUMSIES_OIDC_CALLBACK_URL` to the public
-`/login/oauth2/code/oidc` URL registered with the organization's IdP.
+`compose.production.yml`. Set `CLUMSIES_PUBLIC_ORIGIN` to the Server's canonical
+HTTPS origin and register its derived `/login/oauth2/code/oidc` URL with the
+organization's IdP. The same origin serves Public API, Admin API, Web Admin, and
+OIDC callbacks.
 
 When OIDC variables are intentionally empty, Server still starts so health and
 database diagnostics remain available. Health reports the OIDC component as

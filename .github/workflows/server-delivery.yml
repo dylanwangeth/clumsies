@@ -108,7 +108,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://clumsies.puzhen.wang/admin/
+      url: ${{ vars.SERVER_PUBLIC_URL }}/admin/
     steps:
       - name: Deploy immutable image
         env:

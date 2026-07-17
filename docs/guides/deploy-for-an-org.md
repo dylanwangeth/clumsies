@@ -37,20 +37,21 @@ and replace every placeholder. In particular:
 
 ```dotenv
 CLUMSIES_SERVER_IMAGE=ghcr.io/lilhammerfun/clumsies-server@sha256:published-digest
-CLUMSIES_SERVER_HOST=memory.example.com
+CLUMSIES_PUBLIC_ORIGIN=https://memory.example.com
 CLUMSIES_DB_PASSWORD=replace-with-a-random-password
 CLUMSIES_SETUP_CODE=replace-with-at-least-32-random-characters
 CLUMSIES_OIDC_ISSUER=https://identity.example.com
 CLUMSIES_OIDC_CLIENT_ID=replace-with-oidc-client-id
 CLUMSIES_OIDC_CLIENT_SECRET=replace-with-oidc-client-secret
-CLUMSIES_OIDC_CALLBACK_URL=https://memory.example.com/login/oauth2/code/oidc
-CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback,https://memory.example.com/admin/setup/callback
+CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback
 ```
 
 `CLUMSIES_CLIENT_REDIRECT_URIS` is the post-provider allowlist for Clumsies
 clients. The loopback template accepts Desktop's dynamic port only at the exact
-callback path. `CLUMSIES_CORS_ORIGINS` is only for additional browser origins;
-same-origin Web Admin and native Desktop traffic do not require it.
+callback path. Server derives both the IdP callback and same-origin Web Admin
+setup callback from `CLUMSIES_PUBLIC_ORIGIN`. `CLUMSIES_CORS_ORIGINS` is only
+for additional browser origins; same-origin Web Admin and native Desktop
+traffic do not require it.
 
 When the host requires an outbound proxy, configure Docker Engine and the
 standard proxy variables in `.env`. Deployment-specific proxy or mirror
@@ -125,7 +126,7 @@ cannot obtain an interactive deployment shell.
 `clumsies-server-release deploy` performs the following operation under an
 exclusive host lock:
 
-1. validate Compose v2, the digest, commit, current configuration, and host;
+1. validate Compose v2, the digest, commit, current configuration, and public origin;
 2. pull the immutable image and render the Compose configuration;
 3. create a PostgreSQL custom-format backup and verify it with `pg_restore`;
 4. atomically persist the desired image digest;
@@ -141,6 +142,19 @@ separate, explicitly rehearsed database migration plan.
 
 To retry or roll back, dispatch `Server Delivery` with a previously published
 digest and its original commit. Production never rebuilds source code.
+
+Changing the canonical origin is a separate configuration transaction:
+
+```bash
+sudo clumsies-server-release reconfigure \
+  https://memory.example.com \
+  http://127.0.0.1/callback
+```
+
+The command backs up PostgreSQL and the active environment file, validates the
+rendered Compose configuration, recreates Server and Caddy, waits for container
+and public HTTPS health, and restores the previous environment and services if
+the new origin fails.
 
 ## Backup and restore
 

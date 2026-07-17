@@ -1,4 +1,4 @@
-{$CLUMSIES_SERVER_HOST} {
+{$CLUMSIES_PUBLIC_ORIGIN} {
 	encode zstd gzip
 
 	header {
