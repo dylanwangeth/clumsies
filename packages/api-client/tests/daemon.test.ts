@@ -23,12 +23,6 @@ describe("daemon API client", () => {
     await client.stop();
     await client.health();
     await client.projectConfig();
-    await client.replaceProjectConfig({
-      server_url: "http://127.0.0.1:8080",
-      project_id: "prj_test",
-      access_token: null,
-      refresh_token: null,
-    });
     await client.selectProject({ project_id: "prj_other" });
     await client.syncStatus();
     await client.retrySync({ channel: "all" });
@@ -63,7 +57,6 @@ describe("daemon API client", () => {
       "stop_daemon_launch_agent",
       "read_daemon_health",
       "read_daemon_project_config",
-      "replace_daemon_project_config",
       "select_daemon_project",
       "read_daemon_sync_status",
       "retry_daemon_sync",
@@ -74,19 +67,11 @@ describe("daemon API client", () => {
       "proxy_server_request",
     ]);
     expect(calls[7]?.args).toEqual({
-      request: {
-        server_url: "http://127.0.0.1:8080",
-        project_id: "prj_test",
-        access_token: null,
-        refresh_token: null,
-      },
-    });
-    expect(calls[8]?.args).toEqual({
       request: { project_id: "prj_other" },
     });
-    expect(calls[12]?.args).toEqual({
+    expect(calls[11]?.args).toEqual({
       query: { resource: "context", limit: 20 },
     });
-    expect(calls[13]?.args).toEqual({ draftId: "draft_test" });
+    expect(calls[12]?.args).toEqual({ draftId: "draft_test" });
   });
 });

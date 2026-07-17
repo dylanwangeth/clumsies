@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "CLUMSIES_SERVER_URL=${CLUMSIES_SERVER_URL:-http://127.0.0.1:18080} tauri dev",
+    "dev": "tauri dev",
     "dev:web": "bun run prepare:daemon && vite --host 127.0.0.1 --port 1420",
     "build": "APPLE_SIGNING_IDENTITY=- tauri build",
     "build:release": "tauri build --config src-tauri/tauri.release.conf.json",

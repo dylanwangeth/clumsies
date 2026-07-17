@@ -5,17 +5,16 @@ TUI and does not require manual draft synchronization.
 
 ## Sign in
 
-Open Desktop, enter your organization's Server URL, and continue with SSO.
-The system browser handles authentication. Your email must already be admitted
-by an organization owner or admin.
+Open Desktop and continue with SSO. The current development distribution
+connects to `https://app.clumsies.ai`; it does not expose a local/production
+profile selector. The system browser handles authentication, and your email
+must already be admitted by an organization owner or admin.
 
-For local development, the Server URL is usually:
-
-```text
-http://127.0.0.1:18080
-```
-
-Remote URLs must use HTTPS.
+Local Server and OIDC environments are test infrastructure for backend and E2E
+development. They are not a second interactive Desktop mode. A future
+self-hosted distribution will receive its organization Server authority from
+the installation or deployment channel instead of asking users to switch
+profiles in the app.
 
 ## Browse memory
 

@@ -32,8 +32,6 @@ export type AdminSchema<Name extends keyof AdminComponents["schemas"]> =
   AdminComponents["schemas"][Name];
 export type DaemonBootstrapStatus = DaemonComponents["schemas"]["DaemonBootstrapStatus"];
 export type DaemonProjectConfig = DaemonComponents["schemas"]["DaemonProjectConfig"];
-export type DaemonProjectConfigUpdateRequest =
-  DaemonComponents["schemas"]["DaemonProjectConfigUpdateRequest"];
 export type DaemonProjectSelectionRequest =
   DaemonComponents["schemas"]["DaemonProjectSelectionRequest"];
 export type DaemonHealth = DaemonComponents["schemas"]["DaemonHealth"];
@@ -103,8 +101,6 @@ export function createDaemonApiClient(invoke: NativeInvoke) {
     health: () => invoke<DaemonHealth>("read_daemon_health"),
     projectConfig: () =>
       invoke<DaemonProjectConfig>("read_daemon_project_config"),
-    replaceProjectConfig: (request: DaemonProjectConfigUpdateRequest) =>
-      invoke<DaemonProjectConfig>("replace_daemon_project_config", { request }),
     selectProject: (request: DaemonProjectSelectionRequest) =>
       invoke<DaemonProjectConfig>("select_daemon_project", { request }),
     syncStatus: () => invoke<DaemonSyncStatus>("read_daemon_sync_status"),

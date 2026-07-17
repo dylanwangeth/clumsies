@@ -1,4 +1,3 @@
-use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -28,6 +27,7 @@ const OIDC_CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
 const OIDC_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CALLBACK_HEADER_BYTES: usize = 16 * 1024;
 const DESKTOP_AUTHENTICATED_EVENT: &str = "desktop-authenticated";
+const DESKTOP_SERVER_URL: &str = "https://app.clumsies.ai";
 
 #[tauri::command]
 async fn read_daemon_bootstrap_status() -> Result<DaemonBootstrapStatus, String> {
@@ -72,13 +72,6 @@ async fn read_daemon_health() -> Result<DaemonHealth, String> {
 #[tauri::command]
 async fn read_daemon_project_config() -> Result<DaemonProjectConfig, String> {
     call_daemon(|client| client.project_config()).await
-}
-
-#[tauri::command]
-async fn replace_daemon_project_config(
-    request: DaemonProjectConfigUpdateRequest,
-) -> Result<DaemonProjectConfig, String> {
-    call_daemon(move |client| client.replace_project_config(request)).await
 }
 
 #[tauri::command]
@@ -131,7 +124,7 @@ async fn proxy_server_request(
 
 #[tauri::command]
 async fn authenticate_desktop(app: tauri::AppHandle) -> Result<DaemonProjectConfig, String> {
-    let server_url = configured_server_url()?;
+    let server_url = normalize_server_url(DESKTOP_SERVER_URL)?;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| format!("failed to bind the OIDC callback listener: {error}"))?;
@@ -308,20 +301,6 @@ fn normalize_server_url(value: &str) -> Result<String, String> {
     }
     url.set_path("");
     Ok(url.as_str().trim_end_matches('/').to_owned())
-}
-
-fn configured_server_url() -> Result<String, String> {
-    let value = env::var("CLUMSIES_SERVER_URL").map_err(|_| {
-        "This Desktop is not connected to an organization. Install it from your organization's Clumsies Server."
-            .to_owned()
-    })?;
-    if value.trim().is_empty() {
-        return Err(
-            "This Desktop is not connected to an organization. Install it from your organization's Clumsies Server."
-                .to_owned(),
-        );
-    }
-    normalize_server_url(&value)
 }
 
 fn authorization_url(
@@ -518,7 +497,6 @@ pub fn run() {
             stop_daemon_launch_agent,
             read_daemon_health,
             read_daemon_project_config,
-            replace_daemon_project_config,
             select_daemon_project,
             read_daemon_sync_status,
             retry_daemon_sync,
@@ -573,6 +551,15 @@ mod tests {
         assert_eq!(
             normalize_server_url("https://server.example/").unwrap(),
             "https://server.example"
+        );
+    }
+
+    #[test]
+    fn desktop_uses_the_clumsies_cloud_server() {
+        assert_eq!(DESKTOP_SERVER_URL, "https://app.clumsies.ai");
+        assert_eq!(
+            normalize_server_url(DESKTOP_SERVER_URL).unwrap(),
+            DESKTOP_SERVER_URL
         );
     }
 }
