@@ -100,8 +100,10 @@ jobs:
   deploy:
     needs: resolve
     if: >-
+      always() &&
       needs.resolve.result == 'success' &&
-      vars.SERVER_AUTO_DEPLOY_ENABLED == 'true'
+      (github.event_name == 'workflow_dispatch' ||
+       vars.SERVER_AUTO_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -133,7 +135,9 @@ jobs:
   report:
     needs: resolve
     if: >-
+      always() &&
       needs.resolve.result == 'success' &&
+      github.event_name != 'workflow_dispatch' &&
       vars.SERVER_AUTO_DEPLOY_ENABLED != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
