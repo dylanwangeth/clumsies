@@ -315,7 +315,7 @@ restore_drill() (
   password="$(openssl rand -hex 24)"
 
   # Invoked by the EXIT trap for this isolated subshell.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cleanup() {
     docker rm --force "$server_container" "$postgres_container" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
