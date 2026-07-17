@@ -31,7 +31,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha == github.sha
     uses: docker/github-builder/.github/workflows/build.yml@v1
     permissions:
       contents: read
@@ -40,7 +41,7 @@ jobs:
     with:
       output: image
       push: true
-      context: https://github.com/${{ github.repository }}.git#${{ github.event.workflow_run.head_sha }}
+      context: .
       file: ./crates/server/Dockerfile
       platforms: linux/amd64,linux/arm64
       cache: true
