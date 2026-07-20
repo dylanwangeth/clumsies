@@ -4,7 +4,6 @@ FROM oven/bun:1.3.5 AS web-builder
 
 WORKDIR /workspace
 COPY package.json bun.lock ./
-COPY apps/desktop/package.json ./apps/desktop/package.json
 COPY apps/web-admin ./apps/web-admin
 COPY packages/api-client ./packages/api-client
 COPY packages/api-contract ./packages/api-contract

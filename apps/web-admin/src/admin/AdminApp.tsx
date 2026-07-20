@@ -204,7 +204,7 @@ export function AdminApp({
   if (!data) {
     return (
       <AdminFailure
-        message={notice?.message ?? "The administrator workspace could not be loaded."}
+        message={notice?.message ?? "Administration could not be loaded."}
         onRetry={() => void loadData(true)}
       />
     );

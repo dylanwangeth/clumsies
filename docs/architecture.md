@@ -21,7 +21,7 @@ flowchart LR
 
     Browser["System browser / organization OIDC"]
 
-    Desktop -->|"typed Tauri commands"| Daemon
+    Desktop -->|"macOS XPC"| Daemon
     MCP -->|"macOS XPC"| Daemon
     CLI -.->|"client operations"| Daemon
     Daemon --> LocalDB
@@ -127,9 +127,9 @@ generation.
 
 ## Authentication boundary
 
-Desktop native Rust owns the browser loopback listener and PKCE verifier. After
-the code exchange and `/api/v1/me` lookup succeed, native Rust sends the token
-pair directly to daemon. Renderer JavaScript never sees either token.
+The native macOS app owns the browser loopback listener and PKCE verifier. After
+the code exchange and `/api/v1/me` lookup succeed, the app sends the token pair
+directly to daemon over XPC.
 
 Daemon injects bearer tokens into Server requests. On `401`, it rotates the
 refresh token and retries exactly once.

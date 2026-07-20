@@ -1,14 +1,14 @@
 # Clumsies for macOS
 
-This is the native macOS client. It uses AppKit and SwiftUI for the interface and communicates with the independent Rust daemon through the existing Mach XPC service.
-
-The Tauri client in `apps/desktop` remains available while the native client reaches feature parity, but it is only a daemon client. The native macOS client owns LaunchAgent installation and daemon upgrades.
+This is the Clumsies desktop client. It uses AppKit and SwiftUI for the interface and communicates with the independent Rust daemon through its Mach XPC service. The app owns LaunchAgent installation and daemon upgrades.
 
 ## Run
 
 ```sh
 bun run dev:macos
 ```
+
+The command builds the Debug app, atomically replaces `~/Applications/Clumsies.app`, and launches that stable installation path. A running Clumsies instance exits only after the new build succeeds. Set `CLUMSIES_MACOS_INSTALL_DIR` to override the installation directory.
 
 The build embeds `clumsiesd` in the app bundle. Set `CLUMSIES_SKIP_DAEMON_BUILD=1` only when iterating on UI code with an already installed daemon.
 Debug builds use Xcode's local ad-hoc signature so the test host can load Swift debug libraries under macOS system policy. The embedded daemon receives an explicit, stable designated requirement so rebuilding it does not invalidate its file-keychain access control entry.

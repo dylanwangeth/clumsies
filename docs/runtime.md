@@ -2,9 +2,9 @@
 
 ## Local daemon
 
-`clumsiesd` is an owner-scoped macOS launchd service. Desktop installs and
-starts it through native Tauri commands. MCP connects to the same process over
-XPC. The daemon has one local SQLite database for durable client state.
+`clumsiesd` is an owner-scoped macOS launchd service. The macOS app installs and
+starts it, while both the app and MCP connect to the same process over XPC. The
+daemon has one local SQLite database for durable client state.
 
 The database currently stores:
 
@@ -21,16 +21,15 @@ either token, and daemon has no plaintext credential fallback.
 
 ## Desktop request path
 
-The TypeScript client builds standard OpenAPI-shaped `Request` objects. A custom
-transport serializes them into a typed Tauri command. Native Rust sends that
-request to daemon, and daemon sends the authenticated HTTP request to Server.
+The native Swift client serializes typed capability requests over XPC. Daemon
+executes local operations or sends authenticated HTTP requests to Server.
 
 ```text
-React -> typed API client -> Tauri command -> XPC -> daemon -> HTTPS -> Server
+SwiftUI/AppKit -> XPC -> daemon -> HTTPS -> Server
 ```
 
-This keeps all product API methods typed without exposing credentials to the
-renderer or depending on WebView CORS.
+This keeps credentials in daemon and macOS Keychain without a WebView or CORS
+dependency.
 
 ## Draft synchronization
 
@@ -100,7 +99,7 @@ integrity checks; type-aware diff and merge remain separate work.
 
 Desktop can read daemon health, bootstrap state, project configuration, sync
 status, MCP status, draft lists, draft details, and operation results through
-typed commands. It can request explicit retry without directly mutating queue
+typed XPC requests. It can request explicit retry without directly mutating queue
 rows.
 
 Server diagnostics are available at `/api/v1/admin/health`. Database, schema,

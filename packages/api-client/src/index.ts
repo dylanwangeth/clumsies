@@ -3,7 +3,6 @@ import type {
   components as AdminComponents,
   paths as AdminPaths,
 } from "@clumsies/api-contract/admin";
-import type { components as DaemonComponents } from "@clumsies/api-contract/daemon";
 import type {
   components as PublicComponents,
   paths as PublicPaths,
@@ -30,39 +29,6 @@ export type PublicSchema<Name extends keyof PublicComponents["schemas"]> =
   PublicComponents["schemas"][Name];
 export type AdminSchema<Name extends keyof AdminComponents["schemas"]> =
   AdminComponents["schemas"][Name];
-export type DaemonBootstrapStatus = DaemonComponents["schemas"]["DaemonBootstrapStatus"];
-export type DaemonProjectConfig = DaemonComponents["schemas"]["DaemonProjectConfig"];
-export type DaemonProjectSelectionRequest =
-  DaemonComponents["schemas"]["DaemonProjectSelectionRequest"];
-export type DaemonHealth = DaemonComponents["schemas"]["DaemonHealth"];
-export type DaemonSyncStatus = DaemonComponents["schemas"]["DaemonSyncStatus"];
-export type DaemonSyncRetryRequest =
-  DaemonComponents["schemas"]["DaemonSyncRetryRequest"];
-export type DaemonRetryResponse = DaemonComponents["schemas"]["DaemonRetryResponse"];
-export type DaemonMcpStatus = DaemonComponents["schemas"]["DaemonMcpStatus"];
-export type DaemonDraftListResponse =
-  DaemonComponents["schemas"]["DaemonDraftListResponse"];
-export type DaemonDraftDetail = DaemonComponents["schemas"]["DaemonDraftDetail"];
-export type DaemonDraftOperationRequest =
-  DaemonComponents["schemas"]["DaemonDraftOperationRequest"];
-export type DaemonDraftOperationResponse =
-  DaemonComponents["schemas"]["DaemonDraftOperationResponse"];
-export type DaemonServerRequest = DaemonComponents["schemas"]["DaemonServerRequest"];
-export type DaemonServerResponse = DaemonComponents["schemas"]["DaemonServerResponse"];
-
-export type DaemonDraftListQuery = {
-  resource?: "context" | "rule" | "workflow" | "metaprompt" | null;
-  status?: "open" | "submitted" | "discarded" | "conflicted" | null;
-  limit?: number | null;
-};
-
-export type NativeInvoke = <T>(
-  command: string,
-  args?: Record<string, unknown>,
-) => Promise<T>;
-
-export type DaemonApiClient = ReturnType<typeof createDaemonApiClient>;
-
 export interface CreateApiClientOptions {
   baseUrl: string;
   accessToken?: string;
@@ -88,32 +54,6 @@ export function createAdminApiClient(options: CreateApiClientOptions): AdminApiC
     credentials: options.credentials,
     fetch: options.fetch,
   });
-}
-
-export function createDaemonApiClient(invoke: NativeInvoke) {
-  return {
-    bootstrapStatus: () =>
-      invoke<DaemonBootstrapStatus>("read_daemon_bootstrap_status"),
-    health: () => invoke<DaemonHealth>("read_daemon_health"),
-    projectConfig: () =>
-      invoke<DaemonProjectConfig>("read_daemon_project_config"),
-    selectProject: (request: DaemonProjectSelectionRequest) =>
-      invoke<DaemonProjectConfig>("select_daemon_project", { request }),
-    syncStatus: () => invoke<DaemonSyncStatus>("read_daemon_sync_status"),
-    retrySync: (request: DaemonSyncRetryRequest) =>
-      invoke<DaemonRetryResponse>("retry_daemon_sync", { request }),
-    mcpStatus: () => invoke<DaemonMcpStatus>("read_daemon_mcp_status"),
-    listDrafts: (query: DaemonDraftListQuery = {}) =>
-      invoke<DaemonDraftListResponse>("list_daemon_drafts", { query }),
-    draft: (draftId: string) =>
-      invoke<DaemonDraftDetail>("read_daemon_draft", { draftId }),
-    storeDraftOperation: (request: DaemonDraftOperationRequest) =>
-      invoke<DaemonDraftOperationResponse>("store_daemon_draft_operation", {
-        request,
-      }),
-    serverRequest: (request: DaemonServerRequest) =>
-      invoke<DaemonServerResponse>("proxy_server_request", { request }),
-  };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {

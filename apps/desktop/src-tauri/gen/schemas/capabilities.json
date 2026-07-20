@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default permissions for the Clumsies desktop windows.","local":true,"windows":["main","authentication"],"permissions":["core:default","opener:default","process:allow-restart","updater:default"]}}

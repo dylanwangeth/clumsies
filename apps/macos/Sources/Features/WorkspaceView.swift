@@ -494,7 +494,7 @@ private struct WorkspaceSearchPopover: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if store.isPreparingWorkspaceIndex {
-                        Label("Indexing workspace", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Preparing search", systemImage: "arrow.triangle.2.circlepath")
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)

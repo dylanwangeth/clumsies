@@ -9,7 +9,6 @@
   ],
   "scripts": {
     "dev": "vitepress dev docs",
-    "dev:desktop": "bun run --cwd apps/desktop dev",
     "dev:macos": "sh apps/macos/Scripts/run.sh",
     "dev:web-admin": "bun run --cwd apps/web-admin dev",
     "dev:infra": "docker compose up -d --wait postgres fake-oidc",

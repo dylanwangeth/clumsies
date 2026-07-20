@@ -371,8 +371,7 @@ private struct LaunchView: View {
                 .frame(width: 88, height: 88)
             ProgressView()
                 .controlSize(.small)
-            Text("Opening workspace")
-                .font(.headline)
+                .accessibilityLabel("Opening Clumsies")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)

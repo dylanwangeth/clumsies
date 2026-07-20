@@ -46,29 +46,30 @@ store draft refinements through the same system.
 
 ## Quick start
 
-The current product is run from source while the Desktop distribution is being
-prepared. The local stack includes Server, PostgreSQL, and a deterministic fake
-OIDC provider:
+The macOS client currently runs from source and connects to the hosted Clumsies
+Server at `https://app.clumsies.ai`:
 
 ```bash
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 bun install
+bun run dev:macos
+```
+
+The build embeds the Rust daemon binary, atomically replaces
+`~/Applications/Clumsies.app`, and launches the native AppKit/SwiftUI
+application from that stable path.
+
+For local Server and Web Admin development, start PostgreSQL, the deterministic
+fake OIDC provider, and Server with:
+
+```bash
 bun run dev:server
 ```
 
-This keeps the Rust Server in the foreground and starts PostgreSQL and the fake
-provider in Docker. In another terminal, launch Desktop. Its Tauri build
-prepares the Rust daemon binary automatically:
-
-```bash
-bun run dev:desktop
-```
-
-Desktop opens the fake provider in the system browser and signs in as the local
-bootstrap owner. The renderer talks to the local daemon; daemon owns automatic
-draft synchronization and authenticated Server transport. The fake provider is
-for local development only; production uses the organization's OIDC provider.
+The fake provider is for local Server development only; production uses the
+organization's OIDC provider. The macOS app talks to the local daemon, which
+owns automatic draft synchronization and authenticated Server transport.
 
 For the self-hosted configuration, see the
 [deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/).

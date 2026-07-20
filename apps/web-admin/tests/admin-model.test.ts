@@ -37,7 +37,7 @@ describe("Web Admin model", () => {
     expect(matchesSearch(["Owner", "owner@example.com"], "member")).toBe(false);
   });
 
-  test("does not crash the workspace on an invalid timestamp", () => {
+  test("does not crash the admin app on an invalid timestamp", () => {
     expect(formatDateTime("not-a-date")).toBe("Unavailable");
     expect(formatRelativeTime("not-a-date")).toBe("Unavailable");
   });

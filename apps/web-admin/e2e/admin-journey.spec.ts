@@ -10,7 +10,7 @@ test("setup and organization governance form one complete administrator journey"
   await page.getByLabel("Setup Code").fill("clumsies-web-admin-e2e-setup-code");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Configure the workspace" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Configure the organization" })).toBeVisible();
   await page.getByLabel("Organization name").fill("Clumsies Lab");
   await page.getByLabel("Default project").fill("Default");
   await page.getByRole("button", { name: "Continue with SSO" }).click();

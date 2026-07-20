@@ -199,7 +199,7 @@ function SetupApp({
           <h1>Claim this installation</h1>
           <ol>
             <ProgressStep index={1} label="Verify access" active={stage === "access"} complete={stage !== "access" && stage !== "loading"} />
-            <ProgressStep index={2} label="Configure workspace" active={stage === "configure"} complete={stage === "complete"} />
+            <ProgressStep index={2} label="Configure organization" active={stage === "configure"} complete={stage === "complete"} />
             <ProgressStep index={3} label="Bind first owner" active={false} complete={stage === "complete"} />
           </ol>
         </aside>
@@ -312,7 +312,7 @@ function ConfigurationStep({
       <div className="section-heading">
         <ShieldCheck aria-hidden="true" />
         <div>
-          <h2>Configure the workspace</h2>
+          <h2>Configure the organization</h2>
           <p>The verified OIDC identity will become the first Owner.</p>
         </div>
       </div>

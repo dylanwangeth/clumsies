@@ -1,11 +1,11 @@
 # Codebase map
 
-Clumsies is a Bun, Rust, Tauri, and Zig monorepo. Ownership follows runtime
+Clumsies is a Bun, Swift, Rust, and Zig monorepo. Ownership follows runtime
 boundaries rather than language alone.
 
 | Path | Responsibility |
 | --- | --- |
-| `apps/desktop/` | Desktop renderer and Tauri native backend |
+| `apps/macos/` | Native macOS product client built with AppKit and SwiftUI |
 | `crates/server/` | deployable Rust authority service and PostgreSQL schema |
 | `crates/daemon/` | macOS launchd daemon, local SQLite state, IPC, and automatic draft sync |
 | `packages/api-contract/` | Public, Admin, and daemon OpenAPI contracts |
@@ -23,8 +23,8 @@ authorization, Bundles, review lifecycle, and Commit history.
 `crates/daemon` owns local drafts, queued operations, automatic synchronization,
 token refresh, and native Server transport. It is not an authority source.
 
-`apps/desktop` is the primary human product. Its renderer uses typed Tauri
-commands and never holds Server credentials. Hub in this UI means
+`apps/macos` is the primary human product. It uses typed XPC requests and never
+persists Server credentials. Hub in this UI means
 organization-scoped shared memory; Local means project and local draft work.
 
 The Zig executable remains useful for CLI and MCP. New local runtime logic that
@@ -36,5 +36,5 @@ state store.
 1. Read the OpenAPI files in `packages/api-contract/openapi`.
 2. Read `crates/server/src/http.rs` and `repository.rs` for authority behavior.
 3. Read `crates/daemon/src/lib.rs` and `ipc.rs` for local synchronization.
-4. Read `apps/desktop/src/backend.ts` for typed client mapping.
-5. Read `apps/desktop/src/App.tsx` for product workflow composition.
+4. Read `apps/macos/Sources/Infrastructure/DaemonXPCClient.swift` for daemon transport.
+5. Read `apps/macos/Sources/Features/WorkspaceView.swift` for product workflow composition.

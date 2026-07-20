@@ -17,5 +17,5 @@ exec env \
   CLUMSIES_OIDC_CLIENT_SECRET=clumsies-local-secret \
   CLUMSIES_OIDC_ISSUER=http://127.0.0.1:18081/clumsies \
   CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback,http://127.0.0.1/admin/setup/callback,http://127.0.0.1:1421/admin/ \
-  CLUMSIES_CORS_ORIGINS=http://127.0.0.1:1420,http://localhost:1420,http://127.0.0.1:1421,http://localhost:1421 \
+  CLUMSIES_CORS_ORIGINS=http://127.0.0.1:1421,http://localhost:1421 \
   cargo run -p server --bin clumsies-server

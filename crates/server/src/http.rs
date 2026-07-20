@@ -289,10 +289,7 @@ fn cors_layer() -> CorsLayer {
 
 fn configured_cors_origins() -> Vec<String> {
     std::env::var("CLUMSIES_CORS_ORIGINS")
-        .unwrap_or_else(|_| {
-            "tauri://localhost,http://tauri.localhost,http://127.0.0.1:1420,http://localhost:1420"
-                .to_owned()
-        })
+        .unwrap_or_else(|_| "http://127.0.0.1:1421,http://localhost:1421".to_owned())
         .split(',')
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
