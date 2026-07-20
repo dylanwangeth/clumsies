@@ -46,7 +46,7 @@ targets:
         SUPublicEDKey: oCAiBe/ez4wochO1I9ziO1uCEpmES+e7ypC74HJwIvw=
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.lilhammerfun.clumsies.macos
+        PRODUCT_BUNDLE_IDENTIFIER: ai.clumsies.desktop
         PRODUCT_NAME: Clumsies
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -74,7 +74,7 @@ targets:
       - target: Clumsies
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.lilhammerfun.clumsies.macos.tests
+        PRODUCT_BUNDLE_IDENTIFIER: ai.clumsies.desktop.tests
         GENERATE_INFOPLIST_FILE: YES
 schemes:
   Clumsies:

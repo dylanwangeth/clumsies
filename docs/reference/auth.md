@@ -85,7 +85,7 @@ for loopback development addresses.
 ## Local credential storage
 
 Daemon stores one generic-password item in macOS Keychain. The service is
-`io.github.lilhammerfun.clumsies`, the account is `server-session`, and the
+`ai.clumsies`, the account is `server-session`, and the
 encrypted value contains the Server URL plus the access/refresh token pair. The
 Server URL binds the credentials to one endpoint; daemon refuses to load a
 Keychain session when it does not match the configured Server.

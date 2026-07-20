@@ -2,6 +2,12 @@ import XCTest
 @testable import Clumsies
 
 final class DaemonContractTests: XCTestCase {
+    func testNativeClientUsesClumsiesIdentifierNamespace() {
+        XCTAssertEqual(ClumsiesIdentifiers.namespace, "ai.clumsies")
+        XCTAssertEqual(DaemonBootstrapController.label, "ai.clumsies.daemon")
+        XCTAssertEqual(DaemonXPCClient.serviceName, "ai.clumsies.daemon")
+    }
+
     func testDraftOperationUsesDaemonWireKeys() throws {
         let request = DaemonDraftOperationRequest(
             draftId: "draft-1",

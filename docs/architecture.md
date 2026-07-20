@@ -136,10 +136,11 @@ refresh token and retries exactly once.
 
 ## Platform boundary
 
-The current daemon transport is macOS launchd plus XPC under bundle identifier
-`io.github.lilhammerfun.clumsies`. Windows is a later roadmap item and will need
-a native service manager and IPC transport behind the same daemon capability
-contract. It is not implemented as a degraded fallback.
+The current daemon transport is macOS launchd plus XPC. Its LaunchAgent label
+and Mach service are both `ai.clumsies.daemon`, under the `ai.clumsies` product
+namespace. Windows is a later roadmap item and will need a native service
+manager and IPC transport behind the same daemon capability contract. It is not
+implemented as a degraded fallback.
 
 ## Incomplete boundary
 

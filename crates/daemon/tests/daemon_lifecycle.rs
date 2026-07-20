@@ -8,16 +8,16 @@ use std::time::Duration;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
-    APP_BUNDLE_IDENTIFIER, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
-    DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
-    DaemonDiscardDraftOperation, DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
+    CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
+    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDiscardDraftOperation,
+    DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
     DaemonServerRequest, DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
-    DraftOperationSyncStatus, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
-    ServerCredentials, SyncRetryChannel, SyncState,
+    DraftOperationSyncStatus, IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController,
+    LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -101,6 +101,8 @@ fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     let program_path = root.path().join("bin").join("clumsiesd");
     let launch_agent = LaunchAgentConfig::from_daemon_config(&config, &program_path);
 
+    assert_eq!(IDENTIFIER_NAMESPACE, "ai.clumsies");
+    assert_eq!(DAEMON_AGENT_LABEL, "ai.clumsies.daemon");
     assert_eq!(launch_agent.label, DAEMON_AGENT_LABEL);
     assert_eq!(launch_agent.mach_service_name, DAEMON_MACH_SERVICE_NAME);
     assert_eq!(
@@ -140,7 +142,7 @@ fn launch_agent_install_writes_owner_only_plist() {
     launch_agent.install_plist().unwrap();
 
     let plist = std::fs::read_to_string(&launch_agent.plist_path).unwrap();
-    assert!(plist.contains(APP_BUNDLE_IDENTIFIER));
+    assert!(plist.contains(IDENTIFIER_NAMESPACE));
     assert!(launch_agent.root_dir.is_dir());
     assert!(launch_agent.cache_dir.is_dir());
     assert!(launch_agent.log_dir.is_dir());

@@ -30,8 +30,8 @@ pub use credentials::{
 };
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 
-pub const APP_BUNDLE_IDENTIFIER: &str = "io.github.lilhammerfun.clumsies";
-pub const DAEMON_AGENT_LABEL: &str = "io.github.lilhammerfun.clumsies.agent";
+pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
+pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
 pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 12;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
@@ -146,15 +146,12 @@ impl DaemonRuntimePaths {
             root_dir: home
                 .join("Library")
                 .join("Application Support")
-                .join(APP_BUNDLE_IDENTIFIER),
+                .join(IDENTIFIER_NAMESPACE),
             cache_dir: home
                 .join("Library")
                 .join("Caches")
-                .join(APP_BUNDLE_IDENTIFIER),
-            log_dir: home
-                .join("Library")
-                .join("Logs")
-                .join(APP_BUNDLE_IDENTIFIER),
+                .join(IDENTIFIER_NAMESPACE),
+            log_dir: home.join("Library").join("Logs").join(IDENTIFIER_NAMESPACE),
             launch_agents_dir: home.join("Library").join("LaunchAgents"),
         }
     }

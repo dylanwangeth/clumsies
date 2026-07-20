@@ -9,7 +9,7 @@ repo_root="$(cd "$SRCROOT/../.." && pwd)"
 cd "$repo_root"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
 destination="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/clumsiesd"
-daemon_identifier="io.github.lilhammerfun.clumsies.daemon"
+daemon_identifier="ai.clumsies.daemon"
 mkdir -p "$(dirname "$destination")"
 
 if [ "$CONFIGURATION" = "Release" ] && [ "${CLUMSIES_UNIVERSAL_BUILD:-0}" = "1" ]; then

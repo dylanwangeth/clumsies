@@ -51,7 +51,7 @@ pub struct SystemCredentialStore {
 
 impl Default for SystemCredentialStore {
     fn default() -> Self {
-        Self::new(crate::APP_BUNDLE_IDENTIFIER, KEYCHAIN_ACCOUNT)
+        Self::new(crate::IDENTIFIER_NAMESPACE, KEYCHAIN_ACCOUNT)
     }
 }
 

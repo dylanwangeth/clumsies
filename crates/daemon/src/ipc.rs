@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn missing_mach_service_returns_an_ipc_error() {
-        let client = DaemonIpcClient::new("io.github.lilhammerfun.clumsies.missing-test-service");
+        let client = DaemonIpcClient::new("ai.clumsies.daemon.missing-test-service");
 
         let error = client.health().unwrap_err();
 

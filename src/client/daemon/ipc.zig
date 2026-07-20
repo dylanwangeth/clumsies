@@ -1,7 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-pub const MACH_SERVICE_NAME = "io.github.lilhammerfun.clumsies.agent";
+pub const MACH_SERVICE_NAME = "ai.clumsies.daemon";
 
 const REQUEST_JSON_KEY = "request_json";
 const RESPONSE_JSON_KEY = "response_json";

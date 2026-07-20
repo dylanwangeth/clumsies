@@ -25,9 +25,9 @@ enum DaemonXPCError: LocalizedError, Sendable {
 }
 
 struct DaemonXPCClient: Sendable {
-    static let serviceName = "io.github.lilhammerfun.clumsies.agent"
+    static let serviceName = ClumsiesIdentifiers.daemon
     private static let replyQueue = DispatchQueue(
-        label: "io.github.lilhammerfun.clumsies.xpc-replies",
+        label: ClumsiesIdentifiers.xpcReplyQueue,
         qos: .userInitiated,
         attributes: .concurrent
     )

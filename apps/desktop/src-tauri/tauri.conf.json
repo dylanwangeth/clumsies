@@ -3,7 +3,7 @@
   "productName": "Clumsies",
   "mainBinaryName": "Clumsies",
   "version": "0.1.0",
-  "identifier": "io.github.lilhammerfun.clumsies",
+  "identifier": "ai.clumsies.desktop.legacy",
   "build": {
     "beforeDevCommand": "bun run dev:web",
     "beforeBuildCommand": "bun run build:web",

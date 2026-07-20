@@ -24,7 +24,7 @@ enum DaemonBootstrapError: LocalizedError, Sendable {
 }
 
 struct DaemonBootstrapController: Sendable {
-    static let label = "io.github.lilhammerfun.clumsies.agent"
+    static let label = ClumsiesIdentifiers.daemon
 
     private var fileManager: FileManager { .default }
 
@@ -76,15 +76,15 @@ struct DaemonBootstrapController: Sendable {
     }
 
     private var runtimeRoot: URL {
-        homeDirectory.appending(path: "Library/Application Support/io.github.lilhammerfun.clumsies", directoryHint: .isDirectory)
+        homeDirectory.appending(path: "Library/Application Support/\(ClumsiesIdentifiers.namespace)", directoryHint: .isDirectory)
     }
 
     private var cacheDirectory: URL {
-        homeDirectory.appending(path: "Library/Caches/io.github.lilhammerfun.clumsies", directoryHint: .isDirectory)
+        homeDirectory.appending(path: "Library/Caches/\(ClumsiesIdentifiers.namespace)", directoryHint: .isDirectory)
     }
 
     private var logDirectory: URL {
-        homeDirectory.appending(path: "Library/Logs/io.github.lilhammerfun.clumsies", directoryHint: .isDirectory)
+        homeDirectory.appending(path: "Library/Logs/\(ClumsiesIdentifiers.namespace)", directoryHint: .isDirectory)
     }
 
     private var launchDomain: String { "gui/\(getuid())" }

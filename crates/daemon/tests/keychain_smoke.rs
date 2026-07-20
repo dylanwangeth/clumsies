@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use daemon::{APP_BUNDLE_IDENTIFIER, CredentialStore, ServerCredentials, SystemCredentialStore};
+use daemon::{CredentialStore, IDENTIFIER_NAMESPACE, ServerCredentials, SystemCredentialStore};
 use uuid::Uuid;
 
 #[test]
@@ -9,7 +9,7 @@ fn macos_keychain_round_trip() {
         return;
     }
 
-    let service = format!("{APP_BUNDLE_IDENTIFIER}.tests");
+    let service = format!("{IDENTIFIER_NAMESPACE}.tests");
     let account = format!("server-session-{}", Uuid::new_v4().simple());
     let store = SystemCredentialStore::new(service, account);
     let cleanup = KeychainCleanup(&store);
