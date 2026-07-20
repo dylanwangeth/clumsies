@@ -4,7 +4,7 @@ use server::repository::rebuild_refs_with_flat_workflows;
 use sqlx::Row;
 
 #[tokio::test]
-async fn structured_workflows_migrate_to_markdown_and_advance_the_current_ref() {
+async fn structured_workflows_and_drafts_migrate_to_markdown() {
     let postgres = common::postgres_without_migrations().await;
     sqlx::raw_sql(include_str!(
         "../migrations/20260708000100_create_server_schema.sql"
@@ -15,6 +15,8 @@ async fn structured_workflows_migrate_to_markdown_and_advance_the_current_ref() 
 
     sqlx::raw_sql(
         "INSERT INTO orgs (org_id, name) VALUES ('org_migration', 'Migration');
+         INSERT INTO users (user_id, email, display_name, role, status)
+         VALUES ('usr_migration', 'migration@example.com', 'Migration', 'owner', 'active');
          INSERT INTO projects (project_id, org_id, name)
          VALUES ('prj_migration', 'org_migration', 'Migration');
          INSERT INTO project_org_selection_states (project_id) VALUES ('prj_migration');
@@ -28,6 +30,20 @@ async fn structured_workflows_migrate_to_markdown_and_advance_the_current_ref() 
          ) VALUES (
              'wfl_migration', 'org_migration', 'prj_migration', 'project', 'workflow',
              'workflow/RELEASE.md', 'Release', 'active', 'sha256:old', 'Publish safely.'
+         );
+         INSERT INTO drafts (
+             draft_id, project_id, author_user_id, title, resource_scope,
+             resource_kind, path, status, daemon_installation_id
+         ) VALUES (
+             'drf_migration', 'prj_migration', 'usr_migration', 'Release', 'project',
+             'workflow', 'workflow/RELEASE.md', 'open', 'ins_migration'
+         );
+         INSERT INTO draft_operations (
+             operation_id, draft_id, action, resource_scope, resource_kind, path, content
+         ) VALUES (
+             'dop_migration', 'drf_migration', 'update', 'project', 'workflow',
+             'workflow/RELEASE.md',
+             '{\"kind\":\"workflow\",\"name\":\"RELEASE\",\"description\":\"Publish safely.\",\"steps\":[{\"rule_id\":\"rul_release\",\"body\":null},{\"rule_id\":null,\"body\":\"Publish the release.\"}]}'
          );
          INSERT INTO workflow_steps (resource_id, step_order, rule_id, body)
          VALUES
@@ -56,9 +72,14 @@ async fn structured_workflows_migrate_to_markdown_and_advance_the_current_ref() 
     .execute(&postgres.pool)
     .await
     .unwrap();
-
     sqlx::raw_sql(include_str!(
         "../migrations/20260720000100_flatten_workflow_content.sql"
+    ))
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20260720000200_flatten_workflow_draft_content.sql"
     ))
     .execute(&postgres.pool)
     .await
@@ -90,6 +111,34 @@ async fn structured_workflows_migrate_to_markdown_and_advance_the_current_ref() 
     let current = current_project_ref(&postgres.pool).await;
     assert_ne!(current, "commit_old_workflow");
     assert_eq!(current_workflow_blob(&postgres.pool).await, expected);
+
+    let migrated_draft: serde_json::Value = sqlx::query_scalar(
+        "SELECT content FROM draft_operations WHERE operation_id = 'dop_migration'",
+    )
+    .fetch_one(&postgres.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        migrated_draft,
+        serde_json::json!({
+            "kind": "workflow",
+            "content": "# RELEASE\n\nPublish safely.\n\n1. Apply rule `rul_release`.\n2. Publish the release."
+        })
+    );
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/20260720000200_flatten_workflow_draft_content.sql"
+    ))
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    let rerun_draft: serde_json::Value = sqlx::query_scalar(
+        "SELECT content FROM draft_operations WHERE operation_id = 'dop_migration'",
+    )
+    .fetch_one(&postgres.pool)
+    .await
+    .unwrap();
+    assert_eq!(rerun_draft, migrated_draft);
 
     rebuild_refs_with_flat_workflows(&postgres.pool)
         .await
