@@ -149,19 +149,119 @@ jobs:
           tauriScript: bun run tauri
           uploadUpdaterJson: true
 
+  macos-native-release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches native macOS version
+        run: |
+          NATIVE_VERSION=$(awk -F'"' '/MARKETING_VERSION:/ { print $2; exit }' apps/macos/project.yml)
+          test "$GITHUB_REF_NAME" = "v$NATIVE_VERSION"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Validate release credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID \
+            KEYCHAIN_PASSWORD \
+            SPARKLE_PRIVATE_KEY
+          do
+            test -n "${!name}" || { echo "Missing release secret: $name"; exit 1; }
+          done
+
+      - name: Import Apple Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            build.keychain
+
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
+          CERT_ID=$(printf '%s' "$CERT_INFO" | awk -F'"' '{print $2}')
+          test -n "$CERT_ID"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+
+      - name: Build and notarize native macOS app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CLUMSIES_BUILD_NUMBER: ${{ github.run_number }}
+          CLUMSIES_VERSION: ${{ github.ref_name }}
+        run: |
+          export CLUMSIES_VERSION="${CLUMSIES_VERSION#v}"
+          apps/macos/Scripts/archive-release.sh
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: apps/macos/Scripts/generate-appcast.sh
+
+      - name: Stage native macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clumsies-macos-native
+          path: |
+            dist/macos/Clumsies-*-macos-universal.zip
+            dist/macos/appcast.xml
+          if-no-files-found: error
+
   publish-release:
-    needs: [cli-release, desktop-release]
+    needs: [cli-release, desktop-release, macos-native-release]
     runs-on: ubuntu-latest
     steps:
       - name: Download CLI artifacts
         uses: actions/download-artifact@v4
         with:
           name: clumsies-cli
-          path: dist
+          path: dist/cli
+
+      - name: Download native macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: clumsies-macos-native
+          path: dist/macos-native
 
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/cli/* --clobber
+          gh release upload "$GITHUB_REF_NAME" dist/macos-native/* --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false

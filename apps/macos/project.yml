@@ -1,0 +1,108 @@
+name: Clumsies
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    macOS: "14.0"
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CLANG_ENABLE_MODULES: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    exactVersion: 2.4.1
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.4
+targets:
+  Clumsies:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources
+        buildPhase: resources
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Clumsies
+        CFBundleName: Clumsies
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        LSMinimumSystemVersion: "14.0"
+        NSHighResolutionCapable: true
+        NSHumanReadableCopyright: Copyright © 2026 Clumsies Lab
+        NSPrincipalClass: NSApplication
+        SUFeedURL: https://github.com/lilhammerfun/clumsies/releases/latest/download/appcast.xml
+        SUPublicEDKey: oCAiBe/ez4wochO1I9ziO1uCEpmES+e7ypC74HJwIvw=
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lilhammerfun.clumsies.macos
+        PRODUCT_NAME: Clumsies
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_APP_SANDBOX: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        ENABLE_HARDENED_RUNTIME: YES
+      configs:
+        Debug:
+          ENABLE_DEBUG_DYLIB: NO
+          ENABLE_HARDENED_RUNTIME: NO
+    dependencies:
+      - package: MarkdownUI
+      - package: Sparkle
+    postBuildScripts:
+      - name: Embed clumsiesd
+        path: Scripts/embed-daemon.sh
+        basedOnDependencyAnalysis: false
+  ClumsiesTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Clumsies
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lilhammerfun.clumsies.macos.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Clumsies:
+    build:
+      targets:
+        Clumsies: all
+        ClumsiesTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ClumsiesTests
+      environmentVariables:
+        CLUMSIES_SKIP_DAEMON_BUILD: "1"
+    archive:
+      config: Release
+  ClumsiesLiveTests:
+    build:
+      targets:
+        Clumsies: all
+        ClumsiesTests: [test]
+    test:
+      config: Debug
+      targets:
+        - ClumsiesTests
+      environmentVariables:
+        CLUMSIES_RUN_LIVE_TESTS: "1"
+        CLUMSIES_SKIP_DAEMON_BUILD: "1"
+    management:
+      isShown: false

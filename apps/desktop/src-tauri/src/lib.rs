@@ -37,34 +37,6 @@ async fn read_daemon_bootstrap_status() -> Result<DaemonBootstrapStatus, String>
 }
 
 #[tauri::command]
-async fn install_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
-    launch_agent_controller()?
-        .install()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn start_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
-    launch_agent_controller()?
-        .reconcile()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn restart_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
-    launch_agent_controller()?
-        .kickstart()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn stop_daemon_launch_agent() -> Result<DaemonBootstrapStatus, String> {
-    launch_agent_controller()?
-        .bootout()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 async fn read_daemon_health() -> Result<DaemonHealth, String> {
     call_daemon(|client| client.health()).await
 }
@@ -491,10 +463,6 @@ pub fn run() {
         .on_window_event(lifecycle::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             read_daemon_bootstrap_status,
-            install_daemon_launch_agent,
-            start_daemon_launch_agent,
-            restart_daemon_launch_agent,
-            stop_daemon_launch_agent,
             read_daemon_health,
             read_daemon_project_config,
             select_daemon_project,

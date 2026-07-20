@@ -94,10 +94,6 @@ export function createDaemonApiClient(invoke: NativeInvoke) {
   return {
     bootstrapStatus: () =>
       invoke<DaemonBootstrapStatus>("read_daemon_bootstrap_status"),
-    install: () => invoke<DaemonBootstrapStatus>("install_daemon_launch_agent"),
-    start: () => invoke<DaemonBootstrapStatus>("start_daemon_launch_agent"),
-    restart: () => invoke<DaemonBootstrapStatus>("restart_daemon_launch_agent"),
-    stop: () => invoke<DaemonBootstrapStatus>("stop_daemon_launch_agent"),
     health: () => invoke<DaemonHealth>("read_daemon_health"),
     projectConfig: () =>
       invoke<DaemonProjectConfig>("read_daemon_project_config"),

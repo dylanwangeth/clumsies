@@ -19,6 +19,9 @@ apps/web-admin/test-results/
 # Editor
 .vscode/
 .idea/
+xcuserdata/
+*.xcuserstate
+.derivedData/
 *.swp
 *.swo
 *~

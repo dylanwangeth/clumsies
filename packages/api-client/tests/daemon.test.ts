@@ -17,10 +17,6 @@ describe("daemon API client", () => {
     const client = createDaemonApiClient(invoke);
 
     await client.bootstrapStatus();
-    await client.install();
-    await client.start();
-    await client.restart();
-    await client.stop();
     await client.health();
     await client.projectConfig();
     await client.selectProject({ project_id: "prj_other" });
@@ -51,10 +47,6 @@ describe("daemon API client", () => {
 
     expect(calls.map((call) => call.command)).toEqual([
       "read_daemon_bootstrap_status",
-      "install_daemon_launch_agent",
-      "start_daemon_launch_agent",
-      "restart_daemon_launch_agent",
-      "stop_daemon_launch_agent",
       "read_daemon_health",
       "read_daemon_project_config",
       "select_daemon_project",
@@ -66,12 +58,12 @@ describe("daemon API client", () => {
       "store_daemon_draft_operation",
       "proxy_server_request",
     ]);
-    expect(calls[7]?.args).toEqual({
+    expect(calls[3]?.args).toEqual({
       request: { project_id: "prj_other" },
     });
-    expect(calls[11]?.args).toEqual({
+    expect(calls[7]?.args).toEqual({
       query: { resource: "context", limit: 20 },
     });
-    expect(calls[12]?.args).toEqual({ draftId: "draft_test" });
+    expect(calls[8]?.args).toEqual({ draftId: "draft_test" });
   });
 });

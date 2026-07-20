@@ -9,6 +9,8 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ClumsiesApiError,
   type DaemonBootstrapStatus,
@@ -81,6 +83,7 @@ import {
   X,
 } from "lucide-react";
 import { TextEditor } from "./text-editor";
+import { Button, IconButton, Tooltip } from "./ui";
 import {
   applyMemoryChange,
   cloneDocument,
@@ -488,46 +491,6 @@ export function App() {
       return null;
     }
   }, []);
-
-  const runDaemonCommand = useCallback(async (command: string) => {
-    const backend = backendRef.current;
-    if (!backend) {
-      setLoadState({ status: "preview" });
-      return;
-    }
-    setLoadState({ status: "loading" });
-    try {
-      const commands: Record<string, () => Promise<DaemonBootstrapStatus>> = {
-        install_daemon_launch_agent: backend.daemon.install,
-        start_daemon_launch_agent: backend.daemon.start,
-        restart_daemon_launch_agent: backend.daemon.restart,
-        stop_daemon_launch_agent: backend.daemon.stop,
-      };
-      const run = commands[command];
-      if (!run) {
-        throw new Error(`Unknown daemon command: ${command}`);
-      }
-      const bootstrap = await run();
-      if (command === "start_daemon_launch_agent" || command === "restart_daemon_launch_agent") {
-        await refreshBackend();
-      } else {
-        setLoadState({
-          status: "ready",
-          bootstrap,
-          health: null,
-          projectConfig: null,
-          syncStatus: null,
-          mcpStatus: null,
-          serverDataSource: "live",
-        });
-      }
-    } catch (error) {
-      setLoadState({
-        status: "failed",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }, [refreshBackend]);
 
   const retryDaemonSync = useCallback(async () => {
     const backend = backendRef.current;
@@ -2911,7 +2874,6 @@ export function App() {
               ) : selectedView === "Diagnostics" ? (
                 <DiagnosticsView
                   loadState={loadState}
-                  onCommand={runDaemonCommand}
                   onRefresh={refreshBackend}
                   onRetrySync={retryDaemonSync}
                 />
@@ -3075,20 +3037,21 @@ function Sidebar({
     <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
       <div className="sidebar-control-row">
         {collapsed ? (
-          <button
-            aria-label="Expand Global Sidebar"
-            className="sidebar-brand-button"
-            onClick={onToggleCollapsed}
-            title={`${organization.name} · Expand sidebar`}
-            type="button"
-          >
-            <img
-              alt=""
-              aria-hidden="true"
-              className="sidebar-brand-logo"
-              src={clumsiesMark}
-            />
-          </button>
+          <Tooltip label={`${organization.name} · Expand sidebar`} side="right">
+            <button
+              aria-label="Expand Global Sidebar"
+              className="sidebar-brand-button"
+              onClick={onToggleCollapsed}
+              type="button"
+            >
+              <img
+                alt=""
+                aria-hidden="true"
+                className="sidebar-brand-logo"
+                src={clumsiesMark}
+              />
+            </button>
+          </Tooltip>
         ) : (
           <>
             <div className="sidebar-brand">
@@ -3100,15 +3063,16 @@ function Sidebar({
               />
               <span>{organization.name}</span>
             </div>
-            <button
-              aria-label="Collapse Global Sidebar"
-              className="sidebar-toggle"
-              onClick={onToggleCollapsed}
-              title="Collapse Global Sidebar"
-              type="button"
-            >
-              <PanelLeftClose aria-hidden="true" size={14} />
-            </button>
+            <Tooltip label="Collapse Global Sidebar" side="right">
+              <button
+                aria-label="Collapse Global Sidebar"
+                className="sidebar-toggle"
+                onClick={onToggleCollapsed}
+                type="button"
+              >
+                <PanelLeftClose aria-hidden="true" size={14} />
+              </button>
+            </Tooltip>
           </>
         )}
       </div>
@@ -3118,17 +3082,18 @@ function Sidebar({
           if (collapsed && item.view === "Local" && selectedProject) {
             return (
               <div className="nav-entry local-nav-entry" key={item.view}>
-                <button
-                  aria-expanded={collapsedProjectsOpen}
-                  aria-haspopup="menu"
-                  aria-label={`Local projects, current project ${selectedProject.name}`}
-                  className={active ? "nav-item active" : "nav-item"}
-                  onClick={() => setCollapsedProjectsOpen((current) => !current)}
-                  title={`Local · ${selectedProject.name}`}
-                  type="button"
-                >
-                  <item.icon aria-hidden="true" size={15} strokeWidth={1.8} />
-                </button>
+                <Tooltip label={`Local · ${selectedProject.name}`} side="right">
+                  <button
+                    aria-expanded={collapsedProjectsOpen}
+                    aria-haspopup="menu"
+                    aria-label={`Local projects, current project ${selectedProject.name}`}
+                    className={active ? "nav-item active" : "nav-item"}
+                    onClick={() => setCollapsedProjectsOpen((current) => !current)}
+                    type="button"
+                  >
+                    <item.icon aria-hidden="true" size={14} />
+                  </button>
+                </Tooltip>
                 {collapsedProjectsOpen ? (
                   <>
                     <div
@@ -3178,18 +3143,19 @@ function Sidebar({
               }
               key={item.view}
             >
-              <button
-                aria-label={item.label}
-                aria-current={itemIsCurrent ? "page" : undefined}
-                aria-expanded={item.view === "Local" ? true : undefined}
-                className={itemIsCurrent ? "nav-item active" : "nav-item"}
-                onClick={() => selectView(item.view)}
-                title={collapsed ? item.label : undefined}
-                type="button"
-              >
-                <item.icon aria-hidden="true" size={15} strokeWidth={1.8} />
-                <span className="nav-label">{item.label}</span>
-              </button>
+              <Tooltip disabled={!collapsed} label={item.label} side="right">
+                <button
+                  aria-label={item.label}
+                  aria-current={itemIsCurrent ? "page" : undefined}
+                  aria-expanded={item.view === "Local" ? true : undefined}
+                  className={itemIsCurrent ? "nav-item active" : "nav-item"}
+                  onClick={() => selectView(item.view)}
+                  type="button"
+                >
+                  <item.icon aria-hidden="true" size={14} />
+                  <span className="nav-label">{item.label}</span>
+                </button>
+              </Tooltip>
               {item.view === "Local" ? (
                 <div aria-label="Local projects" className="sidebar-project-list">
                   {visibleProjects.map((project) => {
@@ -3257,19 +3223,20 @@ function Sidebar({
             </button>
           </div>
         ) : null}
-        <button
-          aria-expanded={userMenuOpen}
-          aria-haspopup="menu"
-          aria-label={`User menu for ${accountLabel}`}
-          className={selectedView === "Settings" ? "user-item active" : "user-item"}
-          onClick={onToggleUserMenu}
-          title={collapsed ? accountLabel : undefined}
-          type="button"
-        >
-          <UserAvatar account={account} />
-          <span className="user-name">{accountLabel}</span>
-          <ChevronDown aria-hidden="true" className="user-menu-chevron" size={13} />
-        </button>
+        <Tooltip disabled={!collapsed} label={accountLabel} side="right">
+          <button
+            aria-expanded={userMenuOpen}
+            aria-haspopup="menu"
+            aria-label={`User menu for ${accountLabel}`}
+            className={selectedView === "Settings" ? "user-item active" : "user-item"}
+            onClick={onToggleUserMenu}
+            type="button"
+          >
+            <UserAvatar account={account} />
+            <span className="user-name">{accountLabel}</span>
+            <ChevronDown aria-hidden="true" className="user-menu-chevron" size={13} />
+          </button>
+        </Tooltip>
       </div> : null}
     </aside>
   );
@@ -3305,16 +3272,15 @@ function BottomToolbar({
     <footer className="bottom-toolbar" aria-label="Workspace tools">
       <div className="bottom-toolbar-drag" data-tauri-drag-region />
       <div className="bottom-toolbar-right">
-        <button
-          aria-label={agentOpen ? "Hide Agent" : "Show Agent"}
+        <IconButton
+          active={agentOpen}
           aria-pressed={agentOpen}
-          className={agentOpen ? "toolbar-tool active" : "toolbar-tool"}
+          className="toolbar-tool"
+          icon={Sparkles}
+          label={agentOpen ? "Hide Agent" : "Show Agent"}
           onClick={onToggleAgent}
-          title={agentOpen ? "Hide Agent" : "Show Agent"}
-          type="button"
-        >
-          <Sparkles aria-hidden="true" size={14} />
-        </button>
+          tooltipSide="top"
+        />
       </div>
     </footer>
   );
@@ -3347,36 +3313,38 @@ function WorkspaceTabBar({
               .join(" ")}
             key={tab.key}
           >
-            <button
-              aria-selected={activeTabKey === tab.key}
-              className="workspace-tab-select"
-              onClick={() => onActivateTab(tab)}
-              onDoubleClick={() => onPinTab(tab.key)}
-              role="tab"
-              title={title}
-              type="button"
-            >
-              <span>{label}</span>
-              {syncState === "syncing" ? (
-                <LoaderCircle aria-hidden="true" className="spin" size={12} />
-              ) : syncState === "conflict" ? (
-                <CloudOff aria-hidden="true" className="tab-conflict" size={12} />
-              ) : syncState === "retrying" ? (
-                <CloudOff aria-hidden="true" size={12} />
-              ) : null}
-            </button>
-            <button
-              aria-label={`Close ${label}`}
-              className="workspace-tab-close"
-              onClick={(event) => {
-                event.stopPropagation();
-                onCloseTab(tab.key);
-              }}
-              title="Close"
-              type="button"
-            >
-              <X aria-hidden="true" size={12} />
-            </button>
+            <Tooltip label={title}>
+              <button
+                aria-selected={activeTabKey === tab.key}
+                className="workspace-tab-select"
+                onClick={() => onActivateTab(tab)}
+                onDoubleClick={() => onPinTab(tab.key)}
+                role="tab"
+                type="button"
+              >
+                <span>{label}</span>
+                {syncState === "syncing" ? (
+                  <LoaderCircle aria-hidden="true" className="spin" size={12} />
+                ) : syncState === "conflict" ? (
+                  <CloudOff aria-hidden="true" className="tab-conflict" size={12} />
+                ) : syncState === "retrying" ? (
+                  <CloudOff aria-hidden="true" size={12} />
+                ) : null}
+              </button>
+            </Tooltip>
+            <Tooltip label={`Close ${label}`}>
+              <button
+                aria-label={`Close ${label}`}
+                className="workspace-tab-close"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTab(tab.key);
+                }}
+                type="button"
+              >
+                <X aria-hidden="true" size={12} />
+              </button>
+            </Tooltip>
           </div>
         ))}
         <div className="tab-drag-space" data-tauri-drag-region />
@@ -3627,18 +3595,18 @@ function KindNavigation({
       {memoryKinds.map((entry) => {
         const Icon = kindIcons[entry];
         return (
-          <button
-            aria-label={`${entry}, ${counts[entry]}`}
-            aria-selected={kind === entry}
-            className={kind === entry ? "kind-item active" : "kind-item"}
-            key={entry}
-            onClick={() => onChange(entry)}
-            role="tab"
-            title={`${entry} · ${counts[entry]}`}
-            type="button"
-          >
-            <Icon aria-hidden="true" size={14} />
-          </button>
+          <Tooltip key={entry} label={`${entry} · ${counts[entry]}`}>
+            <button
+              aria-label={`${entry}, ${counts[entry]}`}
+              aria-selected={kind === entry}
+              className={kind === entry ? "kind-item active" : "kind-item"}
+              onClick={() => onChange(entry)}
+              role="tab"
+              type="button"
+            >
+              <Icon aria-hidden="true" size={14} />
+            </button>
+          </Tooltip>
         );
       })}
     </div>
@@ -3763,44 +3731,92 @@ function TreeBranch({
   if (node.item) {
     const active = selectedId === node.item.selectionId;
     return (
-      <button
-        aria-label={resourceStateAriaLabel(node.item, node.name)}
-        aria-level={depth + 1}
-        aria-selected={active}
-        className={active ? "tree-file active" : "tree-file"}
-        onDoubleClick={() => onPin(node.item!.selectionId)}
-        onClick={() => onSelect(node.item!.selectionId)}
-        role="treeitem"
-        style={{ paddingLeft: 8 + depth * 14 }}
-        type="button"
-      >
-        {node.item.inherited ? (
-          <Link2 aria-hidden="true" size={13} />
-        ) : (
-          <FileText aria-hidden="true" size={13} />
-        )}
-        <span className={resourceNameClass(node.item)}>{node.name}</span>
-      </button>
+      <ContextMenu.Root>
+        <ContextMenu.Trigger asChild>
+          <button
+            aria-label={resourceStateAriaLabel(node.item, node.name)}
+            aria-level={depth + 1}
+            aria-selected={active}
+            className={active ? "tree-file active" : "tree-file"}
+            onDoubleClick={() => onPin(node.item!.selectionId)}
+            onClick={() => onSelect(node.item!.selectionId)}
+            role="treeitem"
+            style={{ paddingLeft: 8 + depth * 14 }}
+            type="button"
+          >
+            {node.item.inherited ? (
+              <Link2 aria-hidden="true" size={13} />
+            ) : (
+              <FileText aria-hidden="true" size={13} />
+            )}
+            <span className={resourceNameClass(node.item)}>{node.name}</span>
+          </button>
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content className="ui-menu" collisionPadding={8}>
+            <ContextMenu.Item
+              className="ui-menu-item"
+              onSelect={() => onSelect(node.item!.selectionId)}
+            >
+              Open
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              className="ui-menu-item"
+              onSelect={() => onPin(node.item!.selectionId)}
+            >
+              Keep Open
+            </ContextMenu.Item>
+            <ContextMenu.Separator className="ui-menu-separator" />
+            <ContextMenu.Item
+              className="ui-menu-item"
+              onSelect={() => void navigator.clipboard.writeText(node.path)}
+            >
+              Copy Path
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
     );
   }
   return (
     <div role="group">
-      <button
-        aria-expanded={expanded}
-        aria-level={depth + 1}
-        className="tree-folder"
-        onClick={() => setExpanded((current) => !current)}
-        role="treeitem"
-        style={{ paddingLeft: 8 + depth * 14 }}
-        type="button"
-      >
-        {expanded ? (
-          <FolderOpen aria-hidden="true" size={13} />
-        ) : (
-          <Folder aria-hidden="true" size={13} />
-        )}
-        <span>{node.name}</span>
-      </button>
+      <ContextMenu.Root>
+        <ContextMenu.Trigger asChild>
+          <button
+            aria-expanded={expanded}
+            aria-level={depth + 1}
+            className="tree-folder"
+            onClick={() => setExpanded((current) => !current)}
+            role="treeitem"
+            style={{ paddingLeft: 8 + depth * 14 }}
+            type="button"
+          >
+            {expanded ? (
+              <FolderOpen aria-hidden="true" size={13} />
+            ) : (
+              <Folder aria-hidden="true" size={13} />
+            )}
+            <span>{node.name}</span>
+          </button>
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content className="ui-menu" collisionPadding={8}>
+            <ContextMenu.Item
+              className="ui-menu-item"
+              onSelect={() => setExpanded((current) => !current)}
+            >
+              {expanded ? "Collapse" : "Expand"}
+            </ContextMenu.Item>
+            <ContextMenu.Separator className="ui-menu-separator" />
+            <ContextMenu.Item
+              className="ui-menu-item"
+              onSelect={() => void navigator.clipboard.writeText(node.path)}
+            >
+              Copy Folder Path
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
       {expanded
         ? node.children.map((child) => (
             <TreeBranch
@@ -3984,19 +4000,6 @@ function MemoryItemToolbar({
       ))
     : null;
 
-  useEffect(() => {
-    if (!menuOpen) {
-      return;
-    }
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [menuOpen]);
-
   const commitRename = () => {
     if (pathError) {
       return;
@@ -4092,7 +4095,6 @@ function MemoryItemToolbar({
       icon: FilePenLine,
       label: "Rename / Move",
       onClick: () => {
-        setMenuOpen(false);
         setNextPath(item.document.path);
         setRenaming(true);
       },
@@ -4102,20 +4104,14 @@ function MemoryItemToolbar({
     menuActions.push({
       icon: X,
       label: "Discard Draft",
-      onClick: () => {
-        setMenuOpen(false);
-        onDiscard();
-      },
+      onClick: onDiscard,
       tone: "danger",
     });
   } else if (!draft && item.resource && !item.inherited) {
     menuActions.push({
       icon: Trash2,
       label: "Propose Deletion",
-      onClick: () => {
-        setMenuOpen(false);
-        onProposeDeletion();
-      },
+      onClick: onProposeDeletion,
       tone: "danger",
     });
   }
@@ -4154,9 +4150,9 @@ function MemoryItemToolbar({
             ) : null}
           </form>
         ) : (
-          <span className="item-breadcrumb" title={item.document.path}>
-            {item.document.path}
-          </span>
+          <Tooltip label={item.document.path}>
+            <span className="item-breadcrumb">{item.document.path}</span>
+          </Tooltip>
         )}
         {stateLabel ? (
           <span className={`item-state ${workingState}`}>{stateLabel}</span>
@@ -4167,57 +4163,53 @@ function MemoryItemToolbar({
           <IconButton key={action.label} {...action} />
         ))}
         {!renaming && menuActions.length > 0 ? (
-            <div className="item-menu-anchor">
-              <button
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                aria-label="More Item Actions"
-                className={menuOpen ? "icon-button active" : "icon-button"}
-                onClick={() => setMenuOpen((current) => !current)}
-                title="More Item Actions"
-                type="button"
+          <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+            <Tooltip disabled={menuOpen} label="More Item Actions">
+              <DropdownMenu.Trigger asChild>
+                <button
+                  aria-label="More Item Actions"
+                  className="icon-button"
+                  type="button"
+                >
+                  <MoreHorizontal aria-hidden="true" size={15} />
+                </button>
+              </DropdownMenu.Trigger>
+            </Tooltip>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                align="end"
+                className="ui-menu item-menu"
+                collisionPadding={8}
+                sideOffset={4}
               >
-                <MoreHorizontal aria-hidden="true" size={15} />
-              </button>
-              {menuOpen ? (
-                <>
-                  <div
-                    className="item-menu-backdrop"
-                    onMouseDown={() => setMenuOpen(false)}
-                    role="presentation"
-                  />
-                  <div className="item-menu" role="menu">
-                    <div className="item-menu-metadata">
-                      <strong>
-                        {item.resource
-                          ? `Published v${item.resource.version}`
-                          : "Not published"}
-                      </strong>
-                      <small>
-                        {item.scope === "Hub" ? "Hub" : item.projectName ?? "Project"}
-                        {` · ${item.kind}`}
-                      </small>
-                    </div>
-                    {menuActions.map(({ icon: Icon, label, onClick, tone }) => (
-                      <button
-                        className={
-                          tone === "danger"
-                            ? "item-menu-action danger"
-                            : "item-menu-action"
-                        }
-                        key={label}
-                        onClick={onClick}
-                        role="menuitem"
-                        type="button"
-                      >
-                        <Icon aria-hidden="true" size={14} />
-                        <span>{label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
+                <DropdownMenu.Label className="item-menu-metadata">
+                  <strong>
+                    {item.resource
+                      ? `Published v${item.resource.version}`
+                      : "Not published"}
+                  </strong>
+                  <small>
+                    {item.scope === "Hub" ? "Hub" : item.projectName ?? "Project"}
+                    {` · ${item.kind}`}
+                  </small>
+                </DropdownMenu.Label>
+                {menuActions.map(({ icon: Icon, label, onClick, tone }) => (
+                  <DropdownMenu.Item
+                    className={
+                      tone === "danger"
+                        ? "ui-menu-item item-menu-action danger"
+                        : "ui-menu-item item-menu-action"
+                    }
+                    key={label}
+                    onSelect={() => onClick()}
+                  >
+                    <Icon aria-hidden="true" size={14} />
+                    <span>{label}</span>
+                  </DropdownMenu.Item>
+                ))}
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
         ) : null}
       </div>
     </div>
@@ -4370,15 +4362,16 @@ function RuleTagEditor({
         <span className="rule-tag" key={tag}>
           <span>{tag}</span>
           {!disabled ? (
-            <button
-              aria-label={`Remove ${tag} tag`}
-              onClick={() => onChange(tags.filter((entry) => entry !== tag))}
-              onMouseDown={(event) => event.preventDefault()}
-              title={`Remove ${tag}`}
-              type="button"
-            >
-              <X aria-hidden="true" size={11} />
-            </button>
+            <Tooltip label={`Remove ${tag}`}>
+              <button
+                aria-label={`Remove ${tag} tag`}
+                onClick={() => onChange(tags.filter((entry) => entry !== tag))}
+                onMouseDown={(event) => event.preventDefault()}
+                type="button"
+              >
+                <X aria-hidden="true" size={11} />
+              </button>
+            </Tooltip>
           ) : null}
         </span>
       ))}
@@ -4598,20 +4591,19 @@ function WorkflowEditor({
           );
         })}
       </ol>
-      <button
-        className="button add-step"
+      <Button
+        className="add-step"
         disabled={disabled}
+        icon={Plus}
         onClick={() =>
           onChange((current) => ({
             ...current,
             steps: [...current.steps, { ruleId: null, body: "" }],
           }))
         }
-        type="button"
       >
-        <Plus aria-hidden="true" size={14} />
         Add Step
-      </button>
+      </Button>
     </div>
   );
 }
@@ -4714,7 +4706,9 @@ function BundlesWorkspace({
                   <strong>{entry.name}</strong>
                   <small>{entry.resourceIds.length} resources</small>
                 </span>
-                <SyncMark compact state={entry.syncState} />
+                {entry.syncState === "synced" ? null : (
+                  <SyncMark compact state={entry.syncState} />
+                )}
               </button>
             ))}
           </div>
@@ -4973,18 +4967,18 @@ function ReviewFilterNavigation({
         const count = reviews.filter((review) => review.status === entry).length;
         const label = capitalize(entry);
         return (
-          <button
-            aria-label={`${label}, ${count}`}
-            aria-selected={filter === entry}
-            className={filter === entry ? "kind-item active" : "kind-item"}
-            key={entry}
-            onClick={() => onChange(entry)}
-            role="tab"
-            title={`${label} · ${count}`}
-            type="button"
-          >
-            <Icon aria-hidden="true" size={14} />
-          </button>
+          <Tooltip key={entry} label={`${label} · ${count}`}>
+            <button
+              aria-label={`${label}, ${count}`}
+              aria-selected={filter === entry}
+              className={filter === entry ? "kind-item active" : "kind-item"}
+              onClick={() => onChange(entry)}
+              role="tab"
+              type="button"
+            >
+              <Icon aria-hidden="true" size={14} />
+            </button>
+          </Tooltip>
         );
       })}
     </div>
@@ -5179,14 +5173,14 @@ function ReviewConflictResolver({
       <div className="conflict-result">
         <header>
           <span>Resolved</span>
-          <button
-            className="button primary"
+          <Button
+            icon={GitPullRequest}
             onClick={() => onResolve(draftContent === null ? null : resolvedContent)}
-            type="button"
+            size="compact"
+            tone="primary"
           >
-            <GitPullRequest aria-hidden="true" size={14} />
             Reopen Review
-          </button>
+          </Button>
         </header>
         {draftContent === null ? (
           <div className={`conflict-operation${operationOnlyTone}`}>
@@ -5226,7 +5220,11 @@ function ConflictSource({
     <section className="conflict-source">
       <header>
         <span>{label}</span>
-        {commitId ? <code title={commitId}>{commitId.slice(0, 8)}</code> : null}
+        {commitId ? (
+          <Tooltip label={commitId}>
+            <code>{commitId.slice(0, 8)}</code>
+          </Tooltip>
+        ) : null}
       </header>
       <pre>{content ?? "Not present"}</pre>
     </section>
@@ -5377,9 +5375,11 @@ function AgentPanel({
       </div>
       {target ? (
         <>
-          <div className="agent-context" title={target.label}>
-            <span>{target.label}</span>
-          </div>
+          <Tooltip label={target.label}>
+            <div className="agent-context">
+              <span>{target.label}</span>
+            </div>
+          </Tooltip>
           <div className="agent-thread">
             {state === "idle" ? (
               <div className="agent-suggestions">
@@ -5422,16 +5422,15 @@ function AgentPanel({
                           ) : target.applyLabel === "No Change" ? (
                             <span className="agent-applied neutral">No change required</span>
                           ) : (
-                            <button
-                              className="button primary"
+                            <Button
                               onClick={() => {
                                 target.onApply();
                                 setState("applied");
                               }}
-                              type="button"
+                              tone="primary"
                             >
                               {target.applyLabel}
-                            </button>
+                            </Button>
                           )}
                         </div>
                       </>
@@ -5581,17 +5580,16 @@ function ConfirmDialog({
           />
         ) : null}
         <div className="confirm-actions">
-          <button autoFocus={!state.input} className="button" onClick={onCancel} type="button">
+          <Button autoFocus={!state.input} onClick={onCancel}>
             Cancel
-          </button>
-          <button
-            className={state.tone === "danger" ? "button danger" : "button primary"}
+          </Button>
+          <Button
             disabled={inputRequired && !input.trim()}
             onClick={() => void state.onConfirm(state.input ? input.trim() : undefined)}
-            type="button"
+            tone={state.tone === "danger" ? "danger" : "primary"}
           >
             {state.confirmLabel}
-          </button>
+          </Button>
         </div>
       </section>
     </div>
@@ -5600,12 +5598,10 @@ function ConfirmDialog({
 
 function DiagnosticsView({
   loadState,
-  onCommand,
   onRefresh,
   onRetrySync,
 }: {
   loadState: LoadState;
-  onCommand: (command: string) => void;
   onRefresh: () => void;
   onRetrySync: () => void;
 }) {
@@ -5613,18 +5609,6 @@ function DiagnosticsView({
   return (
     <section className="utility-view" aria-label="Diagnostics">
       <div className="utility-actions">
-        <button className="button" onClick={() => onCommand("install_daemon_launch_agent")} type="button">
-          Install
-        </button>
-        <button className="button" onClick={() => onCommand("start_daemon_launch_agent")} type="button">
-          Start
-        </button>
-        <button className="button" onClick={() => onCommand("restart_daemon_launch_agent")} type="button">
-          Restart
-        </button>
-        <button className="button" onClick={() => onCommand("stop_daemon_launch_agent")} type="button">
-          Stop
-        </button>
         <IconButton icon={RefreshCw} label="Retry synchronization" onClick={onRetrySync} />
         <IconButton icon={RefreshCw} label="Refresh daemon status" onClick={onRefresh} />
       </div>
@@ -5812,13 +5796,9 @@ function SoftwareUpdateControl({
     return (
       <span className="settings-update-control">
         <strong>{state.update.version} available</strong>
-        <button
-          className="button"
-          onClick={() => onInstall(state.update)}
-          type="button"
-        >
+        <Button onClick={() => onInstall(state.update)}>
           Install and restart
-        </button>
+        </Button>
       </span>
     );
   }
@@ -5840,13 +5820,13 @@ function SoftwareUpdateControl({
   return (
     <span className="settings-update-control">
       {state.status === "failed" ? (
-        <span className="settings-update-error" title={state.message}>
-          Update failed
-        </span>
+        <Tooltip label={state.message}>
+          <span className="settings-update-error">Update failed</span>
+        </Tooltip>
       ) : null}
-      <button className="button" disabled={disabled} onClick={onCheck} type="button">
+      <Button disabled={disabled} onClick={onCheck}>
         {state.status === "failed" ? "Retry" : "Check for updates"}
-      </button>
+      </Button>
     </span>
   );
 }
@@ -5879,10 +5859,9 @@ function ConnectionStateView({
           <>
             <strong>Server unavailable</strong>
             <p>{message}</p>
-            <button className="button" onClick={onRetry} type="button">
-              <RefreshCw aria-hidden="true" size={14} />
+            <Button icon={RefreshCw} onClick={onRetry}>
               Retry
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -5908,39 +5887,11 @@ function EmptyState({
       <Icon aria-hidden="true" size={compact ? 18 : 22} />
       <p>{title}</p>
       {actionLabel && onAction ? (
-        <button className="button" onClick={onAction} type="button">
-          <Plus aria-hidden="true" size={14} />
+        <Button icon={Plus} onClick={onAction}>
           {actionLabel}
-        </button>
+        </Button>
       ) : null}
     </div>
-  );
-}
-
-function IconButton({
-  disabled,
-  icon: Icon,
-  label,
-  onClick,
-  tone,
-}: {
-  disabled?: boolean;
-  icon: LucideIcon;
-  label: string;
-  onClick: () => void;
-  tone?: "danger";
-}) {
-  return (
-    <button
-      aria-label={label}
-      className={tone === "danger" ? "icon-button danger" : "icon-button"}
-      disabled={disabled}
-      onClick={onClick}
-      title={label}
-      type="button"
-    >
-      <Icon aria-hidden="true" size={15} />
-    </button>
   );
 }
 
@@ -5965,11 +5916,15 @@ function SyncMark({
           ? CloudOff
           : Cloud;
   return (
-    <Icon
-      aria-label={syncLabel(state)}
-      className={state === "syncing" ? "spin" : undefined}
-      size={compact ? 13 : 14}
-    />
+    <Tooltip label={syncLabel(state)}>
+      <span aria-label={syncLabel(state)} className={`sync-mark ${state}`} role="img">
+        <Icon
+          aria-hidden="true"
+          className={state === "syncing" ? "spin" : undefined}
+          size={compact ? 13 : 14}
+        />
+      </span>
+    </Tooltip>
   );
 }
 

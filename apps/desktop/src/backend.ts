@@ -29,7 +29,6 @@ import {
   type ReviewRecord,
   type SyncState,
 } from "./model";
-import { ensureDaemonReady } from "./daemon-readiness";
 
 export type ProjectOption = {
   id: string;
@@ -103,11 +102,9 @@ export class DesktopBackend {
   }
 
   async load(): Promise<DesktopBackendState> {
-    const bootstrap = await ensureDaemonReady(this.daemon);
-    let [health, projectConfig] = await Promise.all([
-      waitForDaemonHealth(this.daemon),
-      this.daemon.projectConfig(),
-    ]);
+    const bootstrap = await this.daemon.bootstrapStatus();
+    const health = await waitForDaemonHealth(this.daemon);
+    const projectConfig = await this.daemon.projectConfig();
     if (!projectConfig.has_access_token || !projectConfig.has_refresh_token) {
       throw new AuthenticationRequiredError();
     }

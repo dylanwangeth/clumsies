@@ -123,11 +123,27 @@ jobs:
       - name: Run Rust tests
         run: cargo test --workspace
 
+  macos-native:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Run native macOS tests
+        run: bun run test:macos
+
   # Aggregator so branch protection rules that require a single "build"
   # status check continue to resolve after the split. Also gives a
   # convenient one-line pass/fail signal on the PR page.
   build:
     runs-on: ubuntu-latest
-    needs: [lint, cross-compile, docs, api-contract, web-admin, rust]
+    needs: [lint, cross-compile, docs, api-contract, web-admin, rust, macos-native]
     steps:
       - run: echo "All CI jobs passed."

@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { App } from "./App";
 import { AuthenticationWindow } from "./AuthenticationWindow";
 import "./styles.css";
+import { UiProvider } from "./ui";
 import { windowSurface } from "./window-surface";
 
 const windowLabel =
@@ -14,6 +15,8 @@ const Root = surface === "authentication" ? AuthenticationWindow : App;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
+    <UiProvider>
+      <Root />
+    </UiProvider>
   </React.StrictMode>,
 );
