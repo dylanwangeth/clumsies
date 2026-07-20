@@ -167,7 +167,7 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
     var contentLoaded: Bool { draft != nil || resource?.contentLoaded == true }
 
     var supportsMarkdownPreview: Bool {
-        if kind == .metaprompt { return true }
+        if kind == .rules || kind == .metaprompt { return true }
         guard kind == .context else { return false }
         let pathExtension = URL(fileURLWithPath: document.path).pathExtension.lowercased()
         return pathExtension == "md" || pathExtension == "markdown"

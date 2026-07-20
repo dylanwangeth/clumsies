@@ -184,6 +184,11 @@ private struct FileTreeRow: View {
                     Button("Open Preview") { store.open(item, mode: .preview) }
                 }
                 Divider()
+                if item.inherited {
+                    Button("Open in Hub") {
+                        Task { await store.reveal(item) }
+                    }
+                }
                 if let draft = item.draft {
                     Button("Discard Draft") { Task { await store.discard(draft) } }
                 }
@@ -286,6 +291,7 @@ private struct DocumentSessionView: View {
 
     @State private var document: EditableMemoryDocument
     @State private var suppressesSaving = false
+    @State private var showsRuleDetails = false
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
@@ -302,38 +308,59 @@ private struct DocumentSessionView: View {
                     isEditable: mode == .source && !item.inherited
                 )
                 Spacer()
-                if item.inherited {
-                    Text("Hub")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if supportsMarkdownPreview {
-                    ToolbarIconButton(
-                        symbol: mode == .preview ? "doc.plaintext" : "eye",
-                        label: mode == .preview ? "Open Source" : "Open Preview"
-                    ) {
-                        store.open(item, mode: mode == .preview ? .source : .preview)
-                    }
-                }
-                Menu {
-                    if let draft = item.draft, draft.status == .open {
-                        Button("Request Review") {
-                            requestReview(draft)
+                ControlGroup {
+                    if item.kind == .rules {
+                        Button {
+                            showsRuleDetails.toggle()
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .symbolVariant(showsRuleDetails ? .fill : .none)
+                                .foregroundStyle(showsRuleDetails ? Color.accentColor : .secondary)
                         }
-                        Divider()
+                        .help("Rule Details")
+                        .accessibilityLabel("Rule Details")
                     }
-                    if let draft = item.draft {
-                        Button("Discard Draft") { discard(draft) }
+                    if supportsMarkdownPreview {
+                        Button {
+                            store.open(item, mode: mode == .preview ? .source : .preview)
+                        } label: {
+                            Image(systemName: mode == .preview ? "doc.plaintext" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .help(mode == .preview ? "Open Source" : "Open Preview")
+                        .accessibilityLabel(mode == .preview ? "Open Source" : "Open Preview")
                     }
-                    if !item.inherited {
-                        Button("Move to Trash", role: .destructive) { moveToTrash() }
+                    Menu {
+                        if item.inherited {
+                            Button("Open in Hub") { openInHub() }
+                        }
+                        if let draft = item.draft, draft.status == .open {
+                            Button("Request Review") {
+                                requestReview(draft)
+                            }
+                            Divider()
+                        }
+                        if let draft = item.draft {
+                            Button("Discard Draft") { discard(draft) }
+                        }
+                        if !item.inherited {
+                            Button("Move to Trash", role: .destructive) { moveToTrash() }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundStyle(.secondary)
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 26, height: 26)
+                    .menuIndicator(.hidden)
+                    .help("Document Actions")
+                    .accessibilityLabel("Document Actions")
                 }
-                .menuStyle(.borderlessButton)
-                .help("Document Actions")
+                .controlSize(.small)
+                .popover(isPresented: $showsRuleDetails, arrowEdge: .top) {
+                    RuleDetailsPopover(
+                        document: mode == .preview ? .constant(item.document) : $document,
+                        isEditable: mode == .source && !item.inherited
+                    )
+                }
             }
             .padding(.horizontal, 10)
             .frame(height: WorkbenchChrome.barHeight)
@@ -360,10 +387,8 @@ private struct DocumentSessionView: View {
     @ViewBuilder
     private var editor: some View {
         switch item.kind {
-        case .context, .metaprompt:
+        case .context, .rules, .metaprompt:
             NativeTextEditor(text: $document.body)
-        case .rules:
-            RuleDocumentEditor(document: $document)
         case .workflows:
             WorkflowDocumentEditor(
                 document: $document,
@@ -375,10 +400,8 @@ private struct DocumentSessionView: View {
     private var renderedSource: String {
         let sourceDocument = mode == .preview ? item.document : document
         switch item.kind {
-        case .context, .metaprompt:
+        case .context, .rules, .metaprompt:
             return sourceDocument.body
-        case .rules:
-            return "# \(sourceDocument.title)\n\n## Applies when\n\n\(sourceDocument.appliesWhen)\n\n## Constraint\n\n\(sourceDocument.body)\n\nTags: \(sourceDocument.tags.joined(separator: ", "))"
         case .workflows:
             return "# \(sourceDocument.title)\n\n\(sourceDocument.body)\n\n" + sourceDocument.steps.enumerated().map { index, step in
                 "\(index + 1). \(step.body ?? step.ruleId.map { "Apply rule `\($0)`." } ?? "")"
@@ -387,7 +410,7 @@ private struct DocumentSessionView: View {
     }
 
     private var supportsMarkdownPreview: Bool {
-        if item.kind == .metaprompt { return true }
+        if item.kind == .rules || item.kind == .metaprompt { return true }
         guard item.kind == .context else { return false }
         let path = mode == .preview ? item.document.path : document.path
         let pathExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
@@ -432,6 +455,10 @@ private struct DocumentSessionView: View {
         suppressesSaving = true
         store.cancelDocumentSave(item.id)
         Task { await store.discard(draft) }
+    }
+
+    private func openInHub() {
+        Task { await store.reveal(item) }
     }
 
     private func moveToTrash() {
@@ -584,28 +611,75 @@ private struct ProjectOrgSelectionView: View {
     }
 }
 
-private struct RuleDocumentEditor: View {
+private struct RuleDetailsPopover: View {
     @Binding var document: EditableMemoryDocument
-    @State private var tagsText = ""
+    let isEditable: Bool
 
     var body: some View {
-        Form {
-            TextField("Name", text: $document.title)
-            TextField("Applies when", text: $document.appliesWhen, axis: .vertical)
-                .lineLimit(2...5)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Constraint")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                NativeTextEditor(text: $document.body, font: .systemFont(ofSize: 13))
-                    .frame(minHeight: 220)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rule Details")
+                .font(.headline)
+
+            metadataField("Name") {
+                if isEditable {
+                    TextField("", text: $document.title)
+                        .accessibilityLabel("Name")
+                } else {
+                    readOnlyValue(document.title)
+                }
             }
-            TextField("Tags", text: Binding(
-                get: { document.tags.joined(separator: ", ") },
-                set: { document.tags = $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
-            ))
+
+            metadataField("Applies when") {
+                if isEditable {
+                    TextField("", text: $document.appliesWhen, axis: .vertical)
+                        .accessibilityLabel("Applies when")
+                        .lineLimit(2...5)
+                } else {
+                    readOnlyValue(document.appliesWhen)
+                }
+            }
+
+            metadataField("Tags") {
+                if isEditable {
+                    TextField("", text: tagsBinding)
+                        .accessibilityLabel("Tags")
+                } else {
+                    readOnlyValue(document.tags.joined(separator: ", "))
+                }
+            }
         }
-        .formStyle(.grouped)
+        .padding(16)
+        .frame(width: 360)
+    }
+
+    private var tagsBinding: Binding<String> {
+        Binding(
+            get: { document.tags.joined(separator: ", ") },
+            set: {
+                document.tags = $0
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
+        )
+    }
+
+    private func metadataField<Content: View>(
+        _ label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    private func readOnlyValue(_ value: String) -> some View {
+        Text(value.isEmpty ? "None" : value)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 }
 

@@ -264,14 +264,14 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(lines.map(\.text), ["one", "two", "three"])
     }
 
-    func testMarkdownPreviewOnlyAppliesToMarkdownMemory() {
+    func testMarkdownPreviewAppliesToMarkdownContextAndRules() {
         let markdown = listItem(kind: .context, path: "notes/readme.md")
         let plainText = listItem(kind: .context, path: "notes/readme.txt")
         let rule = listItem(kind: .rules, path: "rules/review.md")
 
         XCTAssertTrue(markdown.supportsMarkdownPreview)
         XCTAssertFalse(plainText.supportsMarkdownPreview)
-        XCTAssertFalse(rule.supportsMarkdownPreview)
+        XCTAssertTrue(rule.supportsMarkdownPreview)
     }
 
     func testLocalWorkbenchTabsAreScopedToTheirProject() {
