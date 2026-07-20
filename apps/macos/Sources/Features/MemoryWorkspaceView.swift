@@ -150,14 +150,13 @@ private struct FileTreeRow: View {
             }
         } label: {
             HStack(spacing: 6) {
-                if item == nil {
+                if let item {
+                    FileSymbolView(path: item.document.path)
+                } else {
                     Image(systemName: isExpanded ? "folder.fill" : "folder")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(width: 14)
-                } else {
-                    Color.clear
-                        .frame(width: 14, height: 1)
                 }
 
                 Text(entry.node.name)

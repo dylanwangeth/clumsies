@@ -28,7 +28,10 @@ targets:
     platform: macOS
     sources:
       - path: Sources
-      - path: Resources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/FileSymbols
+        type: folder
         buildPhase: resources
     info:
       path: Config/Info.plist
