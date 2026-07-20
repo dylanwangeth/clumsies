@@ -25,15 +25,58 @@ use crate::api::{
     ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse, ReviewMergeResult,
     ReviewStatus, RuleContent, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry,
     TreeEntryKind, TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef,
-    WorkflowContent, WorkflowDetail, WorkflowListResponse, WorkflowMeta, WorkflowStep,
-    WorkflowStepInput,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef, WorkflowDetail,
+    WorkflowListResponse, WorkflowMeta,
 };
 use crate::auth::AuthPrincipal;
 
 #[derive(Clone)]
 pub struct ServerRepository {
     pool: PgPool,
+}
+
+pub async fn rebuild_refs_with_flat_workflows(pool: &PgPool) -> Result<(), ServerError> {
+    let mut tx = pool.begin().await?;
+    let org_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT ref.org_id
+         FROM refs ref
+         JOIN commits commit ON commit.commit_id = ref.commit_id
+         JOIN tree_entries entry ON entry.tree_id = commit.tree_id
+         JOIN blobs blob ON blob.blob_id = entry.blob_id
+         WHERE ref.scope = 'org'
+           AND entry.resource_kind = 'workflow'
+           AND blob.content LIKE '{\"format\":\"clumsies.workflow.v1\"%'",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let project_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT ref.project_id
+         FROM refs ref
+         JOIN commits commit ON commit.commit_id = ref.commit_id
+         JOIN tree_entries entry ON entry.tree_id = commit.tree_id
+         JOIN blobs blob ON blob.blob_id = entry.blob_id
+         WHERE ref.scope = 'project'
+           AND ref.project_id IS NOT NULL
+           AND entry.resource_kind = 'workflow'
+           AND blob.content LIKE '{\"format\":\"clumsies.workflow.v1\"%'",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    for org_id in org_ids {
+        let parent_commit_id = current_org_ref(&mut tx, &org_id).await?;
+        let commit_id = create_org_commit(&mut tx, &org_id, parent_commit_id.as_deref()).await?;
+        advance_org_ref(&mut tx, &org_id, &commit_id).await?;
+    }
+    for project_id in project_ids {
+        let parent_commit_id = current_project_ref(&mut tx, &project_id).await?;
+        let commit_id =
+            create_project_commit(&mut tx, &project_id, parent_commit_id.as_deref()).await?;
+        advance_project_ref(&mut tx, &project_id, &commit_id).await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
 }
 
 impl ServerRepository {
@@ -2811,8 +2854,9 @@ fn validate_draft_operation_resource(
 fn validate_draft_content_shape(content: &DraftResourceContent) -> Result<(), ServerError> {
     match content {
         DraftResourceContent::Rule { constraint, .. } => validate_rule_constraint(constraint),
-        DraftResourceContent::Workflow { steps, .. } => validate_workflow_step_shapes(steps),
-        DraftResourceContent::Context { .. } | DraftResourceContent::Metaprompt { .. } => Ok(()),
+        DraftResourceContent::Context { .. }
+        | DraftResourceContent::Workflow { .. }
+        | DraftResourceContent::Metaprompt { .. } => Ok(()),
     }
 }
 
@@ -3342,12 +3386,8 @@ async fn load_workflow_detail(
     let row =
         load_resource_detail_row(tx, workflow_id, "workflow", scope, org_id, project_id).await?;
     let workflow = workflow_meta_from_row(&row)?;
-    let steps = load_workflow_steps(tx, workflow_id).await?;
     Ok(WorkflowDetail {
-        content: WorkflowContent {
-            description: row.try_get("body")?,
-            steps,
-        },
+        content: row.try_get("body")?,
         etag: etag(row.try_get("revision")?),
         workflow,
     })
@@ -3407,31 +3447,6 @@ async fn load_resource_detail_row(
         ));
     };
     row.ok_or_else(|| ServerError::not_found("resource", resource_id))
-}
-
-async fn load_workflow_steps(
-    tx: &mut Transaction<'_, Postgres>,
-    resource_id: &str,
-) -> Result<Vec<WorkflowStep>, ServerError> {
-    let rows = sqlx::query(
-        "SELECT step_order, rule_id, body
-         FROM workflow_steps
-         WHERE resource_id = $1
-         ORDER BY step_order",
-    )
-    .bind(resource_id)
-    .fetch_all(&mut **tx)
-    .await?;
-
-    rows.iter()
-        .map(|row| {
-            Ok(WorkflowStep {
-                order: row.try_get("step_order")?,
-                rule_id: row.try_get("rule_id")?,
-                body: row.try_get("body")?,
-            })
-        })
-        .collect()
 }
 
 async fn load_metaprompt_detail(
@@ -3893,20 +3908,6 @@ fn merge_draft_contents(
             constraint,
             tags: tags.or(base_tags),
         })),
-        (
-            Some(DraftResourceContent::Workflow {
-                name: base_name, ..
-            }),
-            Some(DraftResourceContent::Workflow {
-                name,
-                description,
-                steps,
-            }),
-        ) => Ok(Some(DraftResourceContent::Workflow {
-            name: name.or(base_name),
-            description,
-            steps,
-        })),
         (Some(base), Some(update)) if base.kind() != update.kind() => {
             Err(ServerError::InvalidRequest(
                 "draft update content kind does not match its create operation".to_owned(),
@@ -3955,17 +3956,6 @@ async fn apply_resource_operation(
             .bind(context_kind_for(operation.resource.kind))
             .execute(&mut **tx)
             .await?;
-            if operation.resource.kind == DraftResourceKind::Workflow {
-                replace_workflow_steps(
-                    tx,
-                    &resource_id,
-                    &org_id,
-                    resource_project_id,
-                    scope,
-                    &prepared.workflow_steps,
-                )
-                .await?;
-            }
         }
         DraftOperationAction::Update => {
             let resource =
@@ -3994,17 +3984,6 @@ async fn apply_resource_operation(
             .bind(content_hash(&prepared.blob_content))
             .execute(&mut **tx)
             .await?;
-            if operation.resource.kind == DraftResourceKind::Workflow {
-                replace_workflow_steps(
-                    tx,
-                    &resource.resource_id,
-                    &org_id,
-                    resource_project_id,
-                    scope,
-                    &prepared.workflow_steps,
-                )
-                .await?;
-            }
         }
         DraftOperationAction::Rename => {
             let resource =
@@ -4015,7 +3994,7 @@ async fn apply_resource_operation(
             sqlx::query(
                 "UPDATE resources
                  SET path = $2,
-                     name = CASE WHEN resource_kind = 'context' THEN $3 ELSE name END,
+                     name = CASE WHEN resource_kind IN ('context', 'workflow') THEN $3 ELSE name END,
                      revision = revision + 1,
                      updated_at = now()
                  WHERE resource_id = $1",
@@ -4047,7 +4026,6 @@ struct PreparedResourceContent {
     body: String,
     applies_when: String,
     tags: Vec<String>,
-    workflow_steps: Vec<WorkflowStepInput>,
     blob_content: String,
 }
 
@@ -4070,7 +4048,6 @@ fn prepare_resource_content(
             body: content.clone(),
             applies_when: String::new(),
             tags: Vec::new(),
-            workflow_steps: Vec::new(),
             blob_content: content.clone(),
         }),
         DraftResourceContent::Rule {
@@ -4104,34 +4081,18 @@ fn prepare_resource_content(
                 body: constraint.clone(),
                 applies_when,
                 tags,
-                workflow_steps: Vec::new(),
                 blob_content,
             })
         }
-        DraftResourceContent::Workflow {
-            name,
-            description,
-            steps,
-        } => {
-            validate_workflow_step_shapes(steps)?;
-            let name = optional_non_empty(name.as_deref())
-                .map(ToOwned::to_owned)
-                .or_else(|| existing.map(|resource| resource.name.clone()))
-                .unwrap_or_else(|| name_from_path(path));
-            let authority = WorkflowContent {
-                description: description.clone(),
-                steps: ordered_workflow_steps(steps)?,
-            };
-            let blob_content = workflow_blob_content(&name, &authority)?;
-            Ok(PreparedResourceContent {
-                name,
-                body: description.clone(),
-                applies_when: String::new(),
-                tags: Vec::new(),
-                workflow_steps: steps.clone(),
-                blob_content,
-            })
-        }
+        DraftResourceContent::Workflow { content } => Ok(PreparedResourceContent {
+            name: existing
+                .map(|resource| resource.name.clone())
+                .unwrap_or_else(|| name_from_path(path)),
+            body: content.clone(),
+            applies_when: String::new(),
+            tags: Vec::new(),
+            blob_content: content.clone(),
+        }),
         DraftResourceContent::Metaprompt { .. } => Err(ServerError::InvalidRequest(
             "metaprompt content cannot be stored as a resource".to_owned(),
         )),
@@ -4235,127 +4196,6 @@ fn validate_rule_constraint(constraint: &str) -> Result<(), ServerError> {
         ));
     }
     Ok(())
-}
-
-fn validate_workflow_step_shapes(steps: &[WorkflowStepInput]) -> Result<(), ServerError> {
-    if steps.is_empty() {
-        return Err(ServerError::InvalidRequest(
-            "workflow must contain at least one step".to_owned(),
-        ));
-    }
-    for step in steps {
-        let has_rule = step
-            .rule_id
-            .as_deref()
-            .is_some_and(|rule_id| !rule_id.trim().is_empty());
-        let has_body = step
-            .body
-            .as_deref()
-            .is_some_and(|body| !body.trim().is_empty());
-        if has_rule == has_body {
-            return Err(ServerError::InvalidRequest(
-                "workflow step must contain exactly one of rule_id or body".to_owned(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn ordered_workflow_steps(steps: &[WorkflowStepInput]) -> Result<Vec<WorkflowStep>, ServerError> {
-    steps
-        .iter()
-        .enumerate()
-        .map(|(index, step)| {
-            Ok(WorkflowStep {
-                order: i32::try_from(index + 1).map_err(|_| {
-                    ServerError::InvalidRequest("workflow has too many steps".to_owned())
-                })?,
-                rule_id: step.rule_id.clone(),
-                body: step.body.clone(),
-            })
-        })
-        .collect()
-}
-
-async fn replace_workflow_steps(
-    tx: &mut Transaction<'_, Postgres>,
-    workflow_id: &str,
-    org_id: &str,
-    project_id: Option<&str>,
-    scope: ResourceScope,
-    steps: &[WorkflowStepInput],
-) -> Result<(), ServerError> {
-    sqlx::query("DELETE FROM workflow_steps WHERE resource_id = $1")
-        .bind(workflow_id)
-        .execute(&mut **tx)
-        .await?;
-    for (index, step) in steps.iter().enumerate() {
-        if let Some(rule_id) = step.rule_id.as_deref() {
-            validate_workflow_rule_reference(tx, org_id, project_id, scope, rule_id).await?;
-        }
-        sqlx::query(
-            "INSERT INTO workflow_steps (resource_id, step_order, rule_id, body)
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(workflow_id)
-        .bind(
-            i32::try_from(index + 1).map_err(|_| {
-                ServerError::InvalidRequest("workflow has too many steps".to_owned())
-            })?,
-        )
-        .bind(&step.rule_id)
-        .bind(&step.body)
-        .execute(&mut **tx)
-        .await?;
-    }
-    Ok(())
-}
-
-async fn validate_workflow_rule_reference(
-    tx: &mut Transaction<'_, Postgres>,
-    org_id: &str,
-    project_id: Option<&str>,
-    workflow_scope: ResourceScope,
-    rule_id: &str,
-) -> Result<(), ServerError> {
-    let exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(
-            SELECT 1
-            FROM resources r
-            WHERE r.resource_id = $1 AND r.org_id = $2 AND r.resource_kind = 'rule'
-              AND r.status = 'active'
-              AND (
-                ($3 = 'org' AND r.scope = 'org')
-                OR (
-                    $3 = 'project'
-                    AND (
-                        (r.scope = 'project' AND r.project_id = $4)
-                        OR (
-                            r.scope = 'org'
-                            AND EXISTS(
-                                SELECT 1
-                                FROM project_org_resource_selections s
-                                WHERE s.project_id = $4 AND s.resource_id = r.resource_id
-                            )
-                        )
-                    )
-                )
-              )
-         )",
-    )
-    .bind(rule_id)
-    .bind(org_id)
-    .bind(workflow_scope.as_str())
-    .bind(project_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    if exists {
-        Ok(())
-    } else {
-        Err(ServerError::InvalidRequest(format!(
-            "workflow references unavailable rule: {rule_id}"
-        )))
-    }
 }
 
 async fn apply_metaprompt_operation(
@@ -4505,90 +4345,6 @@ async fn validate_project_effective_memory(
         )?;
     }
 
-    let missing_rule = sqlx::query(
-        "SELECT w.name, ws.rule_id
-         FROM resources w
-         JOIN workflow_steps ws ON ws.resource_id = w.resource_id
-         WHERE w.resource_kind = 'workflow' AND w.status = 'active'
-           AND ws.rule_id IS NOT NULL
-           AND (
-             (w.scope = 'project' AND w.project_id = $1)
-             OR (
-               w.scope = 'org' AND w.org_id = $2
-               AND EXISTS(
-                 SELECT 1
-                 FROM project_org_resource_selections selected_workflow
-                 WHERE selected_workflow.project_id = $1
-                   AND selected_workflow.resource_id = w.resource_id
-               )
-             )
-           )
-           AND NOT EXISTS(
-             SELECT 1
-             FROM resources r
-             WHERE r.resource_id = ws.rule_id
-               AND r.resource_kind = 'rule' AND r.status = 'active'
-               AND (
-                 (r.scope = 'project' AND r.project_id = $1)
-                 OR (
-                   r.scope = 'org' AND r.org_id = $2
-                   AND EXISTS(
-                     SELECT 1
-                     FROM project_org_resource_selections selected_rule
-                     WHERE selected_rule.project_id = $1
-                       AND selected_rule.resource_id = r.resource_id
-                   )
-                 )
-               )
-           )
-         ORDER BY w.resource_id, ws.step_order
-         LIMIT 1",
-    )
-    .bind(project_id)
-    .bind(org_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if let Some(row) = missing_rule {
-        let workflow_name: String = row.try_get("name")?;
-        let rule_id: String = row.try_get("rule_id")?;
-        return Err(ServerError::InvalidRequest(format!(
-            "workflow {workflow_name} references rule {rule_id}, which is not available in project effective memory"
-        )));
-    }
-    Ok(())
-}
-
-async fn validate_org_effective_memory(
-    tx: &mut Transaction<'_, Postgres>,
-    org_id: &str,
-) -> Result<(), ServerError> {
-    let missing_rule = sqlx::query(
-        "SELECT w.name, ws.rule_id
-         FROM resources w
-         JOIN workflow_steps ws ON ws.resource_id = w.resource_id
-         WHERE w.scope = 'org' AND w.org_id = $1
-           AND w.resource_kind = 'workflow' AND w.status = 'active'
-           AND ws.rule_id IS NOT NULL
-           AND NOT EXISTS(
-             SELECT 1
-             FROM resources r
-             WHERE r.resource_id = ws.rule_id
-               AND r.scope = 'org' AND r.org_id = $1
-               AND r.resource_kind = 'rule' AND r.status = 'active'
-           )
-         ORDER BY w.resource_id, ws.step_order
-         LIMIT 1",
-    )
-    .bind(org_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if let Some(row) = missing_rule {
-        let workflow_name: String = row.try_get("name")?;
-        let rule_id: String = row.try_get("rule_id")?;
-        return Err(ServerError::InvalidRequest(format!(
-            "workflow {workflow_name} references rule {rule_id}, which is not available in organization memory"
-        )));
-    }
     Ok(())
 }
 
@@ -4691,7 +4447,6 @@ async fn create_org_commit(
     org_id: &str,
     parent_commit_id: Option<&str>,
 ) -> Result<String, ServerError> {
-    validate_org_effective_memory(tx, org_id).await?;
     let version = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT max(version) FROM commits WHERE scope = 'org' AND org_id = $1",
     )
@@ -4782,13 +4537,7 @@ async fn pending_resource_entry(
                 tags: row.try_get("tags")?,
             },
         )?,
-        "workflow" => workflow_blob_content(
-            &row.try_get::<String, _>("name")?,
-            &WorkflowContent {
-                description: body,
-                steps: load_workflow_steps(tx, &resource_id).await?,
-            },
-        )?,
+        "workflow" => body,
         other => {
             return Err(ServerError::InvalidRequest(format!(
                 "unknown resource kind while creating Commit: {other}"
@@ -5745,13 +5494,6 @@ struct RuleBlobContent<'a> {
     tags: &'a [String],
 }
 
-#[derive(serde::Serialize)]
-struct WorkflowBlobContent<'a> {
-    name: &'a str,
-    description: &'a str,
-    steps: &'a [WorkflowStep],
-}
-
 fn rule_blob_content(name: &str, content: &RuleContent) -> Result<String, ServerError> {
     structured_blob_content(
         "clumsies.rule.v1",
@@ -5760,17 +5502,6 @@ fn rule_blob_content(name: &str, content: &RuleContent) -> Result<String, Server
             applies_when: &content.applies_when,
             constraint: &content.constraint,
             tags: &content.tags,
-        },
-    )
-}
-
-fn workflow_blob_content(name: &str, content: &WorkflowContent) -> Result<String, ServerError> {
-    structured_blob_content(
-        "clumsies.workflow.v1",
-        &WorkflowBlobContent {
-            name,
-            description: &content.description,
-            steps: &content.steps,
         },
     )
 }
@@ -6015,39 +5746,6 @@ mod tests {
         assert!(validate_rule_constraint("").is_err());
         assert!(validate_rule_constraint("  \n").is_err());
         assert!(validate_rule_constraint("Run focused tests.").is_ok());
-    }
-
-    #[test]
-    fn workflow_steps_require_non_empty_exclusive_content() {
-        assert!(validate_workflow_step_shapes(&[]).is_err());
-        assert!(
-            validate_workflow_step_shapes(&[WorkflowStepInput {
-                rule_id: None,
-                body: None,
-            }])
-            .is_err()
-        );
-        assert!(
-            validate_workflow_step_shapes(&[WorkflowStepInput {
-                rule_id: Some("rule-one".to_owned()),
-                body: Some("duplicate".to_owned()),
-            }])
-            .is_err()
-        );
-        assert!(
-            validate_workflow_step_shapes(&[WorkflowStepInput {
-                rule_id: Some("rule-one".to_owned()),
-                body: None,
-            }])
-            .is_ok()
-        );
-        assert!(
-            validate_workflow_step_shapes(&[WorkflowStepInput {
-                rule_id: None,
-                body: Some("Run the step.".to_owned()),
-            }])
-            .is_ok()
-        );
     }
 
     #[test]

@@ -232,8 +232,12 @@ private struct FileTreeNode: Identifiable {
     }
 
     static func build(_ items: [MemoryListItem]) -> [FileTreeNode] {
-        let entries = items.map {
-            Entry(item: $0, components: Array($0.document.path.split(separator: "/").map(String.init))[...])
+        let entries = items.map { item in
+            var components = item.document.path.split(separator: "/").map(String.init)
+            if item.kind == .workflows, components.first == "workflow", components.count > 1 {
+                components.removeFirst()
+            }
+            return Entry(item: item, components: components[...])
         }
         return build(entries, prefix: "")
     }
@@ -386,34 +390,22 @@ private struct DocumentSessionView: View {
     @ViewBuilder
     private var editor: some View {
         switch item.kind {
-        case .context, .rules, .metaprompt:
+        case .context, .rules, .workflows, .metaprompt:
             NativeTextEditor(text: $document.body)
-        case .workflows:
-            WorkflowDocumentEditor(
-                document: $document,
-                rules: store.resources.filter { $0.kind == .rules }
-            )
         }
     }
 
     private var renderedSource: String {
         let sourceDocument = mode == .preview ? item.document : document
         switch item.kind {
-        case .context, .rules, .metaprompt:
+        case .context, .rules, .workflows, .metaprompt:
             return sourceDocument.body
-        case .workflows:
-            return "# \(sourceDocument.title)\n\n\(sourceDocument.body)\n\n" + sourceDocument.steps.enumerated().map { index, step in
-                "\(index + 1). \(step.body ?? step.ruleId.map { "Apply rule `\($0)`." } ?? "")"
-            }.joined(separator: "\n")
         }
     }
 
     private var supportsMarkdownPreview: Bool {
-        if item.kind == .rules || item.kind == .metaprompt { return true }
-        guard item.kind == .context else { return false }
         let path = mode == .preview ? item.document.path : document.path
-        let pathExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
-        return pathExtension == "md" || pathExtension == "markdown"
+        return item.kind.supportsMarkdownPreview(path: path)
     }
 
     private func scheduleSave() {
@@ -679,63 +671,5 @@ private struct RuleDetailsPopover: View {
         Text(value.isEmpty ? "None" : value)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
-    }
-}
-
-private struct WorkflowDocumentEditor: View {
-    @Binding var document: EditableMemoryDocument
-    let rules: [MemoryResource]
-
-    var body: some View {
-        Form {
-            TextField("Name", text: $document.title)
-            TextField("Description", text: $document.body, axis: .vertical)
-                .lineLimit(2...6)
-            Section("Steps") {
-                ForEach($document.steps) { $step in
-                    HStack(alignment: .top, spacing: 8) {
-                        Picker("Type", selection: Binding(
-                            get: { step.ruleId == nil ? "instruction" : "rule" },
-                            set: { value in
-                                if value == "rule" {
-                                    step.ruleId = rules.first?.id
-                                    step.body = nil
-                                } else {
-                                    step.ruleId = nil
-                                    step.body = ""
-                                }
-                            }
-                        )) {
-                            Text("Instruction").tag("instruction")
-                            Text("Rule").tag("rule")
-                        }
-                        .labelsHidden()
-                        .frame(width: 110)
-                        if step.ruleId != nil {
-                            Picker("Rule", selection: $step.ruleId) {
-                                ForEach(rules) { rule in
-                                    Text(rule.document.title).tag(Optional(rule.id))
-                                }
-                            }
-                            .labelsHidden()
-                        } else {
-                            TextField("Instruction", text: Binding(
-                                get: { step.body ?? "" },
-                                set: { step.body = $0 }
-                            ), axis: .vertical)
-                        }
-                        ToolbarIconButton(symbol: "trash", label: "Remove Step") {
-                            document.steps.removeAll { $0.id == step.id }
-                        }
-                    }
-                }
-                Button {
-                    document.steps.append(.init(body: ""))
-                } label: {
-                    Label("Add Step", systemImage: "plus")
-                }
-            }
-        }
-        .formStyle(.grouped)
     }
 }

@@ -507,20 +507,13 @@ components:
             type: string
     DaemonWorkflowDraftContent:
       type: object
-      required: [kind, description, steps]
+      required: [kind, content]
       properties:
         kind:
           type: string
           enum: [workflow]
-        name:
-          type: [string, "null"]
-        description:
+        content:
           type: string
-        steps:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/DaemonWorkflowStepInput"
     DaemonMetapromptDraftContent:
       type: object
       required: [kind, content]
@@ -530,14 +523,6 @@ components:
           enum: [metaprompt]
         content:
           type: string
-    DaemonWorkflowStepInput:
-      type: object
-      required: [rule_id, body]
-      properties:
-        rule_id:
-          type: [string, "null"]
-        body:
-          type: [string, "null"]
     DaemonRenameDraftOperation:
       type: object
       required: [id, new_path]

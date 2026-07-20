@@ -39,13 +39,11 @@ enum WorkspaceLoadError: LocalizedError, Sendable {
 enum MemoryValidationError: LocalizedError, Sendable {
     case invalidPath(String)
     case emptyRule
-    case invalidWorkflow(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidPath(let message): message
         case .emptyRule: "A Rule needs a constraint."
-        case .invalidWorkflow(let message): message
         }
     }
 }
@@ -1148,20 +1146,19 @@ final class WorkspaceStore: ObservableObject {
     private func defaultDocument(kind: MemoryKind, path: String) -> EditableMemoryDocument {
         switch kind {
         case .context:
-            .init(title: "Untitled", path: path, body: "", appliesWhen: "", tags: [], steps: [])
+            .init(title: "Untitled", path: path, body: "", appliesWhen: "", tags: [])
         case .rules:
-            .init(title: "Untitled rule", path: path, body: "Describe the constraint.", appliesWhen: "", tags: [], steps: [])
+            .init(title: "Untitled rule", path: path, body: "Describe the constraint.", appliesWhen: "", tags: [])
         case .workflows:
             .init(
                 title: "Untitled workflow",
                 path: path,
-                body: "",
+                body: "# Untitled workflow\n",
                 appliesWhen: "",
-                tags: [],
-                steps: [.init(body: "Describe this step.")]
+                tags: []
             )
         case .metaprompt:
-            .init(title: "Metaprompt", path: path, body: "", appliesWhen: "", tags: [], steps: [])
+            .init(title: "Metaprompt", path: path, body: "", appliesWhen: "", tags: [])
         }
     }
 
@@ -1177,11 +1174,7 @@ final class WorkspaceStore: ObservableObject {
                 tags: document.tags
             )
         case .workflows:
-            .workflow(
-                name: document.title,
-                description: document.body,
-                steps: document.steps.map { .init(ruleId: $0.ruleId, body: $0.body) }
-            )
+            .workflow(content: document.body)
         case .metaprompt:
             .metaprompt(content: document.body)
         }
@@ -1207,20 +1200,6 @@ final class WorkspaceStore: ObservableObject {
         }
         if kind == .rules && document.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw MemoryValidationError.emptyRule
-        }
-        if kind == .workflows {
-            guard !document.steps.isEmpty else {
-                throw MemoryValidationError.invalidWorkflow("A Workflow needs at least one step.")
-            }
-            for (index, step) in document.steps.enumerated() {
-                let hasRule = !(step.ruleId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                let hasBody = !(step.body?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                if hasRule == hasBody {
-                    throw MemoryValidationError.invalidWorkflow(
-                        "Step \(index + 1) must use either a published Rule or an instruction."
-                    )
-                }
-            }
         }
     }
 }
@@ -1346,8 +1325,7 @@ struct WorkspaceLoader: Sendable {
             loaded.document.body = detail.content
         case .workflows:
             let detail: WorkflowDetail = try await server.get("\(prefix)/workflows/\(resource.id)")
-            loaded.document.body = detail.content.description
-            loaded.document.steps = detail.content.steps.map { .init(ruleId: $0.ruleId, body: $0.body) }
+            loaded.document.body = detail.content
         case .metaprompt:
             throw ServerClientError.invalidResponse("Metaprompt is not a user-maintained memory type.")
         }
@@ -1472,8 +1450,7 @@ struct WorkspaceLoader: Sendable {
                     path: metadata.path,
                     body: "",
                     appliesWhen: "",
-                    tags: [],
-                    steps: []
+                    tags: []
                 )
             )
         }
@@ -1502,8 +1479,7 @@ struct WorkspaceLoader: Sendable {
                     path: metadata.path,
                     body: "",
                     appliesWhen: "",
-                    tags: [],
-                    steps: []
+                    tags: []
                 )
             )
         }
@@ -1532,8 +1508,7 @@ struct WorkspaceLoader: Sendable {
                     path: metadata.path,
                     body: "",
                     appliesWhen: "",
-                    tags: [],
-                    steps: []
+                    tags: []
                 )
             )
         }
@@ -1654,7 +1629,7 @@ struct WorkspaceLoader: Sendable {
         guard let entry,
               let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }) else { return nil }
         switch resource.kind {
-        case .context, .metaprompt:
+        case .context, .workflow, .metaprompt:
             return blob.content
         case .rule:
             let document = try JSONCoding.decoder().decode(RuleCommitDocument.self, from: Data(blob.content.utf8))
@@ -1674,17 +1649,6 @@ struct WorkspaceLoader: Sendable {
                 "",
                 "Tags: \(document.content.tags.isEmpty ? "None" : document.content.tags.joined(separator: ", "))"
             ].joined(separator: "\n")
-        case .workflow:
-            let document = try JSONCoding.decoder().decode(WorkflowCommitDocument.self, from: Data(blob.content.utf8))
-            guard document.format == "clumsies.workflow.v1" else {
-                throw ServerClientError.invalidResponse("Workflow commit blob uses an unsupported format.")
-            }
-            let steps = document.content.steps.enumerated().map { index, step in
-                let text = step.body ?? step.ruleId.map { "Apply rule `\($0)`." } ?? ""
-                return "\(index + 1). \(text)"
-            }
-            return (["# \(document.content.name)", "", document.content.description, ""] + steps)
-                .joined(separator: "\n")
         }
     }
 
@@ -1696,8 +1660,7 @@ struct WorkspaceLoader: Sendable {
             path: summary.path ?? "untitled.md",
             body: "",
             appliesWhen: "",
-            tags: [],
-            steps: []
+            tags: []
         )
         var deletion = false
         for operation in detail.operations {
@@ -1742,17 +1705,13 @@ struct WorkspaceLoader: Sendable {
     ) -> EditableMemoryDocument {
         var document = document
         switch content {
-        case .context(let content), .metaprompt(let content):
+        case .context(let content), .workflow(let content), .metaprompt(let content):
             document.body = content
         case .rule(let name, let appliesWhen, let constraint, let tags):
             document.title = name ?? document.title
             document.appliesWhen = appliesWhen ?? ""
             document.body = constraint
             document.tags = tags ?? []
-        case .workflow(let name, let description, let steps):
-            document.title = name ?? document.title
-            document.body = description
-            document.steps = steps.map { .init(ruleId: $0.ruleId, body: $0.body) }
         }
         return document
     }
@@ -1772,17 +1731,6 @@ private struct RuleCommitDocument: Decodable {
         let appliesWhen: String
         let constraint: String
         let tags: [String]
-    }
-
-    let format: String
-    let content: Content
-}
-
-private struct WorkflowCommitDocument: Decodable {
-    struct Content: Decodable {
-        let name: String
-        let description: String
-        let steps: [DaemonWorkflowStep]
     }
 
     let format: String

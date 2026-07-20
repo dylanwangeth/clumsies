@@ -228,18 +228,12 @@ export interface components {
         DaemonWorkflowDraftContent: {
             /** @enum {string} */
             kind: "workflow";
-            name?: string | null;
-            description: string;
-            steps: components["schemas"]["DaemonWorkflowStepInput"][];
+            content: string;
         };
         DaemonMetapromptDraftContent: {
             /** @enum {string} */
             kind: "metaprompt";
             content: string;
-        };
-        DaemonWorkflowStepInput: {
-            rule_id: string | null;
-            body: string | null;
         };
         DaemonRenameDraftOperation: {
             id: string;

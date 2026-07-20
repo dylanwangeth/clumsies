@@ -95,22 +95,9 @@ struct ContextDetail: Codable, Sendable {
     let etag: String
 }
 
-struct WorkflowContent: Codable, Hashable, Sendable {
-    let description: String
-    let steps: [WorkflowStep]
-}
-
-struct WorkflowStep: Codable, Hashable, Sendable, Identifiable {
-    var id: String { "\(order):\(ruleId ?? ""):\(body ?? "")" }
-
-    let order: Int
-    let ruleId: String?
-    let body: String?
-}
-
 struct WorkflowDetail: Codable, Sendable {
     let workflow: WorkflowMetadata
-    let content: WorkflowContent
+    let content: String
     let etag: String
 }
 

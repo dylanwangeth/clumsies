@@ -207,7 +207,7 @@ struct DaemonDraftOperationResponse: Codable, Sendable {
 enum DaemonDraftContent: Codable, Hashable, Sendable {
     case context(content: String)
     case rule(name: String?, appliesWhen: String?, constraint: String, tags: [String]?)
-    case workflow(name: String?, description: String, steps: [DaemonWorkflowStep])
+    case workflow(content: String)
     case metaprompt(content: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -217,8 +217,6 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
         case appliesWhen
         case constraint
         case tags
-        case description
-        case steps
     }
 
     init(from decoder: Decoder) throws {
@@ -235,11 +233,7 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
                 tags: try container.decodeIfPresent([String].self, forKey: .tags)
             )
         case .workflow:
-            self = .workflow(
-                name: try container.decodeIfPresent(String.self, forKey: .name),
-                description: try container.decode(String.self, forKey: .description),
-                steps: try container.decode([DaemonWorkflowStep].self, forKey: .steps)
-            )
+            self = .workflow(content: try container.decode(String.self, forKey: .content))
         case .metaprompt:
             self = .metaprompt(content: try container.decode(String.self, forKey: .content))
         }
@@ -257,11 +251,9 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
             try container.encodeIfPresent(appliesWhen, forKey: .appliesWhen)
             try container.encode(constraint, forKey: .constraint)
             try container.encodeIfPresent(tags, forKey: .tags)
-        case .workflow(let name, let description, let steps):
+        case .workflow(let content):
             try container.encode(DaemonResourceKind.workflow, forKey: .kind)
-            try container.encodeIfPresent(name, forKey: .name)
-            try container.encode(description, forKey: .description)
-            try container.encode(steps, forKey: .steps)
+            try container.encode(content, forKey: .content)
         case .metaprompt(let content):
             try container.encode(DaemonResourceKind.metaprompt, forKey: .kind)
             try container.encode(content, forKey: .content)
@@ -270,18 +262,16 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
 
     var primaryText: String {
         switch self {
-        case .context(let content), .metaprompt(let content):
+        case .context(let content), .workflow(let content), .metaprompt(let content):
             return content
         case .rule(_, _, let constraint, _):
             return constraint
-        case .workflow(_, let description, _):
-            return description
         }
     }
 
     var renderedText: String {
         switch self {
-        case .context(let content), .metaprompt(let content):
+        case .context(let content), .workflow(let content), .metaprompt(let content):
             return content
         case .rule(let name, let appliesWhen, let constraint, let tags):
             return [
@@ -297,13 +287,6 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
                 "",
                 "Tags: \((tags ?? []).isEmpty ? "None" : (tags ?? []).joined(separator: ", "))"
             ].joined(separator: "\n")
-        case .workflow(let name, let description, let steps):
-            let renderedSteps = steps.enumerated().map { index, step in
-                let text = step.body ?? step.ruleId.map { "Apply rule `\($0)`." } ?? ""
-                return "\(index + 1). \(text)"
-            }
-            return (["# \(name ?? "Workflow")", "", description, ""] + renderedSteps)
-                .joined(separator: "\n")
         }
     }
 
@@ -313,17 +296,12 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
             .context(content: text)
         case .rule(let name, let appliesWhen, _, let tags):
             .rule(name: name, appliesWhen: appliesWhen, constraint: text, tags: tags)
-        case .workflow(let name, _, let steps):
-            .workflow(name: name, description: text, steps: steps)
+        case .workflow:
+            .workflow(content: text)
         case .metaprompt:
             .metaprompt(content: text)
         }
     }
-}
-
-struct DaemonWorkflowStep: Codable, Hashable, Sendable {
-    let ruleId: String?
-    let body: String?
 }
 
 enum DaemonDraftOperation: Codable, Sendable {

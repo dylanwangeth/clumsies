@@ -111,7 +111,7 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(draft.syncStatus, .queued)
     }
 
-    func testStructuredDraftProjectionPreservesRuleAndWorkflowFields() {
+    func testDraftProjectionPreservesRuleMetadataAndWorkflowMarkdown() {
         let rule = projectedDraft(
             kind: .rule,
             path: "rules/review.md",
@@ -129,18 +129,10 @@ final class DaemonContractTests: XCTestCase {
         let workflow = projectedDraft(
             kind: .workflow,
             path: "workflow/review.md",
-            content: .workflow(
-                name: "Review",
-                description: "Review a change.",
-                steps: [
-                    .init(ruleId: "rule-1", body: nil),
-                    .init(ruleId: nil, body: "Run focused tests."),
-                ]
-            )
+            content: .workflow(content: "# Review\n\nReview a change.\n\n- Run focused tests.")
         )
-        XCTAssertEqual(workflow.document.title, "Review")
-        XCTAssertEqual(workflow.document.steps.count, 2)
-        XCTAssertEqual(workflow.document.steps.first?.ruleId, "rule-1")
+        XCTAssertEqual(workflow.document.title, "review")
+        XCTAssertEqual(workflow.document.body, "# Review\n\nReview a change.\n\n- Run focused tests.")
     }
 
     func testUserMaintainedMemoryKindsMatchProductModel() {
@@ -264,14 +256,16 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(lines.map(\.text), ["one", "two", "three"])
     }
 
-    func testMarkdownPreviewAppliesToMarkdownContextAndRules() {
+    func testMarkdownPreviewAppliesToMarkdownContextAndStructuredMemory() {
         let markdown = listItem(kind: .context, path: "notes/readme.md")
         let plainText = listItem(kind: .context, path: "notes/readme.txt")
         let rule = listItem(kind: .rules, path: "rules/review.md")
+        let workflow = listItem(kind: .workflows, path: "workflow/review.md")
 
         XCTAssertTrue(markdown.supportsMarkdownPreview)
         XCTAssertFalse(plainText.supportsMarkdownPreview)
         XCTAssertTrue(rule.supportsMarkdownPreview)
+        XCTAssertTrue(workflow.supportsMarkdownPreview)
     }
 
     func testLocalWorkbenchTabsAreScopedToTheirProject() {
@@ -474,8 +468,7 @@ final class DaemonContractTests: XCTestCase {
                 path: path,
                 body: "Body",
                 appliesWhen: "",
-                tags: [],
-                steps: []
+                tags: []
             )
         )
         return .init(id: resource.id, resource: resource, draft: nil, inherited: false)

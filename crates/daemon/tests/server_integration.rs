@@ -6,8 +6,7 @@ use daemon::{
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
     DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DaemonWorkflowStepInput, DraftOperationSyncStatus,
-    SyncRetryChannel, SyncState,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
@@ -40,15 +39,9 @@ fn rule_content(name: &str, constraint: &str, tags: &[&str]) -> DaemonDraftConte
     }
 }
 
-fn workflow_content(
-    name: &str,
-    description: &str,
-    steps: Vec<DaemonWorkflowStepInput>,
-) -> DaemonDraftContent {
+fn workflow_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Workflow {
-        name: Some(name.to_owned()),
-        description: description.to_owned(),
-        steps,
+        content: content.to_owned(),
     }
 }
 
@@ -1583,7 +1576,7 @@ async fn project_metaprompt_is_independent_from_hub_and_converges_through_delete
 }
 
 #[tokio::test]
-async fn rule_and_workflow_crud_preserve_structured_generations() {
+async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let postgres = common::start_postgres().await;
     let port = postgres.port;
     let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
@@ -1675,20 +1668,9 @@ async fn rule_and_workflow_crud_preserve_structured_generations() {
         DaemonDraftScope::Project,
         DaemonDraftResourceKind::Workflow,
         "workflow/memory-publication",
-        workflow_content(
-            "Memory publication",
-            "Publish durable memory safely.",
-            vec![
-                DaemonWorkflowStepInput {
-                    rule_id: Some(rule_id.clone()),
-                    body: None,
-                },
-                DaemonWorkflowStepInput {
-                    rule_id: None,
-                    body: Some("Verify the materialized generation.".to_owned()),
-                },
-            ],
-        ),
+        workflow_content(&format!(
+            "# Memory publication\n\nPublish durable memory safely.\n\n1. Apply rule `{rule_id}`.\n2. Verify the materialized generation."
+        )),
         DaemonDraftOperationSource::Desktop,
     )
     .await;
@@ -1712,10 +1694,11 @@ async fn rule_and_workflow_crud_preserve_structured_generations() {
         .get_project_workflow(&bootstrap.project_id, &workflow_id)
         .await
         .unwrap();
-    assert_eq!(created_workflow.content.steps.len(), 2);
     assert_eq!(
-        created_workflow.content.steps[0].rule_id.as_deref(),
-        Some(rule_id.as_str())
+        created_workflow.content,
+        format!(
+            "# Memory publication\n\nPublish durable memory safely.\n\n1. Apply rule `{rule_id}`.\n2. Verify the materialized generation."
+        )
     );
     let workflow_create_root =
         cache_root_for_commit(&service, &bootstrap.project_id, &workflow_create_commit).await;
@@ -1782,20 +1765,9 @@ async fn rule_and_workflow_crud_preserve_structured_generations() {
         &bootstrap.project_id,
         (DaemonDraftScope::Project, DaemonDraftResourceKind::Workflow),
         &workflow_id,
-        workflow_content(
-            "Memory publication",
-            "Publish and verify durable memory.",
-            vec![
-                DaemonWorkflowStepInput {
-                    rule_id: None,
-                    body: Some("Verify the materialized generation.".to_owned()),
-                },
-                DaemonWorkflowStepInput {
-                    rule_id: Some(rule_id.clone()),
-                    body: None,
-                },
-            ],
-        ),
+        workflow_content(&format!(
+            "# Memory publication\n\nPublish and verify durable memory.\n\n1. Verify the materialized generation.\n2. Apply rule `{rule_id}`."
+        )),
         "workflow/memory-publish",
         DaemonDraftOperationSource::Desktop,
     )
@@ -1812,14 +1784,11 @@ async fn rule_and_workflow_crud_preserve_structured_generations() {
         .await
         .unwrap();
     assert_eq!(updated_workflow.workflow.path, "workflow/memory-publish");
-    assert_eq!(updated_workflow.content.steps[0].order, 1);
     assert_eq!(
-        updated_workflow.content.steps[0].body.as_deref(),
-        Some("Verify the materialized generation.")
-    );
-    assert_eq!(
-        updated_workflow.content.steps[1].rule_id.as_deref(),
-        Some(rule_id.as_str())
+        updated_workflow.content,
+        format!(
+            "# Memory publication\n\nPublish and verify durable memory.\n\n1. Verify the materialized generation.\n2. Apply rule `{rule_id}`."
+        )
     );
     let workflow_update_root =
         cache_root_for_commit(&service, &bootstrap.project_id, &workflow_update_commit).await;
@@ -1999,20 +1968,9 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
         DaemonDraftScope::Org,
         DaemonDraftResourceKind::Workflow,
         "workflow/shared-publication",
-        workflow_content(
-            "Shared publication",
-            "Publish organization memory safely.",
-            vec![
-                DaemonWorkflowStepInput {
-                    rule_id: Some(rule_id.clone()),
-                    body: None,
-                },
-                DaemonWorkflowStepInput {
-                    rule_id: None,
-                    body: Some("Confirm the effective project memory.".to_owned()),
-                },
-            ],
-        ),
+        workflow_content(&format!(
+            "# Shared publication\n\nPublish organization memory safely.\n\n1. Apply rule `{rule_id}`.\n2. Confirm the effective project memory."
+        )),
         DaemonDraftOperationSource::McpStore,
     )
     .await;
@@ -2124,20 +2082,9 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
         &bootstrap.project_id,
         (DaemonDraftScope::Org, DaemonDraftResourceKind::Workflow),
         &workflow_id,
-        workflow_content(
-            "Shared publication",
-            "Publish and verify organization memory.",
-            vec![
-                DaemonWorkflowStepInput {
-                    rule_id: None,
-                    body: Some("Confirm the effective project memory.".to_owned()),
-                },
-                DaemonWorkflowStepInput {
-                    rule_id: Some(rule_id.clone()),
-                    body: None,
-                },
-            ],
-        ),
+        workflow_content(&format!(
+            "# Shared publication\n\nPublish and verify organization memory.\n\n1. Confirm the effective project memory.\n2. Apply rule `{rule_id}`."
+        )),
         "workflow/shared-publish",
         DaemonDraftOperationSource::McpStore,
     )

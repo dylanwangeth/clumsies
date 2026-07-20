@@ -15,7 +15,7 @@ use server::api::{
     ProjectListResponse, ProjectOrgSelection, ReplaceProjectOrgSelectionRequest, ResourceScope,
     Review, ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail,
     ReviewListResponse, ReviewMergeResult, ReviewStatus, RuleDetail, TreeEntryKind,
-    UpdateDraftRequest, UpdateProjectRequest, WorkflowDetail, WorkflowStepInput,
+    UpdateDraftRequest, UpdateProjectRequest, WorkflowDetail,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -2103,112 +2103,7 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
 }
 
 #[tokio::test]
-async fn project_org_selection_cannot_remove_a_rule_used_by_effective_workflow() {
-    let postgres = common::migrated_postgres().await;
-    let bootstrap = common::initialize_installation(
-        postgres.pool.clone(),
-        "Acme Memory",
-        "owner@example.com",
-        "Owner",
-        "oidc-subject-owner",
-        "Workflow Memory",
-    )
-    .await;
-    sqlx::query(
-        "INSERT INTO resources (
-            resource_id, org_id, project_id, scope, resource_kind, path, name,
-            status, content_hash, body
-         ) VALUES ($1, $2, NULL, 'org', 'rule', $3, $4, 'active', $5, $6)",
-    )
-    .bind("rul_shared_dependency")
-    .bind(&bootstrap.org_id)
-    .bind("rules/shared-dependency")
-    .bind("Shared dependency")
-    .bind("shared-rule-hash")
-    .bind("Use the shared dependency.")
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO resources (
-            resource_id, org_id, project_id, scope, resource_kind, path, name,
-            status, content_hash, body
-         ) VALUES ($1, $2, $3, 'project', 'workflow', $4, $5, 'active', $6, $7)",
-    )
-    .bind("wfl_project_dependency")
-    .bind(&bootstrap.org_id)
-    .bind(&bootstrap.project_id)
-    .bind("workflow/dependency")
-    .bind("Dependency workflow")
-    .bind("workflow-hash")
-    .bind("Uses a shared Rule.")
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO workflow_steps (resource_id, step_order, rule_id, body)
-         VALUES ($1, 1, $2, NULL)",
-    )
-    .bind("wfl_project_dependency")
-    .bind("rul_shared_dependency")
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
-
-    let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
-    let selection_uri = format!("/api/v1/projects/{}/org-selections", bootstrap.project_id);
-    let selected: ProjectOrgSelection = put_json_with_if_match(
-        app.clone(),
-        &selection_uri,
-        0,
-        &ReplaceProjectOrgSelectionRequest {
-            rule_ids: vec!["rul_shared_dependency".to_owned()],
-            context_ids: Vec::new(),
-            workflow_ids: Vec::new(),
-        },
-    )
-    .await;
-    let state_before: CommitStateResponse = get_json(
-        app.clone(),
-        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
-    )
-    .await;
-
-    let response = put_response_with_if_match(
-        app.clone(),
-        &selection_uri,
-        selected.revision,
-        &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: Vec::new(),
-            workflow_ids: Vec::new(),
-        },
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let error: serde_json::Value = decode_json(response).await;
-    assert!(
-        error["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("not available in project effective memory")
-    );
-    let selection_after: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
-    assert_eq!(selection_after.revision, selected.revision);
-    assert_eq!(selection_after.rules.len(), 1);
-    let state_after: CommitStateResponse = get_json(
-        app,
-        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
-    )
-    .await;
-    assert_eq!(
-        state_after.reference.commit_id,
-        state_before.reference.commit_id
-    );
-}
-
-#[tokio::test]
-async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
+async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
         postgres.pool.clone(),
@@ -2241,12 +2136,7 @@ async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
                 path: Some("workflows/invalid".to_owned()),
             },
             content: Some(DraftResourceContent::Workflow {
-                name: Some("Invalid Workflow".to_owned()),
-                description: String::new(),
-                steps: vec![WorkflowStepInput {
-                    rule_id: None,
-                    body: Some("Run the step.".to_owned()),
-                }],
+                content: "# Invalid Workflow".to_owned(),
             }),
             new_path: None,
         }],
@@ -2274,41 +2164,6 @@ async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
     };
     assert_eq!(
         post_response(app.clone(), "/api/v1/drafts", &invalid_empty_draft)
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-
-    let empty_workflow = CreateDraftRequest {
-        daemon_installation_id: "daemon_paths".to_owned(),
-        project_id: bootstrap.project_id.clone(),
-        base_commit_id: None,
-        title: "Empty Workflow".to_owned(),
-        description: None,
-        resource: DraftResourceRef {
-            scope: ResourceScope::Project,
-            kind: DraftResourceKind::Workflow,
-            id: None,
-            path: Some("workflow/empty".to_owned()),
-        },
-        operations: vec![DraftOperationInput {
-            action: DraftOperationAction::Create,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Project,
-                kind: DraftResourceKind::Workflow,
-                id: None,
-                path: Some("workflow/empty".to_owned()),
-            },
-            content: Some(DraftResourceContent::Workflow {
-                name: Some("Empty Workflow".to_owned()),
-                description: String::new(),
-                steps: Vec::new(),
-            }),
-            new_path: None,
-        }],
-    };
-    assert_eq!(
-        post_response(app.clone(), "/api/v1/drafts", &empty_workflow)
             .await
             .status(),
         StatusCode::BAD_REQUEST
@@ -2423,7 +2278,7 @@ async fn invalid_memory_shapes_are_rejected_before_draft_storage() {
 }
 
 #[tokio::test]
-async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip() {
+async fn structured_rule_and_markdown_workflow_survive_draft_review_and_commit_round_trip() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
         postgres.pool.clone(),
@@ -2568,18 +2423,9 @@ async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip
                     path: Some("workflow/coding".to_owned()),
                 },
                 content: Some(DraftResourceContent::Workflow {
-                    name: Some("Coding workflow".to_owned()),
-                    description: "Prepare a production change.".to_owned(),
-                    steps: vec![
-                        WorkflowStepInput {
-                            rule_id: Some(rule_id.clone()),
-                            body: None,
-                        },
-                        WorkflowStepInput {
-                            rule_id: None,
-                            body: Some("Summarize verification evidence.".to_owned()),
-                        },
-                    ],
+                    content: format!(
+                        "# Coding workflow\n\nPrepare a production change.\n\n- Apply rule `{rule_id}`.\n- Summarize verification evidence."
+                    ),
                 }),
                 new_path: None,
             }],
@@ -2644,26 +2490,19 @@ async fn structured_rule_and_workflow_survive_draft_review_and_commit_round_trip
         ),
     )
     .await;
-    assert_eq!(workflow.workflow.name, "Coding workflow");
-    assert_eq!(workflow.content.description, "Prepare a production change.");
-    assert_eq!(workflow.content.steps.len(), 2);
-    assert_eq!(workflow.content.steps[0].order, 1);
+    assert_eq!(workflow.workflow.name, "coding");
     assert_eq!(
-        workflow.content.steps[0].rule_id.as_deref(),
-        Some(rule_id.as_str())
-    );
-    assert_eq!(
-        workflow.content.steps[1].body.as_deref(),
-        Some("Summarize verification evidence.")
+        workflow.content,
+        format!(
+            "# Coding workflow\n\nPrepare a production change.\n\n- Apply rule `{rule_id}`.\n- Summarize verification evidence."
+        )
     );
     let workflow_blob = workflow_commit
         .blobs
         .iter()
         .find(|blob| blob.blob_id == workflow_entry.blob_id)
         .expect("workflow Blob should be present");
-    let encoded_workflow: serde_json::Value = serde_json::from_str(&workflow_blob.content).unwrap();
-    assert_eq!(encoded_workflow["format"], "clumsies.workflow.v1");
-    assert_eq!(encoded_workflow["content"]["steps"][0]["rule_id"], rule_id);
+    assert_eq!(workflow_blob.content, workflow.content);
 }
 
 fn context_draft_content(content: &str) -> Option<DraftResourceContent> {

@@ -33,7 +33,7 @@ pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 13;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
@@ -3826,9 +3826,7 @@ pub enum DaemonDraftContent {
         tags: Option<Vec<String>>,
     },
     Workflow {
-        name: Option<String>,
-        description: String,
-        steps: Vec<DaemonWorkflowStepInput>,
+        content: String,
     },
     Metaprompt {
         content: String,
@@ -3850,38 +3848,9 @@ impl DaemonDraftContent {
             Self::Rule { constraint, .. } if constraint.trim().is_empty() => Err(
                 DaemonError::InvalidRequest("rule constraint must not be empty".to_owned()),
             ),
-            Self::Workflow { steps, .. } => {
-                if steps.is_empty() {
-                    return Err(DaemonError::InvalidRequest(
-                        "workflow must contain at least one step".to_owned(),
-                    ));
-                }
-                for step in steps {
-                    let has_rule = step
-                        .rule_id
-                        .as_deref()
-                        .is_some_and(|rule_id| !rule_id.trim().is_empty());
-                    let has_body = step
-                        .body
-                        .as_deref()
-                        .is_some_and(|body| !body.trim().is_empty());
-                    if has_rule == has_body {
-                        return Err(DaemonError::InvalidRequest(
-                            "workflow step must contain exactly one of rule_id or body".to_owned(),
-                        ));
-                    }
-                }
-                Ok(())
-            }
             _ => Ok(()),
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonWorkflowStepInput {
-    pub rule_id: Option<String>,
-    pub body: Option<String>,
 }
 
 #[cfg(test)]
@@ -3918,30 +3887,6 @@ mod draft_operation_validation_tests {
         });
 
         assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
-    }
-
-    #[test]
-    fn rejects_invalid_workflow_steps_before_storage() {
-        let empty = create_operation(DaemonDraftContent::Workflow {
-            name: Some("Empty".to_owned()),
-            description: String::new(),
-            steps: Vec::new(),
-        });
-        let ambiguous = create_operation(DaemonDraftContent::Workflow {
-            name: Some("Ambiguous".to_owned()),
-            description: String::new(),
-            steps: vec![DaemonWorkflowStepInput {
-                rule_id: Some("rule-one".to_owned()),
-                body: Some("Duplicate".to_owned()),
-            }],
-        });
-
-        assert!(empty.validate(DaemonDraftResourceKind::Workflow).is_err());
-        assert!(
-            ambiguous
-                .validate(DaemonDraftResourceKind::Workflow)
-                .is_err()
-        );
     }
 
     #[test]

@@ -519,9 +519,7 @@ pub enum DraftResourceContent {
         tags: Option<Vec<String>>,
     },
     Workflow {
-        name: Option<String>,
-        description: String,
-        steps: Vec<WorkflowStepInput>,
+        content: String,
     },
     Metaprompt {
         content: String,
@@ -938,21 +936,8 @@ pub struct ContextDetail {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowDetail {
     pub workflow: WorkflowMeta,
-    pub content: WorkflowContent,
+    pub content: String,
     pub etag: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowStep {
-    pub order: i32,
-    pub rule_id: Option<String>,
-    pub body: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowStepInput {
-    pub rule_id: Option<String>,
-    pub body: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -960,12 +945,6 @@ pub struct RuleContent {
     pub applies_when: String,
     pub constraint: String,
     pub tags: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowContent {
-    pub description: String,
-    pub steps: Vec<WorkflowStep>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

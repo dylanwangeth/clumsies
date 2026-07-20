@@ -1073,26 +1073,6 @@ struct StructuredRuleContent {
     tags: Vec<String>,
 }
 
-#[derive(Deserialize)]
-struct StructuredWorkflowBlob {
-    format: String,
-    content: StructuredWorkflowContent,
-}
-
-#[derive(Deserialize)]
-struct StructuredWorkflowContent {
-    name: String,
-    description: String,
-    steps: Vec<StructuredWorkflowStep>,
-}
-
-#[derive(Deserialize)]
-struct StructuredWorkflowStep {
-    order: i32,
-    rule_id: Option<String>,
-    body: Option<String>,
-}
-
 fn materialized_resource_content(
     kind: ServerTreeEntryKind,
     blob: &str,
@@ -1136,52 +1116,7 @@ fn materialized_resource_content(
             ]
             .join("\n"))
         }
-        ServerTreeEntryKind::Workflow => {
-            let decoded: StructuredWorkflowBlob = serde_json::from_str(blob).map_err(|error| {
-                DaemonError::Server(format!("Workflow Blob is not canonical JSON: {error}"))
-            })?;
-            if decoded.format != "clumsies.workflow.v1" {
-                return Err(DaemonError::Server(format!(
-                    "Unsupported Workflow Blob format: {}",
-                    decoded.format
-                )));
-            }
-            if decoded.content.steps.is_empty() {
-                return Err(DaemonError::Server(
-                    "Workflow Blob must contain at least one step".to_owned(),
-                ));
-            }
-            let mut lines = vec![
-                format!("# {}", decoded.content.name),
-                String::new(),
-                decoded.content.description,
-            ];
-            for (index, step) in decoded.content.steps.into_iter().enumerate() {
-                let expected_order = i32::try_from(index + 1).map_err(|_| {
-                    DaemonError::Server("Workflow Blob contains too many steps".to_owned())
-                })?;
-                if step.order != expected_order {
-                    return Err(DaemonError::Server(
-                        "Workflow Blob step order is not contiguous".to_owned(),
-                    ));
-                }
-                let text = match (step.rule_id, step.body) {
-                    (Some(rule_id), None) => format!("Apply rule `{rule_id}`."),
-                    (None, Some(body)) if !body.trim().is_empty() => body,
-                    _ => {
-                        return Err(DaemonError::Server(
-                            "Workflow Blob step must contain exactly one of rule_id or body"
-                                .to_owned(),
-                        ));
-                    }
-                };
-                if lines.len() == 3 {
-                    lines.push(String::new());
-                }
-                lines.push(format!("{}. {text}", index + 1));
-            }
-            Ok(lines.join("\n"))
-        }
+        ServerTreeEntryKind::Workflow => Ok(blob.to_owned()),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
             "Project organization selection cannot be materialized as memory".to_owned(),
         )),
@@ -1431,21 +1366,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_workflow_blobs_without_steps() {
-        let error = materialized_resource_content(
-            ServerTreeEntryKind::Workflow,
-            r#"{"format":"clumsies.workflow.v1","content":{"name":"Empty","description":"Invalid","steps":[]}}"#,
-        )
-        .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("Workflow Blob must contain at least one step")
-        );
-    }
-
-    #[test]
     fn rejects_rule_blobs_without_a_constraint() {
         let error = materialized_resource_content(
             ServerTreeEntryKind::Rule,
@@ -1489,7 +1409,7 @@ mod tests {
                 Some("prj_test"),
                 "workflow/CODING.md",
                 ServerTreeEntrySource::Project,
-                r#"{"format":"clumsies.workflow.v1","content":{"name":"Coding","description":"Workflow body","steps":[{"order":1,"rule_id":null,"body":"Run tests"}]}}"#,
+                "# Coding\n\nWorkflow body\n\n1. Run tests",
             ),
             (
                 "mpf_test",

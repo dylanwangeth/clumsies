@@ -884,7 +884,7 @@ export interface components {
         };
         WorkflowDetail: {
             workflow: components["schemas"]["WorkflowMeta"];
-            content: components["schemas"]["WorkflowContent"];
+            content: string;
             etag: string;
         };
         MetapromptDetail: {
@@ -896,19 +896,6 @@ export interface components {
             applies_when: string;
             constraint: string;
             tags: string[];
-        };
-        WorkflowContent: {
-            description: string;
-            steps: components["schemas"]["WorkflowStep"][];
-        };
-        WorkflowStep: {
-            order: number;
-            rule_id: string | null;
-            body: string | null;
-        };
-        WorkflowStepInput: {
-            rule_id: string | null;
-            body: string | null;
         };
         ReplaceProjectOrgSelectionRequest: {
             rule_ids?: string[];
@@ -990,9 +977,7 @@ export interface components {
         WorkflowDraftContent: {
             /** @enum {string} */
             kind: "workflow";
-            name?: string | null;
-            description: string;
-            steps: components["schemas"]["WorkflowStepInput"][];
+            content: string;
         };
         MetapromptDraftContent: {
             /** @enum {string} */

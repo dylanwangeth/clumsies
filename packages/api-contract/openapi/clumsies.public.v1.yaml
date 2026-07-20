@@ -1411,7 +1411,7 @@ components:
         workflow:
           $ref: "#/components/schemas/WorkflowMeta"
         content:
-          $ref: "#/components/schemas/WorkflowContent"
+          type: string
         etag:
           type: string
     MetapromptDetail:
@@ -1437,35 +1437,6 @@ components:
           type: array
           items:
             type: string
-    WorkflowContent:
-      type: object
-      required: [description, steps]
-      properties:
-        description:
-          type: string
-        steps:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/WorkflowStep"
-    WorkflowStep:
-      type: object
-      required: [order, rule_id, body]
-      properties:
-        order:
-          type: integer
-        rule_id:
-          type: [string, "null"]
-        body:
-          type: [string, "null"]
-    WorkflowStepInput:
-      type: object
-      required: [rule_id, body]
-      properties:
-        rule_id:
-          type: [string, "null"]
-        body:
-          type: [string, "null"]
     ReplaceProjectOrgSelectionRequest:
       type: object
       properties:
@@ -1650,20 +1621,13 @@ components:
             type: string
     WorkflowDraftContent:
       type: object
-      required: [kind, description, steps]
+      required: [kind, content]
       properties:
         kind:
           type: string
           enum: [workflow]
-        name:
-          type: [string, "null"]
-        description:
+        content:
           type: string
-        steps:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/WorkflowStepInput"
     MetapromptDraftContent:
       type: object
       required: [kind, content]

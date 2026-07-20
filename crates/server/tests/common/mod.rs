@@ -38,7 +38,7 @@ fn postgres_slots() -> &'static Arc<Semaphore> {
     SLOTS.get_or_init(|| Arc::new(Semaphore::new(4)))
 }
 
-pub async fn migrated_postgres() -> TestPostgres {
+pub async fn postgres_without_migrations() -> TestPostgres {
     let permit = postgres_slots().clone().acquire_owned().await.unwrap();
     let container = Postgres::default().start().await.unwrap();
     let mut port = None;
@@ -62,13 +62,17 @@ pub async fn migrated_postgres() -> TestPostgres {
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = PgPool::connect(&url).await.unwrap();
 
-    server::db::run_migrations(&pool).await.unwrap();
-
     TestPostgres {
         _permit: permit,
         _container: container,
         pool,
     }
+}
+
+pub async fn migrated_postgres() -> TestPostgres {
+    let postgres = postgres_without_migrations().await;
+    server::db::run_migrations(&postgres.pool).await.unwrap();
+    postgres
 }
 
 pub async fn authenticated_router(pool: PgPool) -> (Router, TokenResponse) {

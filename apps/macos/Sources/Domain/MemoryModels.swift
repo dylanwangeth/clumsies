@@ -77,6 +77,16 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         }
     }
 
+    func supportsMarkdownPreview(path: String) -> Bool {
+        switch self {
+        case .rules, .workflows, .metaprompt:
+            return true
+        case .context:
+            let pathExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
+            return pathExtension == "md" || pathExtension == "markdown"
+        }
+    }
+
     init(_ daemonKind: DaemonResourceKind) {
         switch daemonKind {
         case .context: self = .context
@@ -98,19 +108,6 @@ struct EditableMemoryDocument: Hashable, Sendable {
     var body: String
     var appliesWhen: String
     var tags: [String]
-    var steps: [EditableWorkflowStep]
-}
-
-struct EditableWorkflowStep: Identifiable, Hashable, Sendable {
-    let id: UUID
-    var ruleId: String?
-    var body: String?
-
-    init(id: UUID = UUID(), ruleId: String? = nil, body: String? = nil) {
-        self.id = id
-        self.ruleId = ruleId
-        self.body = body
-    }
 }
 
 struct MemoryResource: Identifiable, Hashable, Sendable {
@@ -156,8 +153,7 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
             path: "",
             body: "",
             appliesWhen: "",
-            tags: [],
-            steps: []
+            tags: []
         )
     }
 
@@ -167,10 +163,7 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
     var contentLoaded: Bool { draft != nil || resource?.contentLoaded == true }
 
     var supportsMarkdownPreview: Bool {
-        if kind == .rules || kind == .metaprompt { return true }
-        guard kind == .context else { return false }
-        let pathExtension = URL(fileURLWithPath: document.path).pathExtension.lowercased()
-        return pathExtension == "md" || pathExtension == "markdown"
+        kind.supportsMarkdownPreview(path: document.path)
     }
 }
 
