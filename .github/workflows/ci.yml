@@ -129,7 +129,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          brew update
+          brew install xcodegen
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
