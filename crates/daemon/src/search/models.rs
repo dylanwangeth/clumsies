@@ -23,6 +23,7 @@ const RERANKER_MODEL_REVISION: &str = "280bcc27a84e0b898c251e06fddb25171bd9b101"
 const EMBEDDING_DIMENSIONS: usize = 384;
 const EMBEDDING_MODEL_FILE: &str = "onnx/model_qint8_avx512_vnni.onnx";
 const RERANKER_MODEL_FILE: &str = "onnx/model_quantized.onnx";
+const MAX_MODEL_INTRA_THREADS: usize = 4;
 
 #[derive(Clone, Copy)]
 struct ModelArtifact {
@@ -232,7 +233,7 @@ impl FastEmbedSearchModels {
         .with_pooling(Pooling::Mean);
         let embedding = TextEmbedding::try_new_from_user_defined(
             embedding_model,
-            InitOptionsUserDefined::default(),
+            InitOptionsUserDefined::default().with_intra_threads(model_intra_threads()),
         )
         .map_err(|error| {
             SearchFailure::model(format!(
@@ -246,7 +247,7 @@ impl FastEmbedSearchModels {
         );
         let reranker = TextRerank::try_new_from_user_defined(
             reranker_model,
-            RerankInitOptionsUserDefined::default(),
+            RerankInitOptionsUserDefined::default().with_intra_threads(model_intra_threads()),
         )
         .map_err(|error| {
             SearchFailure::model(format!("failed to initialize {RERANKER_MODEL_ID}: {error}"))
@@ -609,6 +610,12 @@ fn model_download_size() -> u64 {
         .sum()
 }
 
+fn model_intra_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().div_ceil(2).min(MAX_MODEL_INTRA_THREADS))
+        .unwrap_or(1)
+}
+
 fn set_preparation_progress(
     status: &Arc<Mutex<SearchModelRuntimeStatus>>,
     downloaded_bytes: u64,
@@ -654,6 +661,11 @@ mod tests {
     #[test]
     fn pinned_model_payload_is_bounded() {
         assert_eq!(model_download_size(), 431_831_479);
+    }
+
+    #[test]
+    fn model_threads_leave_capacity_for_foreground_work() {
+        assert!((1..=MAX_MODEL_INTRA_THREADS).contains(&model_intra_threads()));
     }
 
     #[test]

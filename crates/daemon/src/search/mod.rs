@@ -213,7 +213,7 @@ pub struct SearchIndexStatus {
 struct EffectiveMemory {
     project_id: String,
     effective_hash: String,
-    resources: Vec<SourceResource>,
+    resources: Arc<[SourceResource]>,
 }
 
 #[derive(Clone, Debug)]
@@ -725,7 +725,7 @@ async fn load_effective_memory(
     Ok(EffectiveMemory {
         project_id: project_id.to_owned(),
         effective_hash,
-        resources: source_resources,
+        resources: source_resources.into(),
     })
 }
 
@@ -1100,10 +1100,12 @@ fn sha256(value: &str) -> String {
 
 #[derive(Clone, Debug)]
 struct BuiltUnit {
-    resource: SourceResource,
+    resource_index: usize,
     unit: RetrievalUnit,
     vector: Vec<f32>,
 }
+
+const INDEX_EMBED_BATCH_SIZE: usize = 32;
 
 async fn ensure_index(
     state: &DaemonState,
@@ -1229,36 +1231,60 @@ fn build_index_units(
     resources: &[SourceResource],
     models: &dyn SearchModels,
 ) -> Result<Vec<BuiltUnit>, SearchFailure> {
-    let mut pairs = Vec::<(SourceResource, RetrievalUnit)>::new();
-    let mut passages = Vec::<String>::new();
-    for resource in resources {
+    let mut built = Vec::new();
+    let mut pending = Vec::with_capacity(INDEX_EMBED_BATCH_SIZE);
+    for (resource_index, resource) in resources.iter().enumerate() {
         for unit in build_units(resource, models)? {
-            passages.push(format!(
+            pending.push((resource_index, unit));
+            if pending.len() == INDEX_EMBED_BATCH_SIZE {
+                embed_pending_units(resources, models, &mut pending, &mut built)?;
+            }
+        }
+    }
+    embed_pending_units(resources, models, &mut pending, &mut built)?;
+    Ok(built)
+}
+
+fn embed_pending_units(
+    resources: &[SourceResource],
+    models: &dyn SearchModels,
+    pending: &mut Vec<(usize, RetrievalUnit)>,
+    built: &mut Vec<BuiltUnit>,
+) -> Result<(), SearchFailure> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let passages = pending
+        .iter()
+        .map(|(resource_index, unit)| {
+            let resource = &resources[*resource_index];
+            format!(
                 "{}\n{}\n{}",
                 resource.path,
                 unit.heading_path.join(" > "),
                 unit.text
-            ));
-            pairs.push((resource.clone(), unit));
-        }
-    }
+            )
+        })
+        .collect::<Vec<_>>();
     let embeddings = models.embed_passages(&passages)?;
-    if embeddings.len() != pairs.len() {
+    if embeddings.len() != pending.len() {
         return Err(SearchFailure::vector(format!(
             "embedding count {} does not match unit count {}",
             embeddings.len(),
-            pairs.len()
+            pending.len()
         )));
     }
-    Ok(pairs
-        .into_iter()
-        .zip(embeddings)
-        .map(|((resource, unit), vector)| BuiltUnit {
-            resource,
-            unit,
-            vector,
-        })
-        .collect())
+    built.extend(
+        pending
+            .drain(..)
+            .zip(embeddings)
+            .map(|((resource_index, unit), vector)| BuiltUnit {
+                resource_index,
+                unit,
+                vector,
+            }),
+    );
+    Ok(())
 }
 
 async fn run_model_work<T: Send + 'static>(
@@ -1296,10 +1322,14 @@ async fn install_index(
     units: &[BuiltUnit],
     dimensions: usize,
 ) -> Result<(), DaemonError> {
-    if units
-        .iter()
-        .any(|unit| unit.vector.len() != dimensions || !valid_normalized_vector(&unit.vector))
-    {
+    if units.iter().any(|built| {
+        built.vector.len() != dimensions
+            || !valid_normalized_vector(&built.vector)
+            || effective
+                .resources
+                .get(built.resource_index)
+                .is_none_or(|resource| resource.resource_id != built.unit.resource_id)
+    }) {
         return Err(SearchFailure::vector(
             "index build produced a corrupt or non-normalized vector",
         )
@@ -1322,7 +1352,7 @@ async fn install_index(
     .execute(&mut *tx)
     .await?;
 
-    for resource in &effective.resources {
+    for resource in effective.resources.iter() {
         sqlx::query(
             "INSERT INTO search_resources (
                 revision_id, resource_id, project_id, scope, kind, path, title,
@@ -1346,6 +1376,7 @@ async fn install_index(
     }
 
     for built in units {
+        let resource = &effective.resources[built.resource_index];
         let result = sqlx::query(
             "INSERT INTO search_units (
                 revision_id, unit_key, resource_id, ordinal, heading_path_json,
@@ -1373,8 +1404,8 @@ async fn install_index(
         .bind(rowid)
         .bind(revision_id)
         .bind(&built.unit.unit_key)
-        .bind(&built.resource.path)
-        .bind(&built.resource.title)
+        .bind(&resource.path)
+        .bind(&resource.title)
         .bind(built.unit.heading_path.join(" > "))
         .bind(&built.unit.text)
         .execute(&mut *tx)
@@ -1976,6 +2007,7 @@ fn activation_response(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;
     use tempfile::TempDir;
@@ -2008,6 +2040,10 @@ mod tests {
     struct FailingIndexModels;
 
     struct PreparingModels;
+
+    struct BatchRecordingModels {
+        largest_batch: AtomicUsize,
+    }
 
     impl SearchModels for DeterministicModels {
         fn revision(&self) -> Result<String, SearchFailure> {
@@ -2115,6 +2151,40 @@ mod tests {
                 downloaded_bytes: 128,
                 total_bytes: 512,
             }
+        }
+    }
+
+    impl SearchModels for BatchRecordingModels {
+        fn revision(&self) -> Result<String, SearchFailure> {
+            Ok("batch-recording-models.v1".to_owned())
+        }
+
+        fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
+            Ok(text
+                .char_indices()
+                .map(|(start, character)| (start, start + character.len_utf8()))
+                .collect())
+        }
+
+        fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure> {
+            self.largest_batch.fetch_max(texts.len(), Ordering::Relaxed);
+            Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0]).collect())
+        }
+
+        fn embed_query(&self, _query: &str) -> Result<Vec<f32>, SearchFailure> {
+            Ok(vec![1.0, 0.0, 0.0])
+        }
+
+        fn rerank(&self, _query: &str, documents: &[String]) -> Result<Vec<f32>, SearchFailure> {
+            Ok(vec![1.0; documents.len()])
+        }
+
+        fn dimensions(&self) -> usize {
+            3
+        }
+
+        fn status(&self) -> SearchModelRuntimeStatus {
+            SearchModelRuntimeStatus::Ready
         }
     }
 
@@ -2434,6 +2504,73 @@ mod tests {
             error,
             DaemonError::Search { ref code, .. } if code == "search_model_preparing"
         ));
+    }
+
+    #[test]
+    fn index_build_bounds_embedding_batches_without_cloning_resources() {
+        let content = (0..80)
+            .map(|index| format!("# Section {index}\n\n{}\n", "x".repeat(500)))
+            .collect::<String>();
+        let resources = [SourceResource {
+            resource_id: "ctx_large".to_owned(),
+            project_id: "prj_test".to_owned(),
+            scope: SourceScope::Project,
+            kind: MemoryKind::Context,
+            path: "context/large.md".to_owned(),
+            title: "Large".to_owned(),
+            content_hash: sha256(&content),
+            content,
+            source_commit_id: Some("commit_test".to_owned()),
+            draft_id: None,
+            draft_revision: None,
+        }];
+        let models = BatchRecordingModels {
+            largest_batch: AtomicUsize::new(0),
+        };
+        let units = build_index_units(&resources, &models).unwrap();
+        assert!(units.len() > INDEX_EMBED_BATCH_SIZE);
+        assert!(models.largest_batch.load(Ordering::Relaxed) <= INDEX_EMBED_BATCH_SIZE);
+        assert!(units.iter().all(|unit| unit.resource_index == 0));
+    }
+
+    #[test]
+    #[ignore = "loads the pinned models and builds 6,250 real embeddings"]
+    fn quantized_models_build_large_index_with_bounded_batches() {
+        let cache_dir = std::env::var_os("CLUMSIES_MODEL_TEST_CACHE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
+        let models = FastEmbedSearchModels::new(cache_dir);
+        models.prepare().unwrap();
+
+        let content = (0..6_250)
+            .map(|index| {
+                format!(
+                    "## Memory {index}\n\nmemory delta uses a content hash so the same memory is not injected twice.\n\n"
+                )
+            })
+            .collect::<String>();
+        let resources = [SourceResource {
+            resource_id: "ctx_large_real".to_owned(),
+            project_id: "prj_test".to_owned(),
+            scope: SourceScope::Project,
+            kind: MemoryKind::Context,
+            path: "context/large-real.md".to_owned(),
+            title: "Large real index".to_owned(),
+            content_hash: sha256(&content),
+            content,
+            source_commit_id: Some("commit_test".to_owned()),
+            draft_id: None,
+            draft_revision: None,
+        }];
+
+        let started = std::time::Instant::now();
+        let units = build_index_units(&resources, &models).unwrap();
+        eprintln!(
+            "built {} real embedding units in {:.2?}",
+            units.len(),
+            started.elapsed()
+        );
+        assert_eq!(units.len(), 6_250);
     }
 
     #[test]
