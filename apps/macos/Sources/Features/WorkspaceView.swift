@@ -625,33 +625,36 @@ private struct GlobalSidebar: View {
     }
 
     private var accountMenu: some View {
-        ZStack {
-            Menu {
-                accountMenuItems
-            } label: {
-                Text("Account")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .opacity(0)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .accessibilityLabel("Account")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
+        Menu {
+            accountMenuItems
+        } label: {
             HStack(spacing: 9) {
                 AvatarView(account: store.account)
-                Text(store.account?.displayName ?? store.account?.email ?? "Account")
+                Text(accountDisplayName)
                     .lineLimit(1)
                 Spacer()
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .allowsHitTesting(false)
+            .contentShape(Rectangle())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .accessibilityLabel("Account menu for \(accountDisplayName)")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var accountDisplayName: String {
+        if let displayName = store.account?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty {
+            return displayName
+        }
+        return store.account?.email ?? "Account"
     }
 
     @ViewBuilder
