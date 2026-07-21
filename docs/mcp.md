@@ -1,271 +1,154 @@
 # MCP
 
-## What MCP Does Here
-
-MCP is the agent-facing protocol surface for clumsies. It is how an agent activates relevant memory, retrieves the specific rules, workflows, and context it needs, and stores draft edits back into the local memory system.
-
-That makes MCP more than a transport layer. It is the runtime contract between agent work and managed rule, workflow, context, and MPF memory.
-
-## Current Tool Surface
-
-The current implementation exposes three MCP tools:
+Clumsies exposes three agent-facing memory tools:
 
 | Tool | Purpose |
-| --- | --- |
-| `activate` | mandatory memory activation at the start of each user task |
-| `retrieve` | bootstrap the session or retrieve selected relevant content |
-| `store` | the only MCP write path for managed agent memory; writes local drafts when asked |
+|---|---|
+| `activate` | Retrieve ranked, directly usable memory fragments for the current task. |
+| `load` | Read complete resources by a known stable ID or exact path. |
+| `store` | Persist an explicit user-requested Context, Rule, or Workflow Draft. |
 
-There is no `memory.` namespace prefix. The older public tools are not part of the current surface: `memsetup`, `memdisc`, `memload`, `memref`, `artifact`, `agentreport`, and `agentrejected` are removed rather than wrapped.
+The Zig MCP server is a protocol adapter. Effective Memory construction,
+indexing, retrieval, exact loading, and Draft persistence belong to the Rust
+daemon and are reached over local XPC.
 
-## Runtime Cycle
+There is no setup call. The removed `retrieve` tool, host-session binding,
+`META_PROMPT.md` bootstrap, and MCP attestation path have no compatibility
+dispatch. Runtime guidance is delivered by `InitializeResult.instructions` and
+the tool descriptions.
 
-The current loop is:
+## Activate
 
-1. bootstrap the connection with `retrieve` using `session_id` and `knownHashes`
-2. call `activate` once at the start of every user task to activate candidate material
-3. retrieve only the selected relevant content with `retrieve` using `ids` and `knownHashes`
-4. apply the loaded material in the work
-5. use `store` for any requested agent memory write to rule, context, or MPF
-
-This phase intentionally does not redesign retrieval parameters or write algorithms. `activate` keeps the old discover arguments, `retrieve` keeps the old setup/load argument shapes, and `store` keeps the old draft operation shape.
-
-## Result Envelope
-
-Every successful tool call is wrapped in the same envelope shape:
+Call `activate` once at the beginning of each substantive task:
 
 ```json
 {
-  "content": [
-    {
-      "type": "text",
-      "text": "{...serialized structured result...}"
-    }
-  ],
-  "structuredContent": {
-    "...": "tool-specific payload"
-  },
-  "isError": false
+  "query": "adjust the MCP hybrid retrieval interface",
+  "state": "optional-opaque-state"
 }
 ```
 
-Error results use the same outer shape, but set `isError` to `true` and place an error string under `structuredContent.error`.
+| Field | Required | Meaning |
+|---|---:|---|
+| `query` | yes | A non-empty natural-language representation of the current task or cue. |
+| `state` | no | The preceding `next_state`, but only while its earlier fragments remain in the model context. |
 
-## `retrieve` For Bootstrap
+The daemon performs BM25 and dense-vector recall, RRF fusion, Cross-Encoder
+reranking, resource diversity limits, token budgeting, and fragment delta
+calculation in one operation. `kind`, `group`, `limit`, model names, and ranking
+parameters are deliberately not agent-facing inputs.
 
-When `session_id` is present, `retrieve` bootstraps the connection. This is the old setup parameter structure under the new tool name.
+The response contains:
 
-### Input
+```json
+{
+  "index_revision": "search_...",
+  "profile": "agent_activation.v1",
+  "next_state": "opaque-state",
+  "fragments": [
+    {
+      "action": "add",
+      "unit_key": "ctx_123/mcp/memory-delta/0/0",
+      "content_hash": "sha256:...",
+      "resource_id": "ctx_123",
+      "scope": "project",
+      "kind": "context",
+      "path": "architecture/retrieval.md",
+      "heading_path": ["MCP", "Memory Delta"],
+      "content": "..."
+    }
+  ],
+  "removed": []
+}
+```
 
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `session_id` | string | yes | host-agent session or thread id |
-| `knownHashes` | object map | yes | must include `META_PROMPT.md`; pass the remembered hash, or `""` when unknown |
+`add` and `replace` include content. `reuse` identifies content already present
+in the caller's context and omits it. `removed` invalidates units that have been
+deleted, lost permission, or disappeared after reparsing. A unit that is merely
+irrelevant to the current query is not removed.
+
+Omit `state` after context compaction, after old tool output is dropped, or
+when starting fresh. Invalid or unsupported state returns
+`invalid_activation_state`; it is never silently treated as an empty state.
+
+## Load
+
+Use `load` for complete resources already identified by ID or exact path:
+
+```json
+{
+  "ids": ["ctx_123", "architecture/retrieval.md"],
+  "knownHashes": {
+    "ctx_123": "sha256:..."
+  }
+}
+```
+
+`ids` is required, non-empty, unique, and contains strings. `knownHashes` is
+optional. When a known hash matches the current complete resource,
+`changed=false` and content is omitted. A missing requested resource returns
+`memory_resource_not_found` instead of being silently dropped.
+
+`load` reads the same Effective Memory as `activate`, including current local
+Draft overlays. It does not perform fuzzy search, embedding, or reranking.
+
+## Store
+
+Call `store` only when the user explicitly asks to create, update, rename,
+delete, or discard managed memory. Ordinary task execution, summarization, and
+the agent's judgment that something may be useful are not write authorization.
+
+Top-level input:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `resource` | `context`, `rule`, or `workflow` | The explicit memory domain type. |
+| `op` | tagged object | Exactly one of `create`, `update`, `rename`, `delete`, or `discard`. |
+
+Operations:
+
+| Operation | Required fields | Optional fields |
+|---|---|---|
+| `create` | `path`, `body` | `description`; Rule may also provide `name`, `applies_when`, `tags`. |
+| `update` | `id`, `body` | `description`; Rule may also provide `name`, `applies_when`, `tags`. |
+| `rename` | `id`, `new_path` | `description` |
+| `delete` | `id` | `description` |
+| `discard` | `id` | none |
 
 Example:
 
 ```json
 {
-  "session_id": "4f04001af902673e92094a7c59d86abb",
-  "knownHashes": {
-    "META_PROMPT.md": ""
-  }
-}
-```
-
-### Structured Result
-
-| Field | Meaning |
-| --- | --- |
-| `workspaceId` | authoritative workspace ID |
-| `sessionId` | session identifier used to group later local events |
-| `mpf.hash` | current `META_PROMPT` hash |
-| `mpf.content` | current `META_PROMPT` content when changed or initially loaded |
-| `mpf.changed` | `false` when the caller already knows the same hash |
-
-## `activate`
-
-`activate` is the mandatory memory activation step after setup. Call it once at the start of every user task before substantive reasoning or edits. It lists available rules, workflows, and context files without loading their full content. It keeps the old discover parameters unchanged.
-
-Calling `activate()` with no arguments performs broad activation. Add filters only when the task gives a useful cue:
-
-| Call shape | Meaning |
-| --- | --- |
-| `activate()` | broad activation across authority rules, workflows, and context |
-| `activate({kind: "rule"})` | only rule candidates |
-| `activate({kind: "workflow"})` | only workflow candidates |
-| `activate({kind: "context"})` | only context candidates |
-| `activate({group: "coding"})` | candidates under a category or folder group |
-| `activate({query: "mcp tool"})` | candidates whose path or description matches any query term |
-| `activate({kind: "rule", group: "zig", query: "toolchain"})` | combined narrowing; filters are applied together |
-
-### Input
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `kind` | string enum | no | focus activation to one of `rule`, `workflow`, `context` |
-| `group` | string | no | focus activation by first path segment or nested logical group |
-| `query` | string | no | focus activation by matching terms against path or description |
-
-### Structured Result
-
-```json
-{
-  "items": [
-    {
-      "id": "p-e60e775a-fc91-4780-bd32-2bb451404298",
-      "kind": "workflow",
-      "path": "workflow/CODING.md",
-      "name": "CODING",
-      "group": "workflow",
-      "hash": "sha256:..."
-    }
-  ]
-}
-```
-
-Each item can include:
-
-| Field | Meaning |
-| --- | --- |
-| `id` | stable authority object ID |
-| `kind` | `rule`, `workflow`, or `context` |
-| `path` | current workspace-relative path |
-| `name` | display name derived from the path |
-| `group` | optional group value |
-| `hash` | current content hash |
-| `description` | optional metadata description when present |
-| `hasDraft` | reserved draft-overlay field; currently `false` for authority generations |
-
-## `retrieve` For Content
-
-When `ids` is present and `session_id` is absent, `retrieve` resolves full content for the selected IDs. This is the old load parameter structure under the new tool name.
-
-Do not retrieve every item returned by `activate`. Read activated metadata first, then retrieve only the items that are relevant to the current task. If the user gives an exact Server id, alias, or path, retrieve that reference directly without a broad activation search.
-
-### Input
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `ids` | string array | yes | one or more authority rule, workflow, context, path, or alias IDs |
-| `knownHashes` | object map | yes | `{id: hash}` map for delta loading; include every requested id |
-
-Each `ids` entry must also be present in `knownHashes`. Pass the remembered hash when available. Pass an empty string when the caller explicitly does not know the hash yet.
-
-### Structured Result
-
-```json
-{
-  "workspaceId": "ws-4a5c282474c9b5d9385dec0502267738",
-  "items": [
-    {
-      "id": "p-e60e775a-fc91-4780-bd32-2bb451404298",
-      "kind": "workflow",
-      "path": "workflow/CODING.md",
-      "changed": true,
-      "hash": "sha256:...",
-      "hasDraft": false,
-      "content": "# ...",
-      "constraints": [
-        {
-          "id": "Steps",
-          "name": "Steps",
-          "text": "Inspect the diff and suggest a commit message.",
-          "textHash": "..."
-        }
-      ]
-    }
-  ]
-}
-```
-
-Important item fields are:
-
-| Field | Meaning |
-| --- | --- |
-| `changed` | whether the current hash differs from the caller's `knownHashes` entry |
-| `hash` | current content hash |
-| `hasDraft` | reserved draft-overlay field; currently `false` for authority generations |
-| `draftBaseHash` | reserved base hash for a future effective draft overlay |
-| `content` | full text content, or `null` when unchanged under delta loading |
-| `constraints` | parsed rule/workflow constraint entries returned as metadata |
-
-The content no longer includes a footer telling the agent to call a reference-reporting tool. `constraints` metadata is still returned because it is useful structure for agents and later protocol work.
-
-## `store`
-
-`store` is the only MCP write path for managed agent memory. Use it whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including `META_PROMPT.md`.
-
-`store` does not directly edit the synced cache or authoritative Server state. It writes a local daemon draft and queues automatic Server synchronization. `activate` and `retrieve` keep reading the installed authority Commit until that draft is reviewed and merged; an effective draft overlay is not implemented yet. `store` is not part of the mandatory activation loop.
-
-The input is still the tagged command object used by the previous draft tool. This phase does not introduce text-fragment replacement or multi-patch operations; `update.body` is the complete replacement draft body.
-
-```json
-{
-  "resource": "context",
+  "resource": "workflow",
   "op": {
-    "update": {
-      "id": "ctx-123",
-      "body": "# New content\n",
-      "description": "Clarify setup notes"
+    "create": {
+      "path": "workflow/RELEASE.md",
+      "body": "# Release\n\nRun verification before publishing."
     }
   }
 }
 ```
 
-### Top-Level Input
+Workflow paths use the `workflow/` namespace. Context and Workflow `body`
+values become complete text content. Rule `body` becomes the structured
+constraint; omitted optional Rule fields retain their current values on update.
+Metaprompt and `mpf` are not valid wire values.
 
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `resource` | string enum | yes | one of `context`, `rule`, or `mpf` |
-| `op` | tagged object | yes | exactly one of `create`, `update`, `rename`, `delete`, or `discard` |
+A successful result contains the local operation ID, Draft ID, queue status,
+and sync status. It means the operation is durably stored locally and queued
+for automatic synchronization. It does not mean a Review was merged or an
+authority Ref moved.
 
-### `create`
+## Daemon operations
 
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `path` | string | yes | target path for the new draft |
-| `body` | string | yes | draft content |
-| `description` | string | no | optional human-facing summary |
+| XPC method | Consumer |
+|---|---|
+| `activate_memory` | MCP `activate` |
+| `load_memory` | MCP `load` |
+| `store_draft_operation` | MCP `store`, Desktop, and other clients |
+| `search_index_status` | Desktop diagnostics and tests |
+| `rebuild_search_index` | Recovery, tests, and development tooling |
 
-### `update`
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `id` | string | yes | context id, rule id, local draft id, or `META_PROMPT.md` |
-| `body` | string | yes | complete replacement draft body |
-| `description` | string | no | optional summary |
-
-### `rename`
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `id` | string | yes | context id, rule id, or local draft id |
-| `new_path` | string | yes | proposed new path |
-| `description` | string | no | optional summary |
-
-### `delete`
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `id` | string | yes | resource id, create-draft temp id, or MPF |
-| `description` | string | no | optional summary |
-
-### `discard`
-
-| Field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `id` | string | yes | any draft or resource identifier |
-
-## Current Error Behavior
-
-| Situation | Result |
-| --- | --- |
-| invalid argument types or missing required fields | `isError: true` with an error message |
-| unknown tool name | `Unknown tool` |
-| `retrieve` bootstrap omits `knownHashes.META_PROMPT.md` | `isError: true` with an invalid params error |
-| `retrieve` content load omits `knownHashes` or an entry for a requested ID | `isError: true` with an invalid params error |
-| `retrieve` content load receives an unknown rule ID | `Unknown rule id` |
-| daemon has no installed authority generation | `local authoritative memory cache is not ready` |
-| daemon XPC is unavailable during `activate` or `retrieve` | `local daemon is unavailable or did not provide the memory cache` |
-| daemon XPC rejects `store` | `local daemon is unavailable or did not accept the draft operation` |
+The default retrieval profile has no silent BM25-only, old substring-search,
+or stale-index fallback. Model, vector, generation, and state failures remain
+explicit protocol errors.

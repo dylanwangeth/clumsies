@@ -1,5 +1,9 @@
 # TUI
 
+> Legacy client reference. Desktop is the primary human product; TUI is no
+> longer an active product surface. This page remains only while the old Zig TUI
+> implementation is removed under the history-cleanup stage.
+
 ## What the TUI is
 
 The TUI is clumsies' terminal dashboard. It is the human-facing visual client for the system, not a separate backend and not a decorative wrapper around the CLI.

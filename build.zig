@@ -109,6 +109,10 @@ fn createClientModule(
         module.linkFramework("CoreFoundation", .{});
     }
     if (enable_xpc) {
+        module.addCSourceFile(.{
+            .file = b.path("src/client/daemon/xpc_client.c"),
+            .flags = &.{"-fblocks"},
+        });
         module.linkSystemLibrary("System", .{});
     }
     return module;
@@ -126,10 +130,6 @@ fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) 
     options.addOption([]const u8, "adapter_codex_runtime_resolve_binary_sh", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/hooks/resolve-binary.sh.tpl",
-    ));
-    options.addOption([]const u8, "adapter_codex_runtime_session_start_sh", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/hooks/session-start.sh.tpl",
     ));
     options.addOption([]const u8, "adapter_codex_runtime_user_prompt_submit_sh", readSourceAsset(
         b,
@@ -166,10 +166,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_setup", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/skills/setup/SKILL.md",
-    ));
     options.addOption([]const u8, "adapter_codex_runtime_skill_activate", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/activate/SKILL.md",
@@ -177,10 +173,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
     options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
         b,
         "assets/adapters/codex/runtime/skills/ntmd/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_setup", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/skills/setup/SKILL.md",
     ));
 }
 

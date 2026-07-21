@@ -1,7 +1,7 @@
 # Overview
 
 Clumsies is external memory infrastructure for coding agents. It keeps durable
-Context, Rules, Workflows, and Metaprompt outside one model conversation, makes
+Context, Rules, and Workflows outside one model conversation, makes
 the relevant subset available to an agent, and turns changes into reviewable
 drafts instead of invisible local edits.
 
@@ -14,12 +14,10 @@ Memory is a product concept, not one database table.
 | Context | file-oriented project or organization knowledge |
 | Rule | structured strong constraints |
 | Workflow | ordered operational behavior with its own lifecycle |
-| Metaprompt | bootstrap instructions used to enter the memory loop |
 | Bundle | a personal selection of shared memory resources |
 
 Organization resources are general and shared. Projects may consume selected
-organization resources and own independent Context, Rules, Workflows, and
-Metaprompt.
+organization resources and own independent Context, Rules, and Workflows.
 
 ## Product surfaces
 
@@ -28,7 +26,7 @@ Metaprompt.
 | Desktop | primary human product for browsing, editing, reviewing, and merging memory |
 | daemon | always-on local runtime for drafts, sync, native transport, and client coordination |
 | Server | self-hosted authority service backed by PostgreSQL |
-| MCP | agent-facing `activate`, `retrieve`, and `store` interface |
+| MCP | agent-facing `activate`, `load`, and `store` interface |
 | CLI | optional command-line client for useful product operations |
 | Web Admin | organization, member, project, token, audit, and health administration |
 
@@ -40,8 +38,8 @@ is not a second backend.
 
 ```text
 task cue
-  -> activate candidates
-  -> retrieve selected memory
+  -> activate ranked fragments
+  -> optionally load a known complete resource
   -> use it in working context
   -> store a local draft
   -> daemon synchronizes the draft
@@ -75,6 +73,12 @@ user-resolvable stale conflicts, and atomic MCP authority generations are
 implemented. Real PostgreSQL tests cover merge-to-Commit, two-daemon
 convergence, restart recovery, and failure without Ref advancement.
 
-Open drafts are not yet composed with the immutable authority generation into
-one effective MCP read view. Type-aware automatic conflict resolution and the
-production installation lifecycle remain incomplete.
+The daemon now composes the installed Commit generation with current local
+Draft operations into one Effective Memory view. It derives Markdown retrieval
+units, SQLite FTS5 BM25 rows, local dense vectors, RRF fusion, cross-encoder
+reranking, and activation delta state from that view. The Zig MCP server is a
+thin XPC adapter for `activate`, `load`, and `store`; it no longer scans the
+materialized generation itself.
+
+Type-aware automatic conflict resolution, the versioned production retrieval
+query set, and the production installation lifecycle remain incomplete.

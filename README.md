@@ -23,22 +23,22 @@ organizational asset, and it is hard for teams to share, review, or evolve in
 one place. When context pressure hits, useful project rules and background can
 still get silently dropped.
 
-clumsies keeps that external memory in a managed workspace. Agents activate
-candidate memory for the current task, retrieve only the relevant items, and
-store draft refinements through the same system.
+clumsies keeps that external memory in managed organization and project scopes. Agents activate
+ranked task-relevant fragments, load complete known resources only when needed,
+and store explicit draft refinements through the same system.
 
 ## Key features
 
 - **Managed agent memory.** Store rules, workflows, and project context outside
-  any single agent runtime, then keep local workspaces in sync.
-- **Cue-driven activation.** The MCP surface is centered on `activate`,
-  `retrieve`, and `store`, so agents can select task-relevant memory before
-  reasoning instead of loading everything up front.
+  any single agent runtime, then keep local project state in sync.
+- **Cue-driven activation.** The MCP surface is centered on `activate`, `load`,
+  and `store`; hybrid retrieval returns useful fragments directly instead of
+  loading every complete resource up front.
 - **Organization and project scope.** Shared memory can live at the
-  organization level, while workspaces keep their own project-specific context
+  organization level, while projects keep their own project-specific context
   and rules.
-- **Bundle-based rollout.** Bundles let teams publish a curated set of shared
-  memory and initialize workspaces from that set.
+- **Personal bundles.** Bundles let each user maintain reusable selections of
+  memory resources without turning those selections into organization truth.
 - **Agent adapters.** The adapter layer installs the runtime hooks and skills
   needed by supported agents. Codex and Claude Code are supported today.
 - **Self-hosted authority.** The Rust Server and PostgreSQL run in your
@@ -59,6 +59,16 @@ bun run dev:macos
 The build embeds the Rust daemon binary, atomically replaces
 `~/Applications/Clumsies.app`, and launches the native AppKit/SwiftUI
 application from that stable path.
+
+Install the development CLI and MCP entrypoint on macOS with:
+
+```bash
+bun run install:cli:macos
+```
+
+The installer ad-hoc signs a staging binary and atomically replaces
+`~/.clumsies/bin/clumsies`, so active MCP processes can finish on the previous
+inode while new agent sessions start the new version.
 
 For local Server and Web Admin development, start PostgreSQL, the deterministic
 fake OIDC provider, and Server with:

@@ -10,7 +10,6 @@ const tool_names = @import("tool_names.zig");
 const tools = @import("tools.zig");
 
 pub const State = struct {
-    memory_root_override: ?[]const u8 = null,
     session: *session_mod.Session,
     initialized: bool = false,
     initialize_seen: bool = false,
@@ -112,7 +111,7 @@ fn processMessage(allocator: std.mem.Allocator, state: *State, version: []const 
     }
 
     if (std.mem.eql(u8, method, "tools/call")) {
-        const result = tools.handleCall(allocator, state.memory_root_override, state.session, params) catch |e| {
+        const result = tools.handleCall(allocator, state.session, params) catch |e| {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Unexpected system error: {s}", .{@errorName(e)}) catch "Unexpected system error";
             return try protocol.buildErrorAlloc(allocator, id.?, .internal_error, msg);
@@ -137,10 +136,10 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
     defer allocator.free(esc_version);
 
     const instructions =
-        "Call " ++ tool_names.retrieve ++ " with session_id and knownHashes first to bind this connection and get META_PROMPT, " ++
-        "then call " ++ tool_names.activate ++ " once at the start of every user task to activate candidate rules/workflows/context. " ++
-        "Use " ++ tool_names.retrieve ++ " with ids only for selected relevant content, " ++
-        "and " ++ tool_names.store ++ " only when the user asks to create, update, rename, delete, or discard local memory drafts.";
+        "Call " ++ tool_names.activate ++ " once at the start of every substantive user task. It returns ranked memory fragments ready for the current reasoning context. " ++
+        "Pass its next_state only while the earlier fragments remain in the model context; omit state after context compaction or when starting fresh. " ++
+        "Use " ++ tool_names.load ++ " only to read complete resources by known id or path, and " ++
+        tool_names.store ++ " only when the user explicitly asks to create, update, rename, delete, or discard a local Context, Rule, or Workflow draft. Store queues synchronization and does not publish authority directly.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -159,7 +158,6 @@ test "processLine: initialize then tools list" {
     defer session.deinit(testing.allocator);
 
     var state: State = .{
-        .memory_root_override = "/tmp/workspace",
         .session = &session,
     };
 
@@ -171,8 +169,8 @@ test "processLine: initialize then tools list" {
     )).?;
     defer testing.allocator.free(init_response);
     try testing.expect(std.mem.indexOf(u8, init_response, "\"protocolVersion\":\"2025-06-18\"") != null);
-    try testing.expect(std.mem.indexOf(u8, init_response, "start of every user task") != null);
-    try testing.expect(std.mem.indexOf(u8, init_response, "selected relevant content") != null);
+    try testing.expect(std.mem.indexOf(u8, init_response, "start of every substantive user task") != null);
+    try testing.expect(std.mem.indexOf(u8, init_response, "ranked memory fragments") != null);
 
     const initialized_response = try processLine(
         testing.allocator,
@@ -190,7 +188,7 @@ test "processLine: initialize then tools list" {
     )).?;
     defer testing.allocator.free(tools_response);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"activate\"") != null);
-    try testing.expect(std.mem.indexOf(u8, tools_response, "\"retrieve\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"load\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"store\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memsetup\"") == null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memdisc\"") == null);

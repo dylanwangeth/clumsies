@@ -53,7 +53,7 @@ because it was not stored in renderer state.
 | Server | authority resources, identity, authorization, review state, Commit graph, audit | local files and client process lifecycle |
 | daemon | local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, refresh handling, native Server proxy | authority decisions and merge policy |
 | Desktop | interaction state, editors, navigation, review workflows | bearer tokens and durable authority |
-| MCP | activation/retrieval protocol and agent-originated store calls | a parallel draft database |
+| MCP | activation, exact loading, and agent-originated store calls | a parallel draft database or search implementation |
 | Web Admin | administrative operations | memory editing and review workflows |
 
 ## Write path
@@ -116,14 +116,14 @@ sequenceDiagram
     D->>D: validate Commit, Tree, Blobs, ownership, paths
     D->>F: build temporary generation and atomic rename
     D->>DB: cache objects and move local Ref in one transaction
-    M->>D: memory_cache(project_id) over XPC
-    D-->>M: exact generation root and commit_id
-    M->>F: activate/retrieve from that generation
+    M->>D: activate_memory or load_memory over XPC
+    D->>F: read exact generation and overlay local Drafts
+    D-->>M: ranked fragments or complete resources
 ```
 
-The SQLite Ref is the only mutable local pointer. MCP never scans old cache
-locations or falls back to a previous workspace cache when daemon has no ready
-generation.
+The SQLite Ref is the only mutable authority pointer. Search heads are local
+derived pointers bound to an Effective Memory hash. MCP never scans cache files
+or falls back to an old generation when daemon has no matching ready index.
 
 ## Authentication boundary
 
@@ -145,8 +145,8 @@ implemented as a degraded fallback.
 ## Incomplete boundary
 
 Draft upload, remote draft projection, Commit download, atomic local
-materialization, and MCP authority reads are operational. Open drafts are not
-yet overlaid onto the immutable authority generation used by MCP. Explicit
-user-resolvable conflicts and macOS Keychain token storage are operational;
-type-aware automatic three-way merge and Windows service transport remain
-outside the implemented boundary.
+materialization, Effective Memory Draft overlay, hybrid retrieval, exact
+loading, and activation delta are operational. Explicit user-resolvable
+conflicts and macOS Keychain token storage are operational; type-aware automatic
+three-way merge, a representative versioned retrieval query set, and Windows
+service transport remain outside the implemented boundary.

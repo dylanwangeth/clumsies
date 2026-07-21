@@ -1,5 +1,9 @@
 # Attestation
 
+> Legacy capability reference. Attestation and agent observability are not part
+> of the current product direction or MCP memory contract. This page remains
+> only while the old implementation is removed under the history-cleanup stage.
+
 ## What attestation is
 
 Attestation is the structured usage signal produced when agents work through clumsies. It is how the system stops guessing about rule value.

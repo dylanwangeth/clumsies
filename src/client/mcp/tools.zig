@@ -1,587 +1,224 @@
-//! MCP tool definitions and dispatch. Exposes the agent-facing memory tools.
+//! Agent-facing MCP memory tools. The Rust daemon owns Effective Memory,
+//! retrieval, loading, and Draft persistence; this module validates MCP input
+//! and adapts it to daemon XPC JSON.
 const std = @import("std");
 const testing = std.testing;
-const encoding = @import("clumsies_lib").util.encoding;
-const workspace_rule = @import("../rule.zig");
 const daemon_ipc = @import("../daemon/ipc.zig");
 const session_mod = @import("session.zig");
 const tool_names = @import("tool_names.zig");
 const tool_result = @import("tool_result.zig");
 
-const DISCOVER_RESULT_NAMES_MAX_COUNT = 20;
-const DISCOVER_RESULT_NAMES_MAX_BYTES = 1024;
-
-const ValidationError = error{
-    MissingKnownHashes,
-    KnownHashesNotObject,
-    MissingMetaPromptKey,
-    MetaPromptValueNotString,
-    InvalidKind,
-    MissingIds,
-    IdsNotArray,
-    IdsEmpty,
-    IdNotString,
-    MissingKnownHashesMap,
-    KnownHashesNotObjectMap,
-    HashNotString,
-    MissingIdHash,
-};
-
 const activate_schema =
-    "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Mandatory memory activation step. After setup, call activate once at the start of every user task before substantive reasoning or edits. It lists candidate rules, workflows, and context from the local workspace so the agent can decide what to retrieve and apply. Use kind, group, or query only to focus activation; omit them for broad activation.\"," ++
+    "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Activate the memory fragments most useful for the current task. Call once at the start of each substantive task. The daemon performs BM25 and vector recall, RRF fusion, reranking, budget control, and fragment delta calculation. Pass state only while fragments from the preceding activation remain in the model context.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"workflow\",\"context\"],\"description\":\"Focus activation by resource kind: 'rule', 'workflow', or 'context'.\"}," ++
-    "\"group\":{\"type\":\"string\",\"description\":\"Focus activation by category or folder group prefix (e.g., 'coding', 'zig').\"}," ++
-    "\"query\":{\"type\":\"string\",\"description\":\"Focus activation by matching terms against resource path or description.\"" ++
-    "}},\"additionalProperties\":false}}";
+    "\"query\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Natural-language representation of the current task or retrieval cue.\"}," ++
+    "\"state\":{\"type\":\"string\",\"description\":\"Opaque next_state from a preceding activation whose fragments are still present in the current model context.\"}" ++
+    "},\"required\":[\"query\"],\"additionalProperties\":false}}";
 
-const retrieve_schema =
-    "{\"name\":\"" ++ tool_names.retrieve ++ "\",\"title\":\"Retrieve\",\"description\":\"Bind this MCP connection when session_id is present. After activate, retrieve full content only for selected relevant ids, or retrieve directly when the user provides an exact resource id, path, or alias. Keep using the original setup and load argument shapes: session_id plus knownHashes for META_PROMPT bootstrap, or ids plus knownHashes for content retrieval.\"," ++
+const load_schema =
+    "{\"name\":\"" ++ tool_names.load ++ "\",\"title\":\"Load\",\"description\":\"Load complete current memory resources by stable id or exact path. Use for deep reading or before editing a known resource; activate already returns directly usable fragments and does not require a follow-up load.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"session_id\":{\"type\":\"string\",\"description\":\"The host session/thread ID to bind this connection to when bootstrapping.\"}," ++
-    "\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of unique resource identifiers, paths, or aliases to load.\"}," ++
-    "\"knownHashes\":{\"type\":\"object\",\"description\":\"A map of known hashes. For bootstrap it must contain META_PROMPT.md; for content retrieval it must contain every requested id. Use an empty string if unknown.\",\"additionalProperties\":{\"type\":\"string\"}}" ++
-    "},\"required\":[\"knownHashes\"],\"additionalProperties\":false}}";
+    "\"ids\":{\"type\":\"array\",\"minItems\":1,\"uniqueItems\":true,\"items\":{\"type\":\"string\",\"minLength\":1},\"description\":\"Stable resource ids or exact paths.\"}," ++
+    "\"knownHashes\":{\"type\":\"object\",\"description\":\"Optional known content hashes keyed by requested id or path. Unchanged resources omit content.\",\"additionalProperties\":{\"type\":\"string\"}}" ++
+    "},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const store_schema =
-    "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\"," ++
-    "\"description\":\"The only MCP write path for managed agent memory. Use store whenever the user asks to create, update, rename, delete, or discard rule, context, or MPF memory, including META_PROMPT. Store writes a local daemon draft and queues automatic Server synchronization; it does not directly edit the authoritative cache file. Store is not part of the mandatory activation loop. The op object is a tagged union: pass exactly one of create, update, rename, delete, or discard.\"," ++
+    "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\",\"description\":\"Create, update, rename, delete, or discard a local Context, Rule, or Workflow Draft only when the user explicitly requests memory maintenance. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
-    "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"mpf\"],\"description\":\"The resource type: 'context', 'rule', or 'mpf'.\"}," ++
-    "\"op\":{\"type\":\"object\",\"description\":\"The draft operation details, containing exactly one of create, update, rename, delete, or discard.\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
-    "\"create\":{\"type\":\"object\",\"properties\":{" ++
-    "\"path\":{\"type\":\"string\",\"description\":\"Relative destination path inside the workspace (e.g., 'research/my_doc.md').\"}," ++
-    "\"body\":{\"type\":\"string\",\"description\":\"The raw content text for the new resource.\"}," ++
-    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the creation.\"" ++
-    "}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
-    "\"update\":{\"type\":\"object\",\"properties\":{" ++
-    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to update.\"}," ++
-    "\"body\":{\"type\":\"string\",\"description\":\"The updated complete raw content text.\"}," ++
-    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the updates made.\"" ++
-    "}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}," ++
-    "\"rename\":{\"type\":\"object\",\"properties\":{" ++
-    "\"id\":{\"type\":\"string\",\"description\":\"The current path or local ID of the draft to rename.\"}," ++
-    "\"new_path\":{\"type\":\"string\",\"description\":\"The new relative path inside the workspace.\"}," ++
-    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of the rename.\"" ++
-    "}},\"required\":[\"id\",\"new_path\"],\"additionalProperties\":false}," ++
-    "\"delete\":{\"type\":\"object\",\"properties\":{" ++
-    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the resource to mark for deletion.\"}," ++
-    "\"description\":{\"type\":\"string\",\"description\":\"Optional explanation of why this resource is being deleted.\"" ++
-    "}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
-    "\"discard\":{\"type\":\"object\",\"properties\":{" ++
-    "\"id\":{\"type\":\"string\",\"description\":\"The path or local ID of the draft to discard completely.\"}" ++
-    "},\"required\":[\"id\"],\"additionalProperties\":false}" ++
+    "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"workflow\"],\"description\":\"Memory resource type.\"}," ++
+    "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
+    "\"create\":{\"$ref\":\"#/$defs/writeCreate\"}," ++
+    "\"update\":{\"$ref\":\"#/$defs/writeUpdate\"}," ++
+    "\"rename\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"new_path\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"new_path\"],\"additionalProperties\":false}," ++
+    "\"delete\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}," ++
+    "\"discard\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"id\"],\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
-    "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false}}";
+    "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false," ++
+    "\"$defs\":{" ++
+    "\"writeCreate\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"name\":{\"type\":\"string\"},\"applies_when\":{\"type\":\"string\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
+    "\"writeUpdate\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"name\":{\"type\":\"string\"},\"applies_when\":{\"type\":\"string\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}" ++
+    "}}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
         u8,
-        "{\"tools\":[" ++
-            activate_schema ++ "," ++
-            retrieve_schema ++ "," ++
-            store_schema ++
-            "]}",
+        "{\"tools\":[" ++ activate_schema ++ "," ++ load_schema ++ "," ++ store_schema ++ "]}",
     );
 }
 
 pub fn handleCall(
     allocator: std.mem.Allocator,
-    memory_root_override: ?[]const u8,
     session: *session_mod.Session,
     params: std.json.Value,
 ) ![]u8 {
     const params_obj = switch (params) {
-        .object => |obj| obj,
+        .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "invalid request: params must be a JSON object"),
     };
-
-    const name = if (params_obj.get("name")) |value| switch (value) {
-        .string => |s| s,
-        else => return try tool_result.buildErrorResult(allocator, "invalid request: name must be a string"),
-    } else return try tool_result.buildErrorResult(allocator, "invalid request: name is required");
-
-    const arguments = params_obj.get("arguments") orelse std.json.Value{
-        .object = .empty,
-    };
-    const args_obj = switch (arguments) {
-        .object => |obj| obj,
+    const name = requiredString(params_obj, "name") orelse
+        return try tool_result.buildErrorResult(allocator, "invalid request: name is required and must be a string");
+    const arguments = params_obj.get("arguments") orelse std.json.Value{ .object = .empty };
+    const args = switch (arguments) {
+        .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "invalid request: arguments must be a JSON object"),
     };
 
-    var owned_memory_root: ?[]u8 = null;
-    defer if (owned_memory_root) |root| allocator.free(root);
-
-    if (std.mem.eql(u8, name, tool_names.retrieve)) {
-        const memory_root = resolveMemoryRoot(
-            allocator,
-            memory_root_override,
-            session.ws_id,
-            &owned_memory_root,
-        ) catch |err| return memoryCacheErr(allocator, err);
-        return handleRetrieve(allocator, memory_root, session, args_obj) catch |err| switch (err) {
-            error.UnknownRuleId => try tool_result.buildErrorResult(
-                allocator,
-                "Unknown rule id",
-            ),
-            else => return err,
-        };
+    if (std.mem.eql(u8, name, tool_names.activate)) {
+        return handleActivate(allocator, session, args) catch |err| daemonToolError(allocator, err, "activate memory");
     }
-    const is_activate = std.mem.eql(u8, name, tool_names.activate);
-    const is_store = std.mem.eql(u8, name, tool_names.store);
-    if (!is_activate and !is_store) {
-        return try tool_result.buildErrorResult(allocator, "Unknown tool");
+    if (std.mem.eql(u8, name, tool_names.load)) {
+        return handleLoad(allocator, session, args) catch |err| daemonToolError(allocator, err, "load memory");
     }
-    if (session.session_id == null) {
-        return try tool_result.buildErrorResult(
-            allocator,
-            "retrieve with the exact host session_id is required before other clumsies tools; do not invent a session_id",
-        );
+    if (std.mem.eql(u8, name, tool_names.store)) {
+        return handleStore(allocator, session, args) catch |err| daemonToolError(allocator, err, "store the Draft operation");
     }
-    if (is_activate) {
-        const memory_root = resolveMemoryRoot(
-            allocator,
-            memory_root_override,
-            session.ws_id,
-            &owned_memory_root,
-        ) catch |err| return memoryCacheErr(allocator, err);
-        return try handleActivate(allocator, memory_root, session, args_obj);
-    }
-    if (is_store) {
-        return handleStore(allocator, session, args_obj) catch |err| storeErr(allocator, err);
-    }
-
-    unreachable;
-}
-
-fn resolveMemoryRoot(
-    allocator: std.mem.Allocator,
-    memory_root_override: ?[]const u8,
-    project_id: []const u8,
-    owned_memory_root: *?[]u8,
-) ![]const u8 {
-    if (memory_root_override) |memory_root| return memory_root;
-    const memory_root = try daemon_ipc.memoryCacheRootAlloc(allocator, project_id);
-    owned_memory_root.* = memory_root;
-    return memory_root;
-}
-
-fn memoryCacheErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
-    return tool_result.buildErrorResult(allocator, switch (err) {
-        error.MemoryCacheNotReady => "local authoritative memory cache is not ready",
-        error.XpcUnavailable => "local daemon IPC is only implemented on macOS",
-        error.XpcReturnedNullConnection,
-        error.XpcReturnedNullObject,
-        error.XpcReturnedErrorObject,
-        error.XpcExpectedDictionary,
-        error.XpcMissingResponseJson,
-        error.InvalidDaemonIpcResponse,
-        error.DaemonIpcRejected,
-        => "local daemon is unavailable or did not provide the memory cache",
-        else => "failed to read the local authoritative memory cache",
-    }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
-}
-
-fn handleRetrieve(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    if (args_obj.get("session_id") != null) {
-        return try handleRetrieveSetup(allocator, workspace_root, session, args_obj);
-    }
-    if (session.session_id == null) {
-        return try tool_result.buildErrorResult(
-            allocator,
-            "retrieve with the exact host session_id is required before loading content; do not invent a session_id",
-        );
-    }
-    if (args_obj.get("ids") != null) {
-        return try handleRetrieveLoad(allocator, workspace_root, session, args_obj);
-    }
-    return try tool_result.buildErrorResult(allocator, "retrieve requires session_id for bootstrap or ids for content retrieval");
-}
-
-fn handleRetrieveSetup(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    const session_id_arg = if (args_obj.get("session_id")) |value| switch (value) {
-        .string => |s| s,
-        else => return try tool_result.buildErrorResult(allocator, "session_id must be a string"),
-    } else return try tool_result.buildErrorResult(allocator, "session_id is required");
-    if (session_id_arg.len == 0) {
-        return try tool_result.buildErrorResult(allocator, "session_id must not be empty");
-    }
-    session.bind(allocator, session_id_arg) catch |err| switch (err) {
-        error.InvalidSessionId => return try tool_result.buildErrorResult(
-            allocator,
-            "session_id may only contain letters, numbers, '-' and '_' and must be at most 128 bytes",
-        ),
-        error.SessionAlreadyBound => return try tool_result.buildErrorResult(
-            allocator,
-            "session is already bound to a different session_id",
-        ),
-        else => return err,
-    };
-
-    const known_hash = parseSetupKnownHash(args_obj.get("knownHashes")) catch |err| switch (err) {
-        error.MissingKnownHashes => return try tool_result.buildErrorResult(allocator, "knownHashes is required"),
-        error.KnownHashesNotObject => return try tool_result.buildErrorResult(allocator, "knownHashes must be an object map"),
-        error.MissingMetaPromptKey => return try tool_result.buildErrorResult(allocator, "knownHashes must contain a 'META_PROMPT.md' entry (use an empty string if unknown)"),
-        error.MetaPromptValueNotString => return try tool_result.buildErrorResult(allocator, "knownHashes['META_PROMPT.md'] must be a string"),
-        else => |e| return e,
-    };
-
-    var mpf = try workspace_rule.loadMpf(allocator, workspace_root, known_hash);
-    defer mpf.deinit(allocator);
-    session.recordEvent(allocator, .{ .setup = .{
-        .mpf_hash = mpf.hash,
-        .mpf_content = mpf.content,
-        .mpf_changed = if (mpf.hash == null) null else mpf.content != null,
-    } });
-
-    const esc_ws = try encoding.jsonEscapeAlloc(allocator, session.ws_id);
-    defer allocator.free(esc_ws);
-    const bound_session_id = session.session_id.?;
-    const esc_session = try encoding.jsonEscapeAlloc(allocator, bound_session_id);
-    defer allocator.free(esc_session);
-
-    if (mpf.content) |content| {
-        const esc_content = try encoding.jsonEscapeAlloc(allocator, content);
-        defer allocator.free(esc_content);
-        const esc_hash = try encoding.jsonEscapeAlloc(allocator, mpf.hash.?);
-        defer allocator.free(esc_hash);
-        const structured = try std.fmt.allocPrint(
-            allocator,
-            "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"content\":\"{s}\"}}}}",
-            .{ esc_ws, esc_session, esc_hash, esc_content },
-        );
-        defer allocator.free(structured);
-        return try tool_result.buildSuccessResult(allocator, structured);
-    } else if (mpf.hash) |hash| {
-        const esc_hash = try encoding.jsonEscapeAlloc(allocator, hash);
-        defer allocator.free(esc_hash);
-        const structured = try std.fmt.allocPrint(
-            allocator,
-            "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":{{\"hash\":\"{s}\",\"changed\":false}}}}",
-            .{ esc_ws, esc_session, esc_hash },
-        );
-        defer allocator.free(structured);
-        return try tool_result.buildSuccessResult(allocator, structured);
-    } else {
-        const structured = try std.fmt.allocPrint(
-            allocator,
-            "{{\"workspaceId\":\"{s}\",\"sessionId\":\"{s}\",\"mpf\":null}}",
-            .{ esc_ws, esc_session },
-        );
-        defer allocator.free(structured);
-        return try tool_result.buildSuccessResult(allocator, structured);
-    }
-}
-
-fn parseSetupKnownHash(value_opt: ?std.json.Value) ValidationError!?[]const u8 {
-    const value = value_opt orelse return error.MissingKnownHashes;
-    const obj = switch (value) {
-        .object => |o| o,
-        else => return error.KnownHashesNotObject,
-    };
-    const value_for_mpf = obj.get("META_PROMPT.md") orelse return error.MissingMetaPromptKey;
-    const hash = switch (value_for_mpf) {
-        .string => |s| s,
-        else => return error.MetaPromptValueNotString,
-    };
-    return if (hash.len == 0) null else hash;
+    return try tool_result.buildErrorResult(allocator, "Unknown tool");
 }
 
 fn handleActivate(
     allocator: std.mem.Allocator,
-    workspace_root: []const u8,
     session: *session_mod.Session,
-    args_obj: std.json.ObjectMap,
+    args: std.json.ObjectMap,
 ) ![]u8 {
-    const kind = if (args_obj.get("kind")) |value|
-        parseRuleKind(value) catch |err| switch (err) {
-            error.InvalidKind => return try tool_result.buildErrorResult(allocator, "kind parameter must be one of 'rule', 'workflow', or 'context'"),
-        }
-    else
-        null;
-    const group = if (args_obj.get("group")) |value| switch (value) {
-        .string => |s| s,
-        else => return try tool_result.buildErrorResult(allocator, "group parameter must be a string"),
+    if (try rejectUnexpectedFields(allocator, args, &.{ "query", "state" }, "activate")) |result| {
+        return result;
+    }
+    const query = requiredString(args, "query") orelse
+        return try tool_result.buildErrorResult(allocator, "query is required and must be a non-empty string");
+    if (std.mem.trim(u8, query, " \t\r\n").len == 0) {
+        return try tool_result.buildErrorResult(allocator, "query must not be empty");
+    }
+    const state = if (args.get("state")) |value| switch (value) {
+        .string => |string| string,
+        else => return try tool_result.buildErrorResult(allocator, "state must be an opaque string"),
     } else null;
-    const query = if (args_obj.get("query")) |value| switch (value) {
-        .string => |s| s,
-        else => return try tool_result.buildErrorResult(allocator, "query parameter must be a string"),
-    } else null;
-
-    var items = try workspace_rule.discoverSearchable(allocator, workspace_root, kind, group, query);
-    defer workspace_rule.deinitRuleItems(allocator, &items);
-    const result_names = try discoverResultNames(allocator, items.items);
-    defer allocator.free(result_names);
-
-    session.recordEvent(allocator, .{ .discover = .{
-        .kind = if (kind) |k| workspace_rule.kindToString(k) else null,
-        .group = group,
-        .query = query,
-        .result_count = @intCast(@min(items.items.len, std.math.maxInt(u32))),
-        .result_names = result_names,
-    } });
-
-    const structured = try tool_result.serializeRuleList(allocator, items.items);
-    defer allocator.free(structured);
-    return try tool_result.buildSuccessResult(allocator, structured);
-}
-
-fn discoverResultNames(allocator: std.mem.Allocator, items: []const workspace_rule.RuleItem) ![]u8 {
-    var names: std.ArrayList(u8) = .empty;
-    errdefer names.deinit(allocator);
-
-    var shown: usize = 0;
-    for (items) |item| {
-        if (shown >= DISCOVER_RESULT_NAMES_MAX_COUNT) break;
-
-        const separator_len: usize = if (names.items.len > 0) 2 else 0;
-        if (names.items.len + separator_len + item.name.len > DISCOVER_RESULT_NAMES_MAX_BYTES) break;
-
-        if (names.items.len > 0) try names.appendSlice(allocator, ", ");
-        try names.appendSlice(allocator, item.name);
-        shown += 1;
-    }
-
-    if (shown < items.len) {
-        const remaining = items.len - shown;
-        const suffix = try std.fmt.allocPrint(allocator, ", ... (+{d} more)", .{remaining});
-        defer allocator.free(suffix);
-        if (names.items.len == 0) {
-            const fallback = try std.fmt.allocPrint(allocator, "... (+{d} more)", .{remaining});
-            defer allocator.free(fallback);
-            try appendTruncatedDiscoverSuffix(allocator, &names, fallback);
-        } else {
-            try appendTruncatedDiscoverSuffix(allocator, &names, suffix);
-        }
-    }
-
-    return try names.toOwnedSlice(allocator);
-}
-
-fn appendTruncatedDiscoverSuffix(
-    allocator: std.mem.Allocator,
-    names: *std.ArrayList(u8),
-    suffix: []const u8,
-) !void {
-    if (names.items.len + suffix.len <= DISCOVER_RESULT_NAMES_MAX_BYTES) {
-        try names.appendSlice(allocator, suffix);
-        return;
-    }
-
-    while (names.items.len > 0 and names.items.len + suffix.len > DISCOVER_RESULT_NAMES_MAX_BYTES) {
-        _ = names.pop();
-    }
-    try names.appendSlice(allocator, suffix);
-}
-
-fn handleRetrieveLoad(
-    allocator: std.mem.Allocator,
-    workspace_root: []const u8,
-    session: *session_mod.Session,
-    args_obj: std.json.ObjectMap,
-) ![]u8 {
-    var ids = parseRequiredIds(allocator, args_obj.get("ids")) catch |err| switch (err) {
-        error.MissingIds => return try tool_result.buildErrorResult(allocator, "ids parameter is required and must be an array of strings"),
-        error.IdsNotArray => return try tool_result.buildErrorResult(allocator, "ids parameter must be a JSON array"),
-        error.IdsEmpty => return try tool_result.buildErrorResult(allocator, "ids parameter must contain at least one ID string"),
-        error.IdNotString => return try tool_result.buildErrorResult(allocator, "all items in the 'ids' array must be strings"),
-        else => return err,
-    };
-    defer ids.deinit(allocator);
-
-    var known = parseKnownHashes(allocator, ids.items, args_obj.get("knownHashes")) catch |err| switch (err) {
-        error.MissingKnownHashesMap => return try tool_result.buildErrorResult(allocator, "knownHashes parameter is required and must be a JSON object map"),
-        error.KnownHashesNotObjectMap => return try tool_result.buildErrorResult(allocator, "knownHashes parameter must be a JSON object map"),
-        error.HashNotString => return try tool_result.buildErrorResult(allocator, "all hash values in knownHashes must be strings"),
-        error.MissingIdHash => return try tool_result.buildErrorResult(allocator, "knownHashes must contain an entry for every requested ID in 'ids' (use an empty string for unknown)"),
-        else => return err,
-    };
-    defer known.deinit(allocator);
-
-    var result = try workspace_rule.loadRules(
+    var operation = try daemon_ipc.activateMemoryOperation(
         allocator,
-        workspace_root,
-        ids.items,
-        known.items,
-    );
-    defer result.deinit(allocator);
-
-    for (result.items.items) |item| {
-        session.recordEvent(allocator, .{ .load = .{ .rule_id = item.id, .rule_hash = item.hash } });
-    }
-
-    const structured = try tool_result.serializeLoadResultWithConstraints(
-        allocator,
-        &result,
-        workspace_root,
         session.ws_id,
+        query,
+        state,
     );
-    defer allocator.free(structured);
-    return try tool_result.buildSuccessResult(allocator, structured);
+    defer operation.deinit(allocator);
+    return try buildDaemonOperationResult(allocator, operation);
 }
 
-fn parseRuleKind(value: std.json.Value) error{InvalidKind}!?workspace_rule.RuleKind {
-    const str = switch (value) {
-        .string => |s| s,
-        else => return error.InvalidKind,
-    };
-
-    if (std.mem.eql(u8, str, "rule")) return .rule;
-    if (std.mem.eql(u8, str, "workflow")) return .workflow;
-    if (std.mem.eql(u8, str, "context")) return .context;
-    return error.InvalidKind;
-}
-
-fn parseRequiredIds(
+fn handleLoad(
     allocator: std.mem.Allocator,
-    value_opt: ?std.json.Value,
-) (ValidationError || std.mem.Allocator.Error)!std.ArrayList([]const u8) {
-    const value = value_opt orelse return error.MissingIds;
-    var ids = parseStringList(allocator, value) catch |err| switch (err) {
-        error.IdsNotArray => return error.IdsNotArray,
-        error.IdNotString => return error.IdNotString,
-        else => |e| return e,
+    session: *session_mod.Session,
+    args: std.json.ObjectMap,
+) ![]u8 {
+    if (try rejectUnexpectedFields(allocator, args, &.{ "ids", "knownHashes" }, "load")) |result| {
+        return result;
+    }
+    var ids = try parseIds(allocator, args.get("ids"));
+    defer ids.deinit(allocator);
+    const known_hashes = if (args.get("knownHashes")) |value| switch (value) {
+        .object => |object| blk: {
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                if (entry.value_ptr.* != .string) {
+                    return try tool_result.buildErrorResult(allocator, "knownHashes values must be strings");
+                }
+            }
+            break :blk value;
+        },
+        else => return try tool_result.buildErrorResult(allocator, "knownHashes must be an object map"),
+    } else std.json.Value{ .object = .empty };
+    var operation = try daemon_ipc.loadMemoryOperation(
+        allocator,
+        session.ws_id,
+        ids.items,
+        known_hashes,
+    );
+    defer operation.deinit(allocator);
+    return try buildDaemonOperationResult(allocator, operation);
+}
+
+fn parseIds(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) !std.ArrayList([]const u8) {
+    const array = switch (value orelse return error.InvalidIds) {
+        .array => |array| array,
+        else => return error.InvalidIds,
     };
+    if (array.items.len == 0) return error.InvalidIds;
+    var ids: std.ArrayList([]const u8) = .empty;
     errdefer ids.deinit(allocator);
-    if (ids.items.len == 0) return error.IdsEmpty;
+    for (array.items) |item| {
+        const id = switch (item) {
+            .string => |string| string,
+            else => return error.InvalidIds,
+        };
+        if (id.len == 0) return error.InvalidIds;
+        for (ids.items) |existing| {
+            if (std.mem.eql(u8, existing, id)) return error.InvalidIds;
+        }
+        try ids.append(allocator, id);
+    }
     return ids;
 }
 
-fn parseStringList(
-    allocator: std.mem.Allocator,
-    value: std.json.Value,
-) (ValidationError || std.mem.Allocator.Error)!std.ArrayList([]const u8) {
-    var values: std.ArrayList([]const u8) = .empty;
-    errdefer values.deinit(allocator);
-
-    const array = switch (value) {
-        .array => |items| items,
-        else => return error.IdsNotArray,
-    };
-
-    for (array.items) |item| {
-        const str = switch (item) {
-            .string => |s| s,
-            else => return error.IdNotString,
-        };
-        try values.append(allocator, str);
-    }
-
-    return values;
-}
-
-fn parseKnownHashes(
-    allocator: std.mem.Allocator,
-    ids: []const []const u8,
-    value_opt: ?std.json.Value,
-) (ValidationError || std.mem.Allocator.Error)!std.ArrayList(workspace_rule.KnownHash) {
-    var known: std.ArrayList(workspace_rule.KnownHash) = .empty;
-    errdefer known.deinit(allocator);
-
-    const value = value_opt orelse return error.MissingKnownHashesMap;
-    const obj = switch (value) {
-        .object => |o| o,
-        else => return error.KnownHashesNotObjectMap,
-    };
-
-    var iter = obj.iterator();
-    while (iter.next()) |entry| {
-        const hash = switch (entry.value_ptr.*) {
-            .string => |s| s,
-            else => return error.HashNotString,
-        };
-        try known.append(allocator, .{ .id = entry.key_ptr.*, .hash = hash });
-    }
-    for (ids) |id| {
-        var found = false;
-        for (known.items) |entry| {
-            if (std.mem.eql(u8, entry.id, id)) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) return error.MissingIdHash;
-    }
-
-    return known;
-}
-
-fn storeErr(allocator: std.mem.Allocator, err: anyerror) []u8 {
-    return tool_result.buildErrorResult(allocator, switch (err) {
-        error.InvalidParams => "invalid parameters",
-        error.XpcUnavailable => "local daemon IPC is only implemented on macOS",
-        error.XpcReturnedNullConnection,
-        error.XpcReturnedNullObject,
-        error.XpcReturnedErrorObject,
-        error.XpcExpectedDictionary,
-        error.XpcMissingResponseJson,
-        error.InvalidDaemonIpcResponse,
-        error.DaemonIpcRejected,
-        => "local daemon is unavailable or did not accept the draft operation",
-        else => "internal error",
-    }) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
-}
-
-const StoreResource = enum {
-    context,
-    rule,
-    metaprompt,
-};
-
-const DraftOp = enum {
-    create,
-    update,
-    rename,
-    delete,
-    discard,
-};
+const StoreResource = enum { context, rule, workflow };
+const DraftOp = enum { create, update, rename, delete, discard };
 
 fn handleStore(
     allocator: std.mem.Allocator,
     session: *session_mod.Session,
     args: std.json.ObjectMap,
 ) ![]u8 {
-    const resource = requiredString(args, "resource") orelse return try tool_result.buildErrorResult(allocator, "resource name is required");
-    const store_resource = parseStoreResource(resource) orelse return try tool_result.buildErrorResult(allocator, "resource must be 'context', 'rule', or 'mpf'");
-    const tagged_op = switch (args.get("op") orelse return try tool_result.buildErrorResult(allocator, "op is required")) {
-        .object => |obj| obj,
+    if (try rejectUnexpectedFields(allocator, args, &.{ "resource", "op" }, "store")) |result| {
+        return result;
+    }
+    const resource_name = requiredString(args, "resource") orelse
+        return try tool_result.buildErrorResult(allocator, "resource is required");
+    const resource = parseStoreResource(resource_name) orelse
+        return try tool_result.buildErrorResult(allocator, "resource must be 'context', 'rule', or 'workflow'");
+    const tagged = switch (args.get("op") orelse return try tool_result.buildErrorResult(allocator, "op is required")) {
+        .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "op must be a JSON object"),
     };
-    const parsed = parseDraftOp(tagged_op) orelse return try tool_result.buildErrorResult(allocator, "op must contain exactly one of 'create', 'update', 'rename', 'delete', or 'discard'");
-    const op_args = switch (tagged_op.get(draftOpName(parsed)) orelse return try tool_result.buildErrorResult(allocator, "invalid draft operation details")) {
-        .object => |obj| obj,
+    const op = parseDraftOp(tagged) orelse
+        return try tool_result.buildErrorResult(allocator, "op must contain exactly one tagged Draft operation");
+    const op_args = switch (tagged.get(draftOpName(op)).?) {
+        .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "operation details must be a JSON object"),
     };
-    if (try validateStoreOperation(allocator, store_resource, parsed, op_args)) |result| return result;
+    if (try validateStoreOperation(allocator, resource, op, op_args)) |error_result| {
+        return error_result;
+    }
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const daemon_op = try daemonDraftOperationValue(
         arena.allocator(),
-        store_resource,
-        parsed,
+        resource,
+        op,
         op_args,
-        .{ .object = tagged_op },
+        .{ .object = tagged },
     );
-    const daemon_payload = try daemon_ipc.storeDraftOperationPayloadJson(
+    var operation = try daemon_ipc.storeDraftOperation(
         allocator,
         session.ws_id,
-        daemonResourceName(store_resource),
+        daemonResourceName(resource),
         daemon_op,
     );
-    defer allocator.free(daemon_payload);
+    defer operation.deinit(allocator);
+    return try buildDaemonOperationResult(allocator, operation);
+}
 
-    return try tool_result.buildSuccessResult(allocator, daemon_payload);
+fn buildDaemonOperationResult(
+    allocator: std.mem.Allocator,
+    operation: daemon_ipc.OperationResult,
+) ![]u8 {
+    if (operation.error_message) |message| {
+        return try tool_result.buildStructuredErrorResult(
+            allocator,
+            message,
+            operation.structured_json,
+        );
+    }
+    return try tool_result.buildSuccessResult(allocator, operation.structured_json);
 }
 
 fn daemonDraftOperationValue(
@@ -592,37 +229,100 @@ fn daemonDraftOperationValue(
     original: std.json.Value,
 ) !std.json.Value {
     if (op != .create and op != .update) return original;
-
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     var content: std.json.ObjectMap = .empty;
     try content.put(allocator, "kind", .{ .string = daemonResourceName(resource) });
     switch (resource) {
-        .context, .metaprompt => try content.put(allocator, "content", .{ .string = body }),
-        .rule => try content.put(allocator, "constraint", .{ .string = body }),
+        .context, .workflow => try content.put(allocator, "content", .{ .string = body }),
+        .rule => {
+            try content.put(allocator, "constraint", .{ .string = body });
+            inline for (.{ "name", "applies_when", "tags" }) |field| {
+                if (args.get(field)) |value| try content.put(allocator, field, value);
+            }
+        },
     }
 
     var details: std.json.ObjectMap = .empty;
     if (op == .create) {
-        const path = requiredString(args, "path") orelse return error.InvalidParams;
-        try details.put(allocator, "path", .{ .string = path });
+        try details.put(allocator, "path", .{ .string = requiredString(args, "path").? });
     } else {
-        const id = requiredString(args, "id") orelse return error.InvalidParams;
-        try details.put(allocator, "id", .{ .string = id });
+        try details.put(allocator, "id", .{ .string = requiredString(args, "id").? });
     }
     try details.put(allocator, "content", .{ .object = content });
     if (args.get("description")) |description| {
         try details.put(allocator, "description", description);
     }
-
     var tagged: std.json.ObjectMap = .empty;
     try tagged.put(allocator, draftOpName(op), .{ .object = details });
     return .{ .object = tagged };
 }
 
-fn parseStoreResource(resource: []const u8) ?StoreResource {
-    if (std.mem.eql(u8, resource, "context")) return .context;
-    if (std.mem.eql(u8, resource, "rule")) return .rule;
-    if (std.mem.eql(u8, resource, "mpf")) return .metaprompt;
+fn validateStoreOperation(
+    allocator: std.mem.Allocator,
+    resource: StoreResource,
+    op: DraftOp,
+    args: std.json.ObjectMap,
+) !?[]u8 {
+    const allowed: []const []const u8 = switch (op) {
+        .create => &.{ "path", "body", "name", "applies_when", "tags", "description" },
+        .update => &.{ "id", "body", "name", "applies_when", "tags", "description" },
+        .rename => &.{ "id", "new_path", "description" },
+        .delete => &.{ "id", "description" },
+        .discard => &.{"id"},
+    };
+    if (try rejectUnexpectedFields(allocator, args, allowed, draftOpName(op))) |result| {
+        return result;
+    }
+    if (resource != .rule and
+        (args.get("name") != null or args.get("applies_when") != null or args.get("tags") != null))
+    {
+        return try tool_result.buildErrorResult(
+            allocator,
+            "name, applies_when, and tags are valid only for Rule writes",
+        );
+    }
+    switch (op) {
+        .create => {
+            const path = requiredString(args, "path") orelse return try tool_result.buildErrorResult(allocator, "path is required and must not be empty");
+            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+            if (path.len == 0 or body.len == 0) return try tool_result.buildErrorResult(allocator, "path and body must not be empty");
+            if (resource == .workflow and !std.mem.startsWith(u8, path, "workflow/")) {
+                return try tool_result.buildErrorResult(allocator, "workflow paths must use the workflow/ namespace");
+            }
+        },
+        .update => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
+            if (id.len == 0 or body.len == 0) return try tool_result.buildErrorResult(allocator, "id and body must not be empty");
+        },
+        .rename => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            const path = requiredString(args, "new_path") orelse return try tool_result.buildErrorResult(allocator, "new_path is required and must not be empty");
+            if (id.len == 0 or path.len == 0) return try tool_result.buildErrorResult(allocator, "id and new_path must not be empty");
+            if (resource == .workflow and !std.mem.startsWith(u8, path, "workflow/")) {
+                return try tool_result.buildErrorResult(allocator, "workflow paths must use the workflow/ namespace");
+            }
+        },
+        .delete, .discard => {
+            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
+            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
+        },
+    }
+    if (resource == .rule and (op == .create or op == .update)) {
+        if (args.get("tags")) |tags| switch (tags) {
+            .array => |array| for (array.items) |item| if (item != .string) {
+                return try tool_result.buildErrorResult(allocator, "rule tags must be an array of strings");
+            },
+            else => return try tool_result.buildErrorResult(allocator, "rule tags must be an array of strings"),
+        };
+    }
+    return null;
+}
+
+fn parseStoreResource(value: []const u8) ?StoreResource {
+    if (std.mem.eql(u8, value, "context")) return .context;
+    if (std.mem.eql(u8, value, "rule")) return .rule;
+    if (std.mem.eql(u8, value, "workflow")) return .workflow;
     return null;
 }
 
@@ -630,20 +330,16 @@ fn daemonResourceName(resource: StoreResource) []const u8 {
     return switch (resource) {
         .context => "context",
         .rule => "rule",
-        .metaprompt => "metaprompt",
+        .workflow => "workflow",
     };
 }
 
-fn parseDraftOp(obj: std.json.ObjectMap) ?DraftOp {
-    if (obj.count() != 1) return null;
-    var found: ?DraftOp = null;
+fn parseDraftOp(object: std.json.ObjectMap) ?DraftOp {
+    if (object.count() != 1) return null;
     inline for (.{ DraftOp.create, DraftOp.update, DraftOp.rename, DraftOp.delete, DraftOp.discard }) |op| {
-        if (obj.get(draftOpName(op)) != null) {
-            if (found != null) return null;
-            found = op;
-        }
+        if (object.get(draftOpName(op)) != null) return op;
     }
-    return found;
+    return null;
 }
 
 fn draftOpName(op: DraftOp) []const u8 {
@@ -656,316 +352,169 @@ fn draftOpName(op: DraftOp) []const u8 {
     };
 }
 
-fn validateStoreOperation(
-    allocator: std.mem.Allocator,
-    resource: StoreResource,
-    op: DraftOp,
-    args: std.json.ObjectMap,
-) !?[]u8 {
-    switch (op) {
-        .create => {
-            const path = requiredString(args, "path") orelse return try tool_result.buildErrorResult(allocator, "path is required and must not be empty");
-            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
-            if (path.len == 0) return try tool_result.buildErrorResult(allocator, "path must not be empty");
-            if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
-            if (resource == .metaprompt and !std.mem.eql(u8, path, "META_PROMPT.md")) return try tool_result.buildErrorResult(allocator, "mpf path must be 'META_PROMPT.md'");
-        },
-        .update => {
-            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
-            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-            if (body.len == 0) return try tool_result.buildErrorResult(allocator, "body must not be empty");
-        },
-        .rename => {
-            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-            const new_path = requiredString(args, "new_path") orelse return try tool_result.buildErrorResult(allocator, "new_path is required and must not be empty");
-            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-            if (new_path.len == 0) return try tool_result.buildErrorResult(allocator, "new_path must not be empty");
-            if (resource == .metaprompt) return try tool_result.buildErrorResult(allocator, "mpf cannot be renamed");
-        },
-        .delete, .discard => {
-            const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-            if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
-        },
-    }
-    return null;
-}
-
-fn requiredString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
-    return switch (val) {
-        .string => |s| s,
+fn requiredString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    return switch (object.get(key) orelse return null) {
+        .string => |string| string,
         else => null,
     };
 }
 
-test "buildListResult: exposes activate retrieve and store tools" {
-    const result = try buildListResult(testing.allocator);
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.activate ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.retrieve ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"" ++ tool_names.store ++ "\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "Mandatory memory activation step") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "start of every user task") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "only MCP write path for managed agent memory") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "Store is not part of the mandatory activation loop") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memsetup\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memdisc\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memload\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"memref\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"agentreport\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"agentrejected\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"artifact\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "META_PROMPT.md") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"knownHashes\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"resource\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"op\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_create\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_update\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_rename\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"context.propose_delete\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_create\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_update\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_rename\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"rule.propose_delete\"") == null);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.begin\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.complete\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.startup\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.list\"") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"memory.activate\"") == null);
+fn rejectUnexpectedFields(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    allowed: []const []const u8,
+    label: []const u8,
+) !?[]u8 {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        const known = for (allowed) |field| {
+            if (std.mem.eql(u8, entry.key_ptr.*, field)) break true;
+        } else false;
+        if (!known) {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "{s} contains unsupported field '{s}'",
+                .{ label, entry.key_ptr.* },
+            );
+            defer allocator.free(message);
+            return try tool_result.buildErrorResult(allocator, message);
+        }
+    }
+    return null;
 }
 
-test "handleCall rejects removed tool names without compatibility dispatch" {
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"name":"memsetup","arguments":{"session_id":"test-session","knownHashes":{"META_PROMPT.md":""}}}
-    ,
-        .{},
-    );
-    defer parsed.deinit();
+fn daemonToolError(allocator: std.mem.Allocator, err: anyerror, operation: []const u8) []u8 {
+    _ = operation;
+    const message = switch (err) {
+        error.InvalidIds => "ids is required and must contain unique non-empty strings",
+        error.XpcUnavailable => "local daemon IPC is only implemented on macOS",
+        error.XpcReturnedNullConnection,
+        error.XpcReturnedNullObject,
+        error.XpcReturnedErrorObject,
+        error.XpcExpectedDictionary,
+        error.XpcMissingResponseJson,
+        error.InvalidDaemonIpcResponse,
+        error.DaemonIpcRejected,
+        => "local daemon is unavailable or rejected the memory operation",
+        else => "internal error while adapting the memory operation",
+    };
+    return tool_result.buildErrorResult(allocator, message) catch @constCast("{\"error\":{\"code\":-32603,\"message\":\"internal error\"}}");
+}
 
+test "buildListResult exposes activate load and store without old retrieval controls" {
+    const result = try buildListResult(testing.allocator);
+    defer testing.allocator.free(result);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"activate\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"load\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"store\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"retrieve\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "META_PROMPT") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"kind\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"group\"") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"workflow\"") != null);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, result, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+}
+
+test "handleCall rejects removed retrieve tool without compatibility dispatch" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"name":"retrieve","arguments":{"ids":["ctx_test"]}}
+    , .{});
+    defer parsed.deinit();
     var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .ws_id = try testing.allocator.dupe(u8, "prj_test"),
         .workspace_root = try testing.allocator.dupe(u8, "/tmp/workspace"),
     };
     defer session.deinit(testing.allocator);
-
-    const result = try handleCall(testing.allocator, "/tmp/workspace", &session, parsed.value);
+    const result = try handleCall(testing.allocator, &session, parsed.value);
     defer testing.allocator.free(result);
-
     try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
     try testing.expect(std.mem.indexOf(u8, result, "Unknown tool") != null);
-    try testing.expect(session.session_id == null);
 }
 
-test "parseSetupKnownHash requires explicit META_PROMPT entry" {
-    try testing.expectError(error.MissingKnownHashes, parseSetupKnownHash(null));
-
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"OTHER.md":"sha256:abc"}
-    ,
-        .{},
-    );
+test "store maps Workflow text to typed daemon content" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"create":{"path":"workflow/CODING.md","body":"# Coding"}}
+    , .{});
     defer parsed.deinit();
-
-    try testing.expectError(error.MissingMetaPromptKey, parseSetupKnownHash(parsed.value));
-}
-
-test "parseSetupKnownHash accepts empty or remembered mpf hash" {
-    const unknown = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"META_PROMPT.md":""}
-    ,
-        .{},
-    );
-    defer unknown.deinit();
-    try testing.expect((try parseSetupKnownHash(unknown.value)) == null);
-
-    const remembered = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"META_PROMPT.md":"sha256:abc"}
-    ,
-        .{},
-    );
-    defer remembered.deinit();
-    try testing.expectEqualStrings("sha256:abc", (try parseSetupKnownHash(remembered.value)).?);
-}
-
-test "parseKnownHashes requires explicit map" {
-    try testing.expectError(
-        error.MissingKnownHashesMap,
-        parseKnownHashes(testing.allocator, &.{"p-style"}, null),
-    );
-}
-
-test "parseKnownHashes requires an entry for every requested id" {
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"p-other":"sha256:abc"}
-    ,
-        .{},
-    );
-    defer parsed.deinit();
-
-    try testing.expectError(
-        error.MissingIdHash,
-        parseKnownHashes(testing.allocator, &.{"p-style"}, parsed.value),
-    );
-}
-
-test "parseKnownHashes accepts empty hash as explicit unknown" {
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"p-style":""}
-    ,
-        .{},
-    );
-    defer parsed.deinit();
-
-    var known = try parseKnownHashes(testing.allocator, &.{"p-style"}, parsed.value);
-    defer known.deinit(testing.allocator);
-
-    try testing.expectEqual(@as(usize, 1), known.items.len);
-    try testing.expectEqualStrings("p-style", known.items[0].id);
-    try testing.expectEqualStrings("", known.items[0].hash);
-}
-
-test "store resource maps MCP mpf to daemon metaprompt" {
-    try testing.expectEqual(StoreResource.context, parseStoreResource("context").?);
-    try testing.expectEqual(StoreResource.rule, parseStoreResource("rule").?);
-    try testing.expectEqual(StoreResource.metaprompt, parseStoreResource("mpf").?);
-    try testing.expectEqualStrings("metaprompt", daemonResourceName(.metaprompt));
-    try testing.expect(parseStoreResource("metaprompt") == null);
-}
-
-test "store op parser requires one tagged operation" {
-    const valid = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"update":{"id":"c-api","body":"new"}}
-    ,
-        .{},
-    );
-    defer valid.deinit();
-    try testing.expectEqual(DraftOp.update, parseDraftOp(valid.value.object).?);
-
-    const multiple = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"update":{"id":"c-api","body":"new"},"delete":{"id":"c-api"}}
-    ,
-        .{},
-    );
-    defer multiple.deinit();
-    try testing.expect(parseDraftOp(multiple.value.object) == null);
-}
-
-test "store validation rejects metaprompt rename before daemon call" {
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"id":"META_PROMPT.md","new_path":"other.md"}
-    ,
-        .{},
-    );
-    defer parsed.deinit();
-
-    const result = (try validateStoreOperation(testing.allocator, .metaprompt, .rename, parsed.value.object)).?;
-    defer testing.allocator.free(result);
-
-    try testing.expect(std.mem.indexOf(u8, result, "\"isError\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "mpf cannot be renamed") != null);
-}
-
-test "store request translates MCP text into typed daemon content" {
-    const parsed = try std.json.parseFromSlice(
-        std.json.Value,
-        testing.allocator,
-        \\{"create":{"path":"META_PROMPT.md","body":"body"}}
-    ,
-        .{},
-    );
-    defer parsed.deinit();
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const daemon_op = try daemonDraftOperationValue(
+    const value = try daemonDraftOperationValue(
         arena.allocator(),
-        .metaprompt,
+        .workflow,
         .create,
         parsed.value.object.get("create").?.object,
         parsed.value,
     );
-
     const json = try daemon_ipc.storeDraftOperationRequestJsonAlloc(
         testing.allocator,
         "prj_test",
-        daemonResourceName(.metaprompt),
-        daemon_op,
+        "workflow",
+        value,
     );
     defer testing.allocator.free(json);
-
-    try testing.expect(std.mem.indexOf(u8, json, "\"method\":\"store_draft_operation\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"project_id\":\"prj_test\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"scope\":\"project\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"kind\":\"metaprompt\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"body\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"body\":") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"workflow\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"kind\":\"workflow\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"# Coding\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"body\"") == null);
 }
 
-test "discoverResultNames caps recorded names" {
-    var items: [25]workspace_rule.RuleItem = undefined;
-    for (&items, 0..) |*item, idx| {
-        item.* = .{
-            .id = "p-test",
-            .kind = .rule,
-            .path = "rule/TEST.md",
-            .name = try std.fmt.allocPrint(testing.allocator, "Rule {d}", .{idx}),
-            .group = null,
-            .hash = "sha256:test",
-            .priority = .normal,
-        };
-    }
-    defer for (items) |item| testing.allocator.free(item.name);
-
-    const names = try discoverResultNames(testing.allocator, items[0..]);
-    defer testing.allocator.free(names);
-
-    try testing.expect(std.mem.indexOf(u8, names, "Rule 0") != null);
-    try testing.expect(std.mem.indexOf(u8, names, "... (+5 more)") != null);
-    try testing.expect(std.mem.indexOf(u8, names, "Rule 24") == null);
+test "store maps optional Rule fields without inventing defaults" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"update":{"id":"rule_test","body":"Use Rust","applies_when":"coding","tags":["rust"]}}
+    , .{});
+    defer parsed.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const value = try daemonDraftOperationValue(
+        arena.allocator(),
+        .rule,
+        .update,
+        parsed.value.object.get("update").?.object,
+        parsed.value,
+    );
+    const json = try std.json.Stringify.valueAlloc(testing.allocator, value, .{});
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"constraint\":\"Use Rust\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"applies_when\":\"coding\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"tags\":[\"rust\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"name\"") == null);
 }
 
-test "discoverResultNames caps recorded bytes" {
-    const long_name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    var items: [40]workspace_rule.RuleItem = undefined;
-    for (&items) |*item| {
-        item.* = .{
-            .id = "p-test",
-            .kind = .rule,
-            .path = "rule/TEST.md",
-            .name = long_name,
-            .group = null,
-            .hash = "sha256:test",
-            .priority = .normal,
-        };
-    }
+test "tool validation rejects undeclared and type-specific fields" {
+    const activate = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"query":"search","kind":"context"}
+    ,
+        .{},
+    );
+    defer activate.deinit();
+    const unexpected = (try rejectUnexpectedFields(
+        testing.allocator,
+        activate.value.object,
+        &.{ "query", "state" },
+        "activate",
+    )).?;
+    defer testing.allocator.free(unexpected);
+    try testing.expect(std.mem.indexOf(u8, unexpected, "unsupported field 'kind'") != null);
 
-    const names = try discoverResultNames(testing.allocator, items[0..]);
-    defer testing.allocator.free(names);
-
-    try testing.expect(names.len <= DISCOVER_RESULT_NAMES_MAX_BYTES);
-    try testing.expect(std.mem.indexOf(u8, names, "... (+") != null);
+    const context_write = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"path":"context/API.md","body":"body","tags":["invalid"]}
+    ,
+        .{},
+    );
+    defer context_write.deinit();
+    const invalid_metadata = (try validateStoreOperation(
+        testing.allocator,
+        .context,
+        .create,
+        context_write.value.object,
+    )).?;
+    defer testing.allocator.free(invalid_metadata);
+    try testing.expect(std.mem.indexOf(u8, invalid_metadata, "valid only for Rule writes") != null);
 }

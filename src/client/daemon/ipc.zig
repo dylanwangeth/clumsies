@@ -9,6 +9,21 @@ const enable_xpc = build_options.enable_xpc;
 
 const EmptyPayload = struct {};
 
+pub const OperationResult = struct {
+    structured_json: []u8,
+    error_message: ?[]u8,
+
+    pub fn deinit(self: *OperationResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.structured_json);
+        if (self.error_message) |message| allocator.free(message);
+        self.* = undefined;
+    }
+
+    pub fn isError(self: OperationResult) bool {
+        return self.error_message != null;
+    }
+};
+
 pub fn healthPayloadJson(allocator: std.mem.Allocator) ![]u8 {
     const response_json = try callEmpty(allocator, MACH_SERVICE_NAME, "health");
     defer allocator.free(response_json);
@@ -44,6 +59,63 @@ pub fn memoryCacheRequestJsonAlloc(allocator: std.mem.Allocator, project_id: []c
     return requestWithPayloadJsonAlloc(allocator, "memory_cache", .{ .project_id = project_id });
 }
 
+pub fn activateMemoryOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    query: []const u8,
+    state: ?[]const u8,
+) !OperationResult {
+    const request_json = try activateMemoryRequestJsonAlloc(allocator, project_id, query, state);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn activateMemoryRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    query: []const u8,
+    state: ?[]const u8,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "activate_memory", .{
+        .project_id = project_id,
+        .query = query,
+        .state = state,
+    });
+}
+
+pub fn loadMemoryOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    ids: []const []const u8,
+    known_hashes: std.json.Value,
+) !OperationResult {
+    const request_json = try loadMemoryRequestJsonAlloc(
+        allocator,
+        project_id,
+        ids,
+        known_hashes,
+    );
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn loadMemoryRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    ids: []const []const u8,
+    known_hashes: std.json.Value,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "load_memory", .{
+        .project_id = project_id,
+        .ids = ids,
+        .known_hashes = known_hashes,
+    });
+}
+
 pub fn callEmpty(allocator: std.mem.Allocator, service_name: []const u8, method: []const u8) ![]u8 {
     const request_json = try requestJsonAlloc(allocator, method);
     defer allocator.free(request_json);
@@ -54,19 +126,19 @@ pub fn requestJsonAlloc(allocator: std.mem.Allocator, method: []const u8) ![]u8 
     return requestWithPayloadJsonAlloc(allocator, method, EmptyPayload{});
 }
 
-pub fn storeDraftOperationPayloadJson(
+pub fn storeDraftOperation(
     allocator: std.mem.Allocator,
     project_id: []const u8,
     resource: []const u8,
     op: std.json.Value,
-) ![]u8 {
+) !OperationResult {
     const request_json = try storeDraftOperationRequestJsonAlloc(allocator, project_id, resource, op);
     defer allocator.free(request_json);
 
     const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
     defer allocator.free(response_json);
 
-    return try payloadJsonFromResponse(allocator, response_json);
+    return try operationResultFromResponse(allocator, response_json);
 }
 
 pub fn storeDraftOperationRequestJsonAlloc(
@@ -123,6 +195,54 @@ pub fn payloadJsonFromResponse(allocator: std.mem.Allocator, response_json: []co
     return std.json.Stringify.valueAlloc(allocator, payload, .{ .whitespace = .indent_2 });
 }
 
+pub fn operationResultFromResponse(
+    allocator: std.mem.Allocator,
+    response_json: []const u8,
+) !OperationResult {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_json, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const ok = switch (root.get("ok") orelse return error.InvalidDaemonIpcResponse) {
+        .bool => |value| value,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    if (ok) {
+        const payload = root.get("payload") orelse return error.InvalidDaemonIpcResponse;
+        return .{
+            .structured_json = try std.json.Stringify.valueAlloc(
+                allocator,
+                payload,
+                .{},
+            ),
+            .error_message = null,
+        };
+    }
+
+    const daemon_error = root.get("error") orelse return error.InvalidDaemonIpcResponse;
+    const error_object = switch (daemon_error) {
+        .object => |object| object,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const message = switch (error_object.get("message") orelse return error.InvalidDaemonIpcResponse) {
+        .string => |value| value,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const error_json = try std.json.Stringify.valueAlloc(allocator, daemon_error, .{});
+    defer allocator.free(error_json);
+    const structured_json = try std.fmt.allocPrint(allocator, "{{\"error\":{s}}}", .{error_json});
+    errdefer allocator.free(structured_json);
+    return .{
+        .structured_json = structured_json,
+        .error_message = try allocator.dupe(u8, message),
+    };
+}
+
 fn callJson(allocator: std.mem.Allocator, service_name: []const u8, request_json: []const u8) ![]u8 {
     if (comptime !enable_xpc) {
         return error.XpcUnavailable;
@@ -132,14 +252,12 @@ fn callJson(allocator: std.mem.Allocator, service_name: []const u8, request_json
         const request_json_z = try dupeZ(allocator, request_json);
         defer allocator.free(request_json_z);
 
-        const connection = c.xpc_connection_create_mach_service(service_name_z.ptr, null, 0) orelse
+        const connection = c.clumsies_xpc_connection_create(service_name_z.ptr) orelse
             return error.XpcReturnedNullConnection;
         defer {
             c.xpc_connection_cancel(connection);
             c.xpc_release(connection);
         }
-        c.xpc_connection_resume(connection);
-
         const message = c.xpc_dictionary_create(null, null, 0) orelse return error.XpcReturnedNullObject;
         defer c.xpc_release(message);
         try setXpcString(message, REQUEST_JSON_KEY, request_json_z);
@@ -188,12 +306,7 @@ const c = if (enable_xpc) struct {
     extern "c" var _xpc_type_dictionary: anyopaque;
     extern "c" var _xpc_type_error: anyopaque;
 
-    extern "c" fn xpc_connection_create_mach_service(
-        name: [*:0]const u8,
-        targetq: ?*anyopaque,
-        flags: u64,
-    ) ?*anyopaque;
-    extern "c" fn xpc_connection_resume(connection: *anyopaque) void;
+    extern "c" fn clumsies_xpc_connection_create(name: [*:0]const u8) ?*anyopaque;
     extern "c" fn xpc_connection_cancel(connection: *anyopaque) void;
     extern "c" fn xpc_connection_send_message_with_reply_sync(
         connection: *anyopaque,
@@ -230,7 +343,7 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
         std.testing.allocator,
-        \\{"create":{"path":"META_PROMPT.md","content":{"kind":"metaprompt","content":"body"}}}
+        \\{"create":{"path":"context/API.md","content":{"kind":"context","content":"body"}}}
     ,
         .{},
     );
@@ -239,7 +352,7 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     const json = try storeDraftOperationRequestJsonAlloc(
         std.testing.allocator,
         "prj_test",
-        "metaprompt",
+        "context",
         parsed.value,
     );
     defer std.testing.allocator.free(json);
@@ -247,10 +360,41 @@ test "storeDraftOperationRequestJsonAlloc builds daemon store envelope" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"method\":\"store_draft_operation\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"project_id\":\"prj_test\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"scope\":\"project\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"metaprompt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"resource\":\"context\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"source\":\"mcp_store\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"create\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"META_PROMPT.md\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context/API.md\"") != null);
+}
+
+test "activateMemoryRequestJsonAlloc builds daemon search envelope" {
+    const json = try activateMemoryRequestJsonAlloc(
+        std.testing.allocator,
+        "prj_test",
+        "hybrid retrieval",
+        "state-token",
+    );
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expectEqualStrings(
+        \\{"method":"activate_memory","payload":{"project_id":"prj_test","query":"hybrid retrieval","state":"state-token"}}
+    , json);
+}
+
+test "loadMemoryRequestJsonAlloc maps MCP knownHashes to daemon known_hashes" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"ctx_api":"sha256:abc"}
+    , .{});
+    defer parsed.deinit();
+    const json = try loadMemoryRequestJsonAlloc(
+        std.testing.allocator,
+        "prj_test",
+        &.{"ctx_api"},
+        parsed.value,
+    );
+    defer std.testing.allocator.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"method\":\"load_memory\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"known_hashes\":{\"ctx_api\":\"sha256:abc\"}") != null);
 }
 
 test "memoryCacheRequestJsonAlloc builds daemon cache envelope" {
@@ -279,4 +423,28 @@ test "payloadJsonFromResponse rejects failed daemon response" {
             \\{"ok":false,"payload":{},"error":{"code":"IPC_ERROR","message":"failed"}}
         ),
     );
+}
+
+test "operationResultFromResponse preserves daemon error code and message" {
+    var result = try operationResultFromResponse(std.testing.allocator,
+        \\{"ok":false,"payload":{},"error":{"code":"invalid_activation_state","message":"state is invalid"}}
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.isError());
+    try std.testing.expectEqualStrings("state is invalid", result.error_message.?);
+    try std.testing.expect(std.mem.indexOf(u8, result.structured_json, "\"code\":\"invalid_activation_state\"") != null);
+}
+
+test "operationResultFromResponse keeps successful MCP payloads on one line" {
+    var result = try operationResultFromResponse(std.testing.allocator,
+        \\{"ok":true,"payload":{"fragments":[{"action":"add"}]},"error":null}
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.isError());
+    try std.testing.expectEqualStrings(
+        \\{"fragments":[{"action":"add"}]}
+    , result.structured_json);
+    try std.testing.expect(std.mem.indexOfScalar(u8, result.structured_json, '\n') == null);
 }

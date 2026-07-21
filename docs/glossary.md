@@ -2,7 +2,9 @@
 
 ## Server
 
-Server is the authority layer. It owns the server-side state for Artifact, Workspace, context collaboration, and aggregated attestation data.
+Server is the authority layer. It owns organization and project resources,
+personal Bundles, Draft and Review lifecycles, identity and authorization, and
+the Blob / Tree / Commit / Ref version graph.
 
 This is the architectural center of gravity for the whole project. If a page explains clumsies as a set of local files plus some helper commands, it is missing the point.
 
@@ -10,7 +12,7 @@ This is the architectural center of gravity for the whole project. If a page exp
 
 A rule is a behavioral instruction for an agent. It answers one question: how should the agent act?
 
-In clumsies, the behavioral layer in Artifact has two main forms:
+In clumsies, behavioral memory has two domain forms:
 
 | Type | Meaning |
 | --- | --- |
@@ -18,8 +20,6 @@ In clumsies, the behavioral layer in Artifact has two main forms:
 | Workflow | an ordered set of constraints that implies execution flow |
 
 When the docs mean a single behavioral instruction, they should usually say `rule`, not `prompt`.
-
-`Prompt` still exists as an umbrella term in some parts of the system, especially in protocol naming and identity fields such as `prompt_id`. But that broader term should not replace `rule` when the actual meaning is narrower.
 
 Rule is not the same thing as project knowledge. A rule tells the agent what to do. It does not tell the agent what the project is.
 
@@ -31,53 +31,48 @@ That is why a workflow belongs in the same behavioral layer as rules, but it sho
 
 ## Bundle
 
-A bundle is a reusable selection unit inside Artifact. It packages rule or workflow choices so a workspace can adopt a coherent set rather than hand-picking everything one item at a time.
-
-Bundles matter because they are the bridge between organization-level curation and workspace-level adoption.
+A Bundle is a personal, Server-stored selection of memory resources. It helps
+one user reuse a curated set without turning that selection into organization
+authority.
 
 ## Context
 
-Context is project knowledge owned by a workspace. It answers a different question: what is this project, why is it shaped this way, and what do we currently know?
+Context is file-oriented knowledge. Project Context answers what a project is,
+why it is shaped this way, and what is currently known. Organization Context
+holds knowledge that is intentionally reusable across projects.
 
 Specs, ADRs, research notes, and design material are all context. They give the agent evidence and background. They do not directly impose behavior.
 
-Context is not managed by Artifact. That boundary matters. If project knowledge were flattened into the shared behavioral layer, workspace ownership and collaboration would become much harder to reason about.
+Context does not impose behavior. Scope and resource identity determine its
+authority; its file-tree presentation is not its storage identity.
 
 ## Artifact
 
-Artifact is the organization-level source of rules, workflows, and bundles. It is not a cache and not a loose pile of copies. It owns rule identity, current path, content hash, and review history.
+Artifact is a retired name for the former organization-level memory manager.
+The current user-facing term is **Hub**, which exposes organization-scoped
+Context, Rules, and Workflows. Server, not Hub, is the authority process.
 
-Once Artifact stops being authoritative, cross-workspace convergence becomes fragile. Rule history, rule review, and attestation aggregation all become harder to trust.
+## Project
 
-## Workspace
+Project is the collaboration and authority boundary for project-specific
+Context, Rules, and Workflows. It may also consume selected Hub resources. A
+Project is not a local folder or Git repository; local paths resolve to a
+stable Server-issued project ID.
 
-Workspace is the project boundary where rules, workflows, bundles, and context are combined for real work. A workspace does not own Artifact behavior content. It selects a subset from Artifact and combines it with workspace-owned context.
-
-| Part of a workspace | Ownership |
-| --- | --- |
-| selected rules, workflows, and bundles | references to Artifact |
-| context files | workspace-owned |
-| local drafts | local working state |
-| manifest | Server-maintained index of current state |
-
-That is why a workspace is not just a folder and not simply a git repository. It is the collaboration boundary around a project.
-
-Workspace also has its own membership model. Org-level maintainers exist above it, while workspace admins and members control project-level collaboration inside it.
+`Workspace` is a retired name that may still appear in old code and legacy
+documents.
 
 ## Manifest
 
-Manifest is the current indexed snapshot of workspace state. It bridges Server and local runtime by recording which rules, workflows, bundles, and context files belong to the workspace and which content hashes are current.
-
-That matters because sync, cache refresh, rename handling, and non-blocking local reads all depend on it.
+Manifest is a retired runtime term. Authority versions use Blob, Tree, Commit,
+and Ref. The daemon materializes a validated Commit generation, overlays local
+Draft operations into Effective Memory, and builds a separate derived Index
+Revision for retrieval.
 
 ## Attestation
 
-Attestation is the event stream produced when agents discover and load
-Artifact behavior, then refer to it during real work.
-
-Attestation is not decorative analytics. It is the feedback signal for the rule lifecycle and the broader improvement loop around Artifact content. Without it, teams are left guessing which constraints actually mattered and which ones were only present in theory.
-
-Older specs and pages may still call this layer `Trace`. The current codebase and newer docs are moving toward `Attestation`.
+Attestation is a legacy event-stream capability. Agent observability is not part
+of the current product direction or MCP memory contract.
 
 ## Adapter
 
@@ -87,17 +82,23 @@ Adapter is not the Server and not the MCP protocol itself. It is the layer that 
 
 ## MCP
 
-MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates available memory, retrieves selected content, and stores draft refinements.
+MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates task-relevant fragments, loads known complete resources, and stores explicit Draft refinements.
 
-MCP is not just a transport detail. It is the mechanism that turns rule and context management into a live runtime system with traceable usage.
+MCP is not an authority or storage layer. The Zig MCP server validates the
+agent-facing contract and delegates Effective Memory, retrieval, loading, and
+Draft persistence to the Rust daemon over XPC.
 
-The current implementation exposes concise tools: `activate`, `retrieve`, and
+The current implementation exposes concise tools: `activate`, `load`, and
 `store`. That is the runtime contract the docs should describe.
 
-## Draft and PR
+## Draft and Review
 
-A draft is local in-progress work. It can target either a Artifact rule or workflow, or a workspace context file. A pull request is the collaboration object that moves those changes back to the authority layer.
+A Draft is local in-progress work over a Context, Rule, or Workflow. A Review
+is the Server collaboration object that decides whether those operations may
+move an organization or project Ref.
 
-Draft is local state. PR is shared workflow.
+Draft is local-first state. Review is shared workflow.
 
-For Artifact content, PR is the path back into org-level shared truth. For workspace context, PR is the path back into workspace mainline knowledge. Those are related patterns, but not the same authority boundary.
+For Hub content, Review targets organization authority. For Local content,
+Review targets project authority. Those are related lifecycles, but they move
+different Refs.

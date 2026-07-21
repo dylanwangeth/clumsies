@@ -8,7 +8,10 @@ name = "clumsiesd"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22.1"
+fastembed = { version = "5.17.3", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
 hex = "0.4.3"
+pulldown-cmark = "0.13.4"
 reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

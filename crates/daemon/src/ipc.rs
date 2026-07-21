@@ -1,9 +1,11 @@
 use crate::{
-    DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
-    DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
-    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonProjectConfig,
-    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonRetryResponse,
-    DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus,
+    ActivateMemoryRequest, ActivateMemoryResponse, DaemonDraftDetail, DaemonDraftDetailRequest,
+    DaemonDraftListQuery, DaemonDraftListResponse, DaemonDraftOperationRequest,
+    DaemonDraftOperationResponse, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse,
+    DaemonIpcService, DaemonMcpStatus, DaemonProjectConfig, DaemonProjectConfigUpdateRequest,
+    DaemonProjectSelectionRequest, DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse,
+    DaemonSyncRetryRequest, DaemonSyncStatus, LoadMemoryRequest, LoadMemoryResponse,
+    SearchIndexProjectRequest, SearchIndexStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -60,6 +62,50 @@ impl DaemonIpcClient {
     pub fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         self.call(DaemonIpcRequest::empty("sync_status"))?
             .into_payload()
+    }
+
+    pub fn activate_memory(
+        &self,
+        request: ActivateMemoryRequest,
+    ) -> Result<ActivateMemoryResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "activate_memory",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn load_memory(
+        &self,
+        request: LoadMemoryRequest,
+    ) -> Result<LoadMemoryResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "load_memory",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn search_index_status(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "search_index_status",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn rebuild_search_index(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "rebuild_search_index",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
     }
 
     pub fn retry_sync(

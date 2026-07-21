@@ -9,8 +9,8 @@ The point of this section is not to restate the architecture. It is to tell a re
 | If you are trying to do | Start here | Why |
 | --- | --- | --- |
 | bring up Server and the database for a team | [Deployment](/guides/deploy-for-an-org) | covers local self-hosted bring-up, bootstrap identity, and what still remains manual |
-| use clumsies inside a repo as a normal member | [Member workflow](/guides/how-to-use-clumsies) | starts from `clumsies login` and `clumsies adapt`, then uses the TUI for observation and context work |
-| wire an agent host into the local runtime | [Agent runtime](/guides/agent-runtime) | covers `clumsies mcp serve`, MCP tools, attestation, and adapter/runtime boundaries |
+| use clumsies inside a repo as a normal member | [Member workflow](/guides/how-to-use-clumsies) | starts from Desktop, then follows the Draft, Review, and Commit workflow |
+| wire an agent host into the local runtime | [Agent runtime](/guides/agent-runtime) | covers `clumsies mcp serve`, MCP tools, daemon XPC, and adapter/runtime boundaries |
 | look up exact command and flag behavior | [CLI reference](/guides/cli-commands) | covers the current command surface without forcing you through a walkthrough |
 
 ## What guides should and should not do

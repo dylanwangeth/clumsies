@@ -56,15 +56,6 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_resolve_binary_sh),
     });
     try assets.append(allocator, .{
-        .resource_id = "codex.hooks.session_start",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "hooks/session-start.sh"),
-        .ownership = "exclusive",
-        .label = "Codex SessionStart hook",
-        .file_mode = 0o755,
-        .content = try renderSessionStartHook(allocator, scope, target_root),
-    });
-    try assets.append(allocator, .{
         .resource_id = "codex.hooks.user_prompt_submit",
         .resource_kind = "plain_file",
         .relative_path = try scopedRelativePath(allocator, "hooks/user-prompt-submit.sh"),
@@ -123,19 +114,11 @@ pub fn renderHooksRegistry(
     allocator: std.mem.Allocator,
     target_root: []const u8,
 ) ![]u8 {
-    const session_start_cmd_json = try commandJsonLiteral(allocator, target_root, "session-start.sh");
-    defer allocator.free(session_start_cmd_json);
     const user_prompt_submit_cmd_json = try commandJsonLiteral(allocator, target_root, "user-prompt-submit.sh");
     defer allocator.free(user_prompt_submit_cmd_json);
     var rendered = try allocator.dupe(u8, build_options.adapter_codex_runtime_hooks_json);
     errdefer allocator.free(rendered);
 
-    rendered = try replaceOwned(
-        allocator,
-        rendered,
-        "__CLUMSIES_SESSION_START_COMMAND_JSON__",
-        session_start_cmd_json,
-    );
     rendered = try replaceOwned(
         allocator,
         rendered,
@@ -229,15 +212,6 @@ fn appendCodexCoreSkills(
         skills_root_absolute,
         build_options.adapter_codex_runtime_skill_ntmd,
     );
-    try appendCodexSkill(
-        allocator,
-        assets,
-        "codex.skills.setup",
-        "setup",
-        "Codex setup skill",
-        skills_root_absolute,
-        build_options.adapter_codex_runtime_skill_setup,
-    );
 }
 
 fn userCodexRoot(allocator: std.mem.Allocator) ![]const u8 {
@@ -262,14 +236,6 @@ fn commandJsonLiteral(
         std.json.Value{ .string = command },
         .{},
     );
-}
-
-fn renderSessionStartHook(
-    allocator: std.mem.Allocator,
-    _: model.Scope,
-    _: []const u8,
-) ![]u8 {
-    return allocator.dupe(u8, build_options.adapter_codex_runtime_session_start_sh);
 }
 
 fn workspaceRootFromAdapterRoot(target_root: []const u8) []const u8 {
@@ -317,12 +283,12 @@ fn replaceOwned(
     return replaced;
 }
 
-test "renderRuntimeAssets uses absolute workspace-local codex hook paths" {
+test "renderRuntimeAssets uses an absolute workspace-local prompt hook path" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
     defer deinitRenderedAssets(allocator, assets);
 
-    try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/session-start.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/user-prompt-submit.sh") != null);
 }
 
 test "codex config does not require Codex thread id in MCP server env" {
@@ -356,27 +322,17 @@ test "codex hooks pass Codex session id through clumsies host session env" {
     try std.testing.expect(!found_stop_check);
 }
 
-test "renderSessionStartHook does not import workflow skills" {
+test "runtime no longer injects a SessionStart memory bootstrap" {
     const allocator = std.testing.allocator;
-    const rendered = try renderSessionStartHook(allocator, .workspace, "/Users/test/project/.codex");
-    defer allocator.free(rendered);
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/Users/test/project/.codex");
+    defer deinitRenderedAssets(allocator, assets);
 
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "__CLUMSIES_WORKFLOW_SKILLS_DIR__") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "hookSpecificOutput") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "retrieve") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "memsetup") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "agentreport") == null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "session_id") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "knownHashes") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "META_PROMPT.md") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Use exactly this session_id value") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "During host agent startup") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call retrieve with session_id only once for this host session") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "unless the user explicitly invokes the setup skill") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Pass that exact value as the retrieve session_id argument") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Do not invent, shorten, replace, or default the session_id") != null);
+    for (assets) |asset| {
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.hooks.session_start"));
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.skills.setup"));
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "META_PROMPT.md") == null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "Call retrieve") == null);
+    }
 }
 
 test "renderRuntimeAssets installs codex user skills under home agents skills" {

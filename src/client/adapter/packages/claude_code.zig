@@ -90,15 +90,6 @@ pub fn renderRuntimeAssets(
         .file_mode = 0o644,
         .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_ntmd),
     });
-    try assets.append(allocator, .{
-        .resource_id = "claude-code.skills.setup",
-        .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "skills/setup/SKILL.md"),
-        .ownership = "exclusive",
-        .label = "Claude Code setup skill",
-        .file_mode = 0o644,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_skill_setup),
-    });
 
     if (scope == .workspace) {
         const skills_root_absolute = try std.fs.path.join(allocator, &.{ target_root, ".claude", "skills" });
@@ -287,4 +278,18 @@ test "renderSessionStartHook disables workflow import for user scope" {
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR=\"\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "META_PROMPT") == null);
+}
+
+test "renderSessionStartHook generates workflow proxies for the load contract" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderSessionStartHook(allocator, .workspace, "/tmp/workspace");
+    defer allocator.free(rendered);
+
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "WORKFLOW_SKILLS_DIR=\"/tmp/workspace/.claude/skills\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Call the \\`load\\` MCP tool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "ids: [\"workflow/$filename\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "retrieve") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
 }

@@ -2,5 +2,5 @@
 //! server.zig (instruction string)
 //! to keep tool identity consistent across the protocol.
 pub const activate = "activate";
-pub const retrieve = "retrieve";
+pub const load = "load";
 pub const store = "store";

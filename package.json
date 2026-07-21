@@ -14,6 +14,7 @@
     "dev:infra": "docker compose up -d --wait postgres fake-oidc",
     "dev:infra:down": "docker compose down",
     "dev:server": "sh dev/server.sh",
+    "install:cli:macos": "sh dev/install-cli-macos.sh",
     "build": "vitepress build docs",
     "build:web-admin": "bun run --cwd apps/web-admin build",
     "build:macos": "sh apps/macos/Scripts/build.sh",

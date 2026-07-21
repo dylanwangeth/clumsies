@@ -1,5 +1,11 @@
 # Artifact
 
+> Legacy architecture reference. `Artifact` has been replaced by the Hub view
+> of organization-scoped Context, Rules, and Workflows. Reserved Metaprompt,
+> manifest-bootstrap, TUI, and attestation behavior below is not a current
+> runtime contract. See [Overview](/overview), [Architecture](/architecture),
+> and [MCP](/mcp).
+
 ## What Artifact is
 
 Artifact is the organization-level source of rules and workflows. It is the place where behavioral content becomes shared infrastructure instead of scattered local files.

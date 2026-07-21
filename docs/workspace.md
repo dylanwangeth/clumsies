@@ -1,5 +1,10 @@
 # Workspace
 
+> Legacy architecture reference. The current product term is `Project`, and
+> local runtime reads use daemon-owned Commit generations plus Draft overlay,
+> not the manifest/META_PROMPT bootstrap described below. See
+> [Architecture](/architecture), [Runtime surfaces](/runtime), and [MCP](/mcp).
+
 ## What Workspace is
 
 Workspace is the project boundary inside clumsies. It is where shared organizational behavior meets project-specific knowledge and local runtime state.

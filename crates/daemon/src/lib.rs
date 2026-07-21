@@ -23,12 +23,18 @@ use uuid::Uuid;
 mod commit_sync;
 mod credentials;
 mod ipc;
+mod search;
 pub use commit_sync::{DaemonMemoryCacheRequest, DaemonMemoryCacheStatus};
 pub use credentials::{
     CredentialStore, CredentialStoreError, KEYCHAIN_ACCOUNT, ServerCredentials,
     SystemCredentialStore,
 };
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
+pub use search::{
+    ActivateMemoryRequest, ActivateMemoryResponse, ActivationAction, ActivationFragment,
+    ActivationRemoval, LoadMemoryRequest, LoadMemoryResponse, LoadedMemoryResource, MemoryKind,
+    SearchIndexProjectRequest, SearchIndexStatus, SearchModelStatus, SourceLocator, SourceScope,
+};
 
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
@@ -652,6 +658,8 @@ struct DaemonInner {
     sync_lock: Mutex<()>,
     commit_sync_running: AtomicBool,
     token_refresh: Mutex<()>,
+    search_models: Arc<dyn search::models::SearchModels>,
+    search_lock: Mutex<()>,
 }
 
 impl DaemonState {
@@ -663,6 +671,20 @@ impl DaemonState {
     pub async fn initialize_with_credential_store(
         config: DaemonConfig,
         credential_store: Arc<dyn CredentialStore>,
+    ) -> Result<Self, DaemonError> {
+        let search_models = search::production_models(config.cache_dir.clone());
+        Self::initialize_with_credential_store_and_search_models(
+            config,
+            credential_store,
+            search_models,
+        )
+        .await
+    }
+
+    pub(crate) async fn initialize_with_credential_store_and_search_models(
+        config: DaemonConfig,
+        credential_store: Arc<dyn CredentialStore>,
+        search_models: Arc<dyn search::models::SearchModels>,
     ) -> Result<Self, DaemonError> {
         prepare_directories(&config)?;
         let pool = connect_local_db(&config.local_db_path()).await?;
@@ -684,6 +706,8 @@ impl DaemonState {
                 sync_lock: Mutex::new(()),
                 commit_sync_running: AtomicBool::new(false),
                 token_refresh: Mutex::new(()),
+                search_models,
+                search_lock: Mutex::new(()),
             }),
         })
     }
@@ -906,6 +930,34 @@ impl DaemonState {
         request: DaemonMemoryCacheRequest,
     ) -> Result<DaemonMemoryCacheStatus, DaemonError> {
         commit_sync::memory_cache(self, request).await
+    }
+
+    pub async fn activate_memory(
+        &self,
+        request: ActivateMemoryRequest,
+    ) -> Result<ActivateMemoryResponse, DaemonError> {
+        search::activate_memory(self, request).await
+    }
+
+    pub async fn load_memory(
+        &self,
+        request: LoadMemoryRequest,
+    ) -> Result<LoadMemoryResponse, DaemonError> {
+        search::load_memory(self, request).await
+    }
+
+    pub async fn search_index_status(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        search::search_index_status(self, request).await
+    }
+
+    pub async fn rebuild_search_index(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        search::rebuild_search_index(self, request).await
     }
 
     pub async fn retry_sync(
@@ -1155,6 +1207,34 @@ impl DaemonIpcService {
         self.state.memory_cache(request).await
     }
 
+    pub async fn activate_memory(
+        &self,
+        request: ActivateMemoryRequest,
+    ) -> Result<ActivateMemoryResponse, DaemonError> {
+        self.state.activate_memory(request).await
+    }
+
+    pub async fn load_memory(
+        &self,
+        request: LoadMemoryRequest,
+    ) -> Result<LoadMemoryResponse, DaemonError> {
+        self.state.load_memory(request).await
+    }
+
+    pub async fn search_index_status(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        self.state.search_index_status(request).await
+    }
+
+    pub async fn rebuild_search_index(
+        &self,
+        request: SearchIndexProjectRequest,
+    ) -> Result<SearchIndexStatus, DaemonError> {
+        self.state.rebuild_search_index(request).await
+    }
+
     pub async fn retry_sync(
         &self,
         request: DaemonSyncRetryRequest,
@@ -1192,106 +1272,148 @@ impl DaemonIpcService {
     }
 
     pub async fn dispatch(&self, request: DaemonIpcRequest) -> DaemonIpcResponse {
-        let result = match request.method.as_str() {
-            "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
-            "project_config" => {
-                serde_json::to_value(self.project_config()).map_err(DaemonError::from)
-            }
-            "replace_project_config" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .replace_project_config(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+        let result =
+            match request.method.as_str() {
+                "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
+                "project_config" => {
+                    serde_json::to_value(self.project_config()).map_err(DaemonError::from)
                 }
-            }
-            "select_project" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .select_project(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "replace_project_config" => {
+                    let payload = self.decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(
+                        request.payload,
+                    );
+                    match payload {
+                        Ok(payload) => {
+                            self.replace_project_config(payload)
+                                .await
+                                .and_then(|value| {
+                                    serde_json::to_value(value).map_err(DaemonError::from)
+                                })
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "sync_status" => self
-                .sync_status()
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-            "memory_cache" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .memory_cache(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "select_project" => {
+                    let payload = self
+                        .decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.select_project(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "retry_sync" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .retry_sync(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "sync_status" => self
+                    .sync_status()
+                    .await
+                    .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                "memory_cache" => {
+                    let payload =
+                        self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.memory_cache(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
-            "list_drafts" => {
-                let payload = self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .list_drafts(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "activate_memory" => {
+                    let payload =
+                        self.decode_dispatch_payload::<ActivateMemoryRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.activate_memory(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "get_draft" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .get_draft(&payload.draft_id)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "load_memory" => {
+                    let payload =
+                        self.decode_dispatch_payload::<LoadMemoryRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.load_memory(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "store_draft_operation" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .store_draft_operation(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "search_index_status" => {
+                    let payload =
+                        self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.search_index_status(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            "server_request" => {
-                let payload = self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .server_request(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
+                "rebuild_search_index" => {
+                    let payload =
+                        self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.rebuild_search_index(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
                 }
-            }
-            method => Err(DaemonError::InvalidRequest(format!(
-                "unknown daemon IPC method: {method}"
-            ))),
-        };
+                "retry_sync" => {
+                    let payload =
+                        self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.retry_sync(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
+                "list_drafts" => {
+                    let payload =
+                        self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
+                    match payload {
+                        Ok(payload) => self.list_drafts(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                "get_draft" => {
+                    let payload =
+                        self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.get_draft(&payload.draft_id).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                "store_draft_operation" => {
+                    let payload = self
+                        .decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => {
+                            self.store_draft_operation(payload).await.and_then(|value| {
+                                serde_json::to_value(value).map_err(DaemonError::from)
+                            })
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                "server_request" => {
+                    let payload =
+                        self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.server_request(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                method => Err(DaemonError::InvalidRequest(format!(
+                    "unknown daemon IPC method: {method}"
+                ))),
+            };
         DaemonIpcResponse::from_result(result)
     }
 
@@ -3036,6 +3158,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     commit_sync::migrate(pool).await?;
+    search::migrate(pool).await?;
     sqlx::query(
         "INSERT INTO daemon_meta (key, value)
          VALUES ('schema_version', $1)
@@ -4135,6 +4258,17 @@ pub struct ApiError {
 }
 
 fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
+    let error = match error {
+        DaemonError::Search { code, message } => {
+            return ApiError {
+                code,
+                message,
+                request_id: format!("req_{}", Uuid::new_v4().simple()),
+                details: json!({}),
+            };
+        }
+        error => error,
+    };
     let (code, message) = match error {
         DaemonError::InvalidConfig(message) => ("invalid_config", message),
         DaemonError::InvalidRequest(message) => ("invalid_request", message),
@@ -4151,6 +4285,7 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
         ),
         DaemonError::Launchctl(message) => ("launchctl_failed", message),
         DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
+        DaemonError::Search { .. } => unreachable!("search errors return above"),
     };
     ApiError {
         code: code.to_owned(),
@@ -4186,6 +4321,8 @@ pub enum DaemonError {
     Launchctl(String),
     #[error("daemon IPC error: {0}")]
     Ipc(String),
+    #[error("search error ({code}): {message}")]
+    Search { code: String, message: String },
 }
 
 impl DaemonError {

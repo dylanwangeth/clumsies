@@ -20,8 +20,7 @@ profiles in the app.
 
 Desktop has two memory scopes:
 
-- **Hub** contains organization-shared Context, Rules, Workflows, and
-  Metaprompt.
+- **Hub** contains organization-shared Context, Rules, and Workflows.
 - **Local** contains the selected project's resources and local drafts.
 
 Choose a resource kind in the Content Region navigator, then open a file or
@@ -48,8 +47,8 @@ conflict. Clumsies does not silently overwrite the newer authority state.
 
 The MCP server exposes:
 
-- `activate` to list task-relevant candidates
-- `retrieve` to load selected content
+- `activate` to return task-relevant, directly usable memory fragments
+- `load` to read a known complete resource by stable ID or exact path
 - `store` to create or update a local project draft
 
 MCP `store` and Desktop editing use the same daemon queue, so a change created

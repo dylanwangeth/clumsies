@@ -14,6 +14,8 @@ The database currently stores:
 - synchronization status, failures, and Server draft identity
 - immutable Blob, Tree, and Commit metadata
 - installed organization and project Refs
+- derived search revisions, complete effective resources, Markdown units,
+  FTS5 rows, and local vectors
 
 File permissions are owner-only. Access and refresh tokens are stored as one
 Server-bound generic-password item in macOS Keychain. SQLite never persists
@@ -65,10 +67,10 @@ with no base; daemon never invents a Commit ID.
 MCP does not currently expose organization scope in `store`; interpreting the
 same call as a Hub write would be ambiguous. Hub writes are explicit in Desktop.
 
-Local drafts and authority generations are currently separate read models.
-`store` persists and synchronizes a draft, but MCP `activate` and `retrieve`
-continue to read the installed authority generation until a later effective
-local view overlays open drafts.
+The daemon combines the installed authority generation with current
+`open`/`submitted`/`conflicted` Draft operations before both `activate` and
+`load`. A successful `store` therefore changes the next Effective Memory hash
+and causes the next activation to build or select a matching search revision.
 
 ## Commit synchronization
 
@@ -82,7 +84,8 @@ Server commit-state + ETag
   -> verify Blob addresses and Tree ownership
   -> build an immutable project generation
   -> move the local SQLite Ref
-  -> MCP asks daemon for that exact generation
+  -> daemon combines that generation with local Drafts
+  -> MCP asks daemon to activate fragments or load complete resources
 ```
 
 The generation is built under a temporary directory and renamed before the Ref

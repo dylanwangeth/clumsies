@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook: bootstrap protocol via CLI and sync workflow skills.
+# SessionStart hook: sync workflow skill proxies from the local generation.
 
 set -euo pipefail
 
@@ -30,8 +30,6 @@ if [ -n "$WORKFLOW_SKILLS_DIR" ] && [ -d "$CACHE_DIR/workflow" ]; then
     filename="$(basename "$filepath")"
     slug="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//; s/_/-/g' | tr '[:upper:]' '[:lower:]')"
     [ -n "$slug" ] || slug="workflow"
-    workflow_name="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//')"
-
     skill_dir="$WORKFLOW_SKILLS_DIR/$slug"
     skill_file="$skill_dir/SKILL.md"
 
@@ -44,16 +42,12 @@ description: Run $filename workflow
 argument-hint: "[task description]"
 user-invocable: true
 ---
-Call the \`retrieve\` MCP tool with ids: ["workflow:$workflow_name"] and
-knownHashes: {"workflow:$workflow_name": "<remembered_hash_or_empty_string>"}.
-Use the last hash you remember for this workflow when available; otherwise use an empty string.
-If retrieve returns changed:false without content, continue from the workflow content you already remember.
-Then follow the loaded workflow carefully.
+Call the \`load\` MCP tool with ids: ["workflow/$filename"].
+If you already know its current content hash, pass it in knownHashes so unchanged
+content can be omitted. Then follow the loaded workflow carefully.
 
 \$ARGUMENTS
 SKILL
     fi
   done
 fi
-
-"$CLUMSIES" _agent setup

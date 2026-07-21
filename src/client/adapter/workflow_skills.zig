@@ -45,14 +45,13 @@ pub fn renderImportedWorkflowSkills(
         if (!std.mem.endsWith(u8, workflow_path, ".md")) continue;
 
         const filename = std.fs.path.basename(workflow_path);
-        const workflow_name = workflowNameFromFilename(filename);
 
         const base_slug = try workflowSlugFromFilename(allocator, filename);
         defer allocator.free(base_slug);
         const slug = try uniqueSlug(allocator, &slug_counts, base_slug);
         defer allocator.free(slug);
 
-        const skill_content = try renderSkillContent(allocator, host, slug, filename, workflow_name);
+        const skill_content = try renderSkillContent(allocator, host, slug, filename);
         const relative_path = try skillFilePath(allocator, host, skill_root_display, slug);
         const absolute_path = try skillFilePath(allocator, host, skill_root_absolute, slug);
         const resource_id = try std.fmt.allocPrint(allocator, "{s}.workflow.{s}", .{ resource_prefix, slug });
@@ -149,19 +148,13 @@ fn trimWorkflowPrefix(stem: []const u8) []const u8 {
     return stem[idx..];
 }
 
-fn workflowNameFromFilename(filename: []const u8) []const u8 {
-    const stem = filename[0 .. filename.len - ".md".len];
-    return trimWorkflowPrefix(stem);
-}
-
 fn renderSkillContent(
     allocator: std.mem.Allocator,
     host: Host,
     slug: []const u8,
     filename: []const u8,
-    workflow_name: []const u8,
 ) ![]u8 {
-    const workflow_ref = try std.fmt.allocPrint(allocator, "workflow:{s}", .{workflow_name});
+    const workflow_ref = try std.fmt.allocPrint(allocator, "workflow/{s}", .{filename});
     defer allocator.free(workflow_ref);
 
     return switch (host) {
@@ -174,15 +167,14 @@ fn renderSkillContent(
             \\  short-description: Follow {s}
             \\---
             \\
-            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
-            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
+            \\Call the `load` MCP tool with ids: ["{s}"].
+            \\If you know its current content hash, pass it in `knownHashes`; otherwise omit `knownHashes`.
+            \\If load returns `changed: false` without content, continue from the workflow content already in context.
             \\Then follow the loaded workflow carefully.
             \\If the user already provided task details, use them as the workflow input.
             \\
         ,
-            .{ slug, filename, filename, workflow_ref, workflow_ref },
+            .{ slug, filename, filename, workflow_ref },
         ),
         .claude_code => std.fmt.allocPrint(
             allocator,
@@ -192,15 +184,14 @@ fn renderSkillContent(
             \\argument-hint: "[task description]"
             \\user-invocable: true
             \\---
-            \\Call the `retrieve` MCP tool with ids: ["{s}"] and
-            \\knownHashes: {{"{s}": "<remembered_hash_or_empty_string>"}}.
-            \\Use the last hash you remember for this workflow when available; otherwise use an empty string.
-            \\If retrieve returns changed:false without content, continue from the workflow content you already remember.
+            \\Call the `load` MCP tool with ids: ["{s}"].
+            \\If you know its current content hash, pass it in `knownHashes`; otherwise omit `knownHashes`.
+            \\If load returns `changed: false` without content, continue from the workflow content already in context.
             \\Then follow the loaded workflow carefully.
             \\
             \\$ARGUMENTS
         ,
-            .{ slug, filename, workflow_ref, workflow_ref },
+            .{ slug, filename, workflow_ref },
         ),
     };
 }
@@ -230,13 +221,13 @@ test "skillAlreadyInstalled detects existing absolute skill paths" {
     try std.testing.expect(!skillAlreadyInstalled("/tmp/clumsies-skill-does-not-exist"));
 }
 
-test "renderSkillContent loads workflow by name alias" {
-    const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md", "GEN_COMMIT_MSG");
+test "renderSkillContent loads workflow by exact path" {
+    const content = try renderSkillContent(std.testing.allocator, .codex, "gen-commit-msg", "GEN_COMMIT_MSG.md");
     defer std.testing.allocator.free(content);
 
-    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:GEN_COMMIT_MSG\"]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "<remembered_hash_or_empty_string>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "workflow/GEN_COMMIT_MSG.md") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Call the `load` MCP tool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow/GEN_COMMIT_MSG.md\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "retrieve") == null);
 }
 
 test "study workflow renders as auto-imported workflow skill proxy" {
@@ -244,11 +235,11 @@ test "study workflow renders as auto-imported workflow skill proxy" {
     defer std.testing.allocator.free(slug);
     try std.testing.expectEqualStrings("study", slug);
 
-    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "STUDY.md", "STUDY");
+    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "STUDY.md");
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "name: study") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:STUDY\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow/STUDY.md\"]") != null);
 }
 
 test "error prone workflow renders as auto-imported workflow skill proxy" {
@@ -256,9 +247,9 @@ test "error prone workflow renders as auto-imported workflow skill proxy" {
     defer std.testing.allocator.free(slug);
     try std.testing.expectEqualStrings("error-prone", slug);
 
-    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "ERROR_PRONE.md", "ERROR_PRONE");
+    const content = try renderSkillContent(std.testing.allocator, .codex, slug, "ERROR_PRONE.md");
     defer std.testing.allocator.free(content);
 
     try std.testing.expect(std.mem.indexOf(u8, content, "name: error-prone") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow:ERROR_PRONE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "ids: [\"workflow/ERROR_PRONE.md\"]") != null);
 }
