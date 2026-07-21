@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
@@ -172,19 +173,26 @@ pub struct LaunchAgentConfig {
     pub root_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub log_dir: PathBuf,
+    binary_sha256: String,
 }
 
 impl LaunchAgentConfig {
-    pub fn from_daemon_config(config: &DaemonConfig, program_path: impl Into<PathBuf>) -> Self {
-        Self {
+    pub fn from_daemon_config(
+        config: &DaemonConfig,
+        program_path: impl Into<PathBuf>,
+    ) -> Result<Self, DaemonError> {
+        let program_path = program_path.into();
+        let binary_sha256 = hex::encode(Sha256::digest(std::fs::read(&program_path)?));
+        Ok(Self {
             label: DAEMON_AGENT_LABEL.to_owned(),
             mach_service_name: DAEMON_MACH_SERVICE_NAME.to_owned(),
-            program_path: program_path.into(),
+            program_path,
             plist_path: config.launch_agent_plist_path(),
             root_dir: config.root_dir.clone(),
             cache_dir: config.cache_dir.clone(),
             log_dir: config.log_dir.clone(),
-        }
+            binary_sha256,
+        })
     }
 
     pub fn standard_output_path(&self) -> PathBuf {
@@ -224,6 +232,8 @@ impl LaunchAgentConfig {
     <string>{cache_dir}</string>
     <key>CLUMSIES_DAEMON_LOG_DIR</key>
     <string>{log_dir}</string>
+    <key>CLUMSIES_DAEMON_BINARY_SHA256</key>
+    <string>{binary_sha256}</string>
   </dict>
   <key>StandardOutPath</key>
   <string>{stdout}</string>
@@ -238,6 +248,7 @@ impl LaunchAgentConfig {
             root_dir = escape_plist_value(self.root_dir.to_string_lossy().as_ref()),
             cache_dir = escape_plist_value(self.cache_dir.to_string_lossy().as_ref()),
             log_dir = escape_plist_value(self.log_dir.to_string_lossy().as_ref()),
+            binary_sha256 = escape_plist_value(&self.binary_sha256),
             stdout = escape_plist_value(self.standard_output_path().to_string_lossy().as_ref()),
             stderr = escape_plist_value(self.standard_error_path().to_string_lossy().as_ref()),
         )
@@ -440,15 +451,20 @@ mod launch_agent_tests {
     fn plist_currency_tracks_the_installed_launch_agent_definition() {
         let root = tempfile::tempdir().unwrap();
         let daemon_config = DaemonConfig::for_root(root.path());
-        let launch_agent = LaunchAgentConfig::from_daemon_config(
-            &daemon_config,
-            root.path().join("bin/clumsiesd"),
-        );
+        let program_path = root.path().join("bin/clumsiesd");
+        std::fs::create_dir_all(program_path.parent().unwrap()).unwrap();
+        std::fs::write(&program_path, "daemon-v1").unwrap();
+        let launch_agent =
+            LaunchAgentConfig::from_daemon_config(&daemon_config, &program_path).unwrap();
 
         assert!(!launch_agent.plist_is_current().unwrap());
 
         launch_agent.install_plist().unwrap();
         assert!(launch_agent.plist_is_current().unwrap());
+
+        std::fs::write(&program_path, "daemon-v2").unwrap();
+        let updated = LaunchAgentConfig::from_daemon_config(&daemon_config, &program_path).unwrap();
+        assert!(!updated.plist_is_current().unwrap());
 
         std::fs::write(&launch_agent.plist_path, "stale launch agent").unwrap();
         assert!(!launch_agent.plist_is_current().unwrap());

@@ -1,6 +1,7 @@
 mod common;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,6 +27,13 @@ use tokio::sync::Notify;
 
 const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn fake_daemon_program(root: &Path) -> PathBuf {
+    let path = root.join("bin/clumsiesd");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "test daemon").unwrap();
+    path
+}
 
 fn context_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Context {
@@ -98,8 +106,8 @@ async fn initialization_rejects_an_old_local_schema() {
 fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_root(root.path());
-    let program_path = root.path().join("bin").join("clumsiesd");
-    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, &program_path);
+    let program_path = fake_daemon_program(root.path());
+    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, &program_path).unwrap();
 
     assert_eq!(IDENTIFIER_NAMESPACE, "ai.clumsies");
     assert_eq!(DAEMON_AGENT_LABEL, "ai.clumsies.daemon");
@@ -137,7 +145,7 @@ fn launch_agent_install_writes_owner_only_plist() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_root(root.path());
     let launch_agent =
-        LaunchAgentConfig::from_daemon_config(&config, root.path().join("bin/clumsiesd"));
+        LaunchAgentConfig::from_daemon_config(&config, fake_daemon_program(root.path())).unwrap();
 
     launch_agent.install_plist().unwrap();
 
@@ -165,7 +173,7 @@ fn launch_agent_controller_uses_standard_launchctl_targets() {
     let root = tempfile::tempdir().unwrap();
     let config = DaemonConfig::for_root(root.path());
     let launch_agent =
-        LaunchAgentConfig::from_daemon_config(&config, root.path().join("bin/clumsiesd"));
+        LaunchAgentConfig::from_daemon_config(&config, fake_daemon_program(root.path())).unwrap();
     let controller = LaunchAgentController::with_domain(launch_agent, "gui/501");
 
     assert_eq!(controller.domain(), "gui/501");

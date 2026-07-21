@@ -56,4 +56,5 @@ fi
 
 rm -rf "$previous_app"
 trap - 0 1 2 15
+"$installed_app/Contents/Resources/clumsiesd" --reconcile-launch-agent >/dev/null
 open -n "$installed_app"

@@ -8,6 +8,30 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(DaemonXPCClient.serviceName, "ai.clumsies.daemon")
     }
 
+    func testBootstrapControllerDecodesCanonicalDaemonStatus() throws {
+        let json = """
+        {
+          "installed": true,
+          "runtime": {
+            "installed": true,
+            "bootstrapped": true,
+            "running": true,
+            "pid": 4242,
+            "state": "running",
+            "last_exit_code": null,
+            "last_error": null
+          }
+        }
+        """
+
+        let state = try DaemonBootstrapController.decodeState(Data(json.utf8))
+
+        XCTAssertEqual(
+            state,
+            DaemonBootstrapState(installed: true, running: true, pid: 4242, error: nil)
+        )
+    }
+
     func testDraftOperationUsesDaemonWireKeys() throws {
         let request = DaemonDraftOperationRequest(
             draftId: "draft-1",

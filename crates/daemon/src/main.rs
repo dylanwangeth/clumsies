@@ -6,7 +6,7 @@ use daemon::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env()?;
-    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?);
+    let launch_agent = LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?)?;
     let launch_agent_controller = LaunchAgentController::for_current_user(launch_agent.clone())?;
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -35,10 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print_status(&launch_agent_controller.kickstart()?)?;
             return Ok(());
         }
+        [command] if command == "--reconcile-launch-agent" => {
+            print_status(&launch_agent_controller.reconcile()?)?;
+            return Ok(());
+        }
         [] => {}
         _ => {
             eprintln!(
-                "usage: clumsiesd [--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent]"
+                "usage: clumsiesd [--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
             );
             std::process::exit(64);
         }
