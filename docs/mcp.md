@@ -38,12 +38,18 @@ reranking, resource diversity limits, token budgeting, and fragment delta
 calculation in one operation. `kind`, `group`, `limit`, model names, and ranking
 parameters are deliberately not agent-facing inputs.
 
+The `agent_activation.v2` profile maps the BGE reranker logit through sigmoid
+and removes candidates below the daemon-owned relevance floor. It also keeps
+only the highest-ranked member of overlapping spans from the same resource.
+Token budgeting consumes the remaining relevance-ordered prefix instead of
+filling unused space with lower-ranked short fragments.
+
 The response contains:
 
 ```json
 {
   "index_revision": "search_...",
-  "profile": "agent_activation.v1",
+  "profile": "agent_activation.v2",
   "next_state": "opaque-state",
   "fragments": [
     {

@@ -20,7 +20,7 @@ use super::{
 
 const SEARCH_SCHEMA_VERSION: i64 = 1;
 const PARSER_VERSION: &str = "markdown-units.v1";
-const RANKING_CONFIG_VERSION: &str = "agent_activation.v1";
+const RANKING_CONFIG_VERSION: &str = "agent_activation.v2";
 const BM25_TOP_K: usize = 60;
 const VECTOR_TOP_K: usize = 60;
 const RRF_CONSTANT: f32 = 60.0;
@@ -29,6 +29,8 @@ const RERANK_CANDIDATES: usize = 24;
 const FINAL_FRAGMENTS: usize = 12;
 const PER_RESOURCE_LIMIT: usize = 2;
 const FRAGMENT_TOKEN_BUDGET: usize = 2400;
+// BGE emits unbounded logits; the floor is applied after sigmoid normalization.
+const MIN_RERANK_RELEVANCE: f32 = 0.01;
 const MAX_ACTIVATION_IDENTITIES: usize = 256;
 const MAX_ACTIVATION_STATE_BYTES: usize = 64 * 1024;
 
@@ -1540,6 +1542,7 @@ struct IndexRow {
     path: String,
     title: String,
     heading_path: Vec<String>,
+    locator: SourceLocator,
     text: String,
     text_hash: String,
     token_count: usize,
@@ -1604,6 +1607,9 @@ async fn query_index(
             )
             .into());
         }
+        if scores.iter().any(|score| !score.is_finite()) {
+            return Err(SearchFailure::model("reranker returned a non-finite score").into());
+        }
         for (candidate, score) in candidates.iter_mut().zip(scores) {
             candidate.rerank_score = score;
         }
@@ -1627,7 +1633,7 @@ async fn fetch_index_rows(
 ) -> Result<Vec<IndexRow>, DaemonError> {
     let rows = sqlx::query(
         "SELECT u.unit_rowid, u.unit_key, u.resource_id, u.heading_path_json,
-                u.text, u.text_hash, u.token_count, u.vector,
+                u.locator_json, u.text, u.text_hash, u.token_count, u.vector,
                 r.scope, r.kind, r.path, r.title
          FROM search_units u
          JOIN search_resources r
@@ -1660,6 +1666,7 @@ async fn fetch_index_rows(
                 heading_path: serde_json::from_str(
                     row.try_get::<String, _>("heading_path_json")?.as_str(),
                 )?,
+                locator: serde_json::from_str(row.try_get::<String, _>("locator_json")?.as_str())?,
                 text: row.try_get("text")?,
                 text_hash: row.try_get("text_hash")?,
                 token_count: token_count as usize,
@@ -1847,6 +1854,15 @@ fn apply_fragment_budget(candidates: Vec<RankedRow>) -> Vec<RankedRow> {
         if selected.len() >= FINAL_FRAGMENTS {
             break;
         }
+        if rerank_relevance(candidate.rerank_score) < MIN_RERANK_RELEVANCE {
+            break;
+        }
+        if selected
+            .iter()
+            .any(|existing| fragments_overlap(existing, &candidate))
+        {
+            continue;
+        }
         let count = per_resource
             .get(&candidate.row.resource_id)
             .copied()
@@ -1857,7 +1873,7 @@ fn apply_fragment_budget(candidates: Vec<RankedRow>) -> Vec<RankedRow> {
         if !selected.is_empty()
             && tokens.saturating_add(candidate.row.token_count) > FRAGMENT_TOKEN_BUDGET
         {
-            continue;
+            break;
         }
         tokens = tokens.saturating_add(candidate.row.token_count);
         *per_resource
@@ -1866,6 +1882,35 @@ fn apply_fragment_budget(candidates: Vec<RankedRow>) -> Vec<RankedRow> {
         selected.push(candidate);
     }
     selected
+}
+
+fn rerank_relevance(score: f32) -> f32 {
+    if score >= 0.0 {
+        1.0 / (1.0 + (-score).exp())
+    } else {
+        let exponential = score.exp();
+        exponential / (1.0 + exponential)
+    }
+}
+
+fn fragments_overlap(left: &RankedRow, right: &RankedRow) -> bool {
+    if left.row.resource_id != right.row.resource_id {
+        return false;
+    }
+    match (&left.row.locator, &right.row.locator) {
+        (
+            SourceLocator::MarkdownSpan {
+                start_byte: left_start,
+                end_byte: left_end,
+                ..
+            },
+            SourceLocator::MarkdownSpan {
+                start_byte: right_start,
+                end_byte: right_end,
+                ..
+            },
+        ) => left_start < right_end && right_start < left_end,
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -2196,6 +2241,39 @@ mod tests {
             vec![0.0, 1.0, 0.0]
         } else {
             vec![0.0, 0.0, 1.0]
+        }
+    }
+
+    fn ranked_test_row(
+        unit_key: &str,
+        resource_id: &str,
+        start_byte: usize,
+        end_byte: usize,
+        token_count: usize,
+        rerank_score: f32,
+    ) -> RankedRow {
+        RankedRow {
+            row: IndexRow {
+                rowid: 1,
+                unit_key: unit_key.to_owned(),
+                resource_id: resource_id.to_owned(),
+                scope: SourceScope::Project,
+                kind: MemoryKind::Context,
+                path: format!("context/{resource_id}.md"),
+                title: resource_id.to_owned(),
+                heading_path: Vec::new(),
+                locator: SourceLocator::MarkdownSpan {
+                    start_byte,
+                    end_byte,
+                    heading_path: Vec::new(),
+                },
+                text: unit_key.to_owned(),
+                text_hash: sha256(unit_key),
+                token_count,
+                vector: vec![1.0, 0.0, 0.0],
+            },
+            rrf_score: 0.01,
+            rerank_score,
         }
     }
 
@@ -2531,6 +2609,38 @@ mod tests {
         assert!(units.len() > INDEX_EMBED_BATCH_SIZE);
         assert!(models.largest_batch.load(Ordering::Relaxed) <= INDEX_EMBED_BATCH_SIZE);
         assert!(units.iter().all(|unit| unit.resource_index == 0));
+    }
+
+    #[test]
+    fn fragment_selection_suppresses_overlap_and_irrelevant_tail() {
+        let selected = apply_fragment_budget(vec![
+            ranked_test_row("best", "same", 0, 200, 300, 2.0),
+            ranked_test_row("overlap", "same", 150, 350, 300, 1.0),
+            ranked_test_row("distinct", "same", 400, 600, 300, 0.0),
+            ranked_test_row("irrelevant", "other", 0, 100, 100, -10.0),
+        ]);
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|candidate| candidate.row.unit_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["best", "distinct"]
+        );
+        assert!((rerank_relevance(0.0) - 0.5).abs() < f32::EPSILON);
+        assert!(rerank_relevance(-10.0) < MIN_RERANK_RELEVANCE);
+    }
+
+    #[test]
+    fn fragment_selection_does_not_fill_budget_with_lower_ranked_noise() {
+        let selected = apply_fragment_budget(vec![
+            ranked_test_row("large", "one", 0, 100, 2_200, 2.0),
+            ranked_test_row("overflow", "two", 0, 100, 300, 1.0),
+            ranked_test_row("filler", "three", 0, 100, 100, 0.0),
+        ]);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].row.unit_key, "large");
     }
 
     #[test]
