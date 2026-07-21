@@ -17,19 +17,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var authenticationWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var diagnosticsWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private lazy var statusMenu = makeStatusMenu()
     private var isFlushingForTermination = false
     private var mainWindowSurface: MainWindowSurface?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         installApplicationMenu()
+        installStatusItem()
         observePhase()
         NSApp.activate(ignoringOtherApps: true)
         store.start()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        restorePrimaryWindow()
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -152,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unified
         window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
         window.contentView = contentView
         window.minSize = NSSize(width: 920, height: 600)
         window.setFrameAutosaveName("ClumsiesNativeWorkspaceWindow")
@@ -241,6 +253,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.center()
         window.makeKeyAndOrderFront(nil)
         diagnosticsWindow = window
+    }
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        guard let button = item.button else { return }
+        let image = NSImage(named: "MenuBarIcon")
+            ?? NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Clumsies")
+        image?.isTemplate = true
+        image?.size = NSSize(width: 18, height: 18)
+        button.image = image
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.toolTip = "Clumsies"
+        button.target = self
+        button.action = #selector(handleStatusItemClick(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem = item
+    }
+
+    private func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        let open = menu.addItem(
+            withTitle: "Open Clumsies",
+            action: #selector(openFromStatusItem(_:)),
+            keyEquivalent: ""
+        )
+        open.target = self
+        let settings = menu.addItem(
+            withTitle: "Settings...",
+            action: #selector(showSettings(_:)),
+            keyEquivalent: ""
+        )
+        settings.target = self
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Quit Clumsies",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: ""
+        )
+        return menu
+    }
+
+    private func restorePrimaryWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let authenticationWindow, authenticationWindow.isVisible {
+            authenticationWindow.deminiaturize(nil)
+            authenticationWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        if let mainWindow, mainWindow.isVisible {
+            mainWindow.deminiaturize(nil)
+            mainWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        present(store.phase)
+    }
+
+    @objc private func handleStatusItemClick(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            statusMenu.appearance = NSApp.effectiveAppearance
+            statusMenu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: sender.bounds.height),
+                in: sender
+            )
+            return
+        }
+        restorePrimaryWindow()
+    }
+
+    @objc private func openFromStatusItem(_ sender: Any?) {
+        restorePrimaryWindow()
     }
 
     private func installApplicationMenu() {
@@ -333,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func showSettings(_ sender: Any?) {
+        NSApp.activate(ignoringOtherApps: true)
         presentSettingsWindow()
     }
 
