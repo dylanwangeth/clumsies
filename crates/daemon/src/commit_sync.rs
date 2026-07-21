@@ -30,6 +30,34 @@ pub struct DaemonMemoryCacheStatus {
     pub ready: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectCheckoutRequest {
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectCheckout {
+    pub project_id: String,
+    pub commit_id: Option<String>,
+    pub ref_etag: Option<String>,
+    pub commit_created_at: Option<String>,
+    pub org_selection_revision: i64,
+    pub selected_org_resource_ids: Vec<String>,
+    pub resources: Vec<DaemonProjectCheckoutResource>,
+    pub ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectCheckoutResource {
+    pub resource_id: String,
+    pub scope: DaemonDraftScope,
+    pub resource_kind: DaemonDraftResourceKind,
+    pub project_id: Option<String>,
+    pub path: String,
+    pub content_hash: String,
+    pub content: DaemonDraftContent,
+}
+
 pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS cached_blobs (
@@ -236,6 +264,63 @@ pub(super) async fn memory_cache(
         root_path: ready.then(|| generation.display().to_string()),
         ready,
     })
+}
+
+pub(super) async fn project_checkout(
+    state: &DaemonState,
+    request: DaemonProjectCheckoutRequest,
+) -> Result<DaemonProjectCheckout, DaemonError> {
+    validate_cache_component("project_id", &request.project_id)?;
+    let row = sqlx::query(
+        "SELECT commit_id, etag
+         FROM cached_refs
+         WHERE ref_key = $1 AND scope = 'project'",
+    )
+    .bind(project_ref_key(&request.project_id))
+    .fetch_optional(&state.inner.pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(DaemonProjectCheckout {
+            project_id: request.project_id,
+            commit_id: None,
+            ref_etag: None,
+            commit_created_at: None,
+            org_selection_revision: 0,
+            selected_org_resource_ids: Vec::new(),
+            resources: Vec::new(),
+            ready: false,
+        });
+    };
+
+    let commit_id: Option<String> = row.try_get("commit_id")?;
+    let ref_etag: String = row.try_get("etag")?;
+    let generation = generation_root(
+        &state.inner.config.cache_dir,
+        &request.project_id,
+        commit_id.as_deref().unwrap_or(EMPTY_GENERATION),
+    );
+    if verify_generation_ref(&generation, &request.project_id, commit_id.as_deref()).is_err() {
+        return Ok(DaemonProjectCheckout {
+            project_id: request.project_id,
+            commit_id,
+            ref_etag: Some(ref_etag),
+            commit_created_at: None,
+            org_selection_revision: 0,
+            selected_org_resource_ids: Vec::new(),
+            resources: Vec::new(),
+            ready: false,
+        });
+    }
+
+    let project_id = request.project_id;
+    let checkout_commit_id = commit_id.clone();
+    let mut checkout = tokio::task::spawn_blocking(move || {
+        load_project_checkout(&generation, &project_id, checkout_commit_id.as_deref())
+    })
+    .await
+    .map_err(|error| DaemonError::Server(format!("Project snapshot task failed: {error}")))??;
+    checkout.ref_etag = Some(ref_etag);
+    Ok(checkout)
 }
 
 async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
@@ -990,6 +1075,139 @@ fn verify_generation_ref(
         }
     }
     Ok(())
+}
+
+fn load_project_checkout(
+    root: &Path,
+    project_id: &str,
+    commit_id: Option<&str>,
+) -> Result<DaemonProjectCheckout, DaemonError> {
+    verify_generation_ref(root, project_id, commit_id)?;
+    let Some(commit_id) = commit_id else {
+        return Ok(DaemonProjectCheckout {
+            project_id: project_id.to_owned(),
+            commit_id: None,
+            ref_etag: None,
+            commit_created_at: None,
+            org_selection_revision: 0,
+            selected_org_resource_ids: Vec::new(),
+            resources: Vec::new(),
+            ready: true,
+        });
+    };
+
+    let payload: ServerCommitPayload =
+        serde_json::from_slice(&std::fs::read(root.join("commit-payload.json"))?)?;
+    let blobs = payload
+        .blobs
+        .iter()
+        .map(|blob| (blob.blob_id.as_str(), blob))
+        .collect::<HashMap<_, _>>();
+    let selection = payload.project_org_selection.as_ref().ok_or_else(|| {
+        DaemonError::Server(
+            "Cached Project Commit is missing its organization selection".to_owned(),
+        )
+    })?;
+    if selection
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(project_id)
+    {
+        return Err(DaemonError::Server(
+            "Cached Project Commit organization selection belongs to another project".to_owned(),
+        ));
+    }
+    let org_selection_revision = selection
+        .get("revision")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| {
+            DaemonError::Server(
+                "Cached Project Commit organization selection is missing revision".to_owned(),
+            )
+        })?;
+
+    let mut selected_org_resource_ids = BTreeSet::new();
+    let mut resources = Vec::new();
+    for entry in &payload.tree.entries {
+        let scope = match entry.scope {
+            ServerTreeEntryScope::Org => {
+                selected_org_resource_ids.insert(entry.id.clone());
+                DaemonDraftScope::Org
+            }
+            ServerTreeEntryScope::Project => DaemonDraftScope::Project,
+            ServerTreeEntryScope::Daemon => continue,
+        };
+        let resource_kind = match entry.kind {
+            ServerTreeEntryKind::Rule => DaemonDraftResourceKind::Rule,
+            ServerTreeEntryKind::Context => DaemonDraftResourceKind::Context,
+            ServerTreeEntryKind::Workflow => DaemonDraftResourceKind::Workflow,
+            ServerTreeEntryKind::Metaprompt => DaemonDraftResourceKind::Metaprompt,
+            ServerTreeEntryKind::ProjectOrgSelection => continue,
+        };
+        let path = entry.path.clone().ok_or_else(|| {
+            DaemonError::Server(format!("Tree entry {} is missing a path", entry.id))
+        })?;
+        let blob = blobs.get(entry.blob_id.as_str()).ok_or_else(|| {
+            DaemonError::Server(format!("Tree entry {} references a missing Blob", entry.id))
+        })?;
+        resources.push(DaemonProjectCheckoutResource {
+            resource_id: entry.id.clone(),
+            scope,
+            resource_kind,
+            project_id: entry.project_id.clone(),
+            path,
+            content_hash: content_hash(&blob.content),
+            content: project_checkout_content(entry.kind, &blob.content)?,
+        });
+    }
+
+    Ok(DaemonProjectCheckout {
+        project_id: project_id.to_owned(),
+        commit_id: Some(commit_id.to_owned()),
+        ref_etag: None,
+        commit_created_at: Some(payload.commit.created_at),
+        org_selection_revision,
+        selected_org_resource_ids: selected_org_resource_ids.into_iter().collect(),
+        resources,
+        ready: true,
+    })
+}
+
+fn project_checkout_content(
+    kind: ServerTreeEntryKind,
+    blob: &str,
+) -> Result<DaemonDraftContent, DaemonError> {
+    match kind {
+        ServerTreeEntryKind::Context => Ok(DaemonDraftContent::Context {
+            content: blob.to_owned(),
+        }),
+        ServerTreeEntryKind::Rule => {
+            let decoded: StructuredRuleBlob = serde_json::from_str(blob).map_err(|error| {
+                DaemonError::Server(format!("Rule Blob is not canonical JSON: {error}"))
+            })?;
+            if decoded.format != "clumsies.rule.v1" {
+                return Err(DaemonError::Server(format!(
+                    "Unsupported Rule Blob format: {}",
+                    decoded.format
+                )));
+            }
+            Ok(DaemonDraftContent::Rule {
+                name: Some(decoded.content.name),
+                applies_when: Some(decoded.content.applies_when),
+                constraint: decoded.content.constraint,
+                tags: Some(decoded.content.tags),
+            })
+        }
+        ServerTreeEntryKind::Workflow => Ok(DaemonDraftContent::Workflow {
+            content: blob.to_owned(),
+        }),
+        ServerTreeEntryKind::Metaprompt => Ok(DaemonDraftContent::Metaprompt {
+            content: blob.to_owned(),
+        }),
+        ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
+            "Project organization selection is not a memory resource".to_owned(),
+        )),
+    }
 }
 
 fn materialize_payload(

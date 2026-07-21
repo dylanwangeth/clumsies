@@ -75,6 +75,29 @@ export interface components {
             root_path: string | null;
             ready: boolean;
         };
+        DaemonProjectCheckoutRequest: {
+            project_id: string;
+        };
+        DaemonProjectCheckout: {
+            project_id: string;
+            commit_id: string | null;
+            ref_etag: string | null;
+            /** Format: date-time */
+            commit_created_at: string | null;
+            org_selection_revision: number;
+            selected_org_resource_ids: string[];
+            resources: components["schemas"]["DaemonProjectCheckoutResource"][];
+            ready: boolean;
+        };
+        DaemonProjectCheckoutResource: {
+            resource_id: string;
+            scope: components["schemas"]["DaemonDraftScope"];
+            resource_kind: components["schemas"]["DaemonDraftResourceKind"];
+            project_id: string | null;
+            path: string;
+            content_hash: string;
+            content: components["schemas"]["DaemonDraftContent"];
+        };
         DaemonServerRequest: {
             /** @enum {string} */
             method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

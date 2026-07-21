@@ -5,8 +5,9 @@ use daemon::{
     DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DraftOperationSyncStatus, SyncRetryChannel, SyncState,
+    DaemonProjectCheckoutRequest, DaemonProjectSelectionRequest, DaemonRenameDraftOperation,
+    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus, SyncRetryChannel,
+    SyncState,
 };
 use server::api::{
     CreateDraftRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
@@ -2566,6 +2567,15 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             .unwrap();
         assert!(empty.ready);
         assert_eq!(empty.commit_id, None);
+        let empty_checkout = service
+            .project_checkout(DaemonProjectCheckoutRequest {
+                project_id: bootstrap.project_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(empty_checkout.ready);
+        assert_eq!(empty_checkout.commit_id, None);
+        assert!(empty_checkout.resources.is_empty());
     }
 
     let draft = repository
@@ -2645,7 +2655,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             0,
             ReplaceProjectOrgSelectionRequest {
                 rule_ids: Vec::new(),
-                context_ids: vec![org_context_id],
+                context_ids: vec![org_context_id.clone()],
                 workflow_ids: Vec::new(),
             },
         )
@@ -2692,6 +2702,28 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
                 .unwrap(),
             "# Shared from Hub\n\nSelected by the project."
         );
+        let checkout = service
+            .project_checkout(DaemonProjectCheckoutRequest {
+                project_id: bootstrap.project_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(checkout.ready);
+        assert_eq!(checkout.commit_id.as_deref(), Some(commit_id.as_str()));
+        assert_eq!(checkout.org_selection_revision, 1);
+        assert_eq!(
+            checkout.selected_org_resource_ids,
+            vec![org_context_id.clone()]
+        );
+        assert!(checkout.resources.iter().any(|resource| {
+            resource.scope == DaemonDraftScope::Project
+                && resource.path == "context/commit-sync.md"
+                && resource.content
+                    == context_content("# Commit sync\n\nInstalled from an immutable Commit.")
+        }));
+        assert!(checkout.resources.iter().any(|resource| {
+            resource.scope == DaemonDraftScope::Org && resource.path == "context/shared-from-hub.md"
+        }));
         let sync = service.sync_status().await.unwrap();
         assert_eq!(sync.commit_sync.state, SyncState::Idle);
         assert_eq!(

@@ -2,10 +2,11 @@ use crate::{
     ActivateMemoryRequest, ActivateMemoryResponse, DaemonDraftDetail, DaemonDraftDetailRequest,
     DaemonDraftListQuery, DaemonDraftListResponse, DaemonDraftOperationRequest,
     DaemonDraftOperationResponse, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse,
-    DaemonIpcService, DaemonMcpStatus, DaemonProjectConfig, DaemonProjectConfigUpdateRequest,
-    DaemonProjectSelectionRequest, DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse,
-    DaemonSyncRetryRequest, DaemonSyncStatus, LoadMemoryRequest, LoadMemoryResponse,
-    SearchIndexProjectRequest, SearchIndexStatus,
+    DaemonIpcService, DaemonMcpStatus, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    DaemonProjectConfig, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
+    DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest,
+    DaemonSyncStatus, LoadMemoryRequest, LoadMemoryResponse, SearchIndexProjectRequest,
+    SearchIndexStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -62,6 +63,17 @@ impl DaemonIpcClient {
     pub fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         self.call(DaemonIpcRequest::empty("sync_status"))?
             .into_payload()
+    }
+
+    pub fn project_checkout(
+        &self,
+        request: DaemonProjectCheckoutRequest,
+    ) -> Result<DaemonProjectCheckout, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "project_checkout",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
     }
 
     pub fn activate_memory(

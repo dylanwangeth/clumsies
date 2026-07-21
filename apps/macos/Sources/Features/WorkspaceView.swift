@@ -11,27 +11,25 @@ enum SyncToolbarPresentation: Equatable {
         guard isAvailable else { return .unavailable(message: nil) }
         guard let status else { return nil }
 
-        let channelStates = [status.draftSync.state, status.commitSync.state]
-        if status.conflictCount > 0 || channelStates.contains("conflicted") {
+        if status.conflictCount > 0 || status.draftSync.state == "conflicted" {
             return .conflicts(count: max(status.conflictCount, 1))
         }
 
-        let errorMessage = [status.draftSync, status.commitSync]
-            .first { $0.state == "failed" || $0.state == "degraded" }?
-            .lastError?
-            .message
-            ?? status.draftSync.lastError?.message
-            ?? status.commitSync.lastError?.message
-
-        if status.failedOperationCount > 0 || channelStates.contains("failed") {
-            return .failed(changeCount: status.failedOperationCount, message: errorMessage)
+        if status.failedOperationCount > 0 || status.draftSync.state == "failed" {
+            return .failed(
+                changeCount: status.failedOperationCount,
+                message: status.draftSync.lastError?.message
+            )
         }
-        if channelStates.contains("degraded") {
-            return .unavailable(message: errorMessage)
+        if status.draftSync.state == "degraded" {
+            return .unavailable(message: status.draftSync.lastError?.message)
         }
         if status.pendingOperationCount > 0
-            || channelStates.contains(where: { ["queued", "syncing", "retrying"].contains($0) }) {
+            || ["queued", "syncing", "retrying"].contains(status.draftSync.state) {
             return .syncing(changeCount: status.pendingOperationCount)
+        }
+        if ["failed", "degraded"].contains(status.commitSync.state) {
+            return .unavailable(message: status.commitSync.lastError?.message)
         }
         return nil
     }

@@ -160,6 +160,70 @@ components:
           type: [string, "null"]
         ready:
           type: boolean
+    DaemonProjectCheckoutRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+    DaemonProjectCheckout:
+      type: object
+      required:
+        - project_id
+        - commit_id
+        - ref_etag
+        - commit_created_at
+        - org_selection_revision
+        - selected_org_resource_ids
+        - resources
+        - ready
+      properties:
+        project_id:
+          type: string
+        commit_id:
+          type: [string, "null"]
+        ref_etag:
+          type: [string, "null"]
+        commit_created_at:
+          type: [string, "null"]
+          format: date-time
+        org_selection_revision:
+          type: integer
+        selected_org_resource_ids:
+          type: array
+          items:
+            type: string
+        resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonProjectCheckoutResource"
+        ready:
+          type: boolean
+    DaemonProjectCheckoutResource:
+      type: object
+      required:
+        - resource_id
+        - scope
+        - resource_kind
+        - project_id
+        - path
+        - content_hash
+        - content
+      properties:
+        resource_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/DaemonDraftScope"
+        resource_kind:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        project_id:
+          type: [string, "null"]
+        path:
+          type: string
+        content_hash:
+          type: string
+        content:
+          $ref: "#/components/schemas/DaemonDraftContent"
     DaemonServerRequest:
       type: object
       required: [method, path, headers, body]

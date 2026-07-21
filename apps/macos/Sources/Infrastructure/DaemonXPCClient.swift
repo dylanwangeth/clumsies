@@ -54,6 +54,13 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "select_project", payload: DaemonProjectSelection(projectId: projectId))
     }
 
+    func projectCheckout(_ projectId: String) async throws -> DaemonProjectCheckout {
+        try await call(
+            method: "project_checkout",
+            payload: DaemonProjectCheckoutRequest(projectId: projectId)
+        )
+    }
+
     func syncStatus() async throws -> DaemonSyncStatus {
         try await call(method: "sync_status", payload: EmptyPayload())
     }

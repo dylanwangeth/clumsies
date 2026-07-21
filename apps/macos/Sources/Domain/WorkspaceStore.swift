@@ -223,7 +223,7 @@ final class WorkspaceStore: ObservableObject {
     func selectProject(_ projectId: String) async {
         guard projectId != activeProjectId else { return }
         guard let project = projects.first(where: { $0.id == projectId }) else { return }
-        guard await flushPendingChanges() else { return }
+        guard await flushPendingDocumentChanges() else { return }
         let generation = UUID()
         projectSelectionGeneration = generation
         loadingProjectId = projectId
@@ -233,13 +233,16 @@ final class WorkspaceStore: ObservableObject {
             }
         }
         do {
+            let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
             var loadedProject: (state: ProjectState, resources: [MemoryResource])?
+            var needsBackgroundRefresh = project.isLoaded
             if !project.isLoaded {
-                loadedProject = try await WorkspaceLoader(
-                    daemon: daemon,
-                    bootstrap: bootstrap,
-                    server: server
-                ).loadProject(id: project.id, name: project.name)
+                if let cached = try await loader.loadCachedProject(id: project.id, name: project.name) {
+                    loadedProject = cached
+                    needsBackgroundRefresh = true
+                } else {
+                    loadedProject = try await loader.loadProject(id: project.id, name: project.name)
+                }
             }
             guard projectSelectionGeneration == generation else { return }
             _ = try await daemon.selectProject(projectId)
@@ -257,6 +260,15 @@ final class WorkspaceStore: ObservableObject {
             let tab = visibleTabs.last
             activeTabId = tab?.id
             selectedItemId = tab?.itemId
+            if needsBackgroundRefresh {
+                Task { [weak self] in
+                    await self?.refreshProjectFromServer(
+                        projectId: project.id,
+                        projectName: project.name,
+                        generation: generation
+                    )
+                }
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -444,7 +456,7 @@ final class WorkspaceStore: ObservableObject {
                         source: .desktop
                     )
                 )
-                try await refreshDraftUntilSettled(response.draftId)
+                try await refreshDraft(response.draftId)
                 selectedItemId = response.draftId
             }
         } catch {
@@ -523,12 +535,22 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func flushPendingChanges() async -> Bool {
+        guard await flushPendingDocumentChanges() else { return false }
+        do {
+            for bundleId in Array(pendingBundleSaves.keys) {
+                try await flushBundleSave(bundleId)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func flushPendingDocumentChanges() async -> Bool {
         do {
             for itemId in Array(pendingDocumentSaves.keys) {
                 try await flushDocumentSave(itemId)
-            }
-            for bundleId in Array(pendingBundleSaves.keys) {
-                try await flushBundleSave(bundleId)
             }
             return true
         } catch {
@@ -595,7 +617,7 @@ final class WorkspaceStore: ObservableObject {
                 )
             )
             if let response {
-                try await refreshDraftUntilSettled(response.draftId)
+                try await refreshDraft(response.draftId)
                 selectedItemId = resource?.id ?? response.draftId
             }
         }
@@ -668,6 +690,7 @@ final class WorkspaceStore: ObservableObject {
                 serverDataSource: runtime.serverDataSource
             )
             syncStatusAvailable = true
+            await refreshUnsettledDrafts(includeFailed: sync.pendingOperationCount > 0)
         } catch {
             syncStatusAvailable = false
         }
@@ -1086,19 +1109,49 @@ final class WorkspaceStore: ObservableObject {
         drafts += mapped
     }
 
-    private func refreshDraftUntilSettled(_ draftId: String) async throws {
-        for attempt in 0..<20 {
-            let detail = try await daemon.draft(draftId)
-            let mapped = WorkspaceLoader.mapDraft(detail, resources: resources)
+    private func refreshUnsettledDrafts(includeFailed: Bool) async {
+        let draftIds = drafts.filter {
+            [.queued, .syncing, .retrying].contains($0.syncStatus)
+                || (includeFailed && $0.syncStatus == .failed)
+        }.map(\.id)
+        guard !draftIds.isEmpty else { return }
+        let resourceSnapshot = resources
+        let mappedDrafts = try? await concurrentMap(draftIds) { draftId in
+            WorkspaceLoader.mapDraft(
+                try await self.daemon.draft(draftId),
+                resources: resourceSnapshot
+            )
+        }
+        guard let mappedDrafts else { return }
+        for mapped in mappedDrafts {
             if let index = drafts.firstIndex(where: { $0.id == mapped.id }) {
                 drafts[index] = mapped
             } else {
                 drafts.append(mapped)
             }
-            if mapped.syncStatus == .synced || mapped.syncStatus == .failed || attempt == 19 {
-                return
+        }
+    }
+
+    private func refreshProjectFromServer(
+        projectId: String,
+        projectName: String,
+        generation: UUID
+    ) async {
+        do {
+            let loaded = try await WorkspaceLoader(
+                daemon: daemon,
+                bootstrap: bootstrap,
+                server: server
+            ).loadProject(id: projectId, name: projectName)
+            guard projectSelectionGeneration == generation, activeProjectId == projectId else { return }
+            if let index = projects.firstIndex(where: { $0.id == projectId }) {
+                projects[index] = loaded.state
             }
-            try await Task.sleep(for: .milliseconds(250))
+            resources.removeAll { $0.projectId == projectId }
+            resources += loaded.resources
+            try await remapDrafts(projectId: projectId)
+        } catch {
+            // The installed Commit remains usable; commit sync reports refresh failures separately.
         }
     }
 
@@ -1308,6 +1361,57 @@ struct WorkspaceLoader: Sendable {
             refCommitId: state.refCommitId
         )
         return (state, resources)
+    }
+
+    func loadCachedProject(
+        id: String,
+        name: String
+    ) async throws -> (state: ProjectState, resources: [MemoryResource])? {
+        let checkout = try await daemon.projectCheckout(id)
+        guard checkout.ready else { return nil }
+        return Self.mapProjectCheckout(checkout, projectName: name)
+    }
+
+    static func mapProjectCheckout(
+        _ checkout: DaemonProjectCheckout,
+        projectName: String
+    ) -> (state: ProjectState, resources: [MemoryResource]) {
+        let resources = checkout.resources.compactMap { resource -> MemoryResource? in
+            guard resource.scope == .project, resource.resourceKind != .metaprompt else { return nil }
+            let kind = MemoryKind(resource.resourceKind)
+            var document = EditableMemoryDocument(
+                title: title(from: resource.path),
+                path: resource.path,
+                body: "",
+                appliesWhen: "",
+                tags: []
+            )
+            document = apply(content: resource.content, to: document)
+            return .init(
+                id: resource.resourceId,
+                scope: .project,
+                projectId: checkout.projectId,
+                projectName: projectName,
+                kind: kind,
+                contentHash: resource.contentHash,
+                updatedAt: checkout.commitCreatedAt ?? "",
+                refCommitId: checkout.commitId,
+                contentLoaded: true,
+                document: document
+            )
+        }
+        return (
+            .init(
+                id: checkout.projectId,
+                name: projectName,
+                refCommitId: checkout.commitId,
+                refEtag: checkout.refEtag ?? "",
+                selectedOrgResourceIds: Set(checkout.selectedOrgResourceIds),
+                orgSelectionRevision: checkout.orgSelectionRevision,
+                isLoaded: true
+            ),
+            resources
+        )
     }
 
     func loadContent(for resource: MemoryResource) async throws -> MemoryResource {

@@ -15,10 +15,11 @@ use daemon::{
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheStatus, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
-    DaemonServerRequest, DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
-    DraftOperationSyncStatus, IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController,
-    LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel, SyncState,
+    DaemonMemoryCacheStatus, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonServerRequest,
+    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
+    ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -360,6 +361,20 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
         .into_payload()
         .unwrap();
     assert!(!memory_cache.ready);
+
+    let project_checkout: DaemonProjectCheckout = service
+        .dispatch(DaemonIpcRequest::new(
+            "project_checkout",
+            serde_json::to_value(DaemonProjectCheckoutRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .unwrap(),
+        ))
+        .await
+        .into_payload()
+        .unwrap();
+    assert!(!project_checkout.ready);
+    assert!(project_checkout.resources.is_empty());
 
     let retry = service
         .dispatch(DaemonIpcRequest::new(

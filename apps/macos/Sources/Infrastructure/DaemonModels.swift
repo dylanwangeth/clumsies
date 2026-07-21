@@ -20,6 +20,31 @@ struct DaemonProjectSelection: Codable, Sendable {
     let projectId: String
 }
 
+struct DaemonProjectCheckoutRequest: Codable, Sendable {
+    let projectId: String
+}
+
+struct DaemonProjectCheckout: Codable, Sendable {
+    let projectId: String
+    let commitId: String?
+    let refEtag: String?
+    let commitCreatedAt: String?
+    let orgSelectionRevision: Int
+    let selectedOrgResourceIds: [String]
+    let resources: [DaemonProjectCheckoutResource]
+    let ready: Bool
+}
+
+struct DaemonProjectCheckoutResource: Codable, Sendable {
+    let resourceId: String
+    let scope: DaemonDraftScope
+    let resourceKind: DaemonResourceKind
+    let projectId: String?
+    let path: String
+    let contentHash: String
+    let content: DaemonDraftContent
+}
+
 struct DaemonHealth: Codable, Equatable, Sendable {
     let daemonVersion: String
     let serverUrl: String

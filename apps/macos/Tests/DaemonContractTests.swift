@@ -164,6 +164,54 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(MemoryKind.userMaintainedCases.map(\.title), ["Context", "Rules", "Workflow"])
     }
 
+    func testCachedProjectCheckoutHydratesProjectMemoryWithoutInheritedDuplicates() {
+        let checkout = DaemonProjectCheckout(
+            projectId: "project-1",
+            commitId: "commit-1",
+            refEtag: "\"commit-1\"",
+            commitCreatedAt: timestamp,
+            orgSelectionRevision: 3,
+            selectedOrgResourceIds: ["context-org"],
+            resources: [
+                .init(
+                    resourceId: "rule-project",
+                    scope: .project,
+                    resourceKind: .rule,
+                    projectId: "project-1",
+                    path: "rules/review.md",
+                    contentHash: "sha256:rule",
+                    content: .rule(
+                        name: "Review carefully",
+                        appliesWhen: "Reviewing changes",
+                        constraint: "Inspect behavior before style.",
+                        tags: ["review"]
+                    )
+                ),
+                .init(
+                    resourceId: "context-org",
+                    scope: .org,
+                    resourceKind: .context,
+                    projectId: nil,
+                    path: "context/shared.md",
+                    contentHash: "sha256:context",
+                    content: .context(content: "Shared context")
+                ),
+            ],
+            ready: true
+        )
+
+        let loaded = WorkspaceLoader.mapProjectCheckout(checkout, projectName: "Clumsies")
+
+        XCTAssertEqual(loaded.state.refCommitId, "commit-1")
+        XCTAssertEqual(loaded.state.refEtag, "\"commit-1\"")
+        XCTAssertEqual(loaded.state.orgSelectionRevision, 3)
+        XCTAssertEqual(loaded.state.selectedOrgResourceIds, ["context-org"])
+        XCTAssertEqual(loaded.resources.count, 1)
+        XCTAssertEqual(loaded.resources[0].document.title, "Review carefully")
+        XCTAssertEqual(loaded.resources[0].document.body, "Inspect behavior before style.")
+        XCTAssertTrue(loaded.resources[0].contentLoaded)
+    }
+
     func testReviewChangeSourcesUseCommitTreeAndDraftOperation() throws {
         let resource = ServerDraftResourceReference(scope: "project", kind: .context, id: "context-1", path: "notes/a.md")
         let detail = ReviewDetail(
@@ -375,7 +423,16 @@ final class DaemonContractTests: XCTestCase {
                 ),
                 isAvailable: true
             ),
-            .failed(changeCount: 0, message: "The server could not be reached.")
+            .unavailable(message: "The server could not be reached.")
+        )
+    }
+
+    func testSyncToolbarHidesCommitBackgroundRefresh() {
+        XCTAssertNil(
+            SyncToolbarPresentation.resolve(
+                status: syncStatus(commitState: "syncing"),
+                isAvailable: true
+            )
         )
     }
 

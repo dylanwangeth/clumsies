@@ -25,7 +25,10 @@ mod commit_sync;
 mod credentials;
 mod ipc;
 mod search;
-pub use commit_sync::{DaemonMemoryCacheRequest, DaemonMemoryCacheStatus};
+pub use commit_sync::{
+    DaemonMemoryCacheRequest, DaemonMemoryCacheStatus, DaemonProjectCheckout,
+    DaemonProjectCheckoutRequest, DaemonProjectCheckoutResource,
+};
 pub use credentials::{
     CredentialStore, CredentialStoreError, KEYCHAIN_ACCOUNT, ServerCredentials,
     SystemCredentialStore,
@@ -948,6 +951,13 @@ impl DaemonState {
         commit_sync::memory_cache(self, request).await
     }
 
+    pub async fn project_checkout(
+        &self,
+        request: DaemonProjectCheckoutRequest,
+    ) -> Result<DaemonProjectCheckout, DaemonError> {
+        commit_sync::project_checkout(self, request).await
+    }
+
     pub async fn activate_memory(
         &self,
         request: ActivateMemoryRequest,
@@ -1247,6 +1257,13 @@ impl DaemonIpcService {
         self.state.memory_cache(request).await
     }
 
+    pub async fn project_checkout(
+        &self,
+        request: DaemonProjectCheckoutRequest,
+    ) -> Result<DaemonProjectCheckout, DaemonError> {
+        self.state.project_checkout(request).await
+    }
+
     pub async fn activate_memory(
         &self,
         request: ActivateMemoryRequest,
@@ -1352,6 +1369,16 @@ impl DaemonIpcService {
                         self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
                     match payload {
                         Ok(payload) => self.memory_cache(payload).await.and_then(|value| {
+                            serde_json::to_value(value).map_err(DaemonError::from)
+                        }),
+                        Err(error) => Err(error),
+                    }
+                }
+                "project_checkout" => {
+                    let payload = self
+                        .decode_dispatch_payload::<DaemonProjectCheckoutRequest>(request.payload);
+                    match payload {
+                        Ok(payload) => self.project_checkout(payload).await.and_then(|value| {
                             serde_json::to_value(value).map_err(DaemonError::from)
                         }),
                         Err(error) => Err(error),
