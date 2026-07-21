@@ -134,6 +134,8 @@ private struct FileTreeRow: View {
     let isExpanded: Bool
     let onToggleDirectory: () -> Void
     @State private var isHovered = false
+    @State private var showsRenameAlert = false
+    @State private var proposedName = ""
 
     private var item: MemoryListItem? { entry.node.item }
     private var isSelected: Bool {
@@ -187,6 +189,8 @@ private struct FileTreeRow: View {
                     Button("Open in Hub") {
                         Task { await store.reveal(item) }
                     }
+                } else {
+                    Button("Rename…") { beginRenaming(item) }
                 }
                 if let draft = item.draft {
                     Button("Discard Draft") { Task { await store.discard(draft) } }
@@ -195,6 +199,16 @@ private struct FileTreeRow: View {
                     Button("Move to Trash", role: .destructive) { Task { await store.delete(item) } }
                 }
             }
+        }
+        .alert("Rename Memory", isPresented: $showsRenameAlert) {
+            TextField("File name", text: $proposedName)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") {
+                if let item {
+                    rename(item)
+                }
+            }
+            .disabled(!isValidProposedName)
         }
     }
 
@@ -210,6 +224,34 @@ private struct FileTreeRow: View {
         if isSelected { return Color.accentColor.opacity(0.16) }
         if isHovered { return Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.55) }
         return .clear
+    }
+
+    private var isValidProposedName: Bool {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
+    }
+
+    private func beginRenaming(_ item: MemoryListItem) {
+        proposedName = item.document.path.split(separator: "/").last.map(String.init) ?? item.document.path
+        showsRenameAlert = true
+    }
+
+    private func rename(_ item: MemoryListItem) {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidProposedName else { return }
+        var document = item.document
+        let parent = document.path
+            .split(separator: "/")
+            .dropLast()
+            .joined(separator: "/")
+        document.path = parent.isEmpty ? name : "\(parent)/\(name)"
+        Task {
+            do {
+                try await store.save(item, document: document)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -306,30 +348,33 @@ private struct DocumentSessionView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                DocumentPathControl(
-                    path: mode == .preview ? .constant(item.document.path) : $document.path,
-                    isEditable: mode == .source && !item.inherited
-                )
+                DocumentPathBreadcrumb(path: mode == .preview ? item.document.path : document.path)
+                    .accessibilityLabel("Path: \(mode == .preview ? item.document.path : document.path)")
                 Spacer()
-                ControlGroup {
+                HStack(spacing: 4) {
                     if item.kind == .rules {
                         Button {
                             showsRuleDetails.toggle()
                         } label: {
                             Image(systemName: "info.circle")
-                                .symbolVariant(showsRuleDetails ? .fill : .none)
-                                .foregroundStyle(showsRuleDetails ? Color.accentColor : .secondary)
                         }
+                        .buttonStyle(DocumentToolButtonStyle(isSelected: showsRuleDetails))
                         .help("Rule Details")
                         .accessibilityLabel("Rule Details")
+                        .popover(isPresented: $showsRuleDetails, arrowEdge: .top) {
+                            RuleDetailsPopover(
+                                document: mode == .preview ? .constant(item.document) : $document,
+                                isEditable: mode == .source && !item.inherited
+                            )
+                        }
                     }
                     if supportsMarkdownPreview {
                         Button {
                             store.open(item, mode: mode == .preview ? .source : .preview)
                         } label: {
                             Image(systemName: mode == .preview ? "doc.plaintext" : "eye")
-                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(DocumentToolButtonStyle())
                         .help(mode == .preview ? "Open Source" : "Open Preview")
                         .accessibilityLabel(mode == .preview ? "Open Source" : "Open Preview")
                     }
@@ -351,18 +396,11 @@ private struct DocumentSessionView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(DocumentToolButtonStyle())
                     .menuIndicator(.hidden)
                     .help("Document Actions")
                     .accessibilityLabel("Document Actions")
-                }
-                .controlSize(.small)
-                .popover(isPresented: $showsRuleDetails, arrowEdge: .top) {
-                    RuleDetailsPopover(
-                        document: mode == .preview ? .constant(item.document) : $document,
-                        isEditable: mode == .source && !item.inherited
-                    )
                 }
             }
             .padding(.horizontal, 10)
@@ -459,55 +497,39 @@ private struct DocumentSessionView: View {
     }
 }
 
-private struct DocumentPathControl: View {
-    @Binding var path: String
-    let isEditable: Bool
+private struct DocumentToolButtonStyle: ButtonStyle {
+    let isSelected: Bool
 
-    @State private var isEditing = false
-    @State private var originalPath = ""
-    @FocusState private var isFocused: Bool
+    @State private var isHovered = false
 
-    var body: some View {
-        Group {
-            if isEditing {
-                TextField("Path", text: $path)
-                    .textFieldStyle(.plain)
-                    .font(.system(.caption, design: .monospaced))
-                    .focused($isFocused)
-                    .onSubmit { finishEditing() }
-                    .onExitCommand {
-                        path = originalPath
-                        finishEditing()
-                    }
-            } else if isEditable {
-                Button(action: beginEditing) {
-                    DocumentPathBreadcrumb(path: path)
-                }
-                .buttonStyle(.plain)
-                .help("Edit Path")
-                .accessibilityLabel("Path: \(path)")
-            } else {
-                DocumentPathBreadcrumb(path: path)
-                    .accessibilityLabel("Path: \(path)")
-            }
-        }
-        .lineLimit(1)
-        .onChange(of: isFocused) { _, focused in
-            if isEditing && !focused {
-                finishEditing()
-            }
-        }
+    init(isSelected: Bool = false) {
+        self.isSelected = isSelected
     }
 
-    private func beginEditing() {
-        originalPath = path
-        isEditing = true
-        DispatchQueue.main.async { isFocused = true }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .regular))
+            .foregroundStyle(isSelected ? .primary : .secondary)
+            .frame(width: 24, height: 24)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(backgroundColor(isPressed: configuration.isPressed))
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .onHover { isHovered = $0 }
     }
 
-    private func finishEditing() {
-        isFocused = false
-        isEditing = false
+    private func backgroundColor(isPressed: Bool) -> Color {
+        if isPressed {
+            return Color(nsColor: .labelColor).opacity(0.14)
+        }
+        if isSelected {
+            return Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
+        }
+        if isHovered {
+            return Color(nsColor: .labelColor).opacity(0.07)
+        }
+        return .clear
     }
 }
 
