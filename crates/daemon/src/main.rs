@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ipc_server =
         DaemonIpcServer::start(launch_agent.mach_service_name.clone(), service.clone())?;
     let _sync_worker = state.start_sync_worker();
+    let _search_model_worker = state.start_search_model_worker();
     let health = service.health().await;
 
     eprintln!(

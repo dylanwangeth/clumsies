@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22.1"
 fastembed = { version = "5.17.3", default-features = false, features = ["hf-hub-rustls-tls", "ort-download-binaries"] }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
 hex = "0.4.3"
 pulldown-cmark = "0.13.4"
 reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }

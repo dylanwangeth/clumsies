@@ -191,6 +191,7 @@ pub struct SearchIndexProjectRequest {
 #[serde(rename_all = "snake_case")]
 pub enum SearchModelStatus {
     Missing,
+    Preparing,
     Ready,
     Failed,
 }
@@ -203,6 +204,8 @@ pub struct SearchIndexStatus {
     pub active_effective_hash: Option<String>,
     pub ready: bool,
     pub model_status: SearchModelStatus,
+    pub model_downloaded_bytes: Option<u64>,
+    pub model_total_bytes: Option<u64>,
     pub last_error: Option<String>,
 }
 
@@ -249,6 +252,10 @@ impl SearchFailure {
 
     pub(crate) fn model(message: impl Into<String>) -> Self {
         Self::new("search_model_unavailable", message)
+    }
+
+    fn model_preparing(message: impl Into<String>) -> Self {
+        Self::new("search_model_preparing", message)
     }
 
     pub(crate) fn vector(message: impl Into<String>) -> Self {
@@ -505,11 +512,20 @@ pub(crate) async fn search_index_status(
         }
         None => (None, None, false, None),
     };
-    let model_status = match state.inner.search_models.status() {
-        SearchModelRuntimeStatus::Missing => SearchModelStatus::Missing,
-        SearchModelRuntimeStatus::Ready => SearchModelStatus::Ready,
-        SearchModelRuntimeStatus::Failed => SearchModelStatus::Failed,
-    };
+    let (model_status, model_downloaded_bytes, model_total_bytes) =
+        match state.inner.search_models.status() {
+            SearchModelRuntimeStatus::Missing => (SearchModelStatus::Missing, None, None),
+            SearchModelRuntimeStatus::Preparing {
+                downloaded_bytes,
+                total_bytes,
+            } => (
+                SearchModelStatus::Preparing,
+                Some(downloaded_bytes),
+                Some(total_bytes),
+            ),
+            SearchModelRuntimeStatus::Ready => (SearchModelStatus::Ready, None, None),
+            SearchModelRuntimeStatus::Failed => (SearchModelStatus::Failed, None, None),
+        };
     let current_failure: Option<String> = sqlx::query_scalar(
         "SELECT last_error
          FROM search_revisions
@@ -531,6 +547,8 @@ pub(crate) async fn search_index_status(
         active_effective_hash,
         ready,
         model_status,
+        model_downloaded_bytes,
+        model_total_bytes,
         last_error: current_failure.or(last_error),
     })
 }
@@ -1091,6 +1109,30 @@ async fn ensure_index(
     state: &DaemonState,
     effective: &EffectiveMemory,
 ) -> Result<String, DaemonError> {
+    match state.inner.search_models.status() {
+        SearchModelRuntimeStatus::Missing => {
+            return Err(SearchFailure::model_preparing(
+                "search models are waiting for background preparation",
+            )
+            .into());
+        }
+        SearchModelRuntimeStatus::Preparing {
+            downloaded_bytes,
+            total_bytes,
+        } => {
+            return Err(SearchFailure::model_preparing(format!(
+                "search models are preparing ({downloaded_bytes}/{total_bytes} bytes)"
+            ))
+            .into());
+        }
+        SearchModelRuntimeStatus::Failed => {
+            return Err(SearchFailure::model(
+                "search model preparation failed and will retry in the background",
+            )
+            .into());
+        }
+        SearchModelRuntimeStatus::Ready => {}
+    }
     let models = state.inner.search_models.clone();
     let model_revision = run_model_work(move || models.revision()).await?;
     let revision_id = index_revision_id(&effective.effective_hash, &model_revision);
@@ -1965,6 +2007,8 @@ mod tests {
 
     struct FailingIndexModels;
 
+    struct PreparingModels;
+
     impl SearchModels for DeterministicModels {
         fn revision(&self) -> Result<String, SearchFailure> {
             Ok("deterministic-models.v1".to_owned())
@@ -2038,6 +2082,39 @@ mod tests {
 
         fn status(&self) -> SearchModelRuntimeStatus {
             SearchModelRuntimeStatus::Ready
+        }
+    }
+
+    impl SearchModels for PreparingModels {
+        fn revision(&self) -> Result<String, SearchFailure> {
+            unreachable!("model revision must not block while preparation is active")
+        }
+
+        fn token_offsets(&self, _text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
+            unreachable!("tokenization must not start while preparation is active")
+        }
+
+        fn embed_passages(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure> {
+            unreachable!("embedding must not start while preparation is active")
+        }
+
+        fn embed_query(&self, _query: &str) -> Result<Vec<f32>, SearchFailure> {
+            unreachable!("embedding must not start while preparation is active")
+        }
+
+        fn rerank(&self, _query: &str, _documents: &[String]) -> Result<Vec<f32>, SearchFailure> {
+            unreachable!("reranking must not start while preparation is active")
+        }
+
+        fn dimensions(&self) -> usize {
+            3
+        }
+
+        fn status(&self) -> SearchModelRuntimeStatus {
+            SearchModelRuntimeStatus::Preparing {
+                downloaded_bytes: 128,
+                total_bytes: 512,
+            }
         }
     }
 
@@ -2330,6 +2407,33 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("deterministic index failure"))
         );
+    }
+
+    #[tokio::test]
+    async fn preparing_models_report_progress_without_blocking_activation() {
+        let (_temp, state) = test_state_with_models(Arc::new(PreparingModels)).await;
+        let status = state
+            .search_index_status(SearchIndexProjectRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(status.model_status, SearchModelStatus::Preparing);
+        assert_eq!(status.model_downloaded_bytes, Some(128));
+        assert_eq!(status.model_total_bytes, Some(512));
+
+        let error = state
+            .activate_memory(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "hybrid".to_owned(),
+                state: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaemonError::Search { ref code, .. } if code == "search_model_preparing"
+        ));
     }
 
     #[test]

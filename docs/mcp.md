@@ -71,6 +71,11 @@ Omit `state` after context compaction, after old tool output is dropped, or
 when starting fresh. Invalid or unsupported state returns
 `invalid_activation_state`; it is never silently treated as an empty state.
 
+The daemon prepares its pinned local models in the background. Until they are
+ready, activation returns `search_model_preparing` with current and total byte
+counts instead of holding the MCP request open. Model preparation retries in
+the background and has no lexical-only fallback.
+
 ## Load
 
 Use `load` for complete resources already identified by ID or exact path:

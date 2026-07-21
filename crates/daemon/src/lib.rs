@@ -1106,6 +1106,30 @@ impl DaemonState {
         }))
     }
 
+    pub fn start_search_model_worker(&self) -> JoinHandle<()> {
+        let models = self.inner.search_models.clone();
+        models.begin_preparation();
+        tokio::spawn(async move {
+            let mut retry_delay = Duration::from_secs(5);
+            loop {
+                let attempt_models = models.clone();
+                let result = tokio::task::spawn_blocking(move || attempt_models.prepare()).await;
+                match result {
+                    Ok(Ok(())) => break,
+                    Ok(Err(error)) => {
+                        eprintln!("search model preparation failed: {}", error.message);
+                    }
+                    Err(error) => {
+                        eprintln!("search model preparation worker failed: {error}");
+                    }
+                }
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(60));
+                models.begin_preparation();
+            }
+        })
+    }
+
     pub fn request_sync(&self) {
         if self.inner.config.sync.enabled {
             self.inner.sync_notify.notify_one();

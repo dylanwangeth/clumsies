@@ -1,20 +1,117 @@
-use std::fs;
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use fastembed::{
-    EmbeddingModel, RerankInitOptions, RerankerModel, TextEmbedding, TextInitOptions, TextRerank,
+    InitOptionsUserDefined, Pooling, RerankInitOptionsUserDefined, TextEmbedding, TextRerank,
+    TokenizerFiles, UserDefinedEmbeddingModel, UserDefinedRerankingModel,
+};
+use hf_hub::{
+    Cache, Repo, RepoType,
+    api::{Progress, sync::ApiBuilder},
 };
 use sha2::{Digest, Sha256};
 
 use super::SearchFailure;
 
 const EMBEDDING_MODEL_ID: &str = "intfloat/multilingual-e5-small";
-const RERANKER_MODEL_ID: &str = "BAAI/bge-reranker-base";
+const EMBEDDING_MODEL_REVISION: &str = "614241f622f53c4eeff9890bdc4f31cfecc418b3";
+const RERANKER_MODEL_ID: &str = "Xenova/bge-reranker-base";
+const RERANKER_MODEL_REVISION: &str = "280bcc27a84e0b898c251e06fddb25171bd9b101";
 const EMBEDDING_DIMENSIONS: usize = 384;
-const MODEL_REPOSITORIES: [&str; 2] = [EMBEDDING_MODEL_ID, RERANKER_MODEL_ID];
+const EMBEDDING_MODEL_FILE: &str = "onnx/model_qint8_avx512_vnni.onnx";
+const RERANKER_MODEL_FILE: &str = "onnx/model_quantized.onnx";
+
+#[derive(Clone, Copy)]
+struct ModelArtifact {
+    path: &'static str,
+    size: u64,
+    sha256: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct ModelManifest {
+    repository: &'static str,
+    revision: &'static str,
+    artifacts: &'static [ModelArtifact],
+}
+
+const EMBEDDING_ARTIFACTS: &[ModelArtifact] = &[
+    ModelArtifact {
+        path: "config.json",
+        size: 655,
+        sha256: "69137736cab8b8903a07fe8afaafdda25aac55415a12a55d1bffa9f581abf959",
+    },
+    ModelArtifact {
+        path: EMBEDDING_MODEL_FILE,
+        size: 118_346_824,
+        sha256: "dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88",
+    },
+    ModelArtifact {
+        path: "special_tokens_map.json",
+        size: 167,
+        sha256: "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7",
+    },
+    ModelArtifact {
+        path: "tokenizer.json",
+        size: 17_082_730,
+        sha256: "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+    },
+    ModelArtifact {
+        path: "tokenizer_config.json",
+        size: 443,
+        sha256: "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+    },
+];
+
+const RERANKER_ARTIFACTS: &[ModelArtifact] = &[
+    ModelArtifact {
+        path: "config.json",
+        size: 782,
+        sha256: "b6575b9d5be20d6747417c8e20c5a0db1636356e0b6d422d7244c628423c4d4c",
+    },
+    ModelArtifact {
+        path: RERANKER_MODEL_FILE,
+        size: 279_301_077,
+        sha256: "dd98f3e67837d23210a6b7550c08cced4f61845b940ac45be3565840a10f3244",
+    },
+    ModelArtifact {
+        path: "special_tokens_map.json",
+        size: 279,
+        sha256: "d5469a60db23249c7f8945013d78df30b44b6bf686c6bb4740f4223f77b1b535",
+    },
+    ModelArtifact {
+        path: "tokenizer.json",
+        size: 17_098_079,
+        sha256: "48564c5c7d3fa64d85d95e65414a542385f88b0f128fd8d4163fd7a57f2be05c",
+    },
+    ModelArtifact {
+        path: "tokenizer_config.json",
+        size: 443,
+        sha256: "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+    },
+];
+
+const MODEL_MANIFESTS: &[ModelManifest] = &[
+    ModelManifest {
+        repository: EMBEDDING_MODEL_ID,
+        revision: EMBEDDING_MODEL_REVISION,
+        artifacts: EMBEDDING_ARTIFACTS,
+    },
+    ModelManifest {
+        repository: RERANKER_MODEL_ID,
+        revision: RERANKER_MODEL_REVISION,
+        artifacts: RERANKER_ARTIFACTS,
+    },
+];
 
 pub(crate) trait SearchModels: Send + Sync {
+    fn begin_preparation(&self) {}
+    fn prepare(&self) -> Result<(), SearchFailure> {
+        self.revision().map(|_| ())
+    }
     fn revision(&self) -> Result<String, SearchFailure>;
     fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure>;
     fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure>;
@@ -24,9 +121,13 @@ pub(crate) trait SearchModels: Send + Sync {
     fn status(&self) -> SearchModelRuntimeStatus;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SearchModelRuntimeStatus {
     Missing,
+    Preparing {
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    },
     Ready,
     Failed,
 }
@@ -37,6 +138,8 @@ pub(crate) struct FastEmbedSearchModels {
     reranker: Mutex<Option<TextRerank>>,
     last_error: Mutex<Option<String>>,
     revision: Mutex<Option<String>>,
+    preparation_lock: Mutex<()>,
+    preparation_status: Arc<Mutex<SearchModelRuntimeStatus>>,
 }
 
 impl FastEmbedSearchModels {
@@ -47,6 +150,8 @@ impl FastEmbedSearchModels {
             reranker: Mutex::new(None),
             last_error: Mutex::new(None),
             revision: Mutex::new(None),
+            preparation_lock: Mutex::new(()),
+            preparation_status: Arc::new(Mutex::new(SearchModelRuntimeStatus::Missing)),
         }
     }
 
@@ -58,22 +163,10 @@ impl FastEmbedSearchModels {
             .embedding
             .lock()
             .map_err(|_| SearchFailure::model("embedding model lock is poisoned"))?;
-        if guard.is_none() {
-            let options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
-                .with_cache_dir(self.cache_dir.clone())
-                .with_show_download_progress(false);
-            match TextEmbedding::try_new(options) {
-                Ok(model) => *guard = Some(model),
-                Err(error) => {
-                    let failure = SearchFailure::model(format!(
-                        "failed to initialize {EMBEDDING_MODEL_ID}: {error}"
-                    ));
-                    self.record_error(&failure);
-                    return Err(failure);
-                }
-            }
-        }
-        operation(guard.as_mut().expect("embedding initialized above"))
+        let model = guard
+            .as_mut()
+            .ok_or_else(|| SearchFailure::model("embedding model is not prepared"))?;
+        operation(model)
     }
 
     fn with_reranker<T>(
@@ -84,27 +177,18 @@ impl FastEmbedSearchModels {
             .reranker
             .lock()
             .map_err(|_| SearchFailure::model("reranker model lock is poisoned"))?;
-        if guard.is_none() {
-            let options = RerankInitOptions::new(RerankerModel::BGERerankerBase)
-                .with_cache_dir(self.cache_dir.clone())
-                .with_show_download_progress(false);
-            match TextRerank::try_new(options) {
-                Ok(model) => *guard = Some(model),
-                Err(error) => {
-                    let failure = SearchFailure::model(format!(
-                        "failed to initialize {RERANKER_MODEL_ID}: {error}"
-                    ));
-                    self.record_error(&failure);
-                    return Err(failure);
-                }
-            }
-        }
-        operation(guard.as_mut().expect("reranker initialized above"))
+        let model = guard
+            .as_mut()
+            .ok_or_else(|| SearchFailure::model("reranker model is not prepared"))?;
+        operation(model)
     }
 
     fn record_error(&self, error: &SearchFailure) {
         if let Ok(mut guard) = self.last_error.lock() {
             *guard = Some(error.message.clone());
+        }
+        if let Ok(mut status) = self.preparation_status.lock() {
+            *status = SearchModelRuntimeStatus::Failed;
         }
     }
 
@@ -114,87 +198,127 @@ impl FastEmbedSearchModels {
             .unwrap_or_else(|| self.cache_dir.clone())
     }
 
-    fn artifact_revision(&self) -> Result<String, SearchFailure> {
-        let root = self.artifact_root();
-        let mut files = Vec::new();
-        for repository in MODEL_REPOSITORIES {
-            let directory = root.join(format!("models--{}", repository.replace('/', "--")));
-            let revision_path = directory.join("refs/main");
-            let revision = fs::read_to_string(&revision_path).map_err(|error| {
-                SearchFailure::model(format!(
-                    "failed to read model revision for {repository}: {error}"
-                ))
-            })?;
-            let revision = revision.trim();
-            if revision.is_empty() || revision.contains(['/', '\\']) {
-                return Err(SearchFailure::model(format!(
-                    "model revision for {repository} is invalid"
-                )));
-            }
-            files.push((format!("{repository}/revision"), revision_path));
-            collect_files(
-                &root,
-                &directory.join("snapshots").join(revision),
-                &mut files,
-            )?;
-        }
-        files.sort_by(|left, right| left.0.cmp(&right.0));
-        if files.is_empty() {
-            return Err(SearchFailure::model(format!(
-                "model cache {} contains no artifacts",
-                root.display()
-            )));
-        }
-
+    fn artifact_revision() -> String {
         let mut hasher = Sha256::new();
-        for (relative, absolute) in files {
-            hasher.update(relative.as_bytes());
+        for manifest in MODEL_MANIFESTS {
+            hasher.update(manifest.repository.as_bytes());
             hasher.update([0]);
-            let bytes = fs::read(&absolute).map_err(|error| {
-                SearchFailure::model(format!(
-                    "failed to hash model artifact {}: {error}",
-                    absolute.display()
-                ))
-            })?;
-            hasher.update((bytes.len() as u64).to_le_bytes());
-            hasher.update(&bytes);
-        }
-        Ok(hex::encode(hasher.finalize()))
-    }
-}
-
-impl SearchModels for FastEmbedSearchModels {
-    fn revision(&self) -> Result<String, SearchFailure> {
-        if let Some(revision) = self
-            .revision
-            .lock()
-            .map_err(|_| SearchFailure::model("model revision lock is poisoned"))?
-            .clone()
-        {
-            return Ok(revision);
-        }
-
-        self.with_embedding(|_| Ok(()))?;
-        self.with_reranker(|_| Ok(()))?;
-        let digest = match self.artifact_revision() {
-            Ok(digest) => digest,
-            Err(error) => {
-                self.record_error(&error);
-                return Err(error);
+            hasher.update(manifest.revision.as_bytes());
+            hasher.update([0]);
+            for artifact in manifest.artifacts {
+                hasher.update(artifact.path.as_bytes());
+                hasher.update([0]);
+                hasher.update(artifact.size.to_le_bytes());
+                hasher.update(artifact.sha256.as_bytes());
+                hasher.update([0]);
             }
-        };
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    fn prepare_inner(&self) -> Result<(), SearchFailure> {
+        let root = self.artifact_root();
+        let paths = prepare_artifacts(&root, self.preparation_status.clone())?;
+        set_preparation_progress(
+            &self.preparation_status,
+            model_download_size(),
+            model_download_size(),
+        );
+
+        let embedding_model = UserDefinedEmbeddingModel::new(
+            read_artifact(&paths, EMBEDDING_MODEL_ID, EMBEDDING_MODEL_FILE)?,
+            tokenizer_files(&paths, EMBEDDING_MODEL_ID)?,
+        )
+        .with_pooling(Pooling::Mean);
+        let embedding = TextEmbedding::try_new_from_user_defined(
+            embedding_model,
+            InitOptionsUserDefined::default(),
+        )
+        .map_err(|error| {
+            SearchFailure::model(format!(
+                "failed to initialize {EMBEDDING_MODEL_ID}: {error}"
+            ))
+        })?;
+
+        let reranker_model = UserDefinedRerankingModel::new(
+            artifact_path(&paths, RERANKER_MODEL_ID, RERANKER_MODEL_FILE)?.to_path_buf(),
+            tokenizer_files(&paths, RERANKER_MODEL_ID)?,
+        );
+        let reranker = TextRerank::try_new_from_user_defined(
+            reranker_model,
+            RerankInitOptionsUserDefined::default(),
+        )
+        .map_err(|error| {
+            SearchFailure::model(format!("failed to initialize {RERANKER_MODEL_ID}: {error}"))
+        })?;
+
+        *self
+            .embedding
+            .lock()
+            .map_err(|_| SearchFailure::model("embedding model lock is poisoned"))? =
+            Some(embedding);
+        *self
+            .reranker
+            .lock()
+            .map_err(|_| SearchFailure::model("reranker model lock is poisoned"))? = Some(reranker);
         let revision = format!(
-            "fastembed-5.17.3:{EMBEDDING_MODEL_ID}:{RERANKER_MODEL_ID}:dim-{EMBEDDING_DIMENSIONS}:l2:{digest}"
+            "fastembed-5.17.3:{EMBEDDING_MODEL_ID}@{EMBEDDING_MODEL_REVISION}:{RERANKER_MODEL_ID}@{RERANKER_MODEL_REVISION}:int8:dim-{EMBEDDING_DIMENSIONS}:l2:{}",
+            Self::artifact_revision()
         );
         *self
             .revision
             .lock()
-            .map_err(|_| SearchFailure::model("model revision lock is poisoned"))? =
-            Some(revision.clone());
+            .map_err(|_| SearchFailure::model("model revision lock is poisoned"))? = Some(revision);
         if let Ok(mut guard) = self.last_error.lock() {
             *guard = None;
         }
-        Ok(revision)
+        if let Ok(mut status) = self.preparation_status.lock() {
+            *status = SearchModelRuntimeStatus::Ready;
+        }
+        Ok(())
+    }
+}
+
+impl SearchModels for FastEmbedSearchModels {
+    fn begin_preparation(&self) {
+        if let Ok(mut status) = self.preparation_status.lock()
+            && !matches!(
+                *status,
+                SearchModelRuntimeStatus::Preparing { .. } | SearchModelRuntimeStatus::Ready
+            )
+        {
+            *status = SearchModelRuntimeStatus::Preparing {
+                downloaded_bytes: 0,
+                total_bytes: model_download_size(),
+            };
+        }
+    }
+
+    fn prepare(&self) -> Result<(), SearchFailure> {
+        let _guard = self
+            .preparation_lock
+            .lock()
+            .map_err(|_| SearchFailure::model("model preparation lock is poisoned"))?;
+        if matches!(self.status(), SearchModelRuntimeStatus::Ready) {
+            return Ok(());
+        }
+        self.begin_preparation();
+        match self.prepare_inner() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.record_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn revision(&self) -> Result<String, SearchFailure> {
+        self.prepare()?;
+        self.revision
+            .lock()
+            .map_err(|_| SearchFailure::model("model revision lock is poisoned"))?
+            .clone()
+            .ok_or_else(|| SearchFailure::model("prepared model revision is missing"))
     }
 
     fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
@@ -288,70 +412,214 @@ impl SearchModels for FastEmbedSearchModels {
     }
 
     fn status(&self) -> SearchModelRuntimeStatus {
-        if self
-            .last_error
+        self.preparation_status
             .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .is_some()
-        {
-            return SearchModelRuntimeStatus::Failed;
-        }
-        let embedding_ready = self
-            .embedding
-            .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(false);
-        let reranker_ready = self
-            .reranker
-            .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(false);
-        if embedding_ready && reranker_ready {
-            SearchModelRuntimeStatus::Ready
-        } else {
-            SearchModelRuntimeStatus::Missing
+            .map(|status| status.clone())
+            .unwrap_or(SearchModelRuntimeStatus::Failed)
+    }
+}
+
+struct ModelDownloadProgress {
+    status: Arc<Mutex<SearchModelRuntimeStatus>>,
+    completed_before: u64,
+    current_file_bytes: u64,
+    total_bytes: u64,
+}
+
+impl ModelDownloadProgress {
+    fn new(
+        status: Arc<Mutex<SearchModelRuntimeStatus>>,
+        completed_before: u64,
+        total_bytes: u64,
+    ) -> Self {
+        Self {
+            status,
+            completed_before,
+            current_file_bytes: 0,
+            total_bytes,
         }
     }
 }
 
-fn collect_files(
-    root: &Path,
-    directory: &Path,
-    output: &mut Vec<(String, PathBuf)>,
-) -> Result<(), SearchFailure> {
-    if !directory.exists() {
-        return Ok(());
+impl Progress for ModelDownloadProgress {
+    fn init(&mut self, _size: usize, _filename: &str) {
+        self.current_file_bytes = 0;
+        set_preparation_progress(&self.status, self.completed_before, self.total_bytes);
     }
-    let entries = fs::read_dir(directory).map_err(|error| {
+
+    fn update(&mut self, size: usize) {
+        self.current_file_bytes = self.current_file_bytes.saturating_add(size as u64);
+        set_preparation_progress(
+            &self.status,
+            self.completed_before
+                .saturating_add(self.current_file_bytes)
+                .min(self.total_bytes),
+            self.total_bytes,
+        );
+    }
+
+    fn finish(&mut self) {}
+}
+
+fn prepare_artifacts(
+    cache_dir: &Path,
+    status: Arc<Mutex<SearchModelRuntimeStatus>>,
+) -> Result<HashMap<String, PathBuf>, SearchFailure> {
+    let endpoint =
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_owned());
+    let api = ApiBuilder::new()
+        .with_cache_dir(cache_dir.to_path_buf())
+        .with_endpoint(endpoint)
+        .with_progress(false)
+        .build()
+        .map_err(|error| SearchFailure::model(format!("failed to create model client: {error}")))?;
+    let cache = Cache::new(cache_dir.to_path_buf());
+    let total_bytes = model_download_size();
+    let mut completed_bytes = 0;
+    let mut paths = HashMap::new();
+    set_preparation_progress(&status, 0, total_bytes);
+
+    for manifest in MODEL_MANIFESTS {
+        let repo = Repo::with_revision(
+            manifest.repository.to_owned(),
+            RepoType::Model,
+            manifest.revision.to_owned(),
+        );
+        let cache_repo = cache.repo(repo.clone());
+        let api_repo = api.repo(repo);
+        for artifact in manifest.artifacts {
+            let cached = cache_repo
+                .get(artifact.path)
+                .filter(|path| verify_artifact(path, artifact).is_ok());
+            let path = match cached {
+                Some(path) => path,
+                None => api_repo
+                    .download_with_progress(
+                        artifact.path,
+                        ModelDownloadProgress::new(status.clone(), completed_bytes, total_bytes),
+                    )
+                    .map_err(|error| {
+                        SearchFailure::model(format!(
+                            "failed to download {}@{} {}: {error}",
+                            manifest.repository, manifest.revision, artifact.path
+                        ))
+                    })?,
+            };
+            verify_artifact(&path, artifact)?;
+            completed_bytes = completed_bytes.saturating_add(artifact.size);
+            set_preparation_progress(&status, completed_bytes, total_bytes);
+            paths.insert(artifact_key(manifest.repository, artifact.path), path);
+        }
+    }
+    Ok(paths)
+}
+
+fn artifact_key(repository: &str, path: &str) -> String {
+    format!("{repository}\0{path}")
+}
+
+fn artifact_path<'a>(
+    paths: &'a HashMap<String, PathBuf>,
+    repository: &str,
+    path: &str,
+) -> Result<&'a Path, SearchFailure> {
+    paths
+        .get(&artifact_key(repository, path))
+        .map(PathBuf::as_path)
+        .ok_or_else(|| SearchFailure::model(format!("prepared model artifact is missing: {path}")))
+}
+
+fn read_artifact(
+    paths: &HashMap<String, PathBuf>,
+    repository: &str,
+    path: &str,
+) -> Result<Vec<u8>, SearchFailure> {
+    let path = artifact_path(paths, repository, path)?;
+    fs::read(path).map_err(|error| {
         SearchFailure::model(format!(
-            "failed to inspect model cache {}: {error}",
-            directory.display()
+            "failed to read model artifact {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn tokenizer_files(
+    paths: &HashMap<String, PathBuf>,
+    repository: &str,
+) -> Result<TokenizerFiles, SearchFailure> {
+    Ok(TokenizerFiles {
+        tokenizer_file: read_artifact(paths, repository, "tokenizer.json")?,
+        config_file: read_artifact(paths, repository, "config.json")?,
+        special_tokens_map_file: read_artifact(paths, repository, "special_tokens_map.json")?,
+        tokenizer_config_file: read_artifact(paths, repository, "tokenizer_config.json")?,
+    })
+}
+
+fn verify_artifact(path: &Path, artifact: &ModelArtifact) -> Result<(), SearchFailure> {
+    let mut file = File::open(path).map_err(|error| {
+        SearchFailure::model(format!(
+            "failed to open model artifact {}: {error}",
+            path.display()
         ))
     })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            SearchFailure::model(format!("failed to inspect model cache entry: {error}"))
-        })?;
-        let path = entry.path();
-        let metadata = fs::metadata(&path).map_err(|error| {
+    let size = file
+        .metadata()
+        .map_err(|error| {
             SearchFailure::model(format!(
                 "failed to inspect model artifact {}: {error}",
                 path.display()
             ))
+        })?
+        .len();
+    if size != artifact.size {
+        return Err(SearchFailure::model(format!(
+            "model artifact {} has size {size}, expected {}",
+            path.display(),
+            artifact.size
+        )));
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            SearchFailure::model(format!(
+                "failed to verify model artifact {}: {error}",
+                path.display()
+            ))
         })?;
-        if metadata.is_dir() {
-            collect_files(root, &path, output)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| SearchFailure::model("model artifact escaped its cache root"))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            output.push((relative, path));
+        if read == 0 {
+            break;
         }
+        hasher.update(&buffer[..read]);
+    }
+    if hex::encode(hasher.finalize()) != artifact.sha256 {
+        return Err(SearchFailure::model(format!(
+            "model artifact {} failed SHA-256 verification",
+            path.display()
+        )));
     }
     Ok(())
+}
+
+fn model_download_size() -> u64 {
+    MODEL_MANIFESTS
+        .iter()
+        .flat_map(|manifest| manifest.artifacts)
+        .map(|artifact| artifact.size)
+        .sum()
+}
+
+fn set_preparation_progress(
+    status: &Arc<Mutex<SearchModelRuntimeStatus>>,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+) {
+    if let Ok(mut status) = status.lock() {
+        *status = SearchModelRuntimeStatus::Preparing {
+            downloaded_bytes: downloaded_bytes.min(total_bytes),
+            total_bytes,
+        };
+    }
 }
 
 fn validate_and_normalize_embeddings(
@@ -377,4 +645,79 @@ fn validate_and_normalize_embeddings(
             Ok(embedding.into_iter().map(|value| value / norm).collect())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_model_payload_is_bounded() {
+        assert_eq!(model_download_size(), 431_831_479);
+    }
+
+    #[test]
+    fn artifact_verification_rejects_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.bin");
+        fs::write(&path, b"abc").unwrap();
+        let artifact = ModelArtifact {
+            path: "artifact.bin",
+            size: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        verify_artifact(&path, &artifact).unwrap();
+
+        fs::write(&path, b"abd").unwrap();
+        let error = verify_artifact(&path, &artifact).unwrap_err();
+        assert!(error.message.contains("SHA-256"));
+    }
+
+    #[test]
+    fn download_progress_is_monotonic_and_bounded() {
+        let status = Arc::new(Mutex::new(SearchModelRuntimeStatus::Missing));
+        let mut progress = ModelDownloadProgress::new(status.clone(), 100, 200);
+        progress.init(80, "model.onnx");
+        progress.update(30);
+        progress.update(100);
+        assert_eq!(
+            *status.lock().unwrap(),
+            SearchModelRuntimeStatus::Preparing {
+                downloaded_bytes: 200,
+                total_bytes: 200,
+            }
+        );
+    }
+
+    #[test]
+    #[ignore = "downloads the pinned 412 MiB model payload"]
+    fn quantized_models_run_multilingual_retrieval() {
+        let cache_dir = std::env::var_os("CLUMSIES_MODEL_TEST_CACHE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
+        let models = FastEmbedSearchModels::new(cache_dir);
+        models.prepare().unwrap();
+
+        let query = models.embed_query("如何避免重复注入相同记忆？").unwrap();
+        let passages = models
+            .embed_passages(&[
+                "memory delta 使用内容哈希避免重复注入。".to_owned(),
+                "macOS 菜单栏使用原生状态项。".to_owned(),
+            ])
+            .unwrap();
+        assert_eq!(query.len(), EMBEDDING_DIMENSIONS);
+        assert_eq!(passages.len(), 2);
+
+        let scores = models
+            .rerank(
+                "如何避免重复注入相同记忆？",
+                &[
+                    "memory delta 使用内容哈希避免重复注入。".to_owned(),
+                    "macOS 菜单栏使用原生状态项。".to_owned(),
+                ],
+            )
+            .unwrap();
+        assert!(scores[0] > scores[1]);
+        assert_eq!(models.status(), SearchModelRuntimeStatus::Ready);
+    }
 }

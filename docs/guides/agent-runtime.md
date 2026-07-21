@@ -29,6 +29,23 @@ MCP does not crawl the repository, read a workspace manifest, or append a
 session attestation log. The daemon is the single owner of the current local
 read and write model.
 
+## Model preparation
+
+The daemon starts model preparation in the background before the first MCP
+request. It downloads a pinned int8
+[`multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small)
+embedding model and a pinned int8
+[`bge-reranker-base`](https://huggingface.co/Xenova/bge-reranker-base)
+conversion. The complete payload is 431,831,479 bytes.
+
+Every repository revision and artifact SHA-256 is fixed in the daemon. Files
+are downloaded into the model cache with resume support, verified before ONNX
+loading, and reused offline afterward. Search index status reports `preparing`
+with downloaded and total bytes while this work is in progress. Activation
+returns `search_model_preparing` immediately during that state; it never blocks
+an MCP request on an unreported download and never falls back to a weaker
+retrieval path.
+
 ## Tool loop
 
 The current tool surface is:
