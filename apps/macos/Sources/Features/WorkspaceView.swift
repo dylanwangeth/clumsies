@@ -3,7 +3,6 @@ import SwiftUI
 
 enum SyncToolbarPresentation: Equatable {
     case syncing(changeCount: Int)
-    case conflicts(count: Int)
     case failed(changeCount: Int, message: String?)
     case unavailable(message: String?)
     case stale
@@ -16,10 +15,6 @@ enum SyncToolbarPresentation: Equatable {
         guard isAvailable else { return .unavailable(message: nil) }
 
         if let status {
-            if status.conflictCount > 0 || status.draftSync.state == "conflicted" {
-                return .conflicts(count: max(status.conflictCount, 1))
-            }
-
             if status.failedOperationCount > 0 || status.draftSync.state == "failed" {
                 return .failed(
                     changeCount: status.failedOperationCount,
@@ -50,7 +45,6 @@ enum SyncToolbarPresentation: Equatable {
     var symbolName: String {
         switch self {
         case .syncing: "arrow.triangle.2.circlepath"
-        case .conflicts: "exclamationmark.triangle"
         case .failed: "cloud.exclamationmark"
         case .unavailable: "icloud.slash"
         case .stale: "icloud.slash"
@@ -61,8 +55,6 @@ enum SyncToolbarPresentation: Equatable {
         switch self {
         case .syncing(let count):
             count == 1 ? "Syncing 1 change" : count > 1 ? "Syncing \(count) changes" : "Syncing"
-        case .conflicts(let count):
-            count == 1 ? "1 sync conflict" : "\(count) sync conflicts"
         case .failed:
             "Sync failed"
         case .unavailable:
@@ -76,10 +68,6 @@ enum SyncToolbarPresentation: Equatable {
         switch self {
         case .syncing:
             return "Clumsies is synchronizing changes in the background."
-        case .conflicts(let count):
-            return count == 1
-                ? "One change needs review before synchronization can continue."
-                : "\(count) changes need review before synchronization can continue."
         case .failed(let count, let message):
             if let message, !message.isEmpty { return message }
             return count == 1
@@ -189,7 +177,7 @@ struct WorkspaceView: View {
                                     .frame(width: 24, height: 24)
                                     .help(syncToolbarPresentation.label)
                                     .accessibilityLabel(syncToolbarPresentation.label)
-                            case .conflicts, .failed, .unavailable, .stale:
+                            case .failed, .unavailable, .stale:
                                 Button {
                                     showsSyncIssuePopover.toggle()
                                 } label: {
@@ -420,7 +408,6 @@ private extension SyncToolbarPresentation {
     var tint: Color {
         switch self {
         case .syncing: .secondary
-        case .conflicts: .orange
         case .failed: .red
         case .unavailable: .secondary
         case .stale: .secondary
@@ -452,15 +439,6 @@ private struct SyncIssuePopover: View {
             HStack {
                 Spacer()
                 switch presentation {
-                case .conflicts:
-                    Button("Open Reviews") {
-                        store.selectedSection = .reviews
-                        if let review = store.reviews.first(where: { $0.conflict != nil }) {
-                            store.selectedReviewId = review.id
-                        }
-                        isPresented = false
-                    }
-                    .keyboardShortcut(.defaultAction)
                 case .failed, .unavailable:
                     Button {
                         isRetrying = true

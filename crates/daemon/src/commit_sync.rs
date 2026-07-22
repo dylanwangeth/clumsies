@@ -27,7 +27,17 @@ pub struct DaemonMemoryCacheStatus {
     pub project_id: String,
     pub commit_id: Option<String>,
     pub root_path: Option<String>,
-    pub ready: bool,
+    pub state: DaemonMemoryCacheState,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonMemoryCacheState {
+    ProjectRefNotSynced,
+    GenerationMissing,
+    GenerationCorrupt,
+    Ready,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -152,7 +162,7 @@ pub(super) async fn run(state: &DaemonState) -> Result<(), DaemonError> {
 
 pub(super) async fn status(state: &DaemonState) -> Result<SyncChannelStatus, DaemonError> {
     let config = state.project_config();
-    let readiness = config.readiness();
+    let readiness = config.server_readiness();
     let project_id = config.project_id.as_deref();
     let server_cursor = match project_id {
         Some(project_id) => {
@@ -229,6 +239,43 @@ pub(super) async fn current_base_commit_id(
     }
 }
 
+pub(super) async fn ensure_commit_cached(
+    state: &DaemonState,
+    commit_id: &str,
+) -> Result<(), DaemonError> {
+    validate_cache_component("commit_id", commit_id)?;
+    if cached_commit_exists(&state.inner.pool, commit_id).await? {
+        return Ok(());
+    }
+    let payload: ServerCommitPayload =
+        get_server_json(state, &format!("/api/v1/commits/{commit_id}")).await?;
+    if payload.commit.commit_id != commit_id {
+        return Err(DaemonError::Server(format!(
+            "Server returned Commit {} while {commit_id} was requested",
+            payload.commit.commit_id
+        )));
+    }
+    let synthetic_state = ServerCommitState {
+        update_available: false,
+        reference: ServerRef {
+            name: "refs/heads/base-retention".to_owned(),
+            scope: payload.commit.scope,
+            org_id: payload.commit.org_id.clone(),
+            project_id: payload.commit.project_id.clone(),
+            commit_id: Some(payload.commit.commit_id.clone()),
+            updated_at: payload.commit.created_at.clone(),
+        },
+        latest: Some(payload.commit.clone()),
+        download_url: Some(format!("/api/v1/commits/{commit_id}")),
+        incremental_supported: false,
+    };
+    validate_commit_payload(&payload, &synthetic_state)?;
+    let mut tx = state.inner.pool.begin().await?;
+    cache_commit_payload(&mut tx, &payload).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 pub(super) async fn memory_cache(
     state: &DaemonState,
     request: DaemonMemoryCacheRequest,
@@ -247,7 +294,8 @@ pub(super) async fn memory_cache(
             project_id: request.project_id,
             commit_id: None,
             root_path: None,
-            ready: false,
+            state: DaemonMemoryCacheState::ProjectRefNotSynced,
+            diagnostic: Some("the Project Ref has not been synchronized".to_owned()),
         });
     };
     let commit_id: Option<String> = row.try_get("commit_id")?;
@@ -256,13 +304,35 @@ pub(super) async fn memory_cache(
         &request.project_id,
         commit_id.as_deref().unwrap_or(EMPTY_GENERATION),
     );
-    let ready =
-        verify_generation_ref(&generation, &request.project_id, commit_id.as_deref()).is_ok();
+    if !generation.exists() {
+        return Ok(DaemonMemoryCacheStatus {
+            project_id: request.project_id,
+            commit_id,
+            root_path: None,
+            state: DaemonMemoryCacheState::GenerationMissing,
+            diagnostic: Some(format!(
+                "the installed Commit generation {} is missing",
+                generation.display()
+            )),
+        });
+    }
+    if let Err(error) =
+        verify_generation_ref(&generation, &request.project_id, commit_id.as_deref())
+    {
+        return Ok(DaemonMemoryCacheStatus {
+            project_id: request.project_id,
+            commit_id,
+            root_path: None,
+            state: DaemonMemoryCacheState::GenerationCorrupt,
+            diagnostic: Some(error.to_string()),
+        });
+    }
     Ok(DaemonMemoryCacheStatus {
         project_id: request.project_id,
         commit_id,
-        root_path: ready.then(|| generation.display().to_string()),
-        ready,
+        root_path: Some(generation.display().to_string()),
+        state: DaemonMemoryCacheState::Ready,
+        diagnostic: None,
     })
 }
 
@@ -324,14 +394,57 @@ pub(super) async fn project_checkout(
 }
 
 async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
-    let project_id = state
-        .project_config()
-        .project_id
-        .ok_or_else(|| DaemonError::InvalidConfig("project_id is required".to_owned()))?;
-    validate_cache_component("project_id", &project_id)?;
+    let project_ids = sync_project_ids(state).await?;
+    let mut first_error = None;
+    for project_id in project_ids {
+        if let Err(error) = sync_project_ref(state, &project_id).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+async fn sync_project_ids(state: &DaemonState) -> Result<BTreeSet<String>, DaemonError> {
+    let config = state.project_config();
+    let server_url = canonical_server_url(&config.server_url)?;
+    let mut project_ids = BTreeSet::new();
+    if let Some(project_id) = config.project_id {
+        project_ids.insert(project_id);
+    }
+    let bound_project_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT project_id
+         FROM project_bindings
+         WHERE server_url = $1
+         ORDER BY project_id",
+    )
+    .bind(server_url)
+    .fetch_all(&state.inner.pool)
+    .await?;
+    project_ids.extend(bound_project_ids);
+    let draft_project_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT project_id
+         FROM local_drafts
+         WHERE status IN ('open', 'submitted')
+         ORDER BY project_id",
+    )
+    .fetch_all(&state.inner.pool)
+    .await?;
+    project_ids.extend(draft_project_ids);
+    Ok(project_ids)
+}
+
+async fn sync_project_ref(state: &DaemonState, project_id: &str) -> Result<(), DaemonError> {
+    validate_cache_component("project_id", project_id)?;
+
+    ensure_active_draft_base_commits(state, project_id).await?;
 
     let local_project_commit =
-        load_ref_commit(&state.inner.pool, &project_ref_key(&project_id)).await?;
+        load_ref_commit(&state.inner.pool, &project_ref_key(project_id)).await?;
     let (project_state, project_etag) = fetch_commit_state(
         state,
         &format!("/api/v1/projects/{project_id}/commit-state"),
@@ -342,7 +455,7 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
         &project_state,
         &project_etag,
         ServerCommitScope::Project,
-        Some(&project_id),
+        Some(project_id),
         local_project_commit.as_deref(),
     )?;
 
@@ -368,7 +481,28 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
     }
 
     install_ref(state, &org_state, &org_etag, None).await?;
-    install_ref(state, &project_state, &project_etag, Some(&project_id)).await?;
+    install_ref(state, &project_state, &project_etag, Some(project_id)).await?;
+    Ok(())
+}
+
+async fn ensure_active_draft_base_commits(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<(), DaemonError> {
+    let commit_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT base_commit_id
+         FROM local_drafts
+         WHERE project_id = $1
+           AND status IN ('open', 'submitted')
+           AND base_commit_id IS NOT NULL
+         ORDER BY base_commit_id",
+    )
+    .bind(project_id)
+    .fetch_all(&state.inner.pool)
+    .await?;
+    for commit_id in commit_ids {
+        ensure_commit_cached(state, &commit_id).await?;
+    }
     Ok(())
 }
 
@@ -883,6 +1017,43 @@ async fn upsert_ref(
     .bind(&reference.updated_at)
     .execute(&mut **tx)
     .await?;
+    match reference.scope {
+        ServerCommitScope::Project => {
+            let project_id = reference.project_id.as_deref().ok_or_else(|| {
+                DaemonError::Server("Project Ref is missing project_id".to_owned())
+            })?;
+            sqlx::query(
+                "UPDATE local_drafts
+                 SET current_commit_id = $2,
+                     freshness = CASE WHEN base_commit_id IS $2 THEN 'current' ELSE 'behind' END,
+                     reconciliation = CASE WHEN current_commit_id IS $2 THEN reconciliation ELSE 'unknown' END,
+                     reconciliation_candidate_id = CASE WHEN current_commit_id IS $2 THEN reconciliation_candidate_id ELSE NULL END
+                 WHERE project_id = $1 AND resource_scope = 'project'",
+            )
+            .bind(project_id)
+            .bind(&reference.commit_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        ServerCommitScope::Org => {
+            sqlx::query(
+                "UPDATE local_drafts
+                 SET current_commit_id = $2,
+                     freshness = CASE WHEN base_commit_id IS $2 THEN 'current' ELSE 'behind' END,
+                     reconciliation = CASE WHEN current_commit_id IS $2 THEN reconciliation ELSE 'unknown' END,
+                     reconciliation_candidate_id = CASE WHEN current_commit_id IS $2 THEN reconciliation_candidate_id ELSE NULL END
+                 WHERE resource_scope = 'org'
+                   AND project_id IN (
+                       SELECT project_id FROM cached_refs
+                       WHERE scope = 'project' AND org_id = $1 AND project_id IS NOT NULL
+                   )",
+            )
+            .bind(&reference.org_id)
+            .bind(&reference.commit_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -1278,7 +1449,7 @@ fn generation_root(cache_dir: &Path, project_id: &str, generation: &str) -> Path
         .join(generation)
 }
 
-fn validate_cache_component(label: &str, value: &str) -> Result<(), DaemonError> {
+pub(super) fn validate_cache_component(label: &str, value: &str) -> Result<(), DaemonError> {
     if value.is_empty()
         || !value
             .bytes()

@@ -35,13 +35,26 @@ automatically synchronizes it to Server. Saving a draft does not publish it.
 The collaboration flow is:
 
 1. edit a Hub or Local resource
-2. submit the draft for review
-3. review comments and a decision
-4. merge an approved review
-5. receive the new authority Commit
+2. keep editing normally while newer shared Commits synchronize
+3. review and explicitly merge the latest shared version when prompted
+4. submit the coordinated draft for review
+5. review comments and a decision
+6. merge an approved current review
+7. receive the new authority Commit
 
-If the target Ref changed after the draft's base Commit, merge stops with a
-conflict. Clumsies does not silently overwrite the newer authority state.
+When the target Ref advances, Desktop continuously shows **共享版本已有更新**.
+Viewing the candidate does not change the Draft. **合并最新版本** shows the
+Base/Current/Draft comparison and requires confirmation even when the result is
+clean. Conflicts use the same screen for manual resolution. The Draft remains
+editable throughout, and its old revision is retained when the result is
+applied.
+
+Creating or resubmitting a Review must use the latest Ref. If it moves again
+during confirmation, Clumsies recalculates instead of overwriting authority.
+An existing Review may remain behind and continue to receive comments, but it
+must be coordinated before merge. An update that changes the final resource
+result invalidates prior approval; a Base-only change with byte-identical final
+result preserves it.
 
 ## Agent workflow
 
@@ -50,6 +63,12 @@ The MCP server exposes:
 - `activate` to return task-relevant, directly usable memory fragments
 - `load` to read a known complete resource by stable ID or exact path
 - `store` to create or update a local project draft
+
+Each MCP process resolves its Project from the current directory through the
+always-on daemon. This binding is durable and does not follow the Project shown
+in Desktop, so Desktop may be closed or displaying another Project. An unbound
+directory fails with `project_binding_not_found`; it is never silently attached
+to a default Project.
 
 MCP `store` and Desktop editing use the same daemon queue, so a change created
 by an agent appears in Desktop for review. Organization-scoped MCP writes are

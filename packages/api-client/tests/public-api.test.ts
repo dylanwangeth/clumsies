@@ -8,12 +8,20 @@ describe("Clumsies API", () => {
   test("maps the complete public contract to HTTP requests", async () => {
     const requests: string[] = [];
     let mergeIfMatch: string | null = null;
+    let submissionIfMatch: string | null = null;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       requests.push(`${request.method} ${url.pathname}`);
-      if (url.pathname.endsWith("/merges") || url.pathname.endsWith("/conflict-resolutions")) {
+      if (
+        url.pathname.endsWith("/merges") ||
+        url.pathname.endsWith("/rebases") ||
+        url.pathname === "/api/v1/reviews"
+      ) {
         mergeIfMatch = request.headers.get("if-match");
+      }
+      if (url.pathname.endsWith("/submissions")) {
+        submissionIfMatch = request.headers.get("if-match");
       }
       return new Response("{}", {
         status: 200,
@@ -69,13 +77,24 @@ describe("Clumsies API", () => {
       resource: { scope: "project", kind: "context", id: null, path: "context/new.md" },
       content: { kind: "context", content: "# New" },
     });
+    await api.createDraftReconciliationCandidate("draft", {
+      expected_draft_version: 2,
+    });
+    await api.draftReconciliationCandidate("draft", "candidate");
+    await api.createDraftRebase("draft", '"commit"', {
+      candidate_id: "candidate",
+      expected_draft_version: 2,
+    });
     await api.listDraftEvents();
     await api.createDraftOperationBatch({
       daemon_installation_id: "daemon",
       operations: [],
     });
     await api.listReviews();
-    await api.createReview({ draft_id: "draft", expected_draft_version: 1 });
+    await api.createReview('"commit"', {
+      draft_id: "draft",
+      expected_draft_version: 1,
+    });
     await api.review("review");
     await api.listReviewComments("review");
     await api.createReviewComment("review", { body: "Comment" });
@@ -83,18 +102,9 @@ describe("Clumsies API", () => {
       decision: "approved",
       expected_review_version: 1,
     });
-    await api.createReviewSubmission("review", {
+    await api.createReviewSubmission("review", '"commit"', {
       expected_review_version: 2,
       expected_draft_version: 3,
-    });
-    await api.createReviewConflictResolution("review", '"commit"', {
-      expected_review_version: 2,
-      expected_draft_version: 3,
-      operations: [{
-        action: "update",
-        resource: { scope: "project", kind: "context", id: "context", path: null },
-        content: { kind: "context", content: "Resolved" },
-      }],
     });
     await api.createReviewMerge("review", '"ref-none"', {
       expected_review_version: 2,
@@ -139,6 +149,9 @@ describe("Clumsies API", () => {
       "PATCH /api/v1/drafts/draft",
       "DELETE /api/v1/drafts/draft",
       "POST /api/v1/drafts/draft/operations",
+      "POST /api/v1/drafts/draft/reconciliation-candidates",
+      "GET /api/v1/drafts/draft/reconciliation-candidates/candidate",
+      "POST /api/v1/drafts/draft/rebases",
       "GET /api/v1/draft-events",
       "POST /api/v1/draft-operation-batches",
       "GET /api/v1/reviews",
@@ -148,7 +161,6 @@ describe("Clumsies API", () => {
       "POST /api/v1/reviews/review/comments",
       "POST /api/v1/reviews/review/decisions",
       "POST /api/v1/reviews/review/submissions",
-      "POST /api/v1/reviews/review/conflict-resolutions",
       "POST /api/v1/reviews/review/merges",
       "GET /api/v1/org/commits",
       "GET /api/v1/org/commit-state",
@@ -157,5 +169,6 @@ describe("Clumsies API", () => {
       "GET /api/v1/commits/commit",
     ]);
     expect(mergeIfMatch).toBe('"ref-none"');
+    expect(submissionIfMatch).toBe('"commit"');
   });
 });

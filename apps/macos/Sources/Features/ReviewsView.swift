@@ -1,5 +1,10 @@
 import SwiftUI
 
+private enum ReviewReconciliationPurpose {
+    case updateDraft
+    case resubmit
+}
+
 struct ReviewNavigator: View {
     @ObservedObject var store: WorkspaceStore
     @Binding var statusFilter: String
@@ -56,9 +61,9 @@ private struct ReviewEditor: View {
     @State private var decisionNote = ""
     @State private var loading = true
     @State private var changeSources: ReviewChangeSources?
-    @State private var resolvedContent = ""
-    @State private var resolvingConflict = false
-    @State private var confirmsDiscard = false
+    @State private var reconciliationCandidate: DraftReconciliationCandidate?
+    @State private var loadsReconciliation = false
+    @State private var reconciliationPurpose = ReviewReconciliationPurpose.updateDraft
 
     var body: some View {
         Group {
@@ -84,34 +89,40 @@ private struct ReviewEditor: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        if review.conflict != nil, let detail, let changeSources {
-                            ReviewConflictResolver(
-                                sources: changeSources,
-                                resolvedContent: $resolvedContent,
-                                isWorking: resolvingConflict,
-                                canResolve: store.isReviewAuthor(review),
-                                onResolve: { resolve(detail, sources: changeSources) },
-                                onDiscard: store.isReviewAuthor(review) ? { confirmsDiscard = true } : nil
-                            )
+                        if review.freshness == .behind, let detail {
+                            HStack(spacing: 10) {
+                                Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                                    .foregroundStyle(.orange)
+                                Text("共享版本已有更新")
+                                Spacer()
+                                Button("查看更新") { loadReconciliation(detail) }
+                                if store.isReviewAuthor(review) {
+                                    Button("合并最新版本") { loadReconciliation(detail) }
+                                        .buttonStyle(.borderedProminent)
+                                }
+                                if loadsReconciliation {
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
+                            .padding(10)
+                            .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                         }
 
-                        if review.conflict == nil {
-                            GroupBox("Changes") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(changeSources?.operationLabels ?? [], id: \.self) { label in
-                                        Text(label)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    if let proposed = changeSources?.draftContent {
-                                        ReviewDiffView(base: changeSources?.baseContent ?? "", proposed: proposed)
-                                    } else if changeSources?.operationLabels.isEmpty != false {
-                                        Text("No content change")
-                                            .foregroundStyle(.secondary)
-                                    }
+                        GroupBox("Changes") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(changeSources?.operationLabels ?? [], id: \.self) { label in
+                                    Text(label)
+                                        .foregroundStyle(.secondary)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(6)
+                                if let proposed = changeSources?.draftContent {
+                                    ReviewDiffView(base: changeSources?.baseContent ?? "", proposed: proposed)
+                                } else if changeSources?.operationLabels.isEmpty != false {
+                                    Text("No content change")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
                         }
 
                         if let detail {
@@ -150,7 +161,7 @@ private struct ReviewEditor: View {
                         } else if review.status == "rejected", let detail, store.isReviewAuthor(review) {
                             Button("Resubmit Review") { resubmit(detail) }
                                 .buttonStyle(.borderedProminent)
-                        } else if review.status == "approved" && review.conflict == nil && store.canMergeReviews {
+                        } else if review.status == "approved" && review.freshness == .current && store.canMergeReviews {
                             Button("Merge Review") { merge() }
                                 .buttonStyle(.borderedProminent)
                         }
@@ -162,17 +173,28 @@ private struct ReviewEditor: View {
             }
         }
         .task { await load() }
-        .confirmationDialog(
-            "Discard this conflicted draft?",
-            isPresented: $confirmsDiscard,
-            titleVisibility: .visible
-        ) {
-            Button("Discard Draft", role: .destructive) {
-                if let detail { discard(detail) }
+        .sheet(item: $reconciliationCandidate) { candidate in
+            DraftReconciliationSheet(candidate: candidate) { resolvedState in
+                guard let detail else {
+                    throw ServerClientError.invalidResponse("Review detail is unavailable.")
+                }
+                switch reconciliationPurpose {
+                case .updateDraft:
+                    try await store.applyReconciliation(
+                        draftId: detail.draft.draftId,
+                        draftVersion: detail.draft.version,
+                        candidate: candidate,
+                        resolvedState: resolvedState
+                    )
+                case .resubmit:
+                    try await store.resubmit(
+                        review,
+                        detail: detail,
+                        candidate: candidate,
+                        resolvedState: resolvedState
+                    )
+                }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The draft and its unresolved changes will be discarded. This cannot be undone.")
         }
     }
 
@@ -183,7 +205,6 @@ private struct ReviewEditor: View {
             detail = loadedDetail
             let sources = try await store.reviewChangeSources(for: loadedDetail)
             changeSources = sources
-            resolvedContent = sources.resolutionContent ?? ""
         } catch {
             store.errorMessage = error.localizedDescription
         }
@@ -225,6 +246,10 @@ private struct ReviewEditor: View {
     }
 
     private func resubmit(_ detail: ReviewDetail) {
+        if detail.draft.coordination.freshness == .behind {
+            loadReconciliation(detail, purpose: .resubmit)
+            return
+        }
         Task {
             do {
                 try await store.resubmit(review, detail: detail)
@@ -234,99 +259,20 @@ private struct ReviewEditor: View {
         }
     }
 
-    private func resolve(_ detail: ReviewDetail, sources: ReviewChangeSources) {
+    private func loadReconciliation(
+        _ detail: ReviewDetail,
+        purpose: ReviewReconciliationPurpose = .updateDraft
+    ) {
+        guard !loadsReconciliation else { return }
+        loadsReconciliation = true
+        reconciliationPurpose = purpose
         Task {
-            resolvingConflict = true
-            defer { resolvingConflict = false }
+            defer { loadsReconciliation = false }
             do {
-                try await store.resolveConflict(
-                    review,
-                    detail: detail,
-                    resolvedContent: sources.resolutionContent == nil ? nil : resolvedContent
-                )
-                await load()
+                reconciliationCandidate = try await store.reconciliationCandidate(for: detail)
             } catch {
                 store.errorMessage = error.localizedDescription
             }
         }
-    }
-
-    private func discard(_ detail: ReviewDetail) {
-        Task {
-            resolvingConflict = true
-            defer { resolvingConflict = false }
-            do {
-                try await store.discardConflict(review, detail: detail)
-            } catch {
-                store.errorMessage = error.localizedDescription
-            }
-        }
-    }
-}
-
-private struct ReviewConflictResolver: View {
-    let sources: ReviewChangeSources
-    @Binding var resolvedContent: String
-    let isWorking: Bool
-    let canResolve: Bool
-    let onResolve: () -> Void
-    let onDiscard: (() -> Void)?
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("The project Ref changed after this draft was created.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
-                ForEach(sources.operationLabels, id: \.self) { label in
-                    Text(label)
-                        .foregroundStyle(.secondary)
-                }
-                HStack(alignment: .top, spacing: 10) {
-                    source("Base", content: sources.baseContent)
-                    source("Current", content: sources.currentContent)
-                    source("Draft", content: sources.draftContent)
-                }
-                GroupBox("Resolved") {
-                    if sources.resolutionContent != nil {
-                        NativeTextEditor(text: $resolvedContent)
-                            .frame(minHeight: 180)
-                    } else {
-                        Text(sources.operationLabels.last ?? "No editable content")
-                            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-                            .padding(6)
-                    }
-                }
-                HStack {
-                    if let onDiscard {
-                        Button("Discard Draft", role: .destructive, action: onDiscard)
-                    }
-                    Spacer()
-                    if isWorking { ProgressView().controlSize(.small) }
-                    if canResolve {
-                        Button("Reopen Review", action: onResolve)
-                            .buttonStyle(.borderedProminent)
-                    }
-                }
-                .disabled(isWorking)
-            }
-            .padding(6)
-        } label: {
-            Text("Resolve Conflict")
-        }
-    }
-
-    private func source(_ title: String, content: String?) -> some View {
-        GroupBox(title) {
-            ScrollView {
-                Text(content ?? "Resource not present")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(content == nil ? .secondary : .primary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(6)
-            }
-            .frame(maxWidth: .infinity, minHeight: 130, maxHeight: 180)
-        }
-        .frame(maxWidth: .infinity)
     }
 }

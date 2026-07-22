@@ -470,6 +470,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/drafts/{draft_id}/reconciliation-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Compute an immutable reconciliation candidate against the latest target Ref without changing the draft. */
+        post: operations["createDraftReconciliationCandidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drafts/{draft_id}/reconciliation-candidates/{candidate_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        /** Read an immutable reconciliation candidate and its current validity. */
+        get: operations["getDraftReconciliationCandidate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/drafts/{draft_id}/rebases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Explicitly apply a confirmed reconciliation result as a new recoverable draft revision. */
+        post: operations["createDraftRebase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/draft-events": {
         parameters: {
             query?: never;
@@ -591,27 +649,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resubmit an edited draft to its existing rejected review. */
+        /** Reconcile when required and resubmit an edited draft to its rejected review. */
         post: operations["createReviewSubmission"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/reviews/{review_id}/conflict-resolutions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                review_id: components["parameters"]["ReviewId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Replace a conflicted draft with a resolution based on the current Ref. */
-        post: operations["createReviewConflictResolution"];
         delete?: never;
         options?: never;
         head?: never;
@@ -872,20 +911,12 @@ export interface components {
         UpdateDraftRequest: {
             title?: string;
             description?: string;
-            status?: components["schemas"]["DraftStatus"];
         };
         AppendDraftOperationRequest: components["schemas"]["DraftOperationInput"];
         DraftDetail: {
             draft: components["schemas"]["Draft"];
             operations: components["schemas"]["DraftOperation"][];
             sync_state: components["schemas"]["DraftSyncState"];
-            conflict: components["schemas"]["DraftConflict"] | null;
-        };
-        DraftConflict: {
-            base_commit_id: string | null;
-            current_commit_id: string | null;
-            /** Format: date-time */
-            detected_at: string;
         };
         Draft: {
             draft_id: string;
@@ -896,6 +927,7 @@ export interface components {
             description: string;
             resource: components["schemas"]["DraftResourceRef"];
             status: components["schemas"]["DraftStatus"];
+            coordination: components["schemas"]["DraftCoordination"];
             version: number;
             /** Format: date-time */
             created_at: string;
@@ -940,10 +972,64 @@ export interface components {
         };
         DraftSyncState: {
             /** @enum {string} */
-            status: "synced" | "pending" | "conflicted" | "failed";
+            status: "synced" | "pending" | "failed";
             server_cursor: string | null;
             daemon_installation_id: string | null;
-            conflict_count: number;
+        };
+        DraftCoordination: {
+            freshness: components["schemas"]["DraftFreshness"];
+            current_commit_id: string | null;
+            reconciliation: components["schemas"]["DraftReconciliationStatus"];
+            candidate_id: string | null;
+        };
+        CreateDraftReconciliationCandidateRequest: {
+            expected_draft_version: number;
+        };
+        ReconciliationResourceState: {
+            exists: boolean;
+            resource: components["schemas"]["DraftResourceRef"];
+            content: components["schemas"]["DraftResourceContent"] | null;
+        };
+        ReconciliationConflict: {
+            /** @enum {string} */
+            kind: "content" | "path" | "existence" | "path_occupied";
+            field: string;
+            base: string | null;
+            current: string | null;
+            draft: string | null;
+        };
+        DraftReconciliationCandidate: {
+            candidate_id: string;
+            draft_id: string;
+            draft_version: number;
+            base_commit_id: string | null;
+            current_commit_id: string | null;
+            /** @enum {string} */
+            status: "clean" | "conflicts";
+            base_state: components["schemas"]["ReconciliationResourceState"];
+            current_state: components["schemas"]["ReconciliationResourceState"];
+            draft_state: components["schemas"]["ReconciliationResourceState"];
+            proposed_state: components["schemas"]["ReconciliationResourceState"] | null;
+            conflicts: components["schemas"]["ReconciliationConflict"][];
+            result_hash: string | null;
+            valid: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            invalidated_at: string | null;
+        };
+        CreateDraftRebaseRequest: {
+            candidate_id: string;
+            expected_draft_version: number;
+            /** @description Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate so the Server applies its canonical proposed state. */
+            resolved_state?: components["schemas"]["ReconciliationResourceState"] | null;
+        };
+        DraftRebaseResult: {
+            rebase_id: string;
+            previous_revision_id: string;
+            draft: components["schemas"]["DraftDetail"];
+            review: components["schemas"]["Review"] | null;
+            approval_invalidated: boolean;
         };
         DraftEventListResponse: {
             events: components["schemas"]["DraftEvent"][];
@@ -955,7 +1041,7 @@ export interface components {
             draft_id: string;
             project_id: string;
             /** @enum {string} */
-            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "reopened" | "conflicted" | "merged";
+            event_type: "created" | "updated" | "operation_appended" | "discarded" | "submitted" | "reopened" | "rebased" | "merged";
             version: number;
             daemon_installation_id: string | null;
             /** Format: date-time */
@@ -984,19 +1070,25 @@ export interface components {
             expected_draft_version: number;
             title?: string;
             description?: string;
+            candidate_id?: string;
+            /** @description Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate. */
+            resolved_state?: components["schemas"]["ReconciliationResourceState"] | null;
         };
         CreateReviewSubmissionRequest: {
             expected_review_version: number;
             expected_draft_version: number;
             title?: string;
             description?: string;
+            /** @description Confirmed reconciliation candidate to apply atomically before resubmission when the Draft is behind. */
+            candidate_id?: string;
+            /** @description Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate. */
+            resolved_state?: components["schemas"]["ReconciliationResourceState"] | null;
         };
         ReviewDetail: {
             review: components["schemas"]["Review"];
             draft: components["schemas"]["Draft"];
             operations: components["schemas"]["DraftOperation"][];
             comments: components["schemas"]["ReviewComment"][];
-            conflict: components["schemas"]["DraftConflict"] | null;
         };
         Review: {
             review_id: string;
@@ -1008,6 +1100,8 @@ export interface components {
             status: components["schemas"]["ReviewStatus"];
             version: number;
             decision_body: string | null;
+            approved_result_hash: string | null;
+            coordination: components["schemas"]["DraftCoordination"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1036,11 +1130,6 @@ export interface components {
         };
         CreateReviewMergeRequest: {
             expected_review_version: number;
-        };
-        CreateReviewConflictResolutionRequest: {
-            expected_review_version: number;
-            expected_draft_version: number;
-            operations: components["schemas"]["DraftOperationInput"][];
         };
         ReviewMergeResult: {
             review: components["schemas"]["Review"];
@@ -1187,7 +1276,11 @@ export interface components {
         /** @enum {string} */
         CommitScope: "org" | "project";
         /** @enum {string} */
-        DraftStatus: "open" | "submitted" | "discarded" | "conflicted" | "merged";
+        DraftStatus: "open" | "submitted" | "merged" | "discarded";
+        /** @enum {string} */
+        DraftFreshness: "current" | "behind";
+        /** @enum {string} */
+        DraftReconciliationStatus: "unknown" | "clean" | "conflicts";
         /** @enum {string} */
         DraftResourceKind: "context" | "rule" | "workflow";
         /** @enum {string} */
@@ -2167,6 +2260,95 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    createDraftReconciliationCandidate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDraftReconciliationCandidateRequest"];
+            };
+        };
+        responses: {
+            /** @description Canonical reconciliation candidate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftReconciliationCandidate"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getDraftReconciliationCandidate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reconciliation candidate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftReconciliationCandidate"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createDraftRebase: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                draft_id: components["parameters"]["DraftId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDraftRebaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Applied draft rebase. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftRebaseResult"];
+                };
+            };
+            /** @description The target Ref changed before the candidate was applied. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listDraftEvents: {
         parameters: {
             query?: {
@@ -2244,7 +2426,9 @@ export interface operations {
     createReview: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -2372,7 +2556,9 @@ export interface operations {
     createReviewSubmission: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": components["parameters"]["IfMatch"];
+            };
             path: {
                 review_id: components["parameters"]["ReviewId"];
             };
@@ -2384,7 +2570,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Reopened review and resubmitted draft. */
+            /** @description Reopened review and resubmitted draft, atomically rebased when a confirmed candidate was supplied. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2393,36 +2579,16 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewDetail"];
                 };
             };
-            default: components["responses"]["Error"];
-        };
-    };
-    createReviewConflictResolution: {
-        parameters: {
-            query?: never;
-            header: {
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                review_id: components["parameters"]["ReviewId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateReviewConflictResolutionRequest"];
-            };
-        };
-        responses: {
-            /** @description Reopened review with the resolved draft. */
-            200: {
+            /** @description The source draft requires explicit reconciliation with the current Ref. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReviewDetail"];
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description The target Ref changed before the resolution was applied. */
+            /** @description The If-Match Ref is no longer current. */
             412: {
                 headers: {
                     [name: string]: unknown;
@@ -2460,7 +2626,7 @@ export interface operations {
                     "application/json": components["schemas"]["ReviewMergeResult"];
                 };
             };
-            /** @description The draft base Commit is no longer the current Ref. */
+            /** @description The source draft requires explicit reconciliation with the current Ref. */
             409: {
                 headers: {
                     [name: string]: unknown;

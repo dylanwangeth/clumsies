@@ -112,11 +112,14 @@ final class DaemonContractTests: XCTestCase {
             serverDraftId: nil,
             serverVersion: 0,
             baseCommitId: "commit-1",
+            currentCommitId: "commit-1",
+            freshness: .current,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
             scope: .project,
             resourceKind: .context,
             targetId: nil,
             path: "notes/old.md",
-            conflict: nil,
             status: .open,
             createdAt: "2026-07-18T00:00:00Z",
             updatedAt: "2026-07-18T00:00:00Z",
@@ -133,6 +136,159 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(draft.document.path, "notes/new.md")
         XCTAssertEqual(draft.document.body, "second")
         XCTAssertEqual(draft.syncStatus, .queued)
+    }
+
+    func testBehindDraftProjectionPreservesCoordinationWithoutChangingTheBase() {
+        let summary = DaemonDraftSummary(
+            draftId: "draft-behind",
+            projectId: "project-1",
+            serverDraftId: "server-draft-1",
+            serverVersion: 7,
+            baseCommitId: "commit-base",
+            currentCommitId: "commit-current",
+            freshness: .behind,
+            reconciliation: .conflicts,
+            reconciliationCandidateId: "candidate-1",
+            scope: .project,
+            resourceKind: .context,
+            targetId: "context-1",
+            path: "context/guide.md",
+            status: .submitted,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            pendingOperationCount: 0,
+            failedOperationCount: 0
+        )
+        let draft = WorkspaceLoader.mapDraft(
+            .init(
+                draft: summary,
+                operations: [
+                    operation(
+                        .update(
+                            id: "context-1",
+                            content: .context(content: "Draft body"),
+                            description: nil
+                        ),
+                        id: "operation-1"
+                    )
+                ]
+            ),
+            resources: [resource(id: "context-1", kind: .context, path: "context/guide.md")]
+        )
+
+        XCTAssertEqual(draft.baseCommitId, "commit-base")
+        XCTAssertEqual(draft.currentCommitId, "commit-current")
+        XCTAssertEqual(draft.freshness, .behind)
+        XCTAssertEqual(draft.reconciliation, .conflicts)
+        XCTAssertEqual(draft.reconciliationCandidateId, "candidate-1")
+        XCTAssertEqual(draft.document.body, "Draft body")
+        XCTAssertEqual(draft.status, .submitted)
+    }
+
+    @MainActor
+    func testRequestReviewRejectsBehindDraftBeforeCallingTheServer() async {
+        let store = WorkspaceStore()
+        let draft = LocalDraft(
+            id: "draft-behind",
+            projectId: "project-1",
+            serverId: "server-draft-1",
+            serverVersion: 7,
+            baseCommitId: "commit-base",
+            currentCommitId: "commit-current",
+            freshness: .behind,
+            reconciliation: .clean,
+            reconciliationCandidateId: "candidate-1",
+            scope: .project,
+            kind: .context,
+            targetId: "context-1",
+            status: .open,
+            origin: .desktop,
+            syncStatus: .synced,
+            updatedAt: timestamp,
+            document: .init(title: "Guide", path: "context/guide.md", body: "Draft body"),
+            isDeletion: false
+        )
+
+        do {
+            try await store.requestReview(for: draft, title: "Guide", description: "")
+            XCTFail("behind Draft must be reconciled before Review creation")
+        } catch ReviewRequestError.reconciliationRequired {
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testReconciliationCandidateAndRebaseWireContract() throws {
+        let json = """
+        {
+          "candidate_id": "candidate-1",
+          "draft_id": "draft-1",
+          "draft_version": 7,
+          "base_commit_id": "commit-base",
+          "current_commit_id": "commit-current",
+          "status": "clean",
+          "base_state": {
+            "exists": true,
+            "resource": {"scope":"project","kind":"context","id":"context-1","path":"context/guide.md"},
+            "content": {"kind":"context","content":"Base"}
+          },
+          "current_state": {
+            "exists": true,
+            "resource": {"scope":"project","kind":"context","id":"context-1","path":"context/guide.md"},
+            "content": {"kind":"context","content":"Current"}
+          },
+          "draft_state": {
+            "exists": true,
+            "resource": {"scope":"project","kind":"context","id":"context-1","path":"context/guide.md"},
+            "content": {"kind":"context","content":"Draft"}
+          },
+          "proposed_state": {
+            "exists": true,
+            "resource": {"scope":"project","kind":"context","id":"context-1","path":"context/guide.md"},
+            "content": {"kind":"context","content":"Merged"}
+          },
+          "conflicts": [],
+          "result_hash": "sha256:result",
+          "valid": true,
+          "created_at": "2026-07-22T00:00:00Z",
+          "invalidated_at": null
+        }
+        """
+        let candidate = try JSONCoding.decoder().decode(
+            DraftReconciliationCandidate.self,
+            from: Data(json.utf8)
+        )
+        XCTAssertEqual(candidate.status, .clean)
+        XCTAssertEqual(candidate.baseCommitId, "commit-base")
+        XCTAssertEqual(candidate.currentCommitId, "commit-current")
+        XCTAssertEqual(candidate.proposedState?.content?.primaryText, "Merged")
+
+        let request = CreateDraftRebaseRequest(
+            candidateId: candidate.candidateId,
+            expectedDraftVersion: candidate.draftVersion,
+            resolvedState: nil
+        )
+        let encoded = try JSONCoding.encoder().encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["candidate_id"] as? String, "candidate-1")
+        XCTAssertEqual(object["expected_draft_version"] as? Int, 7)
+        XCTAssertNil(object["resolved_state"])
+
+        let submission = CreateReviewSubmissionRequest(
+            expectedReviewVersion: 4,
+            expectedDraftVersion: candidate.draftVersion,
+            title: "Guide",
+            description: "",
+            candidateId: candidate.candidateId,
+            resolvedState: nil
+        )
+        let submissionData = try JSONCoding.encoder().encode(submission)
+        let submissionObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: submissionData) as? [String: Any]
+        )
+        XCTAssertEqual(submissionObject["candidate_id"] as? String, "candidate-1")
+        XCTAssertEqual(submissionObject["expected_review_version"] as? Int, 4)
+        XCTAssertEqual(submissionObject["expected_draft_version"] as? Int, 7)
     }
 
     func testDraftProjectionPreservesRuleAndWorkflowMarkdown() {
@@ -218,9 +374,15 @@ final class DaemonContractTests: XCTestCase {
                 author: user,
                 title: "Update note",
                 description: "",
-                status: "conflicted",
+                status: "approved",
                 version: 3,
                 decisionBody: nil,
+                approvedResultHash: nil,
+                coordination: coordination(
+                    freshness: .behind,
+                    currentCommitId: "commit-current",
+                    reconciliation: .conflicts
+                ),
                 createdAt: timestamp,
                 updatedAt: timestamp
             ),
@@ -232,7 +394,12 @@ final class DaemonContractTests: XCTestCase {
                 title: "Update note",
                 description: "",
                 resource: resource,
-                status: "conflicted",
+                status: "submitted",
+                coordination: coordination(
+                    freshness: .behind,
+                    currentCommitId: "commit-current",
+                    reconciliation: .conflicts
+                ),
                 version: 4,
                 createdAt: timestamp,
                 updatedAt: timestamp
@@ -247,8 +414,7 @@ final class DaemonContractTests: XCTestCase {
                     createdAt: timestamp
                 )
             ],
-            comments: [],
-            conflict: .init(baseCommitId: "commit-base", currentCommitId: "commit-current", detectedAt: timestamp)
+            comments: []
         )
 
         let sources = try WorkspaceLoader.mapReviewChangeSources(
@@ -262,6 +428,10 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(sources.draftContent, "Draft body")
         XCTAssertEqual(sources.resolutionContent, "Draft body")
         XCTAssertTrue(sources.operationLabels.isEmpty)
+        let mapped = WorkspaceLoader.mapReview(detail)
+        XCTAssertEqual(mapped.freshness, .behind)
+        XCTAssertEqual(mapped.reconciliation, .conflicts)
+        XCTAssertEqual(mapped.currentCommitId, "commit-current")
     }
 
     func testReviewChangeSourcesPreserveRenameAlongsideContentUpdate() throws {
@@ -425,18 +595,13 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
-    func testSyncToolbarPrioritizesConflictsOverOtherFailures() {
-        XCTAssertEqual(
+    func testSyncToolbarDoesNotTreatReconciliationAsTransportFailure() {
+        XCTAssertNil(
             SyncToolbarPresentation.resolve(
-                status: syncStatus(
-                    draftState: "failed",
-                    failedCount: 1,
-                    conflictCount: 2
-                ),
+                status: syncStatus(reconciliationConflictCount: 2),
                 isAvailable: true,
-                serverDataSource: "stale"
-            ),
-            .conflicts(count: 2)
+                serverDataSource: "live"
+            )
         )
     }
 
@@ -480,7 +645,8 @@ final class DaemonContractTests: XCTestCase {
         commitState: String = "idle",
         pendingCount: Int = 0,
         failedCount: Int = 0,
-        conflictCount: Int = 0,
+        behindDraftCount: Int = 0,
+        reconciliationConflictCount: Int = 0,
         commitError: String? = nil
     ) -> DaemonSyncStatus {
         .init(
@@ -488,7 +654,8 @@ final class DaemonContractTests: XCTestCase {
             commitSync: syncChannel(state: commitState, error: commitError),
             pendingOperationCount: pendingCount,
             failedOperationCount: failedCount,
-            conflictCount: conflictCount,
+            behindDraftCount: behindDraftCount,
+            reconciliationConflictCount: reconciliationConflictCount,
             lastSuccessAt: nil
         )
     }
@@ -514,11 +681,14 @@ final class DaemonContractTests: XCTestCase {
             serverDraftId: nil,
             serverVersion: 0,
             baseCommitId: "commit-1",
+            currentCommitId: "commit-1",
+            freshness: .current,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
             scope: .project,
             resourceKind: kind,
             targetId: nil,
             path: path,
-            conflict: nil,
             status: .open,
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -558,6 +728,21 @@ final class DaemonContractTests: XCTestCase {
         return .init(id: resource.id, resource: resource, draft: nil, inherited: false)
     }
 
+    private func resource(id: String, kind: MemoryKind, path: String) -> MemoryResource {
+        .init(
+            id: id,
+            scope: .project,
+            projectId: "project-1",
+            projectName: "Project",
+            kind: kind,
+            contentHash: "hash",
+            updatedAt: timestamp,
+            refCommitId: "commit-base",
+            contentLoaded: true,
+            document: .init(title: "Guide", path: path, body: "Base body")
+        )
+    }
+
     private func reviewDetail(
         resource: ServerDraftResourceReference,
         operations: [ServerDraftOperation]
@@ -573,6 +758,8 @@ final class DaemonContractTests: XCTestCase {
                 status: "open",
                 version: 1,
                 decisionBody: nil,
+                approvedResultHash: nil,
+                coordination: coordination(),
                 createdAt: timestamp,
                 updatedAt: timestamp
             ),
@@ -585,13 +772,27 @@ final class DaemonContractTests: XCTestCase {
                 description: "",
                 resource: resource,
                 status: "open",
+                coordination: coordination(),
                 version: 1,
                 createdAt: timestamp,
                 updatedAt: timestamp
             ),
             operations: operations,
-            comments: [],
-            conflict: nil
+            comments: []
+        )
+    }
+
+    private func coordination(
+        freshness: DraftFreshness = .current,
+        currentCommitId: String? = "commit-base",
+        reconciliation: DraftReconciliationStatus = .unknown,
+        candidateId: String? = nil
+    ) -> DraftCoordination {
+        .init(
+            freshness: freshness,
+            currentCommitId: currentCommitId,
+            reconciliation: reconciliation,
+            candidateId: candidateId
         )
     }
 

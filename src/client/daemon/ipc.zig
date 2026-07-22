@@ -24,6 +24,81 @@ pub const OperationResult = struct {
     }
 };
 
+pub const ProjectBinding = struct {
+    project_id: []u8,
+    workspace_root: []u8,
+
+    pub fn deinit(self: *ProjectBinding, allocator: std.mem.Allocator) void {
+        allocator.free(self.project_id);
+        allocator.free(self.workspace_root);
+        self.* = undefined;
+    }
+};
+
+pub fn resolveProjectBinding(
+    allocator: std.mem.Allocator,
+    workspace_path: []const u8,
+) !ProjectBinding {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "resolve_project_binding", .{
+        .workspace_path = workspace_path,
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try projectBindingFromResponse(allocator, response_json);
+}
+
+pub fn replaceProjectBinding(
+    allocator: std.mem.Allocator,
+    workspace_root: []const u8,
+    project_id: []const u8,
+    expected_revision: ?i64,
+) !ProjectBinding {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "replace_project_binding", .{
+        .workspace_root = workspace_root,
+        .project_id = project_id,
+        .expected_revision = expected_revision,
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try projectBindingFromResponse(allocator, response_json);
+}
+
+pub fn serverGetBodyAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "server_request", .{
+        .method = "GET",
+        .path = path,
+        .headers = std.json.Value{ .object = .empty },
+        .body = @as(?[]const u8, null),
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    const payload_json = try payloadJsonFromResponse(allocator, response_json);
+    defer allocator.free(payload_json);
+    const parsed = try std.json.parseFromSlice(
+        struct { status: u16, body: []const u8 },
+        allocator,
+        payload_json,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    if (parsed.value.status < 200 or parsed.value.status >= 300) return error.ServerRequestFailed;
+    return try allocator.dupe(u8, parsed.value.body);
+}
+
+pub fn retryCommitSync(allocator: std.mem.Allocator) !void {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "retry_sync", .{
+        .channel = "commits",
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    const payload_json = try payloadJsonFromResponse(allocator, response_json);
+    allocator.free(payload_json);
+}
+
 pub fn healthPayloadJson(allocator: std.mem.Allocator) ![]u8 {
     const response_json = try callEmpty(allocator, MACH_SERVICE_NAME, "health");
     defer allocator.free(response_json);
@@ -43,14 +118,19 @@ pub fn memoryCacheRootAlloc(allocator: std.mem.Allocator, project_id: []const u8
             project_id: []const u8,
             commit_id: ?[]const u8,
             root_path: ?[]const u8,
-            ready: bool,
+            state: []const u8,
         },
         allocator,
         payload_json,
-        .{ .allocate = .alloc_always },
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
-    if (!parsed.value.ready) return error.MemoryCacheNotReady;
+    if (!std.mem.eql(u8, parsed.value.state, "ready")) {
+        if (std.mem.eql(u8, parsed.value.state, "project_ref_not_synced")) return error.ProjectRefNotSynced;
+        if (std.mem.eql(u8, parsed.value.state, "generation_missing")) return error.CommitGenerationMissing;
+        if (std.mem.eql(u8, parsed.value.state, "generation_corrupt")) return error.CommitGenerationCorrupt;
+        return error.InvalidDaemonIpcResponse;
+    }
     const root_path = parsed.value.root_path orelse return error.InvalidDaemonIpcResponse;
     return try allocator.dupe(u8, root_path);
 }
@@ -243,6 +323,57 @@ pub fn operationResultFromResponse(
     };
 }
 
+fn projectBindingFromResponse(
+    allocator: std.mem.Allocator,
+    response_json: []const u8,
+) !ProjectBinding {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_json, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const ok = switch (root.get("ok") orelse return error.InvalidDaemonIpcResponse) {
+        .bool => |value| value,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    if (!ok) {
+        const daemon_error = switch (root.get("error") orelse return error.InvalidDaemonIpcResponse) {
+            .object => |object| object,
+            else => return error.InvalidDaemonIpcResponse,
+        };
+        const code = switch (daemon_error.get("code") orelse return error.InvalidDaemonIpcResponse) {
+            .string => |value| value,
+            else => return error.InvalidDaemonIpcResponse,
+        };
+        if (std.mem.eql(u8, code, "project_binding_not_found")) return error.ProjectBindingNotFound;
+        if (std.mem.eql(u8, code, "project_binding_unresolved")) return error.ProjectBindingUnresolved;
+        if (std.mem.eql(u8, code, "project_binding_ambiguous")) return error.ProjectBindingAmbiguous;
+        if (std.mem.eql(u8, code, "project_binding_changed")) return error.ProjectBindingChanged;
+        return error.DaemonIpcRejected;
+    }
+    const payload = switch (root.get("payload") orelse return error.InvalidDaemonIpcResponse) {
+        .object => |object| object,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const project_id = switch (payload.get("project_id") orelse return error.InvalidDaemonIpcResponse) {
+        .string => |value| value,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const workspace_root = switch (payload.get("workspace_root") orelse return error.InvalidDaemonIpcResponse) {
+        .string => |value| value,
+        else => return error.InvalidDaemonIpcResponse,
+    };
+    const owned_project_id = try allocator.dupe(u8, project_id);
+    errdefer allocator.free(owned_project_id);
+    return .{
+        .project_id = owned_project_id,
+        .workspace_root = try allocator.dupe(u8, workspace_root),
+    };
+}
+
 fn callJson(allocator: std.mem.Allocator, service_name: []const u8, request_json: []const u8) ![]u8 {
     if (comptime !enable_xpc) {
         return error.XpcUnavailable;
@@ -404,6 +535,56 @@ test "memoryCacheRequestJsonAlloc builds daemon cache envelope" {
     try std.testing.expectEqualStrings(
         \\{"method":"memory_cache","payload":{"project_id":"project_test"}}
     , json);
+}
+
+test "project binding envelopes use workspace paths and canonical project ids" {
+    const resolve_json = try requestWithPayloadJsonAlloc(std.testing.allocator, "resolve_project_binding", .{
+        .workspace_path = "/tmp/example/packages/app",
+    });
+    defer std.testing.allocator.free(resolve_json);
+    try std.testing.expectEqualStrings(
+        \\{"method":"resolve_project_binding","payload":{"workspace_path":"/tmp/example/packages/app"}}
+    , resolve_json);
+
+    const replace_json = try requestWithPayloadJsonAlloc(std.testing.allocator, "replace_project_binding", .{
+        .workspace_root = "/tmp/example",
+        .project_id = "prj_example",
+        .expected_revision = @as(?i64, null),
+    });
+    defer std.testing.allocator.free(replace_json);
+    try std.testing.expectEqualStrings(
+        \\{"method":"replace_project_binding","payload":{"workspace_root":"/tmp/example","project_id":"prj_example","expected_revision":null}}
+    , replace_json);
+}
+
+test "projectBindingFromResponse preserves the daemon canonical binding" {
+    var binding = try projectBindingFromResponse(std.testing.allocator,
+        \\{"ok":true,"payload":{"server_url":"https://app.clumsies.ai","workspace_root":"/tmp/example","project_id":"prj_example","revision":1,"created_at":"2026-07-22T00:00:00Z","updated_at":"2026-07-22T00:00:00Z"},"error":null}
+    );
+    defer binding.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("prj_example", binding.project_id);
+    try std.testing.expectEqualStrings("/tmp/example", binding.workspace_root);
+}
+
+test "projectBindingFromResponse keeps binding failures distinct" {
+    try std.testing.expectError(
+        error.ProjectBindingNotFound,
+        projectBindingFromResponse(std.testing.allocator,
+            \\{"ok":false,"payload":{},"error":{"code":"project_binding_not_found","message":"not bound"}}
+        ),
+    );
+    try std.testing.expectError(
+        error.ProjectBindingUnresolved,
+        projectBindingFromResponse(std.testing.allocator,
+            \\{"ok":false,"payload":{},"error":{"code":"project_binding_unresolved","message":"missing"}}
+        ),
+    );
+    try std.testing.expectError(
+        error.ProjectBindingAmbiguous,
+        projectBindingFromResponse(std.testing.allocator,
+            \\{"ok":false,"payload":{},"error":{"code":"project_binding_ambiguous","message":"ambiguous"}}
+        ),
+    );
 }
 
 test "payloadJsonFromResponse returns successful payload JSON" {

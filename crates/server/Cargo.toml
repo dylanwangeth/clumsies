@@ -12,6 +12,7 @@ async-trait = "0.1.89"
 axum = "0.8.9"
 base64 = "0.22.1"
 cookie = "0.18.1"
+diffy = "0.5.0"
 hex = "0.4.3"
 openidconnect = "4.0.1"
 serde = { version = "1.0.228", features = ["derive"] }

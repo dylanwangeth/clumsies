@@ -142,6 +142,53 @@ components:
       properties:
         project_id:
           type: string
+    DaemonProjectBindingResolveRequest:
+      type: object
+      required: [workspace_path]
+      properties:
+        workspace_path:
+          type: string
+          description: Existing local path whose nearest bound ancestor should be resolved.
+    DaemonProjectBindingReplaceRequest:
+      type: object
+      required: [workspace_root, project_id, expected_revision]
+      properties:
+        workspace_root:
+          type: string
+          description: Existing local directory to bind after canonical filesystem resolution.
+        project_id:
+          type: string
+          description: Canonical Server Project identifier accessible to the signed-in user.
+        expected_revision:
+          type: [integer, "null"]
+          minimum: 1
+          description: Current binding revision for replacement; null creates a binding idempotently.
+    DaemonProjectBinding:
+      type: object
+      required:
+        - server_url
+        - workspace_root
+        - project_id
+        - revision
+        - created_at
+        - updated_at
+      properties:
+        server_url:
+          type: string
+          format: uri
+        workspace_root:
+          type: string
+        project_id:
+          type: string
+        revision:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     DaemonMemoryCacheRequest:
       type: object
       required: [project_id]
@@ -150,7 +197,7 @@ components:
           type: string
     DaemonMemoryCacheStatus:
       type: object
-      required: [project_id, commit_id, root_path, ready]
+      required: [project_id, commit_id, root_path, state, diagnostic]
       properties:
         project_id:
           type: string
@@ -158,8 +205,10 @@ components:
           type: [string, "null"]
         root_path:
           type: [string, "null"]
-        ready:
-          type: boolean
+        state:
+          $ref: "#/components/schemas/DaemonMemoryCacheState"
+        diagnostic:
+          type: [string, "null"]
     DaemonProjectCheckoutRequest:
       type: object
       required: [project_id]
@@ -292,7 +341,8 @@ components:
         - commit_sync
         - pending_operation_count
         - failed_operation_count
-        - conflict_count
+        - behind_draft_count
+        - reconciliation_conflict_count
         - last_success_at
       properties:
         draft_sync:
@@ -303,7 +353,9 @@ components:
           type: integer
         failed_operation_count:
           type: integer
-        conflict_count:
+        behind_draft_count:
+          type: integer
+        reconciliation_conflict_count:
           type: integer
         last_success_at:
           type: [string, "null"]
@@ -391,11 +443,14 @@ components:
         - server_draft_id
         - server_version
         - base_commit_id
+        - current_commit_id
+        - freshness
+        - reconciliation
+        - reconciliation_candidate_id
         - scope
         - resource_kind
         - target_id
         - path
-        - conflict
         - status
         - created_at
         - updated_at
@@ -412,6 +467,14 @@ components:
           type: integer
         base_commit_id:
           type: [string, "null"]
+        current_commit_id:
+          type: [string, "null"]
+        freshness:
+          $ref: "#/components/schemas/DaemonDraftFreshness"
+        reconciliation:
+          $ref: "#/components/schemas/DaemonDraftReconciliationStatus"
+        reconciliation_candidate_id:
+          type: [string, "null"]
         scope:
           $ref: "#/components/schemas/DaemonDraftScope"
         resource_kind:
@@ -420,10 +483,6 @@ components:
           type: [string, "null"]
         path:
           type: [string, "null"]
-        conflict:
-          oneOf:
-            - $ref: "#/components/schemas/DaemonDraftConflict"
-            - type: "null"
         status:
           $ref: "#/components/schemas/DaemonLocalDraftStatus"
         created_at:
@@ -436,17 +495,6 @@ components:
           type: integer
         failed_operation_count:
           type: integer
-    DaemonDraftConflict:
-      type: object
-      required: [base_commit_id, current_commit_id, detected_at]
-      properties:
-        base_commit_id:
-          type: [string, "null"]
-        current_commit_id:
-          type: [string, "null"]
-        detected_at:
-          type: string
-          format: date-time
     DaemonLocalDraftOperation:
       type: object
       required:
@@ -628,7 +676,7 @@ components:
           additionalProperties: true
     SyncState:
       type: string
-      enum: [idle, queued, syncing, retrying, degraded, conflicted, failed]
+      enum: [idle, queued, syncing, retrying, degraded, failed]
     DaemonDraftResourceKind:
       type: string
       enum: [context, rule, workflow]
@@ -637,7 +685,16 @@ components:
       enum: [org, project]
     DaemonLocalDraftStatus:
       type: string
-      enum: [open, submitted, discarded, conflicted, merged]
+      enum: [open, submitted, merged, discarded]
+    DaemonDraftFreshness:
+      type: string
+      enum: [current, behind]
+    DaemonDraftReconciliationStatus:
+      type: string
+      enum: [unknown, clean, conflicts]
+    DaemonMemoryCacheState:
+      type: string
+      enum: [project_ref_not_synced, generation_missing, generation_corrupt, ready]
     DaemonDraftOperationSource:
       type: string
       enum: [desktop, cli, mcp_store]

@@ -9,9 +9,19 @@ pub fn run(stdout: *std.Io.Writer, stderr: *std.Io.Writer, allocator: std.mem.Al
     defer allocator.free(cwd);
 
     var session = session_mod.init(allocator, cwd) catch |err| switch (err) {
-        error.NoWorkspaceFound, error.NoConfigFound => {
-            try stderr.print("Error: this directory is not bound to a clumsies workspace.\n", .{});
-            try stderr.print("Run 'clumsies init' to bind it to a workspace.\n", .{});
+        error.ProjectBindingNotFound => {
+            try stderr.print("Error: this directory is not bound to a Clumsies Project.\n", .{});
+            try stderr.print("Bind the local directory to a Server Project before starting MCP.\n", .{});
+            return;
+        },
+        error.ProjectBindingUnresolved => {
+            try stderr.print("Error: the legacy local binding does not match an accessible Server Project.\n", .{});
+            try stderr.print("Bind this directory to a canonical Project explicitly.\n", .{});
+            return;
+        },
+        error.ProjectBindingAmbiguous => {
+            try stderr.print("Error: more than one accessible Server Project matches the legacy binding.\n", .{});
+            try stderr.print("Bind this directory to one canonical Project explicitly.\n", .{});
             return;
         },
         else => return err,

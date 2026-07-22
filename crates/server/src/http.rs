@@ -17,15 +17,15 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::{
-    CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
-    CreateReviewCommentRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
-    CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
-    CreateSetupSessionRequest, DraftOperationBatchRequest, DraftOperationInput,
-    OidcAuthorizationRequest, OidcCallbackRequest, OrgRole, PersonalBundleRequest,
-    PersonalBundleUpdateRequest, ProjectRole, ReplaceProjectOrgSelectionRequest,
-    ReplaceSetupConfigurationRequest, ResourceScope, SetupOidcAuthorization,
-    SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    CreateDraftRebaseRequest, CreateDraftReconciliationCandidateRequest, CreateDraftRequest,
+    CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
+    CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
+    CreateReviewRequest, CreateReviewSubmissionRequest, CreateSetupSessionRequest,
+    DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
+    OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
+    ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest, ResourceScope,
+    SetupOidcAuthorization, SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest,
+    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
 use crate::db::current_schema_migration;
@@ -164,6 +164,13 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         delete: delete_draft,
     };
     "/api/v1/drafts/{draft_id}/operations" => { post: append_draft_operation };
+    "/api/v1/drafts/{draft_id}/reconciliation-candidates" => {
+        post: create_draft_reconciliation_candidate,
+    };
+    "/api/v1/drafts/{draft_id}/reconciliation-candidates/{candidate_id}" => {
+        get: get_draft_reconciliation_candidate,
+    };
+    "/api/v1/drafts/{draft_id}/rebases" => { post: create_draft_rebase };
     "/api/v1/draft-events" => { get: list_draft_events };
     "/api/v1/draft-operation-batches" => { post: create_draft_operation_batch };
     "/api/v1/reviews" => { get: list_reviews, post: create_review };
@@ -174,9 +181,6 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
     };
     "/api/v1/reviews/{review_id}/decisions" => { post: create_review_decision };
     "/api/v1/reviews/{review_id}/submissions" => { post: create_review_submission };
-    "/api/v1/reviews/{review_id}/conflict-resolutions" => {
-        post: create_review_conflict_resolution,
-    };
     "/api/v1/reviews/{review_id}/merges" => { post: create_review_merge };
     "/api/v1/org/commits" => { get: list_org_commits };
     "/api/v1/org/commit-state" => { get: get_org_commit_state };
@@ -1541,6 +1545,66 @@ async fn append_draft_operation(
     ))
 }
 
+async fn create_draft_reconciliation_candidate(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(draft_id): Path<String>,
+    Json(request): Json<CreateDraftReconciliationCandidateRequest>,
+) -> Result<Json<crate::api::DraftReconciliationCandidate>, HttpError> {
+    state
+        .repository
+        .ensure_draft_owner(&principal, &draft_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .create_draft_reconciliation_candidate(&draft_id, request)
+            .await?,
+    ))
+}
+
+async fn get_draft_reconciliation_candidate(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((draft_id, candidate_id)): Path<(String, String)>,
+) -> Result<Json<crate::api::DraftReconciliationCandidate>, HttpError> {
+    state
+        .repository
+        .ensure_draft_owner(&principal, &draft_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .get_draft_reconciliation_candidate(&draft_id, &candidate_id)
+            .await?,
+    ))
+}
+
+async fn create_draft_rebase(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(draft_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CreateDraftRebaseRequest>,
+) -> Result<Json<crate::api::DraftRebaseResult>, HttpError> {
+    state
+        .repository
+        .ensure_draft_owner(&principal, &draft_id)
+        .await?;
+    let expected_ref = parse_ref_if_match(&headers)?;
+    Ok(Json(
+        state
+            .repository
+            .create_draft_rebase(
+                &draft_id,
+                &principal.user_id,
+                expected_ref.as_deref(),
+                request,
+            )
+            .await?,
+    ))
+}
+
 #[derive(Deserialize)]
 struct ListDraftEventsQuery {
     after_cursor: Option<String>,
@@ -1586,13 +1650,20 @@ async fn create_draft_operation_batch(
 async fn create_review(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    headers: HeaderMap,
     Json(request): Json<CreateReviewRequest>,
 ) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
     state
         .repository
         .ensure_draft_owner(&principal, &request.draft_id)
         .await?;
-    Ok(Json(state.repository.create_review(request).await?))
+    let expected_ref = parse_ref_if_match(&headers)?;
+    Ok(Json(
+        state
+            .repository
+            .create_review(&principal.user_id, expected_ref.as_deref(), request)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1679,16 +1750,23 @@ async fn create_review_submission(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
     Path(review_id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<CreateReviewSubmissionRequest>,
 ) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
     state
         .repository
         .ensure_review_member(&principal, &review_id)
         .await?;
+    let expected_ref = parse_ref_if_match(&headers)?;
     Ok(Json(
         state
             .repository
-            .create_review_submission(&review_id, &principal.user_id, request)
+            .create_review_submission(
+                &review_id,
+                &principal.user_id,
+                expected_ref.as_deref(),
+                request,
+            )
             .await?,
     ))
 }
@@ -1710,31 +1788,6 @@ async fn create_review_merge(
         state
             .repository
             .create_review_merge(&review_id, expected_ref.as_deref(), request)
-            .await?,
-    ))
-}
-
-async fn create_review_conflict_resolution(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(review_id): Path<String>,
-    headers: HeaderMap,
-    Json(request): Json<CreateReviewConflictResolutionRequest>,
-) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
-    state
-        .repository
-        .ensure_review_member(&principal, &review_id)
-        .await?;
-    let expected_ref = parse_ref_if_match(&headers)?;
-    Ok(Json(
-        state
-            .repository
-            .create_review_conflict_resolution(
-                &review_id,
-                &principal.user_id,
-                expected_ref.as_deref(),
-                request,
-            )
             .await?,
     ))
 }
@@ -1919,7 +1972,9 @@ impl IntoResponse for HttpError {
                     ServerError::NotFound { .. } => StatusCode::NOT_FOUND,
                     ServerError::AlreadyExists { .. }
                     | ServerError::VersionConflict { .. }
-                    | ServerError::DraftConflict { .. } => StatusCode::CONFLICT,
+                    | ServerError::ReconciliationRequired { .. }
+                    | ServerError::DraftAlreadyCurrent { .. }
+                    | ServerError::ReconciliationCandidateInvalid { .. } => StatusCode::CONFLICT,
                     ServerError::PreconditionFailed { .. } => StatusCode::PRECONDITION_FAILED,
                     ServerError::InvalidTransition { .. } | ServerError::InvalidRequest(_) => {
                         StatusCode::BAD_REQUEST
@@ -1932,7 +1987,9 @@ impl IntoResponse for HttpError {
                     ServerError::AlreadyExists { .. } => "already_exists",
                     ServerError::VersionConflict { .. } => "version_conflict",
                     ServerError::PreconditionFailed { .. } => "precondition_failed",
-                    ServerError::DraftConflict { .. } => "draft_conflict",
+                    ServerError::ReconciliationRequired { .. } => "reconciliation_required",
+                    ServerError::DraftAlreadyCurrent { .. } => "draft_already_current",
+                    ServerError::ReconciliationCandidateInvalid { .. } => "candidate_invalid",
                     ServerError::InvalidTransition { .. } | ServerError::InvalidRequest(_) => {
                         "invalid_request"
                     }
@@ -1952,18 +2009,20 @@ impl IntoResponse for HttpError {
                         "expected_commit_id": expected,
                         "current_commit_id": actual,
                     }),
-                    ServerError::DraftConflict {
-                        review_id,
+                    ServerError::ReconciliationRequired {
                         draft_id,
-                        scope,
-                        base_commit_id,
+                        candidate_id,
                         current_commit_id,
                     } => json!({
-                        "review_id": review_id,
                         "draft_id": draft_id,
-                        "scope": scope.as_str(),
-                        "base_commit_id": base_commit_id,
+                        "candidate_id": candidate_id,
                         "current_commit_id": current_commit_id,
+                    }),
+                    ServerError::DraftAlreadyCurrent { draft_id } => json!({
+                        "draft_id": draft_id,
+                    }),
+                    ServerError::ReconciliationCandidateInvalid { candidate_id } => json!({
+                        "candidate_id": candidate_id,
                     }),
                     _ => json!({}),
                 };

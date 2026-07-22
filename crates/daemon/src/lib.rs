@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,8 @@ mod credentials;
 mod ipc;
 mod search;
 pub use commit_sync::{
-    DaemonMemoryCacheRequest, DaemonMemoryCacheStatus, DaemonProjectCheckout,
-    DaemonProjectCheckoutRequest, DaemonProjectCheckoutResource,
+    DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,
+    DaemonProjectCheckout, DaemonProjectCheckoutRequest, DaemonProjectCheckoutResource,
 };
 pub use credentials::{
     CredentialStore, CredentialStoreError, KEYCHAIN_ACCOUNT, ServerCredentials,
@@ -43,7 +43,7 @@ pub use search::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 16;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
@@ -413,13 +413,26 @@ impl LaunchAgentController {
             LaunchAgentReconcileAction::Reload => {
                 run_launchctl_success(&self.bootout_args())?;
                 self.config.install_plist()?;
-                run_launchctl_success(&self.bootstrap_args())?;
+                self.bootstrap_after_bootout()?;
             }
             LaunchAgentReconcileAction::Kickstart => {
                 run_launchctl_success(&self.kickstart_args())?;
             }
         }
         self.status()
+    }
+
+    fn bootstrap_after_bootout(&self) -> Result<(), DaemonError> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match run_launchctl_success(&self.bootstrap_args()) {
+                Ok(()) => return Ok(()),
+                Err(DaemonError::Launchctl(_)) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 
@@ -660,6 +673,20 @@ impl RuntimeProjectConfig {
             missing_fields,
         }
     }
+
+    fn server_readiness(&self) -> ProjectConfigReadiness {
+        let mut missing_fields = Vec::new();
+        if self.server_url.trim().is_empty() {
+            missing_fields.push("server_url".to_owned());
+        }
+        if self.access_token.as_deref().is_none_or(str::is_empty) {
+            missing_fields.push("access_token".to_owned());
+        }
+        ProjectConfigReadiness {
+            ready: missing_fields.is_empty(),
+            missing_fields,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -816,6 +843,149 @@ impl DaemonState {
             .expect("project config rwlock poisoned") = project_config;
         self.request_sync();
         Ok(self.project_config_view())
+    }
+
+    pub async fn resolve_project_binding(
+        &self,
+        request: DaemonProjectBindingResolveRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        let workspace_path = canonical_workspace_directory(&request.workspace_path)?;
+        let server_url = canonical_server_url(&self.project_config().server_url)?;
+        let rows = sqlx::query(
+            "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
+             FROM project_bindings
+             WHERE server_url = $1",
+        )
+        .bind(&server_url)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut best: Option<(usize, DaemonProjectBinding)> = None;
+        for row in rows {
+            let binding = project_binding_from_row(&row)?;
+            let root = Path::new(&binding.workspace_root);
+            if !workspace_path.starts_with(root) {
+                continue;
+            }
+            let specificity = root.components().count();
+            if best
+                .as_ref()
+                .is_some_and(|(best_specificity, _)| *best_specificity >= specificity)
+            {
+                continue;
+            }
+            best = Some((specificity, binding));
+        }
+
+        best.map(|(_, binding)| binding)
+            .ok_or_else(|| DaemonError::State {
+                code: "project_binding_not_found",
+                message: format!(
+                    "No Project is bound to workspace path {} on {server_url}",
+                    workspace_path.display()
+                ),
+            })
+    }
+
+    pub async fn replace_project_binding(
+        &self,
+        request: DaemonProjectBindingReplaceRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        let workspace_root = canonical_workspace_directory(&request.workspace_root)?;
+        let project_id = non_empty_string(request.project_id).ok_or_else(|| {
+            DaemonError::InvalidRequest("project_id must not be empty".to_owned())
+        })?;
+        commit_sync::validate_cache_component("project_id", &project_id)?;
+        let server_url = canonical_server_url(&self.project_config().server_url)?;
+
+        let response = execute_authenticated_server_request(
+            self,
+            reqwest::Method::GET,
+            &format!("/api/v1/projects/{project_id}"),
+            &BTreeMap::new(),
+            None,
+        )
+        .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(DaemonError::State {
+                code: "project_binding_unresolved",
+                message: format!(
+                    "Project {project_id} does not exist or is not accessible on {server_url}"
+                ),
+            });
+        }
+        ensure_server_success(response).await?;
+
+        let workspace_root = workspace_root.display().to_string();
+        let mut tx = self.inner.pool.begin().await?;
+        let existing = sqlx::query(
+            "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
+             FROM project_bindings
+             WHERE server_url = $1 AND workspace_root = $2",
+        )
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(row) = existing {
+            let existing = project_binding_from_row(&row)?;
+            if request.expected_revision.is_none() && existing.project_id == project_id {
+                tx.commit().await?;
+                return Ok(existing);
+            }
+            if request.expected_revision != Some(existing.revision) {
+                return Err(DaemonError::State {
+                    code: "project_binding_changed",
+                    message: format!(
+                        "Project binding for {workspace_root} changed from the expected revision"
+                    ),
+                });
+            }
+            sqlx::query(
+                "UPDATE project_bindings
+                 SET project_id = $3, revision = revision + 1,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE server_url = $1 AND workspace_root = $2",
+            )
+            .bind(&server_url)
+            .bind(&workspace_root)
+            .bind(&project_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            if request.expected_revision.is_some() {
+                return Err(DaemonError::State {
+                    code: "project_binding_changed",
+                    message: format!("Project binding for {workspace_root} no longer exists"),
+                });
+            }
+            sqlx::query(
+                "INSERT INTO project_bindings (server_url, workspace_root, project_id, revision)
+                 VALUES ($1, $2, $3, 1)",
+            )
+            .bind(&server_url)
+            .bind(&workspace_root)
+            .bind(&project_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let row = sqlx::query(
+            "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
+             FROM project_bindings
+             WHERE server_url = $1 AND workspace_root = $2",
+        )
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .fetch_one(&mut *tx)
+        .await?;
+        let binding = project_binding_from_row(&row)?;
+        tx.commit().await?;
+        self.request_sync();
+        Ok(binding)
     }
 
     pub async fn server_request(
@@ -1039,8 +1209,9 @@ impl DaemonState {
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);
         let operation_json = serde_json::to_string(&request.op)?;
-        let base_commit_id = match request.base_commit_id {
-            Some(commit_id) => Some(commit_id),
+        let requested_base_commit_id = request.base_commit_id;
+        let new_draft_base_commit_id = match requested_base_commit_id.as_deref() {
+            Some(commit_id) => Some(commit_id.to_owned()),
             None => {
                 commit_sync::current_base_commit_id(
                     &self.inner.pool,
@@ -1054,12 +1225,15 @@ impl DaemonState {
 
         let draft_id = resolve_local_draft(
             &mut tx,
-            request.draft_id.as_deref(),
-            &request.project_id,
-            base_commit_id.as_deref(),
-            request.scope,
-            request.resource,
-            &request.op,
+            LocalDraftResolutionInput {
+                requested_draft_id: request.draft_id.as_deref(),
+                project_id: &request.project_id,
+                requested_base_commit_id: requested_base_commit_id.as_deref(),
+                new_draft_base_commit_id: new_draft_base_commit_id.as_deref(),
+                scope: request.scope,
+                resource: request.resource,
+                op: &request.op,
+            },
         )
         .await?;
         let local_operation_id = format!("op_{}", Uuid::new_v4().simple());
@@ -1079,7 +1253,8 @@ impl DaemonState {
         .await?;
         sqlx::query(
             "UPDATE local_drafts
-             SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             SET reconciliation = 'unknown', reconciliation_candidate_id = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE draft_id = $1",
         )
         .bind(&draft_id)
@@ -1177,7 +1352,7 @@ impl DaemonState {
     ) -> Result<(), DaemonError> {
         let _sync_guard = self.inner.sync_lock.lock().await;
         async {
-            if !self.project_config().readiness().ready {
+            if !self.project_config().server_readiness().ready {
                 return Ok(());
             }
             let mut first_error = None;
@@ -1246,6 +1421,20 @@ impl DaemonIpcService {
         request: DaemonProjectSelectionRequest,
     ) -> Result<DaemonProjectConfig, DaemonError> {
         self.state.select_project(request).await
+    }
+
+    pub async fn resolve_project_binding(
+        &self,
+        request: DaemonProjectBindingResolveRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        self.state.resolve_project_binding(request).await
+    }
+
+    pub async fn replace_project_binding(
+        &self,
+        request: DaemonProjectBindingReplaceRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        self.state.replace_project_binding(request).await
     }
 
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
@@ -1331,158 +1520,182 @@ impl DaemonIpcService {
     }
 
     pub async fn dispatch(&self, request: DaemonIpcRequest) -> DaemonIpcResponse {
-        let result =
-            match request.method.as_str() {
-                "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
-                "project_config" => {
-                    serde_json::to_value(self.project_config()).map_err(DaemonError::from)
+        let result = match request.method.as_str() {
+            "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
+            "project_config" => {
+                serde_json::to_value(self.project_config()).map_err(DaemonError::from)
+            }
+            "replace_project_config" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .replace_project_config(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "replace_project_config" => {
-                    let payload = self.decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(
-                        request.payload,
-                    );
-                    match payload {
-                        Ok(payload) => {
-                            self.replace_project_config(payload)
-                                .await
-                                .and_then(|value| {
-                                    serde_json::to_value(value).map_err(DaemonError::from)
-                                })
-                        }
-                        Err(error) => Err(error),
-                    }
+            }
+            "select_project" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .select_project(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "select_project" => {
-                    let payload = self
-                        .decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.select_project(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "resolve_project_binding" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectBindingResolveRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .resolve_project_binding(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "sync_status" => self
-                    .sync_status()
-                    .await
-                    .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                "memory_cache" => {
-                    let payload =
-                        self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.memory_cache(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "replace_project_binding" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectBindingReplaceRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .replace_project_binding(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "project_checkout" => {
-                    let payload = self
-                        .decode_dispatch_payload::<DaemonProjectCheckoutRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.project_checkout(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "sync_status" => self
+                .sync_status()
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+            "memory_cache" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .memory_cache(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "activate_memory" => {
-                    let payload =
-                        self.decode_dispatch_payload::<ActivateMemoryRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.activate_memory(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "project_checkout" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonProjectCheckoutRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .project_checkout(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "load_memory" => {
-                    let payload =
-                        self.decode_dispatch_payload::<LoadMemoryRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.load_memory(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "activate_memory" => {
+                let payload =
+                    self.decode_dispatch_payload::<ActivateMemoryRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .activate_memory(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "search_index_status" => {
-                    let payload =
-                        self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.search_index_status(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "load_memory" => {
+                let payload = self.decode_dispatch_payload::<LoadMemoryRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .load_memory(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "rebuild_search_index" => {
-                    let payload =
-                        self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.rebuild_search_index(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "search_index_status" => {
+                let payload =
+                    self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .search_index_status(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "retry_sync" => {
-                    let payload =
-                        self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.retry_sync(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "rebuild_search_index" => {
+                let payload =
+                    self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .rebuild_search_index(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
-                "list_drafts" => {
-                    let payload =
-                        self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
-                    match payload {
-                        Ok(payload) => self.list_drafts(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "retry_sync" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .retry_sync(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "get_draft" => {
-                    let payload =
-                        self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.get_draft(&payload.draft_id).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
+            "list_drafts" => {
+                let payload = self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .list_drafts(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "store_draft_operation" => {
-                    let payload = self
-                        .decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => {
-                            self.store_draft_operation(payload).await.and_then(|value| {
-                                serde_json::to_value(value).map_err(DaemonError::from)
-                            })
-                        }
-                        Err(error) => Err(error),
-                    }
+            }
+            "get_draft" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .get_draft(&payload.draft_id)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                "server_request" => {
-                    let payload =
-                        self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
-                    match payload {
-                        Ok(payload) => self.server_request(payload).await.and_then(|value| {
-                            serde_json::to_value(value).map_err(DaemonError::from)
-                        }),
-                        Err(error) => Err(error),
-                    }
+            }
+            "store_draft_operation" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .store_draft_operation(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
                 }
-                method => Err(DaemonError::InvalidRequest(format!(
-                    "unknown daemon IPC method: {method}"
-                ))),
-            };
+            }
+            "server_request" => {
+                let payload = self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .server_request(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            method => Err(DaemonError::InvalidRequest(format!(
+                "unknown daemon IPC method: {method}"
+            ))),
+        };
         DaemonIpcResponse::from_result(result)
     }
 
@@ -1494,15 +1707,29 @@ impl DaemonIpcService {
     }
 }
 
-async fn resolve_local_draft(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    requested_draft_id: Option<&str>,
-    project_id: &str,
-    base_commit_id: Option<&str>,
+struct LocalDraftResolutionInput<'a> {
+    requested_draft_id: Option<&'a str>,
+    project_id: &'a str,
+    requested_base_commit_id: Option<&'a str>,
+    new_draft_base_commit_id: Option<&'a str>,
     scope: DaemonDraftScope,
     resource: DaemonDraftResourceKind,
-    op: &DaemonDraftOperation,
+    op: &'a DaemonDraftOperation,
+}
+
+async fn resolve_local_draft(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    input: LocalDraftResolutionInput<'_>,
 ) -> Result<String, DaemonError> {
+    let LocalDraftResolutionInput {
+        requested_draft_id,
+        project_id,
+        requested_base_commit_id,
+        new_draft_base_commit_id,
+        scope,
+        resource,
+        op,
+    } = input;
     if let Some(draft_id) = requested_draft_id {
         let row = sqlx::query(
             "SELECT project_id, resource_scope, resource_kind, base_commit_id, status
@@ -1525,13 +1752,15 @@ async fn resolve_local_draft(
             )));
         }
         let stored_base_commit_id: Option<String> = row.try_get("base_commit_id")?;
-        if base_commit_id.is_some() && stored_base_commit_id.as_deref() != base_commit_id {
+        if requested_base_commit_id.is_some()
+            && stored_base_commit_id.as_deref() != requested_base_commit_id
+        {
             return Err(DaemonError::InvalidRequest(format!(
                 "local draft {draft_id} has a different base commit"
             )));
         }
         let status: String = row.try_get("status")?;
-        if status != "open" {
+        if status != "open" && status != "submitted" {
             return Err(DaemonError::InvalidRequest(format!(
                 "local draft {draft_id} is {status}"
             )));
@@ -1553,13 +1782,14 @@ async fn resolve_local_draft(
         let draft_id = format!("draft_{}", Uuid::new_v4().simple());
         sqlx::query(
             "INSERT INTO local_drafts (
-                draft_id, project_id, base_commit_id, resource_scope, resource_kind, target_id, path, status
+                draft_id, project_id, base_commit_id, current_commit_id,
+                resource_scope, resource_kind, target_id, path, status
              )
-             VALUES ($1, $2, $3, $4, $5, NULL, $6, 'open')",
+             VALUES ($1, $2, $3, $3, $4, $5, NULL, $6, 'open')",
         )
         .bind(&draft_id)
         .bind(project_id)
-        .bind(base_commit_id)
+        .bind(new_draft_base_commit_id)
         .bind(scope.as_str())
         .bind(resource.as_str())
         .bind(&create.path)
@@ -1575,7 +1805,7 @@ async fn resolve_local_draft(
         "SELECT draft_id, project_id, resource_scope, resource_kind, base_commit_id
          FROM local_drafts
          WHERE (draft_id = $1 OR target_id = $1)
-           AND status = 'open'
+           AND status IN ('open', 'submitted')
          ORDER BY updated_at DESC
          LIMIT 1",
     )
@@ -1596,7 +1826,9 @@ async fn resolve_local_draft(
             )));
         }
         let stored_base_commit_id: Option<String> = existing.try_get("base_commit_id")?;
-        if base_commit_id.is_some() && stored_base_commit_id.as_deref() != base_commit_id {
+        if requested_base_commit_id.is_some()
+            && stored_base_commit_id.as_deref() != requested_base_commit_id
+        {
             return Err(DaemonError::InvalidRequest(format!(
                 "local draft {draft_id} has a different base commit"
             )));
@@ -1610,13 +1842,14 @@ async fn resolve_local_draft(
     let draft_id = format!("draft_{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO local_drafts (
-            draft_id, project_id, base_commit_id, resource_scope, resource_kind, target_id, path, status
+            draft_id, project_id, base_commit_id, current_commit_id,
+            resource_scope, resource_kind, target_id, path, status
          )
-         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)",
+         VALUES ($1, $2, $3, $3, $4, $5, $6, NULL, $7)",
     )
     .bind(&draft_id)
     .bind(project_id)
-    .bind(base_commit_id)
+    .bind(new_draft_base_commit_id)
     .bind(scope.as_str())
     .bind(resource.as_str())
     .bind(target_id)
@@ -1663,8 +1896,8 @@ async fn list_local_drafts(
     let rows = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
-            d.resource_scope, d.resource_kind, d.target_id,
-            d.path, d.conflict_base_commit_id, d.conflict_current_commit_id, d.conflicted_at,
+            d.current_commit_id, d.freshness, d.reconciliation, d.reconciliation_candidate_id,
+            d.resource_scope, d.resource_kind, d.target_id, d.path,
             d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
@@ -1703,8 +1936,8 @@ async fn load_local_draft_detail(
     let row = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
-            d.resource_scope, d.resource_kind, d.target_id,
-            d.path, d.conflict_base_commit_id, d.conflict_current_commit_id, d.conflicted_at,
+            d.current_commit_id, d.freshness, d.reconciliation, d.reconciliation_candidate_id,
+            d.resource_scope, d.resource_kind, d.target_id, d.path,
             d.status, d.created_at, d.updated_at,
             (
                 SELECT COUNT(*)
@@ -1744,28 +1977,24 @@ async fn load_local_draft_detail(
 }
 
 fn local_draft_summary_from_row(row: &SqliteRow) -> Result<DaemonDraftSummary, DaemonError> {
-    let conflicted_at: Option<String> = row.try_get("conflicted_at")?;
-    let conflict = match conflicted_at {
-        Some(detected_at) => Some(DaemonDraftConflict {
-            base_commit_id: row.try_get("conflict_base_commit_id")?,
-            current_commit_id: row.try_get("conflict_current_commit_id")?,
-            detected_at,
-        }),
-        None => None,
-    };
     Ok(DaemonDraftSummary {
         draft_id: row.try_get("draft_id")?,
         project_id: row.try_get("project_id")?,
         server_draft_id: row.try_get("server_draft_id")?,
         server_version: row.try_get("server_version")?,
         base_commit_id: row.try_get("base_commit_id")?,
+        current_commit_id: row.try_get("current_commit_id")?,
+        freshness: draft_freshness_from_str(row.try_get::<String, _>("freshness")?.as_str())?,
+        reconciliation: draft_reconciliation_status_from_str(
+            row.try_get::<String, _>("reconciliation")?.as_str(),
+        )?,
+        reconciliation_candidate_id: row.try_get("reconciliation_candidate_id")?,
         scope: daemon_draft_scope_from_str(row.try_get::<String, _>("resource_scope")?.as_str())?,
         resource_kind: draft_resource_kind_from_str(
             row.try_get::<String, _>("resource_kind")?.as_str(),
         )?,
         target_id: row.try_get("target_id")?,
         path: row.try_get("path")?,
-        conflict,
         status: local_draft_status_from_str(row.try_get::<String, _>("status")?.as_str())?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -1816,8 +2045,12 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
     )
     .fetch_one(pool)
     .await?;
-    let conflict_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE status = 'conflicted'")
+    let behind_draft_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE freshness = 'behind'")
+            .fetch_one(pool)
+            .await?;
+    let reconciliation_conflict_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE reconciliation = 'conflicts'")
             .fetch_one(pool)
             .await?;
     let server_cursor = load_meta_value(pool, META_DRAFT_EVENTS_CURSOR).await?;
@@ -1853,8 +2086,6 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         SyncState::Retrying
     } else if pending_operation_count > 0 {
         SyncState::Queued
-    } else if conflict_count > 0 {
-        SyncState::Conflicted
     } else {
         SyncState::Idle
     };
@@ -1888,7 +2119,8 @@ async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, Daemo
         commit_sync,
         pending_operation_count,
         failed_operation_count,
-        conflict_count,
+        behind_draft_count,
+        reconciliation_conflict_count,
         last_success_at: overall_last_success_at,
     })
 }
@@ -2630,10 +2862,32 @@ fn local_draft_status_from_str(value: &str) -> Result<DaemonLocalDraftStatus, Da
         "open" => Ok(DaemonLocalDraftStatus::Open),
         "submitted" => Ok(DaemonLocalDraftStatus::Submitted),
         "discarded" => Ok(DaemonLocalDraftStatus::Discarded),
-        "conflicted" => Ok(DaemonLocalDraftStatus::Conflicted),
         "merged" => Ok(DaemonLocalDraftStatus::Merged),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown local draft status: {other}"
+        ))),
+    }
+}
+
+fn draft_freshness_from_str(value: &str) -> Result<DaemonDraftFreshness, DaemonError> {
+    match value {
+        "current" => Ok(DaemonDraftFreshness::Current),
+        "behind" => Ok(DaemonDraftFreshness::Behind),
+        other => Err(DaemonError::InvalidRequest(format!(
+            "unknown draft freshness: {other}"
+        ))),
+    }
+}
+
+fn draft_reconciliation_status_from_str(
+    value: &str,
+) -> Result<DaemonDraftReconciliationStatus, DaemonError> {
+    match value {
+        "unknown" => Ok(DaemonDraftReconciliationStatus::Unknown),
+        "clean" => Ok(DaemonDraftReconciliationStatus::Clean),
+        "conflicts" => Ok(DaemonDraftReconciliationStatus::Conflicts),
+        other => Err(DaemonError::InvalidRequest(format!(
+            "unknown draft reconciliation status: {other}"
         ))),
     }
 }
@@ -2703,14 +2957,9 @@ async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
             ));
         }
 
-        let remote_events = response
-            .events
-            .iter()
-            .filter(|event| {
-                event.daemon_installation_id.as_deref()
-                    != Some(state.inner.daemon_installation_id.as_str())
-            })
-            .collect::<Vec<_>>();
+        // The Server projection is canonical even for events produced by this installation.
+        // Re-projecting them refreshes coordination fields that an upload response cannot carry.
+        let remote_events = response.events.iter().collect::<Vec<_>>();
         let mut drafts = BTreeMap::new();
         for event in &remote_events {
             if drafts.contains_key(&event.draft_id) {
@@ -2726,6 +2975,9 @@ async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonError> {
                     "Server returned an inconsistent projection for draft {}",
                     event.draft_id
                 )));
+            }
+            if let Some(base_commit_id) = detail.draft.base_commit_id.as_deref() {
+                commit_sync::ensure_commit_cached(state, base_commit_id).await?;
             }
             drafts.insert(event.draft_id.clone(), detail);
         }
@@ -2794,37 +3046,24 @@ async fn project_server_draft(
         sqlx::query(
             "UPDATE local_drafts
              SET project_id = $2, server_version = $3, base_commit_id = $4,
-                 resource_scope = $5, resource_kind = $6, target_id = $7, path = $8,
-                 conflict_base_commit_id = $9, conflict_current_commit_id = $10,
-                 conflicted_at = $11, status = $12, updated_at = $13
+                 current_commit_id = $5, freshness = $6, reconciliation = $7,
+                 reconciliation_candidate_id = $8,
+                 resource_scope = $9, resource_kind = $10, target_id = $11, path = $12,
+                 status = $13, updated_at = $14
              WHERE draft_id = $1",
         )
         .bind(&local_draft_id)
         .bind(&detail.draft.project_id)
         .bind(detail.draft.version)
         .bind(&detail.draft.base_commit_id)
+        .bind(&detail.draft.coordination.current_commit_id)
+        .bind(detail.draft.coordination.freshness.as_str())
+        .bind(detail.draft.coordination.reconciliation.as_str())
+        .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())
         .bind(detail.draft.resource.kind.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .and_then(|conflict| conflict.base_commit_id.as_deref()),
-        )
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .and_then(|conflict| conflict.current_commit_id.as_deref()),
-        )
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .map(|conflict| conflict.detected_at.as_str()),
-        )
         .bind(detail.draft.status.as_str())
         .bind(&detail.draft.updated_at)
         .execute(&mut **tx)
@@ -2834,38 +3073,24 @@ async fn project_server_draft(
         sqlx::query(
             "INSERT INTO local_drafts (
                 draft_id, project_id, server_draft_id, server_version, base_commit_id,
+                current_commit_id, freshness, reconciliation, reconciliation_candidate_id,
                 resource_scope, resource_kind, target_id, path,
-                conflict_base_commit_id, conflict_current_commit_id, conflicted_at,
                 status, created_at, updated_at
              )
-             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
         )
         .bind(&detail.draft.draft_id)
         .bind(&detail.draft.project_id)
         .bind(detail.draft.version)
         .bind(&detail.draft.base_commit_id)
+        .bind(&detail.draft.coordination.current_commit_id)
+        .bind(detail.draft.coordination.freshness.as_str())
+        .bind(detail.draft.coordination.reconciliation.as_str())
+        .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())
         .bind(detail.draft.resource.kind.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .and_then(|conflict| conflict.base_commit_id.as_deref()),
-        )
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .and_then(|conflict| conflict.current_commit_id.as_deref()),
-        )
-        .bind(
-            detail
-                .conflict
-                .as_ref()
-                .map(|conflict| conflict.detected_at.as_str()),
-        )
         .bind(detail.draft.status.as_str())
         .bind(&detail.draft.created_at)
         .bind(&detail.draft.updated_at)
@@ -3115,12 +3340,20 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     )
     .execute(pool)
     .await?;
-    let existing_schema_version = current_schema_version(pool).await?;
+    let mut existing_schema_version = current_schema_version(pool).await?;
     if existing_schema_version == 13 {
         migrate_local_schema_13_to_14(pool).await?;
-    } else if existing_schema_version != 0
-        && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION
-    {
+        existing_schema_version = 14;
+    }
+    if existing_schema_version == 14 {
+        migrate_local_schema_14_to_15(pool).await?;
+        existing_schema_version = 15;
+    }
+    if existing_schema_version == 15 {
+        migrate_local_schema_15_to_16(pool).await?;
+        existing_schema_version = 16;
+    }
+    if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
         )));
@@ -3138,14 +3371,15 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             server_draft_id TEXT,
             server_version BIGINT NOT NULL DEFAULT 0,
             base_commit_id TEXT,
+            current_commit_id TEXT,
+            freshness TEXT NOT NULL CHECK (freshness IN ('current', 'behind')) DEFAULT 'current',
+            reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
+            reconciliation_candidate_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
             resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
             target_id TEXT,
             path TEXT,
-            conflict_base_commit_id TEXT,
-            conflict_current_commit_id TEXT,
-            conflicted_at TEXT,
-            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted', 'merged')) DEFAULT 'open',
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )",
@@ -3194,6 +3428,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     )
     .execute(pool)
     .await?;
+    create_project_bindings_table(pool).await?;
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_draft_operations_server_operation_id
          ON local_draft_operations (server_operation_id)
@@ -3313,6 +3548,102 @@ async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(), DaemonEr
     }
     migrate_legacy_rule_operations(&mut tx).await?;
     tx.commit().await?;
+    Ok(())
+}
+
+async fn migrate_local_schema_14_to_15(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    for statement in [
+        "DROP INDEX IF EXISTS idx_local_drafts_target_id",
+        "DROP INDEX IF EXISTS idx_local_drafts_server_draft_id",
+        "DROP INDEX IF EXISTS idx_local_draft_operations_server_operation_id",
+        "DROP INDEX IF EXISTS idx_local_draft_operations_sync_status",
+        "ALTER TABLE local_draft_operations RENAME TO local_draft_operations_v14",
+        "ALTER TABLE local_drafts RENAME TO local_drafts_v14",
+        "CREATE TABLE local_drafts (
+            draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            server_draft_id TEXT,
+            server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            current_commit_id TEXT,
+            freshness TEXT NOT NULL CHECK (freshness IN ('current', 'behind')) DEFAULT 'current',
+            reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
+            reconciliation_candidate_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            target_id TEXT,
+            path TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+        "INSERT INTO local_drafts (
+            draft_id, project_id, server_draft_id, server_version, base_commit_id,
+            current_commit_id, freshness, reconciliation, reconciliation_candidate_id,
+            resource_scope, resource_kind, target_id, path, status, created_at, updated_at
+         )
+         SELECT
+            draft_id, project_id, server_draft_id, server_version, base_commit_id,
+            CASE WHEN status = 'conflicted' THEN conflict_current_commit_id ELSE base_commit_id END,
+            CASE WHEN status = 'conflicted' THEN 'behind' ELSE 'current' END,
+            'unknown', NULL,
+            resource_scope, resource_kind, target_id, path,
+            CASE WHEN status = 'conflicted' THEN 'submitted' ELSE status END,
+            created_at, updated_at
+         FROM local_drafts_v14",
+        "CREATE TABLE local_draft_operations (
+            local_operation_id TEXT PRIMARY KEY,
+            draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+            server_operation_id TEXT,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            operation_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
+            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+        "INSERT INTO local_draft_operations (
+            local_operation_id, draft_id, server_operation_id, resource_kind,
+            operation_json, source, sync_status, last_error, created_at, updated_at
+         )
+         SELECT local_operation_id, draft_id, server_operation_id, resource_kind,
+                operation_json, source, sync_status, last_error, created_at, updated_at
+         FROM local_draft_operations_v14",
+        "DROP TABLE local_draft_operations_v14",
+        "DROP TABLE local_drafts_v14",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migrate_local_schema_15_to_16(pool: &SqlitePool) -> Result<(), DaemonError> {
+    create_project_bindings_table(pool).await
+}
+
+async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS project_bindings (
+            server_url TEXT NOT NULL,
+            workspace_root TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            revision BIGINT NOT NULL CHECK (revision > 0),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (server_url, workspace_root)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_project_bindings_project
+         ON project_bindings (server_url, project_id)",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -3648,6 +3979,45 @@ fn non_empty_string(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+fn canonical_server_url(server_url: &str) -> Result<String, DaemonError> {
+    ProjectConfig {
+        server_url: server_url.to_owned(),
+        project_id: None,
+    }
+    .validate()?;
+    Ok(server_url.trim().trim_end_matches('/').to_owned())
+}
+
+fn canonical_workspace_directory(path: &str) -> Result<PathBuf, DaemonError> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "workspace path must not be empty".to_owned(),
+        ));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        DaemonError::InvalidRequest(format!("workspace path {path} cannot be resolved: {error}"))
+    })?;
+    if !canonical.is_dir() {
+        return Err(DaemonError::InvalidRequest(format!(
+            "workspace path {} is not a directory",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
+
+fn project_binding_from_row(row: &SqliteRow) -> Result<DaemonProjectBinding, DaemonError> {
+    Ok(DaemonProjectBinding {
+        server_url: row.try_get("server_url")?,
+        workspace_root: row.try_get("workspace_root")?,
+        project_id: row.try_get("project_id")?,
+        revision: row.try_get("revision")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
 fn parse_bool_env(name: &str) -> Result<Option<bool>, DaemonError> {
     let Some(value) = env::var(name).ok() else {
         return Ok(None);
@@ -3842,6 +4212,28 @@ pub struct DaemonProjectSelectionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingResolveRequest {
+    pub workspace_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingReplaceRequest {
+    pub workspace_root: String,
+    pub project_id: String,
+    pub expected_revision: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBinding {
+    pub server_url: String,
+    pub workspace_root: String,
+    pub project_id: String,
+    pub revision: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonServerRequest {
     pub method: String,
     pub path: String,
@@ -3885,7 +4277,8 @@ pub struct DaemonSyncStatus {
     pub commit_sync: SyncChannelStatus,
     pub pending_operation_count: i64,
     pub failed_operation_count: i64,
-    pub conflict_count: i64,
+    pub behind_draft_count: i64,
+    pub reconciliation_conflict_count: i64,
     pub last_success_at: Option<String>,
 }
 
@@ -3906,7 +4299,6 @@ pub enum SyncState {
     Syncing,
     Retrying,
     Degraded,
-    Conflicted,
     Failed,
 }
 
@@ -3978,23 +4370,19 @@ pub struct DaemonDraftSummary {
     pub server_draft_id: Option<String>,
     pub server_version: i64,
     pub base_commit_id: Option<String>,
+    pub current_commit_id: Option<String>,
+    pub freshness: DaemonDraftFreshness,
+    pub reconciliation: DaemonDraftReconciliationStatus,
+    pub reconciliation_candidate_id: Option<String>,
     pub scope: DaemonDraftScope,
     pub resource_kind: DaemonDraftResourceKind,
     pub target_id: Option<String>,
     pub path: Option<String>,
-    pub conflict: Option<DaemonDraftConflict>,
     pub status: DaemonLocalDraftStatus,
     pub created_at: String,
     pub updated_at: String,
     pub pending_operation_count: i64,
     pub failed_operation_count: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonDraftConflict {
-    pub base_commit_id: Option<String>,
-    pub current_commit_id: Option<String>,
-    pub detected_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -4014,9 +4402,8 @@ pub struct DaemonLocalDraftOperation {
 pub enum DaemonLocalDraftStatus {
     Open,
     Submitted,
-    Discarded,
-    Conflicted,
     Merged,
+    Discarded,
 }
 
 impl DaemonLocalDraftStatus {
@@ -4024,9 +4411,42 @@ impl DaemonLocalDraftStatus {
         match self {
             Self::Open => "open",
             Self::Submitted => "submitted",
-            Self::Discarded => "discarded",
-            Self::Conflicted => "conflicted",
             Self::Merged => "merged",
+            Self::Discarded => "discarded",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonDraftFreshness {
+    Current,
+    Behind,
+}
+
+impl DaemonDraftFreshness {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Behind => "behind",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonDraftReconciliationStatus {
+    Unknown,
+    Clean,
+    Conflicts,
+}
+
+impl DaemonDraftReconciliationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Clean => "clean",
+            Self::Conflicts => "conflicts",
         }
     }
 }
@@ -4452,14 +4872,14 @@ struct ServerDraftVersion {
 struct ServerDraftProjectionDetail {
     draft: ServerDraftProjection,
     operations: Vec<ServerDraftProjectionOperation>,
-    conflict: Option<ServerDraftConflict>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ServerDraftConflict {
-    base_commit_id: Option<String>,
+struct ServerDraftCoordination {
     current_commit_id: Option<String>,
-    detected_at: String,
+    freshness: DaemonDraftFreshness,
+    reconciliation: DaemonDraftReconciliationStatus,
+    candidate_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -4467,6 +4887,7 @@ struct ServerDraftProjection {
     draft_id: String,
     project_id: String,
     base_commit_id: Option<String>,
+    coordination: ServerDraftCoordination,
     resource: ServerDraftResourceRef,
     status: DaemonLocalDraftStatus,
     version: i64,
@@ -4532,6 +4953,14 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
                 details: json!({}),
             };
         }
+        DaemonError::State { code, message } => {
+            return ApiError {
+                code: code.to_owned(),
+                message,
+                request_id: format!("req_{}", Uuid::new_v4().simple()),
+                details: json!({}),
+            };
+        }
         error => error,
     };
     let (code, message) = match error {
@@ -4551,6 +4980,7 @@ fn api_error_from_daemon_error(error: DaemonError) -> ApiError {
         DaemonError::Launchctl(message) => ("launchctl_failed", message),
         DaemonError::Ipc(message) => ("daemon_ipc_failed", message),
         DaemonError::Search { .. } => unreachable!("search errors return above"),
+        DaemonError::State { .. } => unreachable!("state errors return above"),
     };
     ApiError {
         code: code.to_owned(),
@@ -4588,6 +5018,8 @@ pub enum DaemonError {
     Ipc(String),
     #[error("search error ({code}): {message}")]
     Search { code: String, message: String },
+    #[error("state error ({code}): {message}")]
+    State { code: &'static str, message: String },
 }
 
 impl DaemonError {

@@ -5,16 +5,16 @@ use daemon::{
     DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonProjectCheckoutRequest, DaemonProjectSelectionRequest, DaemonRenameDraftOperation,
-    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus, SyncRetryChannel,
-    SyncState,
+    DaemonMemoryCacheState, DaemonProjectCheckoutRequest, DaemonProjectSelectionRequest,
+    DaemonRenameDraftOperation, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
+    DraftOperationSyncStatus, LoadMemoryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
-    CreateDraftRequest, CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest,
+    CreateDraftRebaseRequest, CreateDraftRequest, CreateReviewDecisionRequest,
     CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
     DraftOperationAction, DraftOperationInput, DraftResourceContent, DraftResourceKind,
-    DraftResourceRef, DraftStatus, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    ReviewDecision, ReviewMergeResult, ReviewStatus,
+    DraftResourceRef, ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest,
+    ResourceScope, ReviewDecision, ReviewMergeResult,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -43,13 +43,20 @@ async fn approve_and_merge(
     expected_draft_version: i64,
     expected_ref: Option<&str>,
 ) -> ReviewMergeResult {
+    let detail = repository.get_draft(draft_id).await.unwrap();
     let review = repository
-        .create_review(CreateReviewRequest {
-            draft_id: draft_id.to_owned(),
-            expected_draft_version,
-            title: None,
-            description: None,
-        })
+        .create_review(
+            &detail.draft.author.user_id,
+            expected_ref,
+            CreateReviewRequest {
+                draft_id: draft_id.to_owned(),
+                expected_draft_version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
         .await
         .unwrap();
     let approved = repository
@@ -381,12 +388,18 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     );
 
     let review = repository
-        .create_review(CreateReviewRequest {
-            draft_id: draft.draft.draft_id.clone(),
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        })
+        .create_review(
+            &bootstrap.user_id,
+            None,
+            CreateReviewRequest {
+                draft_id: draft.draft.draft_id.clone(),
+                expected_draft_version: draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
         .await
         .unwrap();
     service
@@ -456,11 +469,14 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
         .create_review_submission(
             &rejected.review.review_id,
             &bootstrap.user_id,
+            rejected.draft.coordination.current_commit_id.as_deref(),
             CreateReviewSubmissionRequest {
                 expected_review_version: rejected.review.version,
                 expected_draft_version: edited.draft.server_version,
                 title: Some("Revised daemon context".to_owned()),
                 description: None,
+                candidate_id: None,
+                resolved_state: None,
             },
         )
         .await
@@ -744,13 +760,14 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
 }
 
 #[tokio::test]
-async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
+async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
     let postgres = common::start_postgres().await;
     let port = postgres.port;
     let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
     server::db::run_migrations(&pool).await.unwrap();
     let repository = ServerRepository::new(pool.clone());
+    let verification_pool = pool.clone();
     let bootstrap = common::initialize_installation(pool.clone(), "Offline Conflict").await;
 
     let base_draft = repository
@@ -832,7 +849,7 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     config.project.server_url = server_url.clone();
     config.project.project_id = Some(bootstrap.project_id.clone());
     let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
-    let service = DaemonIpcService::new(state);
+    let service = DaemonIpcService::new(state.clone());
     service
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::Commits,
@@ -932,6 +949,17 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     .await;
     let current_commit_id = remote_merge.commit_id.unwrap();
 
+    let local_pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    for statement in [
+        "DELETE FROM cached_commits",
+        "DELETE FROM cached_trees",
+        "DELETE FROM cached_blobs",
+    ] {
+        sqlx::query(statement).execute(&local_pool).await.unwrap();
+    }
+
     service
         .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
             server_url: server_url.clone(),
@@ -941,6 +969,45 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
         })
         .await
         .unwrap();
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+    let retained_base_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cached_commits WHERE commit_id = $1")
+            .bind(&base_commit_id)
+            .fetch_one(&local_pool)
+            .await
+            .unwrap();
+    assert_eq!(retained_base_count, 1);
+    let effective = service
+        .load_memory(LoadMemoryRequest {
+            project_id: bootstrap.project_id.clone(),
+            ids: vec![
+                "context/offline-conflict.md".to_owned(),
+                "context/remote-change.md".to_owned(),
+            ],
+            known_hashes: Default::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(effective.resources.len(), 2);
+    assert_eq!(
+        effective
+            .resources
+            .iter()
+            .find(|resource| resource.path == "context/offline-conflict.md")
+            .and_then(|resource| resource.content.as_deref()),
+        Some("# Offline conflict\n\nThis content must survive recovery and resolution.")
+    );
+    assert!(
+        effective
+            .resources
+            .iter()
+            .any(|resource| resource.path == "context/remote-change.md")
+    );
     service
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::Drafts,
@@ -1014,39 +1081,6 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
         DraftOperationSyncStatus::Retrying
     );
 
-    let review = repository
-        .create_review(CreateReviewRequest {
-            draft_id: uploaded.draft.server_draft_id.clone().unwrap(),
-            expected_draft_version: uploaded.draft.server_version,
-            title: None,
-            description: None,
-        })
-        .await
-        .unwrap();
-    let approved = repository
-        .create_review_decision(
-            &review.review.review_id,
-            CreateReviewDecisionRequest {
-                decision: ReviewDecision::Approved,
-                expected_review_version: review.review.version,
-                body: None,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        repository
-            .create_review_merge(
-                &approved.review.review_id,
-                Some(&current_commit_id),
-                CreateReviewMergeRequest {
-                    expected_review_version: approved.review.version,
-                },
-            )
-            .await
-            .is_err()
-    );
-
     service
         .replace_project_config(daemon::DaemonProjectConfigUpdateRequest {
             server_url,
@@ -1062,21 +1096,21 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
         })
         .await
         .unwrap();
-    let projected_conflict = service.get_draft(&local_draft.draft_id).await.unwrap();
+    let projected_behind = service.get_draft(&local_draft.draft_id).await.unwrap();
+    assert_eq!(projected_behind.draft.status, DaemonLocalDraftStatus::Open);
     assert_eq!(
-        projected_conflict.draft.status,
-        DaemonLocalDraftStatus::Conflicted
-    );
-    let conflict = projected_conflict.draft.conflict.as_ref().unwrap();
-    assert_eq!(
-        conflict.base_commit_id.as_deref(),
+        projected_behind.draft.base_commit_id.as_deref(),
         Some(base_commit_id.as_str())
     );
     assert_eq!(
-        conflict.current_commit_id.as_deref(),
+        projected_behind.draft.current_commit_id.as_deref(),
         Some(current_commit_id.as_str())
     );
-    let failed_offline_operation = projected_conflict
+    assert_eq!(
+        projected_behind.draft.freshness,
+        daemon::DaemonDraftFreshness::Behind
+    );
+    let synced_offline_operation = projected_behind
         .operations
         .iter()
         .find(|operation| {
@@ -1084,11 +1118,11 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
         })
         .unwrap();
     assert_eq!(
-        failed_offline_operation.sync_status,
-        DraftOperationSyncStatus::Failed
+        synced_offline_operation.sync_status,
+        DraftOperationSyncStatus::Synced
     );
     assert_eq!(
-        failed_offline_operation
+        synced_offline_operation
             .operation
             .create
             .as_ref()
@@ -1098,44 +1132,82 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     );
     assert_eq!(
         service.sync_status().await.unwrap().draft_sync.state,
-        SyncState::Failed
+        SyncState::Idle
     );
 
-    let conflicted = repository
-        .get_review_detail(&approved.review.review_id)
+    let server_behind = repository
+        .get_draft(projected_behind.draft.server_draft_id.as_deref().unwrap())
         .await
         .unwrap();
-    assert_eq!(conflicted.review.status, ReviewStatus::Approved);
-    assert_eq!(conflicted.draft.status, DraftStatus::Conflicted);
-    assert_eq!(conflicted.operations.len(), 1);
-    let mut resolved_operations = conflicted
-        .operations
-        .iter()
-        .map(|operation| operation.input.clone())
-        .collect::<Vec<_>>();
-    resolved_operations.last_mut().unwrap().content = Some(DraftResourceContent::Context {
-        content: later_offline_content.to_owned(),
-    });
-    let resolved = repository
-        .create_review_conflict_resolution(
-            &conflicted.review.review_id,
+    assert_eq!(
+        server_behind.draft.base_commit_id,
+        Some(base_commit_id.clone())
+    );
+    assert_eq!(server_behind.operations.len(), 2);
+
+    let reconciliation_error = repository
+        .create_review(
             &bootstrap.user_id,
             Some(&current_commit_id),
-            CreateReviewConflictResolutionRequest {
-                expected_review_version: conflicted.review.version,
-                expected_draft_version: conflicted.draft.version,
-                operations: resolved_operations,
+            CreateReviewRequest {
+                draft_id: server_behind.draft.draft_id.clone(),
+                expected_draft_version: server_behind.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    let candidate_id = match reconciliation_error {
+        server::repository::ServerError::ReconciliationRequired { candidate_id, .. } => {
+            candidate_id
+        }
+        error => panic!("expected reconciliation_required, got {error:?}"),
+    };
+    let candidate = repository
+        .get_draft_reconciliation_candidate(&server_behind.draft.draft_id, &candidate_id)
+        .await
+        .unwrap();
+    assert_eq!(candidate.status, ReconciliationCandidateStatus::Clean);
+    assert!(candidate.valid);
+    assert_eq!(candidate.base_commit_id, Some(base_commit_id.clone()));
+    assert_eq!(candidate.current_commit_id, Some(current_commit_id.clone()));
+
+    let unchanged = repository
+        .get_draft(&server_behind.draft.draft_id)
+        .await
+        .unwrap();
+    assert_eq!(unchanged.draft.base_commit_id, Some(base_commit_id.clone()));
+    assert_eq!(unchanged.draft.version, server_behind.draft.version);
+    assert_eq!(unchanged.operations, server_behind.operations);
+
+    let rebased = repository
+        .create_draft_rebase(
+            &server_behind.draft.draft_id,
+            &bootstrap.user_id,
+            Some(&current_commit_id),
+            CreateDraftRebaseRequest {
+                candidate_id,
+                expected_draft_version: server_behind.draft.version,
+                resolved_state: None,
             },
         )
         .await
         .unwrap();
-    assert_eq!(resolved.review.status, ReviewStatus::Open);
-    assert_eq!(resolved.draft.status, DraftStatus::Submitted);
     assert_eq!(
-        resolved.draft.base_commit_id.as_deref(),
+        rebased.draft.draft.base_commit_id.as_deref(),
         Some(current_commit_id.as_str())
     );
-    assert!(resolved.conflict.is_none());
+    assert_eq!(rebased.draft.operations.len(), 1);
+    let revision_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM draft_revisions WHERE draft_id = $1")
+            .bind(&server_behind.draft.draft_id)
+            .fetch_one(&verification_pool)
+            .await
+            .unwrap();
+    assert_eq!(revision_count, 1);
 
     service
         .retry_sync(DaemonSyncRetryRequest {
@@ -1146,18 +1218,21 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     let projected_resolution = service.get_draft(&local_draft.draft_id).await.unwrap();
     assert_eq!(
         projected_resolution.draft.status,
-        DaemonLocalDraftStatus::Submitted
+        DaemonLocalDraftStatus::Open
     );
     assert_eq!(
         projected_resolution.draft.base_commit_id.as_deref(),
         Some(current_commit_id.as_str())
     );
-    assert!(projected_resolution.draft.conflict.is_none());
-    assert_eq!(projected_resolution.operations.len(), 1);
     assert_eq!(
-        projected_resolution.operations[0].local_operation_id,
-        later_offline_operation.local_operation_id
+        projected_resolution.draft.current_commit_id,
+        Some(current_commit_id.clone())
     );
+    assert_eq!(
+        projected_resolution.draft.freshness,
+        daemon::DaemonDraftFreshness::Current
+    );
+    assert_eq!(projected_resolution.operations.len(), 1);
     assert_eq!(
         projected_resolution.operations[0].sync_status,
         DraftOperationSyncStatus::Synced
@@ -1176,23 +1251,38 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
     assert_eq!(resolved_sync_status.failed_operation_count, 0);
     assert_eq!(resolved_sync_status.draft_sync.state, SyncState::Idle);
 
-    let reapproved = repository
+    let review = repository
+        .create_review(
+            &bootstrap.user_id,
+            Some(&current_commit_id),
+            CreateReviewRequest {
+                draft_id: rebased.draft.draft.draft_id.clone(),
+                expected_draft_version: rebased.draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let approved = repository
         .create_review_decision(
-            &resolved.review.review_id,
+            &review.review.review_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
-                expected_review_version: resolved.review.version,
-                body: Some("Resolved against the current Ref.".to_owned()),
+                expected_review_version: review.review.version,
+                body: Some("Reviewed against the current Ref.".to_owned()),
             },
         )
         .await
         .unwrap();
     let final_merge = repository
         .create_review_merge(
-            &reapproved.review.review_id,
+            &approved.review.review_id,
             Some(&current_commit_id),
             CreateReviewMergeRequest {
-                expected_review_version: reapproved.review.version,
+                expected_review_version: approved.review.version,
             },
         )
         .await
@@ -1208,7 +1298,6 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
         .unwrap();
     let merged = service.get_draft(&local_draft.draft_id).await.unwrap();
     assert_eq!(merged.draft.status, DaemonLocalDraftStatus::Merged);
-    assert!(merged.draft.conflict.is_none());
     let cache = service
         .memory_cache(DaemonMemoryCacheRequest {
             project_id: bootstrap.project_id,
@@ -2215,7 +2304,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             })
             .await
             .unwrap();
-        assert!(empty.ready);
+        assert_eq!(empty.state, DaemonMemoryCacheState::Ready);
         assert_eq!(empty.commit_id, None);
         let empty_checkout = service
             .project_checkout(DaemonProjectCheckoutRequest {
@@ -2261,12 +2350,18 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         .await
         .unwrap();
     let review = repository
-        .create_review(CreateReviewRequest {
-            draft_id: draft.draft.draft_id,
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        })
+        .create_review(
+            &bootstrap.user_id,
+            None,
+            CreateReviewRequest {
+                draft_id: draft.draft.draft_id,
+                expected_draft_version: draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
         .await
         .unwrap();
     let approved = repository
@@ -2334,7 +2429,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             })
             .await
             .unwrap();
-        assert!(cache.ready);
+        assert_eq!(cache.state, DaemonMemoryCacheState::Ready);
         assert_eq!(cache.commit_id.as_deref(), Some(commit_id.as_str()));
         let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
         let manifest: serde_json::Value =
@@ -2399,7 +2494,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         })
         .await
         .unwrap();
-    assert!(cache_after_restart.ready);
+    assert_eq!(cache_after_restart.state, DaemonMemoryCacheState::Ready);
     assert_eq!(
         cache_after_restart.commit_id.as_deref(),
         Some(commit_id.as_str())

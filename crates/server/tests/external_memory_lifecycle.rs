@@ -5,17 +5,19 @@ use axum::http::{Request, StatusCode};
 use serde::Serialize;
 use server::api::{
     CommitListResponse, CommitPayload, CommitStateResponse, ContextDetail, ContextListResponse,
-    CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
-    CreateReviewConflictResolutionRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, CreateReviewSubmissionRequest, DeleteResult, DraftDetail,
-    DraftEventListResponse, DraftEventType, DraftListResponse, DraftOperationAction,
+    CreateDraftRebaseRequest, CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    CreateReviewSubmissionRequest, DeleteResult, DraftDetail, DraftEventListResponse,
+    DraftEventType, DraftFreshness, DraftListResponse, DraftOperationAction,
     DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationBatchResponse,
-    DraftOperationInput, DraftResourceContent, DraftResourceKind, DraftResourceRef, DraftStatus,
-    MeResponse, PersonalBundleDetail, PersonalBundleRequest, PersonalBundleUpdateRequest, Project,
-    ProjectListResponse, ProjectOrgSelection, ReplaceProjectOrgSelectionRequest, ResourceScope,
-    Review, ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail,
-    ReviewListResponse, ReviewMergeResult, ReviewStatus, RuleDetail, TreeEntryKind,
-    UpdateDraftRequest, UpdateProjectRequest, WorkflowDetail,
+    DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
+    DraftReconciliationStatus, DraftResourceContent, DraftResourceKind, DraftResourceRef,
+    DraftStatus, MeResponse, PersonalBundleDetail, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
+    ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
+    ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
+    ReviewMergeResult, ReviewStatus, RuleDetail, TreeEntryKind, UpdateDraftRequest,
+    UpdateProjectRequest, WorkflowDetail,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -221,7 +223,6 @@ async fn draft_review_merge_produces_project_commit() {
         &UpdateDraftRequest {
             title: Some("Add project context v2".to_owned()),
             description: Some("Updated draft metadata".to_owned()),
-            status: None,
         },
     )
     .await;
@@ -340,17 +341,7 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert!(deleted_draft.deleted);
 
-    let review_detail: ReviewDetail = post_json(
-        app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: draft.draft.draft_id.clone(),
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let review_detail = create_review_for_draft(app.clone(), &draft).await;
     let review = review_detail.review;
     assert_eq!(review.status, ReviewStatus::Open);
     assert_eq!(review_detail.draft.status, DraftStatus::Submitted);
@@ -663,17 +654,7 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         },
     )
     .await;
-    let review: ReviewDetail = post_json(
-        app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: draft.draft.draft_id,
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let review = create_review_for_draft(app.clone(), &draft).await;
     let review: ReviewDetail = post_json(
         app.clone(),
         &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
@@ -1021,12 +1002,18 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
         .await
         .unwrap();
     let project_review = repo
-        .create_review(CreateReviewRequest {
-            draft_id: project_draft.draft.draft_id,
-            expected_draft_version: project_draft.draft.version,
-            title: None,
-            description: None,
-        })
+        .create_review(
+            &bootstrap.user_id,
+            initial_project_head.as_deref(),
+            CreateReviewRequest {
+                draft_id: project_draft.draft.draft_id,
+                expected_draft_version: project_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
         .await
         .unwrap();
     let project_review = repo
@@ -1093,12 +1080,18 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
         .await
         .unwrap();
     let org_review = repo
-        .create_review(CreateReviewRequest {
-            draft_id: org_draft.draft.draft_id,
-            expected_draft_version: org_draft.draft.version,
-            title: None,
-            description: None,
-        })
+        .create_review(
+            &bootstrap.user_id,
+            org_head_before.as_deref(),
+            CreateReviewRequest {
+                draft_id: org_draft.draft.draft_id,
+                expected_draft_version: org_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
         .await
         .unwrap();
     let org_review = repo
@@ -1226,17 +1219,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         },
     )
     .await;
-    let submitted: ReviewDetail = post_json(
-        owner_app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: draft.draft.draft_id.clone(),
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let submitted = create_review_for_draft(owner_app.clone(), &draft).await;
     assert_eq!(submitted.review.status, ReviewStatus::Open);
     assert_eq!(submitted.review.decision_body, None);
     assert_eq!(submitted.draft.status, DraftStatus::Submitted);
@@ -1308,40 +1291,80 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(edited.draft.status, DraftStatus::Open);
     assert_eq!(edited.draft.version, 4);
 
-    let stale_review_submission = post_response(
+    let remote = create_approved_context_review(
+        owner_app.clone(),
+        &bootstrap.project_id,
+        None,
+        "context/remote.md",
+        "# Remote authority",
+    )
+    .await;
+    let remote_merge: ReviewMergeResult = post_json_with_etag(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/merges", remote.review_id),
+        "\"ref-none\"",
+        &CreateReviewMergeRequest {
+            expected_review_version: remote.version,
+        },
+    )
+    .await;
+    let current_commit_id = remote_merge.commit_id.unwrap();
+    let submission_ref_etag = format!("\"{current_commit_id}\"");
+    let behind_before_submission: DraftDetail = get_json(
+        owner_app.clone(),
+        &format!("/api/v1/drafts/{}", edited.draft.draft_id),
+    )
+    .await;
+    assert_eq!(behind_before_submission.draft.base_commit_id, None);
+    assert_eq!(
+        behind_before_submission.draft.coordination.freshness,
+        DraftFreshness::Behind
+    );
+    assert_eq!(behind_before_submission.operations, edited.operations);
+
+    let stale_review_submission = post_response_with_etag(
         owner_app.clone(),
         &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: 1,
             expected_draft_version: edited.draft.version,
             title: None,
             description: None,
+            candidate_id: None,
+            resolved_state: None,
         },
     )
     .await;
     assert_eq!(stale_review_submission.status(), StatusCode::CONFLICT);
 
-    let stale_draft_submission = post_response(
+    let stale_draft_submission = post_response_with_etag(
         owner_app.clone(),
         &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
             expected_draft_version: edited.draft.version - 1,
             title: None,
             description: None,
+            candidate_id: None,
+            resolved_state: None,
         },
     )
     .await;
     assert_eq!(stale_draft_submission.status(), StatusCode::CONFLICT);
 
-    let member_submission = post_response(
+    let member_submission = post_response_with_etag(
         member_app,
         &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
             expected_draft_version: edited.draft.version,
             title: None,
             description: None,
+            candidate_id: None,
+            resolved_state: None,
         },
     )
     .await;
@@ -1356,37 +1379,102 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(still_rejected.draft.status, DraftStatus::Open);
     assert_eq!(still_rejected.draft.version, edited.draft.version);
 
-    let resubmitted: ReviewDetail = post_json(
+    let reconciliation_required = post_response_with_etag(
         owner_app.clone(),
         &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
             expected_draft_version: edited.draft.version,
             title: Some("Revised review lifecycle context".to_owned()),
             description: None,
+            candidate_id: None,
+            resolved_state: None,
+        },
+    )
+    .await;
+    assert_eq!(reconciliation_required.status(), StatusCode::CONFLICT);
+    let required_body = to_bytes(reconciliation_required.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let required_error: serde_json::Value = serde_json::from_slice(&required_body).unwrap();
+    assert_eq!(required_error["error"]["code"], "reconciliation_required");
+    let candidate_id = required_error["error"]["details"]["candidate_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let candidate: DraftReconciliationCandidate = get_json(
+        owner_app.clone(),
+        &format!(
+            "/api/v1/drafts/{}/reconciliation-candidates/{candidate_id}",
+            edited.draft.draft_id
+        ),
+    )
+    .await;
+    assert_eq!(candidate.status, ReconciliationCandidateStatus::Clean);
+    assert_eq!(candidate.draft_version, edited.draft.version);
+    assert_eq!(candidate.base_commit_id, None);
+    assert_eq!(
+        candidate.current_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    let viewed_only: DraftDetail = get_json(
+        owner_app.clone(),
+        &format!("/api/v1/drafts/{}", edited.draft.draft_id),
+    )
+    .await;
+    assert_eq!(viewed_only.draft.base_commit_id, None);
+    assert_eq!(viewed_only.draft.version, edited.draft.version);
+    assert_eq!(viewed_only.operations, edited.operations);
+
+    let resubmitted: ReviewDetail = post_json_with_etag(
+        owner_app.clone(),
+        &format!("/api/v1/reviews/{}/submissions", rejected.review.review_id),
+        &submission_ref_etag,
+        &CreateReviewSubmissionRequest {
+            expected_review_version: rejected.review.version,
+            expected_draft_version: edited.draft.version,
+            title: Some("Revised review lifecycle context".to_owned()),
+            description: None,
+            candidate_id: Some(candidate_id),
+            resolved_state: None,
         },
     )
     .await;
     assert_eq!(resubmitted.review.review_id, submitted.review.review_id);
     assert_eq!(resubmitted.review.status, ReviewStatus::Open);
-    assert_eq!(resubmitted.review.version, 3);
+    assert_eq!(resubmitted.review.version, 4);
     assert_eq!(resubmitted.review.title, "Revised review lifecycle context");
     assert_eq!(resubmitted.review.decision_body, None);
     assert_eq!(resubmitted.draft.status, DraftStatus::Submitted);
-    assert_eq!(resubmitted.draft.version, 5);
-    assert_eq!(resubmitted.operations.len(), 2);
+    assert_eq!(
+        resubmitted.draft.base_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    assert_eq!(resubmitted.draft.version, 6);
+    assert_eq!(resubmitted.operations.len(), 1);
+    let revision_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM draft_revisions WHERE draft_id = $1")
+            .bind(&resubmitted.draft.draft_id)
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert_eq!(revision_count, 1);
 
-    let duplicate_submission = post_response(
+    let duplicate_submission = post_response_with_etag(
         owner_app.clone(),
         &format!(
             "/api/v1/reviews/{}/submissions",
             resubmitted.review.review_id
         ),
+        &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: resubmitted.review.version,
             expected_draft_version: resubmitted.draft.version,
             title: None,
             description: None,
+            candidate_id: None,
+            resolved_state: None,
         },
     )
     .await;
@@ -1412,7 +1500,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         .filter(|event| event.event_type == DraftEventType::Submitted)
         .map(|event| event.version)
         .collect::<Vec<_>>();
-    assert_eq!(submitted_versions, vec![2, 5]);
+    assert_eq!(submitted_versions, vec![2, 6]);
 }
 
 #[tokio::test]
@@ -1503,7 +1591,6 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     .await;
     assert_eq!(discarded.review.status, ReviewStatus::Rejected);
     assert_eq!(discarded.draft.status, DraftStatus::Discarded);
-    assert_eq!(discarded.conflict, None);
 
     let current = create_approved_context_review(
         app.clone(),
@@ -1573,7 +1660,6 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
     assert_eq!(unchanged.draft.status, DraftStatus::Submitted);
     assert_eq!(unchanged.draft.version, 2);
-    assert_eq!(unchanged.conflict, None);
 
     let stale_body = serde_json::to_vec(&CreateReviewMergeRequest {
         expected_review_version: stale.version,
@@ -1594,59 +1680,69 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         .unwrap();
     assert_eq!(stale_response.status(), StatusCode::CONFLICT);
     let stale_error: serde_json::Value = decode_json(stale_response).await;
-    assert_eq!(stale_error["error"]["code"], "draft_conflict");
+    assert_eq!(stale_error["error"]["code"], "reconciliation_required");
     assert_eq!(stale_error["error"]["details"]["draft_id"], stale.draft_id);
     assert_eq!(
         stale_error["error"]["details"]["current_commit_id"],
         first_commit_id
     );
+    let candidate_id = stale_error["error"]["details"]["candidate_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
-    let conflicted: ReviewDetail =
+    let behind: ReviewDetail =
         get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
-    assert_eq!(conflicted.draft.status, DraftStatus::Conflicted);
-    assert_eq!(conflicted.draft.version, 3);
+    assert_eq!(behind.draft.status, DraftStatus::Submitted);
+    assert_eq!(behind.draft.version, 2);
+    assert_eq!(behind.draft.base_commit_id, None);
+    assert_eq!(behind.draft.coordination.freshness, DraftFreshness::Behind);
     assert_eq!(
-        conflicted
-            .conflict
-            .as_ref()
-            .and_then(|conflict| conflict.current_commit_id.as_deref()),
+        behind.draft.coordination.reconciliation,
+        DraftReconciliationStatus::Clean
+    );
+    assert_eq!(
+        behind.draft.coordination.candidate_id.as_deref(),
+        Some(candidate_id.as_str())
+    );
+    assert_eq!(behind.review.status, ReviewStatus::Approved);
+
+    let candidate: DraftReconciliationCandidate = get_json(
+        app.clone(),
+        &format!(
+            "/api/v1/drafts/{}/reconciliation-candidates/{candidate_id}",
+            stale.draft_id
+        ),
+    )
+    .await;
+    assert!(candidate.valid);
+    assert_eq!(candidate.draft_version, behind.draft.version);
+    assert_eq!(candidate.base_commit_id, None);
+    assert_eq!(
+        candidate.current_commit_id.as_deref(),
         Some(first_commit_id.as_str())
     );
-    let illegal_reopen_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/v1/drafts/{}", stale.draft_id))
-                .header("content-type", "application/json")
-                .header("if-match", conflicted.draft.version.to_string())
-                .body(Body::from(
-                    serde_json::to_vec(&UpdateDraftRequest {
-                        title: None,
-                        description: None,
-                        status: Some(DraftStatus::Open),
-                    })
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(illegal_reopen_response.status(), StatusCode::BAD_REQUEST);
-    let still_conflicted: DraftDetail =
-        get_json(app.clone(), &format!("/api/v1/drafts/{}", stale.draft_id)).await;
-    assert_eq!(still_conflicted.draft.status, DraftStatus::Conflicted);
-    assert_eq!(still_conflicted.draft.version, conflicted.draft.version);
-    assert!(still_conflicted.conflict.is_some());
+    let clean_override = post_response_with_etag(
+        app.clone(),
+        &format!("/api/v1/drafts/{}/rebases", stale.draft_id),
+        &format!("\"{first_commit_id}\""),
+        &CreateDraftRebaseRequest {
+            candidate_id: candidate_id.clone(),
+            expected_draft_version: behind.draft.version,
+            resolved_state: Some(candidate.draft_state.clone()),
+        },
+    )
+    .await;
+    assert_eq!(clean_override.status(), StatusCode::BAD_REQUEST);
+    let still_behind: ReviewDetail =
+        get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
+    assert_eq!(still_behind.draft.base_commit_id, None);
+    assert_eq!(still_behind.draft.version, behind.draft.version);
+
     let events: DraftEventListResponse = get_json(app.clone(), "/api/v1/draft-events").await;
-    let conflict_event = events
-        .events
-        .iter()
-        .find(|event| {
-            event.draft_id == stale.draft_id && event.event_type == DraftEventType::Conflicted
-        })
-        .expect("stale merge should emit a conflict event");
-    assert_eq!(conflict_event.daemon_installation_id, None);
+    assert!(!events.events.iter().any(|event| {
+        event.draft_id == stale.draft_id && event.event_type == DraftEventType::Rebased
+    }));
 
     let context: ContextListResponse = get_json(
         app.clone(),
@@ -1663,52 +1759,469 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     assert_eq!(commits.items.len(), 1);
     assert_eq!(commits.items[0].commit_id, first_commit_id);
 
-    let resolved: ReviewDetail = post_json_with_etag(
+    let second = create_approved_context_review(
         app.clone(),
-        &format!("/api/v1/reviews/{}/conflict-resolutions", stale.review_id),
+        &project_id,
+        Some(&first_commit_id),
+        "context/second.md",
+        "# Second",
+    )
+    .await;
+    let second_merge: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", second.review_id),
         &format!("\"{first_commit_id}\""),
-        &CreateReviewConflictResolutionRequest {
-            expected_review_version: conflicted.review.version,
-            expected_draft_version: conflicted.draft.version,
-            operations: conflicted
-                .operations
-                .iter()
-                .map(|operation| operation.input.clone())
-                .collect(),
+        &CreateReviewMergeRequest {
+            expected_review_version: second.version,
         },
     )
     .await;
-    assert_eq!(resolved.review.status, ReviewStatus::Open);
-    assert_eq!(resolved.draft.status, DraftStatus::Submitted);
-    assert_eq!(
-        resolved.draft.base_commit_id.as_deref(),
-        Some(first_commit_id.as_str())
-    );
-    assert_eq!(resolved.conflict, None);
-
-    let approved: ReviewDetail = post_json(
+    let second_commit_id = second_merge.commit_id.unwrap();
+    let invalidated_candidate: DraftReconciliationCandidate = get_json(
         app.clone(),
-        &format!("/api/v1/reviews/{}/decisions", stale.review_id),
-        &CreateReviewDecisionRequest {
-            decision: ReviewDecision::Approved,
-            expected_review_version: resolved.review.version,
-            body: Some("Resolved against the current Commit.".to_owned()),
+        &format!(
+            "/api/v1/drafts/{}/reconciliation-candidates/{candidate_id}",
+            stale.draft_id
+        ),
+    )
+    .await;
+    assert!(!invalidated_candidate.valid);
+    let behind_again: ReviewDetail =
+        get_json(app.clone(), &format!("/api/v1/reviews/{}", stale.review_id)).await;
+    assert_eq!(
+        behind_again.draft.coordination.freshness,
+        DraftFreshness::Behind
+    );
+    assert_eq!(
+        behind_again.draft.coordination.current_commit_id.as_deref(),
+        Some(second_commit_id.as_str())
+    );
+    assert_eq!(
+        behind_again.draft.coordination.reconciliation,
+        DraftReconciliationStatus::Unknown
+    );
+
+    let refreshed_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/reviews/{}/merges", stale.review_id))
+                .header("content-type", "application/json")
+                .header("if-match", format!("\"{second_commit_id}\""))
+                .body(Body::from(
+                    serde_json::to_vec(&CreateReviewMergeRequest {
+                        expected_review_version: stale.version,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refreshed_response.status(), StatusCode::CONFLICT);
+    let refreshed_error: serde_json::Value = decode_json(refreshed_response).await;
+    let refreshed_candidate_id = refreshed_error["error"]["details"]["candidate_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(refreshed_candidate_id, candidate_id);
+
+    let rebased: DraftRebaseResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/drafts/{}/rebases", stale.draft_id),
+        &format!("\"{second_commit_id}\""),
+        &CreateDraftRebaseRequest {
+            candidate_id: refreshed_candidate_id,
+            expected_draft_version: behind.draft.version,
+            resolved_state: None,
         },
     )
     .await;
+    assert!(!rebased.approval_invalidated);
+    assert_eq!(rebased.draft.draft.status, DraftStatus::Submitted);
+    assert_eq!(
+        rebased.draft.draft.base_commit_id.as_deref(),
+        Some(second_commit_id.as_str())
+    );
+    assert_eq!(
+        rebased.draft.draft.coordination.freshness,
+        DraftFreshness::Current
+    );
+    let rebased_review = rebased.review.expect("existing Review should be returned");
+    assert_eq!(rebased_review.status, ReviewStatus::Approved);
+    assert_eq!(
+        rebased_review.approved_result_hash,
+        behind.review.approved_result_hash
+    );
+
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
         &format!("/api/v1/reviews/{}/merges", stale.review_id),
-        &format!("\"{first_commit_id}\""),
+        &format!("\"{second_commit_id}\""),
         &CreateReviewMergeRequest {
-            expected_review_version: approved.review.version,
+            expected_review_version: rebased_review.version,
         },
     )
     .await;
     assert!(merge.commit_id.is_some());
     let context: ContextListResponse =
         get_json(app, &format!("/api/v1/projects/{project_id}/context")).await;
-    assert_eq!(context.items.len(), 2);
+    assert_eq!(context.items.len(), 3);
+}
+
+#[tokio::test]
+async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Reconciliation Memory",
+    )
+    .await;
+
+    let resource = DraftResourceRef {
+        scope: ResourceScope::Project,
+        kind: DraftResourceKind::Context,
+        id: None,
+        path: Some("context/coordination.md".to_owned()),
+    };
+    let seed = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_seed".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Seed coordination context".to_owned(),
+                description: None,
+                resource: resource.clone(),
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: resource.clone(),
+                    content: context_draft_content(
+                        "# Coordination\n\nmode: base\n\nfooter: base\n",
+                    ),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let seed_review = repo
+        .create_review(
+            &bootstrap.user_id,
+            None,
+            CreateReviewRequest {
+                draft_id: seed.draft.draft_id,
+                expected_draft_version: seed.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let seed_review = repo
+        .create_review_decision(
+            &seed_review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: seed_review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    let base_commit_id = repo
+        .create_review_merge(
+            &seed_review.review.review_id,
+            None,
+            CreateReviewMergeRequest {
+                expected_review_version: seed_review.review.version,
+            },
+        )
+        .await
+        .unwrap()
+        .commit_id
+        .unwrap();
+    let payload = repo.get_commit_payload(&base_commit_id).await.unwrap();
+    let resource_id = payload
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.path.as_deref() == Some("context/coordination.md"))
+        .unwrap()
+        .id
+        .clone();
+    let existing_resource = DraftResourceRef {
+        scope: ResourceScope::Project,
+        kind: DraftResourceKind::Context,
+        id: Some(resource_id.clone()),
+        path: None,
+    };
+
+    let local_update = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_local_update".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: Some(base_commit_id.clone()),
+                title: "Update coordination locally".to_owned(),
+                description: None,
+                resource: existing_resource.clone(),
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Update,
+                    resource: existing_resource.clone(),
+                    content: context_draft_content(
+                        "# Coordination\n\nmode: local\n\nfooter: base\n",
+                    ),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let local_review = repo
+        .create_review(
+            &bootstrap.user_id,
+            Some(&base_commit_id),
+            CreateReviewRequest {
+                draft_id: local_update.draft.draft_id.clone(),
+                expected_draft_version: local_update.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let local_review = repo
+        .create_review_decision(
+            &local_review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: local_review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let rename = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_local_rename".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: Some(base_commit_id.clone()),
+                title: "Rename coordination context".to_owned(),
+                description: None,
+                resource: existing_resource.clone(),
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Rename,
+                    resource: existing_resource.clone(),
+                    content: None,
+                    new_path: Some("context/coordination-local.md".to_owned()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let remote = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_remote_update".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: Some(base_commit_id.clone()),
+                title: "Update coordination remotely".to_owned(),
+                description: None,
+                resource: existing_resource.clone(),
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Update,
+                    resource: existing_resource.clone(),
+                    content: context_draft_content(
+                        "# Coordination\n\nmode: remote\n\nfooter: base\n",
+                    ),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let remote_review = repo
+        .create_review(
+            &bootstrap.user_id,
+            Some(&base_commit_id),
+            CreateReviewRequest {
+                draft_id: remote.draft.draft_id,
+                expected_draft_version: remote.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let remote_review = repo
+        .create_review_decision(
+            &remote_review.review.review_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: remote_review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    let current_commit_id = repo
+        .create_review_merge(
+            &remote_review.review.review_id,
+            Some(&base_commit_id),
+            CreateReviewMergeRequest {
+                expected_review_version: remote_review.review.version,
+            },
+        )
+        .await
+        .unwrap()
+        .commit_id
+        .unwrap();
+
+    let conflicting = repo
+        .create_draft_reconciliation_candidate(
+            &local_update.draft.draft_id,
+            server::api::CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: local_review.draft.version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflicting.status, ReconciliationCandidateStatus::Conflicts);
+    assert!(conflicting.proposed_state.is_none());
+    assert!(!conflicting.conflicts.is_empty());
+    let unchanged = repo.get_draft(&local_update.draft.draft_id).await.unwrap();
+    assert_eq!(
+        unchanged.draft.base_commit_id.as_deref(),
+        Some(base_commit_id.as_str())
+    );
+    assert_eq!(unchanged.draft.status, DraftStatus::Submitted);
+    assert_eq!(unchanged.draft.version, local_review.draft.version);
+    assert!(
+        repo.create_draft_rebase(
+            &local_update.draft.draft_id,
+            &bootstrap.user_id,
+            Some(&current_commit_id),
+            CreateDraftRebaseRequest {
+                candidate_id: conflicting.candidate_id.clone(),
+                expected_draft_version: unchanged.draft.version,
+                resolved_state: None,
+            },
+        )
+        .await
+        .is_err()
+    );
+    let mut resolved_state = conflicting.draft_state.clone();
+    resolved_state.content =
+        context_draft_content("# Coordination\n\nmode: resolved\n\nfooter: base\n");
+    let resolved = repo
+        .create_draft_rebase(
+            &local_update.draft.draft_id,
+            &bootstrap.user_id,
+            Some(&current_commit_id),
+            CreateDraftRebaseRequest {
+                candidate_id: conflicting.candidate_id,
+                expected_draft_version: unchanged.draft.version,
+                resolved_state: Some(resolved_state),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resolved.approval_invalidated);
+    assert_eq!(
+        resolved.draft.draft.base_commit_id.as_deref(),
+        Some(current_commit_id.as_str())
+    );
+    assert_eq!(resolved.review.as_ref().unwrap().status, ReviewStatus::Open);
+    let revision_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM draft_revisions WHERE draft_id = $1")
+            .bind(&local_update.draft.draft_id)
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert_eq!(revision_count, 1);
+
+    let rename_candidate = repo
+        .create_draft_reconciliation_candidate(
+            &rename.draft.draft_id,
+            server::api::CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: rename.draft.version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rename_candidate.status,
+        ReconciliationCandidateStatus::Clean
+    );
+    let renamed = repo
+        .append_draft_operation(
+            &rename.draft.draft_id,
+            rename.draft.version,
+            DraftOperationInput {
+                action: DraftOperationAction::Rename,
+                resource: existing_resource,
+                content: None,
+                new_path: Some("context/coordination-final.md".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.draft.status, DraftStatus::Open);
+    assert_eq!(
+        renamed.draft.base_commit_id.as_deref(),
+        Some(base_commit_id.as_str())
+    );
+    assert_eq!(renamed.draft.coordination.freshness, DraftFreshness::Behind);
+    let invalidated = repo
+        .get_draft_reconciliation_candidate(&rename.draft.draft_id, &rename_candidate.candidate_id)
+        .await
+        .unwrap();
+    assert!(!invalidated.valid);
+    let refreshed = repo
+        .create_draft_reconciliation_candidate(
+            &rename.draft.draft_id,
+            server::api::CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: renamed.draft.version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refreshed.status, ReconciliationCandidateStatus::Clean);
+    assert_eq!(
+        refreshed
+            .proposed_state
+            .as_ref()
+            .and_then(|state| state.resource.path.as_deref()),
+        Some("context/coordination-final.md")
+    );
+    assert_eq!(
+        refreshed
+            .proposed_state
+            .as_ref()
+            .and_then(|state| state.content.as_ref())
+            .map(content_text_for_test),
+        Some("# Coordination\n\nmode: remote\n\nfooter: base\n")
+    );
 }
 
 #[tokio::test]
@@ -2057,17 +2570,7 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         },
     )
     .await;
-    let rule_review: ReviewDetail = post_json(
-        app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: rule_draft.draft.draft_id,
-            expected_draft_version: rule_draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let rule_review = create_review_for_draft(app.clone(), &rule_draft).await;
     let approved_rule: ReviewDetail = post_json(
         app.clone(),
         &format!("/api/v1/reviews/{}/decisions", rule_review.review.review_id),
@@ -2154,17 +2657,7 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         },
     )
     .await;
-    let workflow_review: ReviewDetail = post_json(
-        app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: workflow_draft.draft.draft_id,
-            expected_draft_version: workflow_draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let workflow_review = create_review_for_draft(app.clone(), &workflow_draft).await;
     let approved_workflow: ReviewDetail = post_json(
         app.clone(),
         &format!(
@@ -2233,19 +2726,41 @@ fn context_draft_content(content: &str) -> Option<DraftResourceContent> {
     })
 }
 
-async fn create_approved_review(app: axum::Router, request: CreateDraftRequest) -> Review {
-    let draft: DraftDetail = post_json(app.clone(), "/api/v1/drafts", &request).await;
-    let review: ReviewDetail = post_json(
-        app.clone(),
+fn content_text_for_test(content: &DraftResourceContent) -> &str {
+    match content {
+        DraftResourceContent::Context { content }
+        | DraftResourceContent::Rule { content }
+        | DraftResourceContent::Workflow { content } => content,
+    }
+}
+
+async fn create_review_for_draft(app: axum::Router, draft: &DraftDetail) -> ReviewDetail {
+    let ref_etag = draft
+        .draft
+        .coordination
+        .current_commit_id
+        .as_deref()
+        .map(|commit_id| format!("\"{commit_id}\""))
+        .unwrap_or_else(|| "\"ref-none\"".to_owned());
+    post_json_with_etag(
+        app,
         "/api/v1/reviews",
+        &ref_etag,
         &CreateReviewRequest {
-            draft_id: draft.draft.draft_id,
+            draft_id: draft.draft.draft_id.clone(),
             expected_draft_version: draft.draft.version,
             title: None,
             description: None,
+            candidate_id: None,
+            resolved_state: None,
         },
     )
-    .await;
+    .await
+}
+
+async fn create_approved_review(app: axum::Router, request: CreateDraftRequest) -> Review {
+    let draft: DraftDetail = post_json(app.clone(), "/api/v1/drafts", &request).await;
+    let review = create_review_for_draft(app.clone(), &draft).await;
     let approved: ReviewDetail = post_json(
         app,
         &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
@@ -2295,17 +2810,7 @@ async fn create_approved_context_review(
         },
     )
     .await;
-    let review: ReviewDetail = post_json(
-        app.clone(),
-        "/api/v1/reviews",
-        &CreateReviewRequest {
-            draft_id: draft.draft.draft_id,
-            expected_draft_version: draft.draft.version,
-            title: None,
-            description: None,
-        },
-    )
-    .await;
+    let review = create_review_for_draft(app.clone(), &draft).await;
     let approved: ReviewDetail = post_json(
         app,
         &format!("/api/v1/reviews/{}/decisions", review.review.review_id),
@@ -2364,6 +2869,28 @@ where
             .method("POST")
             .uri(uri)
             .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(request).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+async fn post_response_with_etag<TRequest>(
+    app: axum::Router,
+    uri: &str,
+    etag: &str,
+    request: &TRequest,
+) -> axum::response::Response
+where
+    TRequest: Serialize,
+{
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("if-match", etag)
             .body(Body::from(serde_json::to_vec(request).unwrap()))
             .unwrap(),
     )

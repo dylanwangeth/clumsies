@@ -9,13 +9,14 @@ use std::time::Duration;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
-    CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDiscardDraftOperation,
-    DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
+    ActivateMemoryRequest, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
+    DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
+    DaemonDiscardDraftOperation, DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
     DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheStatus, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    DaemonMemoryCacheState, DaemonMemoryCacheStatus, DaemonProjectBindingReplaceRequest,
+    DaemonProjectBindingResolveRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonServerRequest,
     DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
     IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
@@ -295,6 +296,121 @@ async fn schema_13_migration_removes_metaprompt_and_resets_rebuildable_memory_st
     assert!(rejected.is_err());
 }
 
+#[tokio::test]
+async fn schema_14_migration_separates_conflicted_lifecycle_from_coordination() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '14')",
+        "CREATE TABLE local_drafts (
+            draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            server_draft_id TEXT,
+            server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            target_id TEXT,
+            path TEXT,
+            conflict_base_commit_id TEXT,
+            conflict_current_commit_id TEXT,
+            conflicted_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted', 'merged')) DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "CREATE TABLE local_draft_operations (
+            local_operation_id TEXT PRIMARY KEY,
+            draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+            server_operation_id TEXT,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            operation_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
+            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "INSERT INTO local_drafts (
+            draft_id, project_id, server_draft_id, server_version, base_commit_id,
+            resource_scope, resource_kind, target_id, path,
+            conflict_base_commit_id, conflict_current_commit_id, conflicted_at,
+            status, created_at, updated_at
+         ) VALUES (
+            'draft_conflicted', 'project_test', 'server_draft', 4, 'commit_base',
+            'project', 'context', 'context_test', 'context/test.md',
+            'commit_base', 'commit_current', '2026-07-22T00:00:00Z',
+            'conflicted', '2026-07-22T00:00:00Z', '2026-07-22T00:01:00Z'
+         )",
+        r#"INSERT INTO local_draft_operations (
+            local_operation_id, draft_id, server_operation_id, resource_kind,
+            operation_json, source, sync_status, created_at, updated_at
+         ) VALUES (
+            'operation_test', 'draft_conflicted', 'server_operation', 'context',
+            '{"create":null,"update":{"id":"context_test","content":{"kind":"context","content":"Draft body"},"description":null},"rename":null,"delete":null,"discard":null}',
+            'desktop', 'synced', '2026-07-22T00:00:00Z', '2026-07-22T00:01:00Z'
+         )"#,
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let row: (
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT base_commit_id, current_commit_id, freshness, reconciliation,
+                    reconciliation_candidate_id, status
+             FROM local_drafts WHERE draft_id = 'draft_conflicted'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0.as_deref(), Some("commit_base"));
+    assert_eq!(row.1.as_deref(), Some("commit_current"));
+    assert_eq!(row.2, "behind");
+    assert_eq!(row.3, "unknown");
+    assert_eq!(row.4, None);
+    assert_eq!(row.5, "submitted");
+    let operation_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM local_draft_operations WHERE draft_id = 'draft_conflicted'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(operation_count, 1);
+    assert!(
+        sqlx::query(
+            "UPDATE local_drafts SET status = 'conflicted' WHERE draft_id = 'draft_conflicted'"
+        )
+        .execute(&pool)
+        .await
+        .is_err()
+    );
+    let project_bindings_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name = 'project_bindings'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(project_bindings_table, 1);
+}
+
 #[test]
 fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     let root = tempfile::tempdir().unwrap();
@@ -552,7 +668,24 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
         .await
         .into_payload()
         .unwrap();
-    assert!(!memory_cache.ready);
+    assert_eq!(
+        memory_cache.state,
+        DaemonMemoryCacheState::ProjectRefNotSynced
+    );
+
+    let activation = service
+        .dispatch(DaemonIpcRequest::new(
+            "activate_memory",
+            serde_json::to_value(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "writing".to_owned(),
+                state: None,
+            })
+            .unwrap(),
+        ))
+        .await;
+    assert!(!activation.ok);
+    assert_eq!(activation.error.unwrap().code, "project_ref_not_synced");
 
     let project_checkout: DaemonProjectCheckout = service
         .dispatch(DaemonIpcRequest::new(
@@ -955,6 +1088,229 @@ async fn selecting_a_project_preserves_credentials_and_persists_the_active_proje
     assert!(error.to_string().contains("project_id must not be empty"));
 }
 
+async fn accessible_project() -> Json<serde_json::Value> {
+    Json(json!({
+        "project_id": "accessible",
+        "name": "Accessible Project"
+    }))
+}
+
+async fn empty_project_commit_state(
+    axum::extract::Path(project_id): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": false,
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "project",
+                "org_id": "org_bindings",
+                "project_id": project_id,
+                "commit_id": null,
+                "updated_at": "2026-07-22T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
+}
+
+async fn empty_org_commit_state() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": false,
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "org",
+                "org_id": "org_bindings",
+                "project_id": null,
+                "commit_id": null,
+                "updated_at": "2026-07-22T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
+}
+
+#[tokio::test]
+async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts() {
+    let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let workspaces = tempfile::tempdir().unwrap();
+    let first_root = workspaces.path().join("first");
+    let first_nested = first_root.join("packages/app");
+    let second_root = workspaces.path().join("second");
+    std::fs::create_dir_all(&first_nested).unwrap();
+    std::fs::create_dir_all(&second_root).unwrap();
+
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}/");
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: config.project.server_url.clone(),
+        access_token: "test-token".to_owned(),
+        refresh_token: None,
+    }));
+    let state = common::initialize_daemon(config.clone(), credential_store.clone()).await;
+    let service = DaemonIpcService::new(state);
+
+    let first = service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: first_root.display().to_string(),
+            project_id: "prj_first".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.server_url, format!("http://{address}"));
+
+    let second = service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: second_root.display().to_string(),
+            project_id: "prj_second".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(second.revision, 1);
+
+    let first_resolution = service.resolve_project_binding(DaemonProjectBindingResolveRequest {
+        workspace_path: first_nested.display().to_string(),
+    });
+    let second_resolution = service.resolve_project_binding(DaemonProjectBindingResolveRequest {
+        workspace_path: second_root.display().to_string(),
+    });
+    let (first_resolution, second_resolution) = tokio::join!(first_resolution, second_resolution);
+    assert_eq!(first_resolution.unwrap().project_id, "prj_first");
+    assert_eq!(second_resolution.unwrap().project_id, "prj_second");
+
+    let restarted = common::initialize_daemon(config, credential_store).await;
+    let persisted = restarted
+        .resolve_project_binding(DaemonProjectBindingResolveRequest {
+            workspace_path: first_nested.display().to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(persisted.project_id, "prj_first");
+    assert_eq!(
+        persisted.workspace_root,
+        std::fs::canonicalize(&first_root)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+
+    let error = restarted
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: first_root.display().to_string(),
+            project_id: "prj_other".to_owned(),
+            expected_revision: Some(99),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DaemonError::State {
+            code: "project_binding_changed",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("unbound");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+    config.project.server_url = "https://app.clumsies.ai".to_owned();
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+    let error = state
+        .resolve_project_binding(DaemonProjectBindingResolveRequest {
+            workspace_path: workspace.display().to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DaemonError::State {
+            code: "project_binding_not_found",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn commit_sync_installs_every_bound_project_independently_of_desktop_selection() {
+    let app = Router::new()
+        .route("/api/v1/projects/{project_id}", get(accessible_project))
+        .route(
+            "/api/v1/projects/{project_id}/commit-state",
+            get(empty_project_commit_state),
+        )
+        .route("/api/v1/org/commit-state", get(empty_org_commit_state));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let workspaces = tempfile::tempdir().unwrap();
+    let first_root = workspaces.path().join("first");
+    let second_root = workspaces.path().join("second");
+    std::fs::create_dir_all(&first_root).unwrap();
+    std::fs::create_dir_all(&second_root).unwrap();
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_desktop_selection".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+
+    state
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: first_root.display().to_string(),
+            project_id: "prj_bound_first".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    state
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: second_root.display().to_string(),
+            project_id: "prj_bound_second".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    state
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap();
+
+    for project_id in ["prj_bound_first", "prj_bound_second"] {
+        let cache = state
+            .memory_cache(DaemonMemoryCacheRequest {
+                project_id: project_id.to_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(cache.state, DaemonMemoryCacheState::Ready);
+    }
+}
+
 #[tokio::test]
 async fn keychain_credentials_are_bound_to_the_configured_server() {
     let root = tempfile::tempdir().unwrap();
@@ -1059,6 +1415,20 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     config.project.server_url = server.url.clone();
     config.project.project_id = Some("prj_default".to_owned());
     let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO cached_commits (
+            commit_id, scope, org_id, project_id, tree_id,
+            parent_commit_id, version, created_at, payload_json
+         ) VALUES ($1, 'project', 'org_test', 'prj_test', 'tree_test',
+                   NULL, 1, '2026-07-08T00:00:00Z', '{}')",
+    )
+    .bind(COMMIT_A)
+    .execute(&pool)
+    .await
+    .unwrap();
     let service = DaemonIpcService::new(state.clone());
 
     service
@@ -1275,7 +1645,7 @@ async fn failed_remote_projection_does_not_advance_the_event_cursor() {
 }
 
 #[tokio::test]
-async fn server_conflict_event_converges_into_local_draft_state() {
+async fn server_reconciliation_projection_keeps_lifecycle_separate_from_coordination() {
     let conflict_state = FakeConflictProjectionState {
         resolved: Arc::new(AtomicUsize::new(0)),
     };
@@ -1294,6 +1664,23 @@ async fn server_conflict_event_converges_into_local_draft_state() {
     config.project.server_url = format!("http://{address}");
     config.project.project_id = Some("prj_conflict".to_owned());
     let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    for (commit_id, tree_id) in [(COMMIT_A, "tree_a"), (COMMIT_B, "tree_b")] {
+        sqlx::query(
+            "INSERT INTO cached_commits (
+                commit_id, scope, org_id, project_id, tree_id,
+                parent_commit_id, version, created_at, payload_json
+             ) VALUES ($1, 'project', 'org_test', 'prj_conflict', $2,
+                       NULL, 1, '2026-07-15T00:00:00Z', '{}')",
+        )
+        .bind(commit_id)
+        .bind(tree_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     let service = DaemonIpcService::new(state);
 
     service
@@ -1309,14 +1696,23 @@ async fn server_conflict_event_converges_into_local_draft_state() {
         .unwrap();
     assert_eq!(drafts.items.len(), 1);
     let draft = &drafts.items[0];
-    assert_eq!(draft.status, DaemonLocalDraftStatus::Conflicted);
-    let conflict = draft.conflict.as_ref().unwrap();
-    assert_eq!(conflict.base_commit_id.as_deref(), Some(COMMIT_A));
-    assert_eq!(conflict.current_commit_id.as_deref(), Some(COMMIT_B));
+    assert_eq!(draft.status, DaemonLocalDraftStatus::Submitted);
+    assert_eq!(draft.base_commit_id.as_deref(), Some(COMMIT_A));
+    assert_eq!(draft.current_commit_id.as_deref(), Some(COMMIT_B));
+    assert_eq!(draft.freshness, daemon::DaemonDraftFreshness::Behind);
+    assert_eq!(
+        draft.reconciliation,
+        daemon::DaemonDraftReconciliationStatus::Conflicts
+    );
+    assert_eq!(
+        draft.reconciliation_candidate_id.as_deref(),
+        Some("rcn_conflict")
+    );
 
     let sync = service.sync_status().await.unwrap();
-    assert_eq!(sync.conflict_count, 1);
-    assert_eq!(sync.draft_sync.state, SyncState::Conflicted);
+    assert_eq!(sync.behind_draft_count, 1);
+    assert_eq!(sync.reconciliation_conflict_count, 1);
+    assert_eq!(sync.draft_sync.state, SyncState::Idle);
     assert_eq!(sync.failed_operation_count, 0);
 
     conflict_state.resolved.store(1, Ordering::SeqCst);
@@ -1330,7 +1726,16 @@ async fn server_conflict_event_converges_into_local_draft_state() {
     let resolved = service.get_draft("drf_conflict").await.unwrap();
     assert_eq!(resolved.draft.status, DaemonLocalDraftStatus::Submitted);
     assert_eq!(resolved.draft.base_commit_id.as_deref(), Some(COMMIT_B));
-    assert_eq!(resolved.draft.conflict, None);
+    assert_eq!(resolved.draft.current_commit_id.as_deref(), Some(COMMIT_B));
+    assert_eq!(
+        resolved.draft.freshness,
+        daemon::DaemonDraftFreshness::Current
+    );
+    assert_eq!(
+        resolved.draft.reconciliation,
+        daemon::DaemonDraftReconciliationStatus::Unknown
+    );
+    assert_eq!(resolved.draft.reconciliation_candidate_id, None);
     assert_eq!(resolved.operations.len(), 1);
     assert_eq!(
         resolved.operations[0]
@@ -1342,7 +1747,8 @@ async fn server_conflict_event_converges_into_local_draft_state() {
         context_content("Resolved content")
     );
     let sync = service.sync_status().await.unwrap();
-    assert_eq!(sync.conflict_count, 0);
+    assert_eq!(sync.behind_draft_count, 0);
+    assert_eq!(sync.reconciliation_conflict_count, 0);
     assert_eq!(sync.draft_sync.state, SyncState::Idle);
 }
 
@@ -1538,7 +1944,8 @@ async fn transient_server_failure_is_retried_automatically() {
     assert_eq!(status.draft_sync.state, SyncState::Retrying);
     assert_eq!(status.pending_operation_count, 1);
     assert_eq!(status.failed_operation_count, 0);
-    assert_eq!(status.draft_sync.last_success_at, None);
+    assert!(status.draft_sync.last_attempt_at.is_some());
+    assert!(status.draft_sync.last_error.is_some());
 
     server_state.available.store(true, Ordering::Release);
     let synced =
@@ -2041,7 +2448,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         })
         .await
         .unwrap();
-    assert!(installed.ready);
+    assert_eq!(installed.state, DaemonMemoryCacheState::Ready);
     assert_eq!(installed.commit_id.as_deref(), Some("commit-valid"));
     let installed_root = installed.root_path.unwrap();
     assert_eq!(
@@ -2067,7 +2474,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         })
         .await
         .unwrap();
-    assert!(after_failure.ready);
+    assert_eq!(after_failure.state, DaemonMemoryCacheState::Ready);
     assert_eq!(after_failure.commit_id.as_deref(), Some("commit-valid"));
     assert_eq!(
         after_failure.root_path.as_deref(),
@@ -2102,9 +2509,48 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         })
         .await
         .unwrap();
-    assert!(!corrupted.ready);
+    assert_eq!(corrupted.state, DaemonMemoryCacheState::GenerationCorrupt);
     assert_eq!(corrupted.commit_id.as_deref(), Some("commit-valid"));
     assert_eq!(corrupted.root_path, None);
+    let corrupt_activation = service
+        .activate_memory(ActivateMemoryRequest {
+            project_id: "prj_atomic".to_owned(),
+            query: "authority".to_owned(),
+            state: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        corrupt_activation,
+        DaemonError::State {
+            code: "commit_generation_corrupt",
+            ..
+        }
+    ));
+
+    std::fs::remove_dir_all(&installed_root).unwrap();
+    let missing = service
+        .memory_cache(DaemonMemoryCacheRequest {
+            project_id: "prj_atomic".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(missing.state, DaemonMemoryCacheState::GenerationMissing);
+    let missing_activation = service
+        .activate_memory(ActivateMemoryRequest {
+            project_id: "prj_atomic".to_owned(),
+            query: "authority".to_owned(),
+            state: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing_activation,
+        DaemonError::State {
+            code: "commit_generation_missing",
+            ..
+        }
+    ));
 }
 
 async fn wait_for_create_request(server: &FakeServer) {
@@ -2619,6 +3065,12 @@ async fn fake_get_draft(
             "project_id": create_request["project_id"],
             "base_commit_id": create_request["base_commit_id"],
             "resource": resource,
+            "coordination": {
+                "current_commit_id": create_request["base_commit_id"],
+                "freshness": "current",
+                "reconciliation": "unknown",
+                "candidate_id": null
+            },
             "status": "open",
             "version": 2,
             "created_at": "2026-07-08T00:00:00Z",
@@ -2668,6 +3120,12 @@ async fn fake_stale_draft(
                 "kind": "context",
                 "id": null,
                 "path": "docs/remote.md"
+            },
+            "coordination": {
+                "current_commit_id": null,
+                "freshness": "current",
+                "reconciliation": "unknown",
+                "candidate_id": null
             },
             "status": "open",
             "version": 1,
@@ -2788,7 +3246,7 @@ async fn fake_conflicted_draft_events(
                 "event_id": "evt_conflict",
                 "draft_id": "drf_conflict",
                 "project_id": "prj_conflict",
-                "event_type": "conflicted",
+                    "event_type": "updated",
                 "version": 3,
                 "daemon_installation_id": null,
                 "created_at": "2026-07-15T00:00:00Z"
@@ -2815,6 +3273,12 @@ async fn fake_conflicted_draft(
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
+                "coordination": {
+                    "current_commit_id": COMMIT_B,
+                    "freshness": "current",
+                    "reconciliation": "unknown",
+                    "candidate_id": null
+                },
                 "status": "submitted",
                 "version": 4,
                 "created_at": "2026-07-15T00:00:00Z",
@@ -2837,8 +3301,7 @@ async fn fake_conflicted_draft(
                     "new_path": null,
                     "created_at": "2026-07-15T00:02:00Z"
                 }
-            ],
-            "conflict": null
+            ]
         }));
     }
     Json(json!({
@@ -2852,7 +3315,13 @@ async fn fake_conflicted_draft(
                 "id": "ctx_conflict",
                 "path": "docs/conflict.md"
             },
-            "status": "conflicted",
+            "coordination": {
+                "current_commit_id": COMMIT_B,
+                "freshness": "behind",
+                "reconciliation": "conflicts",
+                "candidate_id": "rcn_conflict"
+            },
+            "status": "submitted",
             "version": 3,
             "created_at": "2026-07-15T00:00:00Z",
             "updated_at": "2026-07-15T00:01:00Z"
@@ -2874,11 +3343,6 @@ async fn fake_conflicted_draft(
                 "new_path": null,
                 "created_at": "2026-07-15T00:00:30Z"
             }
-        ],
-        "conflict": {
-            "base_commit_id": COMMIT_A,
-            "current_commit_id": COMMIT_B,
-            "detected_at": "2026-07-15T00:01:00Z"
-        }
+        ]
     }))
 }

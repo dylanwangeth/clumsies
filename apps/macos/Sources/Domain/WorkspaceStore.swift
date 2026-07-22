@@ -50,11 +50,14 @@ enum MemoryValidationError: LocalizedError, Sendable {
 
 enum ReviewRequestError: LocalizedError, Sendable {
     case draftNotSynchronized
+    case reconciliationRequired
 
     var errorDescription: String? {
         switch self {
         case .draftNotSynchronized:
             "Wait for this draft to finish syncing before requesting a review."
+        case .reconciliationRequired:
+            "Merge the latest shared version before requesting a review."
         }
     }
 }
@@ -836,18 +839,30 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func requestReview(for draft: LocalDraft, title: String, description: String) async throws {
+    func requestReview(
+        for draft: LocalDraft,
+        title: String,
+        description: String,
+        candidate: DraftReconciliationCandidate? = nil,
+        resolvedState: ReconciliationResourceState? = nil
+    ) async throws {
         guard let serverId = draft.serverId else {
             throw ReviewRequestError.draftNotSynchronized
+        }
+        guard draft.freshness == .current || candidate != nil else {
+            throw ReviewRequestError.reconciliationRequired
         }
         let detail: ReviewDetail = try await server.send(
             method: "POST",
             path: "/api/v1/reviews",
+            headers: ["If-Match": Self.refETag(candidate?.currentCommitId ?? draft.currentCommitId)],
             body: CreateReviewRequest(
                 draftId: serverId,
-                expectedDraftVersion: draft.serverVersion,
+                expectedDraftVersion: candidate?.draftVersion ?? draft.serverVersion,
                 title: title,
-                description: description
+                description: description,
+                candidateId: candidate?.candidateId,
+                resolvedState: resolvedState
             )
         )
         let record = WorkspaceLoader.mapReview(detail)
@@ -856,93 +871,86 @@ final class WorkspaceStore: ObservableObject {
         selectedSection = .reviews
     }
 
-    func resubmit(_ review: ReviewRecord, detail: ReviewDetail) async throws {
+    func resubmit(
+        _ review: ReviewRecord,
+        detail: ReviewDetail,
+        candidate: DraftReconciliationCandidate? = nil,
+        resolvedState: ReconciliationResourceState? = nil
+    ) async throws {
         guard isReviewAuthor(review) else {
             throw ServerClientError.forbidden("Only the draft author can resubmit this Review.")
+        }
+        guard detail.draft.coordination.freshness == .current || candidate != nil else {
+            throw ReviewRequestError.reconciliationRequired
         }
         let updated: ReviewDetail = try await server.send(
             method: "POST",
             path: "/api/v1/reviews/\(review.id)/submissions",
+            headers: [
+                "If-Match": Self.refETag(
+                    candidate?.currentCommitId ?? detail.draft.coordination.currentCommitId
+                )
+            ],
             body: CreateReviewSubmissionRequest(
                 expectedReviewVersion: review.version,
-                expectedDraftVersion: detail.draft.version,
+                expectedDraftVersion: candidate?.draftVersion ?? detail.draft.version,
                 title: review.title,
-                description: review.description
+                description: review.description,
+                candidateId: candidate?.candidateId,
+                resolvedState: resolvedState
             )
         )
         replaceReview(with: WorkspaceLoader.mapReview(updated))
     }
 
     func reviewChangeSources(for detail: ReviewDetail) async throws -> ReviewChangeSources {
-        async let baseRequest: CommitPayload? = loadCommit(detail.conflict?.baseCommitId ?? detail.draft.baseCommitId)
-        async let currentRequest: CommitPayload? = loadCommit(detail.conflict?.currentCommitId)
+        async let baseRequest: CommitPayload? = loadCommit(detail.draft.baseCommitId)
+        async let currentRequest: CommitPayload? = loadCommit(detail.draft.coordination.currentCommitId)
         let (base, current) = try await (baseRequest, currentRequest)
         return try WorkspaceLoader.mapReviewChangeSources(detail: detail, base: base, current: current)
     }
 
-    func resolveConflict(
-        _ review: ReviewRecord,
-        detail: ReviewDetail,
-        resolvedContent: String?
-    ) async throws {
-        guard isReviewAuthor(review) else {
-            throw ServerClientError.forbidden("Only the draft author can resolve this conflict.")
+    func reconciliationCandidate(for draft: LocalDraft) async throws -> DraftReconciliationCandidate {
+        guard let serverId = draft.serverId else {
+            throw ReviewRequestError.draftNotSynchronized
         }
-        guard let conflict = detail.conflict else {
-            throw ServerClientError.invalidResponse("This Review no longer has a conflict.")
-        }
-        var operations = detail.operations.map {
-            DraftOperationInput(
-                action: $0.action,
-                resource: $0.resource,
-                content: $0.content,
-                newPath: $0.newPath
-            )
-        }
-        if let resolvedContent {
-            guard let operationIndex = operations.lastIndex(where: {
-                ($0.action == "create" || $0.action == "update") && $0.content != nil
-            }), let content = operations[operationIndex].content else {
-                throw ServerClientError.invalidResponse("This conflict has no editable content operation.")
-            }
-            let operation = operations[operationIndex]
-            operations[operationIndex] = .init(
-                action: operation.action,
-                resource: operation.resource,
-                content: content.replacingPrimaryText(with: resolvedContent),
-                newPath: operation.newPath
-            )
-        }
-        let updated: ReviewDetail = try await server.send(
+        return try await server.send(
             method: "POST",
-            path: "/api/v1/reviews/\(review.id)/conflict-resolutions",
-            headers: ["If-Match": Self.refETag(conflict.currentCommitId)],
-            body: CreateReviewConflictResolutionRequest(
-                expectedReviewVersion: review.version,
-                expectedDraftVersion: detail.draft.version,
-                operations: operations
+            path: "/api/v1/drafts/\(serverId)/reconciliation-candidates",
+            body: CreateDraftReconciliationCandidateRequest(
+                expectedDraftVersion: draft.serverVersion
             )
         )
-        replaceReview(with: WorkspaceLoader.mapReview(updated))
-        if let localDraft = drafts.first(where: { $0.serverId == detail.draft.draftId }) {
-            try? await refreshDraft(localDraft.id)
-        }
     }
 
-    func discardConflict(_ review: ReviewRecord, detail: ReviewDetail) async throws {
-        guard isReviewAuthor(review) else {
-            throw ServerClientError.forbidden("Only the draft author can discard this conflicted draft.")
-        }
-        let response = try await server.raw(
-            method: "DELETE",
-            path: "/api/v1/drafts/\(detail.draft.draftId)",
-            headers: ["If-Match": String(detail.draft.version)]
+    func reconciliationCandidate(for detail: ReviewDetail) async throws -> DraftReconciliationCandidate {
+        try await server.send(
+            method: "POST",
+            path: "/api/v1/drafts/\(detail.draft.draftId)/reconciliation-candidates",
+            body: CreateDraftReconciliationCandidateRequest(
+                expectedDraftVersion: detail.draft.version
+            )
         )
-        guard (200..<300).contains(response.status) else {
-            throw ServerClientError.response(status: response.status, message: response.body)
-        }
-        drafts.removeAll { $0.serverId == detail.draft.draftId }
-        try await refreshReview(review.id)
+    }
+
+    func applyReconciliation(
+        draftId: String,
+        draftVersion: Int,
+        candidate: DraftReconciliationCandidate,
+        resolvedState: ReconciliationResourceState?
+    ) async throws {
+        let _: DraftRebaseResult = try await server.send(
+            method: "POST",
+            path: "/api/v1/drafts/\(draftId)/rebases",
+            headers: ["If-Match": Self.refETag(candidate.currentCommitId)],
+            body: CreateDraftRebaseRequest(
+                candidateId: candidate.candidateId,
+                expectedDraftVersion: draftVersion,
+                resolvedState: resolvedState
+            )
+        )
+        _ = try? await daemon.retrySync(channel: "drafts")
+        await reload()
     }
 
     func reviewDetail(_ reviewId: String) async throws -> ReviewDetail {
@@ -1648,10 +1656,14 @@ struct WorkspaceLoader: Sendable {
             status: metadata.status,
             version: metadata.version,
             decisionBody: metadata.decisionBody,
+            approvedResultHash: metadata.approvedResultHash,
+            freshness: metadata.coordination.freshness,
+            reconciliation: metadata.coordination.reconciliation,
+            reconciliationCandidateId: metadata.coordination.candidateId,
+            currentCommitId: metadata.coordination.currentCommitId,
             updatedAt: metadata.updatedAt,
             operationCount: detail.operations.count,
-            commentCount: detail.comments.count,
-            conflict: detail.conflict
+            commentCount: detail.comments.count
         )
     }
 
@@ -1747,13 +1759,16 @@ struct WorkspaceLoader: Sendable {
             serverId: summary.serverDraftId,
             serverVersion: summary.serverVersion,
             baseCommitId: summary.baseCommitId,
+            currentCommitId: summary.currentCommitId,
+            freshness: summary.freshness,
+            reconciliation: summary.reconciliation,
+            reconciliationCandidateId: summary.reconciliationCandidateId,
             scope: summary.scope == .org ? .org : .project,
             kind: .init(summary.resourceKind),
             targetId: summary.targetId,
             status: summary.status,
             origin: detail.operations.last?.source ?? .desktop,
             syncStatus: detail.operations.last?.syncStatus ?? .synced,
-            conflict: summary.conflict,
             updatedAt: summary.updatedAt,
             document: document,
             isDeletion: deletion

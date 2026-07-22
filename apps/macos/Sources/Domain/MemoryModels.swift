@@ -115,13 +115,16 @@ struct LocalDraft: Identifiable, Hashable, Sendable {
     let serverId: String?
     let serverVersion: Int
     let baseCommitId: String?
+    let currentCommitId: String?
+    let freshness: DraftFreshness
+    let reconciliation: DraftReconciliationStatus
+    let reconciliationCandidateId: String?
     let scope: MemoryScope
     let kind: MemoryKind
     let targetId: String?
     let status: DaemonLocalDraftStatus
     let origin: DaemonDraftOperationSource
     let syncStatus: DaemonDraftSyncState
-    let conflict: DaemonDraftConflict?
     let updatedAt: String
     var document: EditableMemoryDocument
     var isDeletion: Bool
@@ -170,10 +173,14 @@ struct ReviewRecord: Identifiable, Hashable, Sendable {
     let status: String
     let version: Int
     let decisionBody: String?
+    let approvedResultHash: String?
+    let freshness: DraftFreshness
+    let reconciliation: DraftReconciliationStatus
+    let reconciliationCandidateId: String?
+    let currentCommitId: String?
     let updatedAt: String
     let operationCount: Int
     let commentCount: Int
-    let conflict: DaemonDraftConflict?
 }
 
 struct ReviewChangeSources: Sendable {

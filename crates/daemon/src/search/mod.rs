@@ -15,7 +15,8 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use self::chunker::build_units;
 use self::models::{FastEmbedSearchModels, SearchModelRuntimeStatus, SearchModels};
 use super::{
-    DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest, DaemonState,
+    DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest,
+    DaemonMemoryCacheState, DaemonState,
 };
 
 const SEARCH_SCHEMA_VERSION: i64 = 2;
@@ -605,9 +606,12 @@ struct CachedBlob {
 #[derive(Debug)]
 struct DraftOverlay {
     draft_id: String,
+    base_commit_id: Option<String>,
     scope: SourceScope,
     kind: Option<MemoryKind>,
     target_id: Option<String>,
+    path: Option<String>,
+    base_resource: Option<EffectiveResource>,
     updated_at: String,
     operations: Vec<(i64, String, DaemonDraftOperation)>,
 }
@@ -621,11 +625,32 @@ async fn load_effective_memory(
             project_id: project_id.to_owned(),
         })
         .await?;
-    if !cache.ready {
-        return Err(SearchFailure::not_ready(format!(
-            "the installed Commit generation for project {project_id} is not ready"
-        ))
-        .into());
+    match cache.state {
+        DaemonMemoryCacheState::Ready => {}
+        DaemonMemoryCacheState::ProjectRefNotSynced => {
+            return Err(DaemonError::State {
+                code: "project_ref_not_synced",
+                message: cache.diagnostic.unwrap_or_else(|| {
+                    format!("the Project Ref for {project_id} has not been synchronized")
+                }),
+            });
+        }
+        DaemonMemoryCacheState::GenerationMissing => {
+            return Err(DaemonError::State {
+                code: "commit_generation_missing",
+                message: cache.diagnostic.unwrap_or_else(|| {
+                    format!("the Commit generation for {project_id} is missing")
+                }),
+            });
+        }
+        DaemonMemoryCacheState::GenerationCorrupt => {
+            return Err(DaemonError::State {
+                code: "commit_generation_corrupt",
+                message: cache.diagnostic.unwrap_or_else(|| {
+                    format!("the Commit generation for {project_id} is corrupt")
+                }),
+            });
+        }
     }
 
     let mut resources = BTreeMap::<String, EffectiveResource>::new();
@@ -748,12 +773,13 @@ async fn load_draft_overlays(
     project_id: &str,
 ) -> Result<Vec<DraftOverlay>, DaemonError> {
     let rows = sqlx::query(
-        "SELECT d.draft_id, d.resource_scope, d.resource_kind, d.target_id, d.updated_at,
+        "SELECT d.draft_id, d.base_commit_id, d.resource_scope, d.resource_kind,
+                d.target_id, d.path, d.updated_at,
                 o.rowid AS operation_order, o.operation_json
          FROM local_drafts d
          JOIN local_draft_operations o ON o.draft_id = d.draft_id
          WHERE d.project_id = $1
-           AND d.status IN ('open', 'submitted', 'conflicted')
+           AND d.status IN ('open', 'submitted')
          ORDER BY d.updated_at, d.draft_id, o.rowid",
     )
     .bind(project_id)
@@ -777,9 +803,12 @@ async fn load_draft_overlays(
             let kind = parse_memory_kind(row.try_get::<String, _>("resource_kind")?.as_str());
             overlays.push(DraftOverlay {
                 draft_id: draft_id.clone(),
+                base_commit_id: row.try_get("base_commit_id")?,
                 scope,
                 kind,
                 target_id: row.try_get("target_id")?,
+                path: row.try_get("path")?,
+                base_resource: None,
                 updated_at: row.try_get("updated_at")?,
                 operations: Vec::new(),
             });
@@ -790,7 +819,79 @@ async fn load_draft_overlays(
             .operations
             .push((row.try_get("operation_order")?, operation_json, operation));
     }
+    for overlay in &mut overlays {
+        overlay.base_resource = load_draft_base_resource(pool, project_id, overlay).await?;
+    }
     Ok(overlays)
+}
+
+async fn load_draft_base_resource(
+    pool: &SqlitePool,
+    project_id: &str,
+    draft: &DraftOverlay,
+) -> Result<Option<EffectiveResource>, DaemonError> {
+    let (Some(commit_id), Some(kind)) = (draft.base_commit_id.as_deref(), draft.kind) else {
+        return Ok(None);
+    };
+    let tree_id: Option<String> =
+        sqlx::query_scalar("SELECT tree_id FROM cached_commits WHERE commit_id = $1")
+            .bind(commit_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some(tree_id) = tree_id else {
+        return Err(SearchFailure::not_ready(format!(
+            "Draft {} requires uncached Base Commit {commit_id}",
+            draft.draft_id
+        ))
+        .into());
+    };
+    let tree_json: String =
+        sqlx::query_scalar("SELECT payload_json FROM cached_trees WHERE tree_id = $1")
+            .bind(tree_id)
+            .fetch_one(pool)
+            .await?;
+    let tree: CachedTree = serde_json::from_str(&tree_json)?;
+    let creates_resource = draft
+        .operations
+        .first()
+        .is_some_and(|(_, _, operation)| operation.create.is_some());
+    let entry = tree.entries.into_iter().find(|entry| {
+        cached_memory_kind(entry.kind) == Some(kind)
+            && cached_scope(entry.scope) == Some(draft.scope)
+            && match draft.target_id.as_deref() {
+                Some(target_id) => entry.id == target_id,
+                None => !creates_resource && entry.path == draft.path,
+            }
+    });
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let path = entry.path.ok_or_else(|| {
+        SearchFailure::failed(format!(
+            "Draft {} Base resource {} has no path",
+            draft.draft_id, entry.id
+        ))
+    })?;
+    let content: String = sqlx::query_scalar("SELECT content FROM cached_blobs WHERE blob_id = $1")
+        .bind(entry.blob_id)
+        .fetch_one(pool)
+        .await?;
+    let (content, title) = project_authority_content(kind, &path, &content)?;
+    Ok(Some(EffectiveResource {
+        source: SourceResource {
+            resource_id: entry.id,
+            project_id: project_id.to_owned(),
+            scope: draft.scope,
+            kind,
+            path,
+            title,
+            content_hash: sha256(&content),
+            content,
+            source_commit_id: Some(commit_id.to_owned()),
+            draft_id: None,
+            draft_revision: None,
+        },
+    }))
 }
 
 fn apply_draft_overlay(
@@ -808,15 +909,6 @@ fn apply_draft_overlay(
     {
         return Ok(());
     }
-    if draft.scope == SourceScope::Org
-        && draft
-            .target_id
-            .as_ref()
-            .is_none_or(|target| !resources.contains_key(target))
-    {
-        return Ok(());
-    }
-
     let mut revision_hasher = Sha256::new();
     revision_hasher.update(draft.updated_at.as_bytes());
     for (order, operation_json, _) in &draft.operations {
@@ -825,11 +917,16 @@ fn apply_draft_overlay(
     }
     let draft_revision = format!("sha256:{}", hex::encode(revision_hasher.finalize()));
 
+    let target_key = draft
+        .target_id
+        .clone()
+        .unwrap_or_else(|| draft.draft_id.clone());
+    let mut draft_resources = BTreeMap::new();
+    if let Some(base_resource) = draft.base_resource {
+        draft_resources.insert(target_key.clone(), base_resource);
+    }
     for (_, _, operation) in &draft.operations {
         if let Some(create) = &operation.create {
-            if draft.scope == SourceScope::Org {
-                continue;
-            }
             let resource_id = draft.draft_id.clone();
             let resource = draft_content_resource(
                 project_id,
@@ -842,12 +939,16 @@ fn apply_draft_overlay(
                 &draft.draft_id,
                 &draft_revision,
             )?;
-            resources.insert(resource_id, resource);
+            draft_resources.clear();
+            draft_resources.insert(resource_id, resource);
         }
         if let Some(update) = &operation.update {
-            let Some(existing) = resources.remove(&update.id) else {
-                continue;
-            };
+            let existing = draft_resources.remove(&update.id).ok_or_else(|| {
+                SearchFailure::failed(format!(
+                    "Draft {} update target {} is absent from its Base Commit",
+                    draft.draft_id, update.id
+                ))
+            })?;
             let path = existing.source.path.clone();
             let updated = draft_content_resource(
                 project_id,
@@ -860,10 +961,10 @@ fn apply_draft_overlay(
                 &draft.draft_id,
                 &draft_revision,
             )?;
-            resources.insert(update.id.clone(), updated);
+            draft_resources.insert(update.id.clone(), updated);
         }
         if let Some(rename) = &operation.rename
-            && let Some(resource) = resources.get_mut(&rename.id)
+            && let Some(resource) = draft_resources.get_mut(&rename.id)
         {
             resource.source.path = rename.new_path.clone();
             if markdown_title(&resource.source.content).is_none() {
@@ -873,9 +974,14 @@ fn apply_draft_overlay(
             resource.source.draft_revision = Some(draft_revision.clone());
         }
         if let Some(delete) = &operation.delete {
-            resources.remove(&delete.id);
+            draft_resources.remove(&delete.id);
         }
     }
+    if let Some(target_id) = draft.target_id.as_ref() {
+        resources.remove(target_id);
+    }
+    resources.remove(&draft.draft_id);
+    resources.extend(draft_resources);
     Ok(())
 }
 
@@ -1967,8 +2073,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CredentialStore, CredentialStoreError, DaemonDraftOperationRequest,
-        DaemonDraftOperationSource, DaemonIpcRequest, DaemonIpcService, DaemonUpdateDraftOperation,
+        CredentialStore, CredentialStoreError, DaemonCreateDraftOperation,
+        DaemonDeleteDraftOperation, DaemonDraftOperationRequest, DaemonDraftOperationSource,
+        DaemonIpcRequest, DaemonIpcService, DaemonRenameDraftOperation, DaemonUpdateDraftOperation,
         ServerCredentials,
     };
 
@@ -2288,6 +2395,33 @@ mod tests {
         .execute(&state.inner.pool)
         .await
         .unwrap();
+        for blob in payload["blobs"].as_array().unwrap() {
+            sqlx::query("INSERT INTO cached_blobs (blob_id, content) VALUES ($1, $2)")
+                .bind(blob["blob_id"].as_str().unwrap())
+                .bind(blob["content"].as_str().unwrap())
+                .execute(&state.inner.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO cached_trees (tree_id, payload_json) VALUES ($1, $2)")
+            .bind("tree_test")
+            .bind(serde_json::to_string(&payload["tree"]).unwrap())
+            .execute(&state.inner.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO cached_commits (
+                commit_id, scope, org_id, project_id, tree_id,
+                parent_commit_id, version, created_at, payload_json
+             ) VALUES ($1, 'project', 'org_test', 'prj_test', $2, NULL, 1, $3, $4)",
+        )
+        .bind("commit_test")
+        .bind("tree_test")
+        .bind("2026-07-21T00:00:00Z")
+        .bind(serde_json::to_string(&payload["commit"]).unwrap())
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
         (temp, state)
     }
 
@@ -2414,6 +2548,154 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(indexed_kinds, ["context", "rule", "workflow"]);
+    }
+
+    #[test]
+    fn draft_overlay_uses_the_complete_base_result_for_every_crud_action() {
+        fn context_resource(path: &str, content: &str, commit_id: &str) -> EffectiveResource {
+            EffectiveResource {
+                source: SourceResource {
+                    resource_id: "ctx_target".to_owned(),
+                    project_id: "prj_test".to_owned(),
+                    scope: SourceScope::Project,
+                    kind: MemoryKind::Context,
+                    path: path.to_owned(),
+                    title: title_from_path(path),
+                    content: content.to_owned(),
+                    content_hash: sha256(content),
+                    source_commit_id: Some(commit_id.to_owned()),
+                    draft_id: None,
+                    draft_revision: None,
+                },
+            }
+        }
+
+        fn overlay(
+            draft_id: &str,
+            target_id: Option<&str>,
+            base_resource: Option<EffectiveResource>,
+            operation: DaemonDraftOperation,
+        ) -> DraftOverlay {
+            DraftOverlay {
+                draft_id: draft_id.to_owned(),
+                base_commit_id: Some("commit_base".to_owned()),
+                scope: SourceScope::Project,
+                kind: Some(MemoryKind::Context),
+                target_id: target_id.map(ToOwned::to_owned),
+                path: Some("context/base.md".to_owned()),
+                base_resource,
+                updated_at: "2026-07-22T00:00:00Z".to_owned(),
+                operations: vec![(1, serde_json::to_string(&operation).unwrap(), operation)],
+            }
+        }
+
+        let base = context_resource("context/base.md", "# Base", "commit_base");
+        let current = context_resource("context/base.md", "# Remote", "commit_current");
+
+        let mut updated = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
+        apply_draft_overlay(
+            "prj_test",
+            &mut updated,
+            overlay(
+                "draft_update",
+                Some("ctx_target"),
+                Some(base.clone()),
+                DaemonDraftOperation {
+                    create: None,
+                    update: Some(DaemonUpdateDraftOperation {
+                        id: "ctx_target".to_owned(),
+                        content: DaemonDraftContent::Context {
+                            content: "# Personal Draft".to_owned(),
+                        },
+                        description: None,
+                    }),
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(updated["ctx_target"].source.content, "# Personal Draft");
+        assert_eq!(
+            updated["ctx_target"].source.draft_id.as_deref(),
+            Some("draft_update")
+        );
+
+        let mut renamed = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
+        apply_draft_overlay(
+            "prj_test",
+            &mut renamed,
+            overlay(
+                "draft_rename",
+                Some("ctx_target"),
+                Some(base.clone()),
+                DaemonDraftOperation {
+                    create: None,
+                    update: None,
+                    rename: Some(DaemonRenameDraftOperation {
+                        id: "ctx_target".to_owned(),
+                        new_path: "context/renamed.md".to_owned(),
+                        description: None,
+                    }),
+                    delete: None,
+                    discard: None,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(renamed["ctx_target"].source.path, "context/renamed.md");
+        assert_eq!(renamed["ctx_target"].source.content, "# Base");
+
+        let mut deleted = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
+        apply_draft_overlay(
+            "prj_test",
+            &mut deleted,
+            overlay(
+                "draft_delete",
+                Some("ctx_target"),
+                Some(base),
+                DaemonDraftOperation {
+                    create: None,
+                    update: None,
+                    rename: None,
+                    delete: Some(DaemonDeleteDraftOperation {
+                        id: "ctx_target".to_owned(),
+                        description: None,
+                    }),
+                    discard: None,
+                },
+            ),
+        )
+        .unwrap();
+        assert!(!deleted.contains_key("ctx_target"));
+
+        let mut created = BTreeMap::from([("ctx_target".to_owned(), current)]);
+        apply_draft_overlay(
+            "prj_test",
+            &mut created,
+            overlay(
+                "draft_create",
+                None,
+                None,
+                DaemonDraftOperation {
+                    create: Some(DaemonCreateDraftOperation {
+                        path: "context/new.md".to_owned(),
+                        content: DaemonDraftContent::Context {
+                            content: "# New Draft".to_owned(),
+                        },
+                        description: None,
+                    }),
+                    update: None,
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(created["draft_create"].source.content, "# New Draft");
+        assert!(created.contains_key("ctx_target"));
     }
 
     #[tokio::test]

@@ -66,6 +66,29 @@ export interface components {
         DaemonProjectSelectionRequest: {
             project_id: string;
         };
+        DaemonProjectBindingResolveRequest: {
+            /** @description Existing local path whose nearest bound ancestor should be resolved. */
+            workspace_path: string;
+        };
+        DaemonProjectBindingReplaceRequest: {
+            /** @description Existing local directory to bind after canonical filesystem resolution. */
+            workspace_root: string;
+            /** @description Canonical Server Project identifier accessible to the signed-in user. */
+            project_id: string;
+            /** @description Current binding revision for replacement; null creates a binding idempotently. */
+            expected_revision: number | null;
+        };
+        DaemonProjectBinding: {
+            /** Format: uri */
+            server_url: string;
+            workspace_root: string;
+            project_id: string;
+            revision: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
         DaemonMemoryCacheRequest: {
             project_id: string;
         };
@@ -73,7 +96,8 @@ export interface components {
             project_id: string;
             commit_id: string | null;
             root_path: string | null;
-            ready: boolean;
+            state: components["schemas"]["DaemonMemoryCacheState"];
+            diagnostic: string | null;
         };
         DaemonProjectCheckoutRequest: {
             project_id: string;
@@ -132,7 +156,8 @@ export interface components {
             commit_sync: components["schemas"]["SyncChannelStatus"];
             pending_operation_count: number;
             failed_operation_count: number;
-            conflict_count: number;
+            behind_draft_count: number;
+            reconciliation_conflict_count: number;
             /** Format: date-time */
             last_success_at: string | null;
         };
@@ -176,11 +201,14 @@ export interface components {
             server_draft_id: string | null;
             server_version: number;
             base_commit_id: string | null;
+            current_commit_id: string | null;
+            freshness: components["schemas"]["DaemonDraftFreshness"];
+            reconciliation: components["schemas"]["DaemonDraftReconciliationStatus"];
+            reconciliation_candidate_id: string | null;
             scope: components["schemas"]["DaemonDraftScope"];
             resource_kind: components["schemas"]["DaemonDraftResourceKind"];
             target_id: string | null;
             path: string | null;
-            conflict: components["schemas"]["DaemonDraftConflict"] | null;
             status: components["schemas"]["DaemonLocalDraftStatus"];
             /** Format: date-time */
             created_at: string;
@@ -188,12 +216,6 @@ export interface components {
             updated_at: string;
             pending_operation_count: number;
             failed_operation_count: number;
-        };
-        DaemonDraftConflict: {
-            base_commit_id: string | null;
-            current_commit_id: string | null;
-            /** Format: date-time */
-            detected_at: string;
         };
         DaemonLocalDraftOperation: {
             local_operation_id: string;
@@ -281,13 +303,19 @@ export interface components {
             };
         };
         /** @enum {string} */
-        SyncState: "idle" | "queued" | "syncing" | "retrying" | "degraded" | "conflicted" | "failed";
+        SyncState: "idle" | "queued" | "syncing" | "retrying" | "degraded" | "failed";
         /** @enum {string} */
         DaemonDraftResourceKind: "context" | "rule" | "workflow";
         /** @enum {string} */
         DaemonDraftScope: "org" | "project";
         /** @enum {string} */
-        DaemonLocalDraftStatus: "open" | "submitted" | "discarded" | "conflicted" | "merged";
+        DaemonLocalDraftStatus: "open" | "submitted" | "merged" | "discarded";
+        /** @enum {string} */
+        DaemonDraftFreshness: "current" | "behind";
+        /** @enum {string} */
+        DaemonDraftReconciliationStatus: "unknown" | "clean" | "conflicts";
+        /** @enum {string} */
+        DaemonMemoryCacheState: "project_ref_not_synced" | "generation_missing" | "generation_corrupt" | "ready";
         /** @enum {string} */
         DaemonDraftOperationSource: "desktop" | "cli" | "mcp_store";
         /** @enum {string} */

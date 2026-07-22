@@ -22,11 +22,10 @@ flowchart LR
     Browser["System browser / organization OIDC"]
 
     Desktop -->|"macOS XPC"| Daemon
-    MCP -->|"macOS XPC"| Daemon
+    MCP -->|"activate / load / store over XPC"| Daemon
     CLI -.->|"client operations"| Daemon
     Daemon --> LocalDB
     Daemon -->|"atomic materialization"| Files
-    MCP -->|"read selected generation"| Files
     Daemon -->|"authenticated HTTPS"| Server
     Desktop --> Browser
     Browser --> Server
@@ -51,7 +50,7 @@ because it was not stored in renderer state.
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | Server | authority resources, identity, authorization, review state, Commit graph, audit | local files and client process lifecycle |
-| daemon | local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, refresh handling, native Server proxy | authority decisions and merge policy |
+| daemon | local Project bindings, local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, refresh handling, native Server proxy | authority decisions and merge policy |
 | Desktop | interaction state, editors, navigation, review workflows | bearer tokens and durable authority |
 | MCP | activation, exact loading, and agent-originated store calls | a parallel draft database or search implementation |
 | Web Admin | administrative operations | memory editing and review workflows |
@@ -76,7 +75,8 @@ sequenceDiagram
 ```
 
 The first response is local acceptance, not publication. Automatic sync retries
-failed operations. Desktop can inspect pending, failed, or conflicted state.
+failed operations. Desktop can inspect pending/failed sync separately from
+behind/conflicts coordination; neither coordination state blocks editing.
 
 ## Review and merge path
 
@@ -87,12 +87,15 @@ sequenceDiagram
     participant Server
     participant DB as PostgreSQL
 
-    Desktop->>Daemon: authenticated API request
-    Daemon->>Server: submit draft / decide review
-    Server->>DB: persist lifecycle transition
+    Desktop->>Daemon: request candidate when Draft is behind
+    Daemon->>Server: compare Base / Current / Draft Result
+    Server->>DB: persist immutable candidate only
+    Desktop->>Daemon: confirm result and create or resubmit Review
+    Daemon->>Server: candidate + resolved state + If-Match
+    Server->>DB: save Draft revision, rebase and submit atomically
     Desktop->>Daemon: merge with If-Match target Ref
     Daemon->>Server: POST review merge
-    Server->>DB: lock Ref, check base, write Blob/Tree/Commit, move Ref
+    Server->>DB: lock Ref, check current Base and approval, write Blob/Tree/Commit, move Ref
     Server-->>Desktop: new commit_id
 ```
 
@@ -110,6 +113,8 @@ sequenceDiagram
     participant F as generation files
     participant M as MCP
 
+    M->>D: resolve_project_binding(current directory)
+    D-->>M: canonical project_id
     D->>S: GET project commit-state(local_commit_id)
     S-->>D: Ref, latest Commit, ETag, download URL
     D->>S: GET Commit payload
@@ -121,9 +126,29 @@ sequenceDiagram
     D-->>M: ranked fragments or complete resources
 ```
 
-The SQLite Ref is the only mutable authority pointer. Search heads are local
-derived pointers bound to an Effective Memory hash. MCP never scans cache files
-or falls back to an old generation when daemon has no matching ready index.
+The SQLite Ref is the only mutable authority pointer. Moving it does not move a
+Draft Base. Search heads are local derived pointers bound to an Effective Memory
+hash. For Draft resources, that memory uses `Base + operations`; for all other
+resources it uses the latest installed Commit. MCP never scans cache files or
+falls back to an old generation when daemon has no matching ready index.
+
+## Local Project binding
+
+The Server connection, the Desktop-selected Project, and a local directory
+binding are separate state:
+
+```text
+Server authority + credentials
+Local canonical workspace root -> canonical project_id
+Desktop selected project_id (UI only)
+```
+
+Daemon persists bindings in SQLite under the normalized Server authority and
+resolves the longest canonical ancestor of the MCP working directory. Commit
+sync enumerates all bound Projects, so two MCP processes can use different
+Projects concurrently while Desktop is closed or displaying a third Project.
+Legacy `ws_id` configuration is only a one-time name-and-path migration source;
+it is not part of the runtime identity model.
 
 ## Authentication boundary
 
@@ -144,9 +169,9 @@ implemented as a degraded fallback.
 
 ## Incomplete boundary
 
-Draft upload, remote draft projection, Commit download, atomic local
-materialization, Effective Memory Draft overlay, hybrid retrieval, exact
-loading, and activation delta are operational. Explicit user-resolvable
-conflicts and macOS Keychain token storage are operational; automatic
-three-way text merge, a representative versioned retrieval query set, and Windows
-service transport remain outside the implemented boundary.
+Draft upload, remote projection, Commit download, atomic local materialization,
+Effective Memory Draft overlay, canonical three-way reconciliation, explicit
+rebase, Review freshness, hybrid retrieval, exact loading, activation delta, and
+macOS Keychain token storage are operational. A representative versioned
+retrieval query set and Windows service transport remain outside the implemented
+boundary.

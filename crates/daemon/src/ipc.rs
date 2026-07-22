@@ -2,7 +2,8 @@ use crate::{
     ActivateMemoryRequest, ActivateMemoryResponse, DaemonDraftDetail, DaemonDraftDetailRequest,
     DaemonDraftListQuery, DaemonDraftListResponse, DaemonDraftOperationRequest,
     DaemonDraftOperationResponse, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse,
-    DaemonIpcService, DaemonMcpStatus, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    DaemonIpcService, DaemonMcpStatus, DaemonProjectBinding, DaemonProjectBindingReplaceRequest,
+    DaemonProjectBindingResolveRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfig, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
     DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest,
     DaemonSyncStatus, LoadMemoryRequest, LoadMemoryResponse, SearchIndexProjectRequest,
@@ -55,6 +56,28 @@ impl DaemonIpcClient {
     ) -> Result<DaemonProjectConfig, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "select_project",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn resolve_project_binding(
+        &self,
+        request: DaemonProjectBindingResolveRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "resolve_project_binding",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn replace_project_binding(
+        &self,
+        request: DaemonProjectBindingReplaceRequest,
+    ) -> Result<DaemonProjectBinding, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "replace_project_binding",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

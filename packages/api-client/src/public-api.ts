@@ -331,6 +331,47 @@ export class ClumsiesApi {
     );
   }
 
+  createDraftReconciliationCandidate(
+    draftId: string,
+    request: Schema<"CreateDraftReconciliationCandidateRequest">,
+  ) {
+    return unwrap(
+      this.raw.POST("/api/v1/drafts/{draft_id}/reconciliation-candidates", {
+        params: { path: { draft_id: draftId } },
+        body: request,
+      }),
+    );
+  }
+
+  draftReconciliationCandidate(draftId: string, candidateId: string) {
+    return unwrap(
+      this.raw.GET(
+        "/api/v1/drafts/{draft_id}/reconciliation-candidates/{candidate_id}",
+        {
+          params: {
+            path: { draft_id: draftId, candidate_id: candidateId },
+          },
+        },
+      ),
+    );
+  }
+
+  createDraftRebase(
+    draftId: string,
+    refEtag: string,
+    request: Schema<"CreateDraftRebaseRequest">,
+  ) {
+    return unwrap(
+      this.raw.POST("/api/v1/drafts/{draft_id}/rebases", {
+        params: {
+          path: { draft_id: draftId },
+          header: { "If-Match": refEtag },
+        },
+        body: request,
+      }),
+    );
+  }
+
   listDraftEvents(query: DraftEventQuery = {}) {
     return unwrap(
       this.raw.GET("/api/v1/draft-events", { params: { query } }),
@@ -347,8 +388,13 @@ export class ClumsiesApi {
     return unwrap(this.raw.GET("/api/v1/reviews", { params: { query } }));
   }
 
-  createReview(request: Schema<"CreateReviewRequest">) {
-    return unwrap(this.raw.POST("/api/v1/reviews", { body: request }));
+  createReview(refEtag: string, request: Schema<"CreateReviewRequest">) {
+    return unwrap(
+      this.raw.POST("/api/v1/reviews", {
+        params: { header: { "If-Match": refEtag } },
+        body: request,
+      }),
+    );
   }
 
   review(reviewId: string) {
@@ -393,23 +439,11 @@ export class ClumsiesApi {
 
   createReviewSubmission(
     reviewId: string,
+    refEtag: string,
     request: Schema<"CreateReviewSubmissionRequest">,
   ) {
     return unwrap(
       this.raw.POST("/api/v1/reviews/{review_id}/submissions", {
-        params: { path: { review_id: reviewId } },
-        body: request,
-      }),
-    );
-  }
-
-  createReviewConflictResolution(
-    reviewId: string,
-    refEtag: string,
-    request: Schema<"CreateReviewConflictResolutionRequest">,
-  ) {
-    return unwrap(
-      this.raw.POST("/api/v1/reviews/{review_id}/conflict-resolutions", {
         params: {
           path: { review_id: reviewId },
           header: { "If-Match": refEtag },

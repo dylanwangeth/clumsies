@@ -483,9 +483,31 @@ pub enum ResourceStatus {
 pub enum DraftStatus {
     Open,
     Submitted,
-    Discarded,
-    Conflicted,
     Merged,
+    Discarded,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftFreshness {
+    Current,
+    Behind,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftReconciliationStatus {
+    Unknown,
+    Clean,
+    Conflicts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftCoordination {
+    pub freshness: DraftFreshness,
+    pub current_commit_id: Option<String>,
+    pub reconciliation: DraftReconciliationStatus,
+    pub candidate_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -540,6 +562,7 @@ pub struct Draft {
     pub description: String,
     pub resource: DraftResourceRef,
     pub status: DraftStatus,
+    pub coordination: DraftCoordination,
     pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -552,7 +575,6 @@ pub struct Draft {
 pub enum DraftSyncStatus {
     Synced,
     Pending,
-    Conflicted,
     Failed,
 }
 
@@ -561,15 +583,90 @@ pub struct DraftSyncState {
     pub status: DraftSyncStatus,
     pub server_cursor: Option<String>,
     pub daemon_installation_id: Option<String>,
-    pub conflict_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DraftConflict {
+pub struct ReconciliationResourceState {
+    pub exists: bool,
+    pub resource: DraftResourceRef,
+    pub content: Option<DraftResourceContent>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationConflictKind {
+    Content,
+    Path,
+    Existence,
+    PathOccupied,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationConflict {
+    pub kind: ReconciliationConflictKind,
+    pub field: String,
+    pub base: Option<String>,
+    pub current: Option<String>,
+    pub draft: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationCandidateStatus {
+    Clean,
+    Conflicts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftReconciliationCandidate {
+    pub candidate_id: String,
+    pub draft_id: String,
+    pub draft_version: i64,
     pub base_commit_id: Option<String>,
     pub current_commit_id: Option<String>,
+    pub status: ReconciliationCandidateStatus,
+    pub base_state: ReconciliationResourceState,
+    pub current_state: ReconciliationResourceState,
+    pub draft_state: ReconciliationResourceState,
+    pub proposed_state: Option<ReconciliationResourceState>,
+    pub conflicts: Vec<ReconciliationConflict>,
+    pub result_hash: Option<String>,
+    pub valid: bool,
     #[serde(with = "time::serde::rfc3339")]
-    pub detected_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub invalidated_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateDraftReconciliationCandidateRequest {
+    pub expected_draft_version: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateDraftRebaseRequest {
+    pub candidate_id: String,
+    pub expected_draft_version: i64,
+    pub resolved_state: Option<ReconciliationResourceState>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftRebaseResult {
+    pub rebase_id: String,
+    pub previous_revision_id: String,
+    pub draft: DraftDetail,
+    pub review: Option<Review>,
+    pub approval_invalidated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftRevision {
+    pub revision_id: String,
+    pub draft_id: String,
+    pub draft_version: i64,
+    pub base_commit_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -577,7 +674,6 @@ pub struct DraftDetail {
     pub draft: Draft,
     pub operations: Vec<DraftOperation>,
     pub sync_state: DraftSyncState,
-    pub conflict: Option<DraftConflict>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -602,7 +698,6 @@ pub struct CreateDraftRequest {
 pub struct UpdateDraftRequest {
     pub title: Option<String>,
     pub description: Option<String>,
-    pub status: Option<DraftStatus>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -633,7 +728,7 @@ pub enum DraftEventType {
     Discarded,
     Submitted,
     Reopened,
-    Conflicted,
+    Rebased,
     Merged,
 }
 
@@ -663,6 +758,8 @@ pub struct CreateReviewRequest {
     pub expected_draft_version: i64,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub candidate_id: Option<String>,
+    pub resolved_state: Option<ReconciliationResourceState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -671,6 +768,8 @@ pub struct CreateReviewSubmissionRequest {
     pub expected_draft_version: i64,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub candidate_id: Option<String>,
+    pub resolved_state: Option<ReconciliationResourceState>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -693,6 +792,8 @@ pub struct Review {
     pub status: ReviewStatus,
     pub version: i64,
     pub decision_body: Option<String>,
+    pub approved_result_hash: Option<String>,
+    pub coordination: DraftCoordination,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -705,7 +806,6 @@ pub struct ReviewDetail {
     pub draft: Draft,
     pub operations: Vec<DraftOperation>,
     pub comments: Vec<ReviewComment>,
-    pub conflict: Option<DraftConflict>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -752,13 +852,6 @@ pub enum ReviewDecision {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateReviewMergeRequest {
     pub expected_review_version: i64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateReviewConflictResolutionRequest {
-    pub expected_review_version: i64,
-    pub expected_draft_version: i64,
-    pub operations: Vec<DraftOperationInput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1043,7 +1136,7 @@ impl DraftEventType {
             Self::Discarded => "discarded",
             Self::Submitted => "submitted",
             Self::Reopened => "reopened",
-            Self::Conflicted => "conflicted",
+            Self::Rebased => "rebased",
             Self::Merged => "merged",
         }
     }

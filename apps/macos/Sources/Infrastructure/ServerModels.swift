@@ -200,6 +200,8 @@ struct ReviewMetadata: Codable, Identifiable, Hashable, Sendable {
     let status: String
     let version: Int
     let decisionBody: String?
+    let approvedResultHash: String?
+    let coordination: DraftCoordination
     let createdAt: String
     let updatedAt: String
 }
@@ -230,6 +232,7 @@ struct ServerDraft: Codable, Sendable {
     let description: String
     let resource: ServerDraftResourceReference
     let status: String
+    let coordination: DraftCoordination
     let version: Int
     let createdAt: String
     let updatedAt: String
@@ -251,7 +254,77 @@ struct ReviewDetail: Codable, Sendable {
     let draft: ServerDraft
     let operations: [ServerDraftOperation]
     let comments: [ReviewComment]
-    let conflict: DaemonDraftConflict?
+}
+
+struct DraftCoordination: Codable, Hashable, Sendable {
+    let freshness: DraftFreshness
+    let currentCommitId: String?
+    let reconciliation: DraftReconciliationStatus
+    let candidateId: String?
+}
+
+struct ReconciliationResourceState: Codable, Hashable, Sendable {
+    let exists: Bool
+    let resource: ServerDraftResourceReference
+    let content: DaemonDraftContent?
+}
+
+struct ReconciliationConflict: Codable, Hashable, Sendable {
+    let kind: String
+    let field: String
+    let base: String?
+    let current: String?
+    let draft: String?
+}
+
+struct DraftReconciliationCandidate: Codable, Identifiable, Hashable, Sendable {
+    var id: String { candidateId }
+
+    let candidateId: String
+    let draftId: String
+    let draftVersion: Int
+    let baseCommitId: String?
+    let currentCommitId: String?
+    let status: DraftReconciliationStatus
+    let baseState: ReconciliationResourceState
+    let currentState: ReconciliationResourceState
+    let draftState: ReconciliationResourceState
+    let proposedState: ReconciliationResourceState?
+    let conflicts: [ReconciliationConflict]
+    let resultHash: String?
+    let valid: Bool
+    let createdAt: String
+    let invalidatedAt: String?
+}
+
+struct CreateDraftReconciliationCandidateRequest: Codable, Sendable {
+    let expectedDraftVersion: Int
+}
+
+struct CreateDraftRebaseRequest: Codable, Sendable {
+    let candidateId: String
+    let expectedDraftVersion: Int
+    let resolvedState: ReconciliationResourceState?
+}
+
+struct DraftRebaseResult: Codable, Sendable {
+    let rebaseId: String
+    let previousRevisionId: String
+    let draft: ServerDraftDetail
+    let review: ReviewMetadata?
+    let approvalInvalidated: Bool
+}
+
+struct ServerDraftDetail: Codable, Sendable {
+    let draft: ServerDraft
+    let operations: [ServerDraftOperation]
+    let syncState: ServerDraftSyncState
+}
+
+struct ServerDraftSyncState: Codable, Sendable {
+    let status: String
+    let serverCursor: String?
+    let daemonInstallationId: String?
 }
 
 struct CreateReviewRequest: Codable, Sendable {
@@ -259,6 +332,8 @@ struct CreateReviewRequest: Codable, Sendable {
     let expectedDraftVersion: Int
     let title: String
     let description: String
+    let candidateId: String?
+    let resolvedState: ReconciliationResourceState?
 }
 
 struct CreateReviewSubmissionRequest: Codable, Sendable {
@@ -266,6 +341,8 @@ struct CreateReviewSubmissionRequest: Codable, Sendable {
     let expectedDraftVersion: Int
     let title: String
     let description: String
+    let candidateId: String?
+    let resolvedState: ReconciliationResourceState?
 }
 
 struct CreateReviewCommentRequest: Codable, Sendable {
@@ -287,12 +364,6 @@ struct DraftOperationInput: Codable, Sendable {
     let resource: ServerDraftResourceReference
     let content: DaemonDraftContent?
     let newPath: String?
-}
-
-struct CreateReviewConflictResolutionRequest: Codable, Sendable {
-    let expectedReviewVersion: Int
-    let expectedDraftVersion: Int
-    let operations: [DraftOperationInput]
 }
 
 struct ReviewMergeResponse: Codable, Sendable {

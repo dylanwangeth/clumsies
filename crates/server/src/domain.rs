@@ -128,8 +128,8 @@ pub struct PersonalBundle {
 pub enum DraftStatus {
     Open,
     Submitted,
+    Merged,
     Discarded,
-    Conflicted,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -192,7 +192,6 @@ pub struct Draft {
 pub enum DraftSyncStatus {
     Synced,
     Pending,
-    Conflicted,
     Failed,
 }
 
@@ -201,7 +200,6 @@ pub struct DraftSyncState {
     pub status: DraftSyncStatus,
     pub server_cursor: Option<String>,
     pub daemon_installation_id: Option<String>,
-    pub conflict_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -16,7 +16,9 @@ Server owns:
 - admin configuration, token revocation, audit events, and health reporting
 
 Desktop and MCP write local drafts through the daemon. The daemon synchronizes
-them to Server. No client is allowed to update authoritative memory directly.
+them to Server. Local directory-to-Project bindings belong to daemon SQLite;
+Server only supplies and authorizes the canonical `project_id`. No client is
+allowed to update authoritative memory directly.
 
 ## Version model
 
@@ -29,13 +31,26 @@ Draft(base_commit_id)
 ```
 
 Each organization and project has its own Ref. A merge locks the target Ref,
-checks `If-Match`, verifies that the draft still has the same base Commit,
-creates a new immutable Commit, and advances only that Ref. Project metadata
-revision is separate from memory history.
+checks `If-Match`, verifies that the Draft is based on that Commit, creates a new
+immutable Commit, and advances only that Ref. Project metadata revision is
+separate from memory history.
 
-The current conflict policy is strict. If the Ref moved after the draft was
-created, merge returns `409 Conflict`; the Server does not silently overwrite or
-pretend to perform a three-way merge.
+Draft lifecycle (`open`, `submitted`, `merged`, `discarded`) is independent from
+freshness (`current`, `behind`) and reconciliation (`unknown`, `clean`,
+`conflicts`). When a Ref advances, Server keeps the Draft Base and operations
+unchanged. It computes a canonical Base/Current/Draft candidate only when asked,
+and applies it only after explicit confirmation. Rebase saves an immutable Draft
+revision before atomically changing `base_commit_id` and operations.
+Applying a clean candidate always uses the Server's canonical proposed result;
+only a conflicts candidate accepts a complete user-resolved state.
+
+Creating or resubmitting a Review and merging an approved Review are coordination
+boundaries. Review creation/submission can apply a confirmed candidate in the
+same Ref-locked transaction. Merge never performs the first stale check as a
+normal workflow; it retains `If-Match`/CAS as the final concurrency guard.
+
+The detailed state model and failure semantics are maintained in the Obsidian
+architecture document `architecture/draft-reconciliation.md`.
 
 ## HTTP contracts
 

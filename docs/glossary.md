@@ -62,6 +62,17 @@ stable Server-issued project ID.
 `Workspace` is a retired name that may still appear in old code and legacy
 documents.
 
+## Project binding
+
+A Project binding is daemon-owned local state that maps a canonical directory
+root to one canonical Server `project_id` under a specific Server authority.
+MCP resolves the nearest bound ancestor of its current working directory. The
+binding is independent from the Project currently displayed by Desktop.
+
+A legacy `ws_id` is not a Project binding. It may supply a path and display name
+during one-time migration, but its identifier is never accepted as a
+`project_id`.
+
 ## Manifest
 
 Manifest is a retired runtime term. Authority versions use Blob, Tree, Commit,
@@ -102,3 +113,28 @@ Draft is local-first state. Review is shared workflow.
 For Hub content, Review targets organization authority. For Local content,
 Review targets project authority. Those are related lifecycles, but they move
 different Refs.
+
+Draft lifecycle is only `open`, `submitted`, `merged`, or `discarded`.
+`behind` is freshness, not a lifecycle state; `clean` and `conflicts` describe a
+reconciliation candidate and do not prevent further Draft edits.
+
+## Sync, Reconciliation, and Rebase
+
+Sync downloads the latest authority Commit/Ref or uploads Draft operations. It
+does not change a Draft Base.
+
+Reconciliation is Server's canonical comparison of Base, Current, and Draft
+Result. It produces a candidate bound to one Draft version and one current Ref,
+without modifying the Draft.
+
+Rebase is the explicit application of a confirmed candidate. It preserves the
+previous Draft revision, advances `base_commit_id` to Current, and replaces the
+operations with the diff from Current to the confirmed result. Rebase never
+moves an authority Ref; only Review merge does that.
+
+## Effective Memory
+
+Effective Memory is the daemon's local read model. A resource with a personal
+Draft uses that Draft's complete `Base + operations` result. Resources without a
+Draft use the latest installed authority Commit. It is not a personal Ref or a
+whole-project branch pinned to an old Commit.

@@ -152,7 +152,7 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
 
 test "processLine: initialize then tools list" {
     var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "ws-test"),
+        .project_id = try testing.allocator.dupe(u8, "prj-test"),
         .workspace_root = try testing.allocator.dupe(u8, "/tmp/workspace"),
     };
     defer session.deinit(testing.allocator);

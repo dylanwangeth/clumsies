@@ -65,7 +65,8 @@ struct DaemonSyncStatus: Codable, Equatable, Sendable {
     let commitSync: DaemonSyncChannelStatus
     let pendingOperationCount: Int
     let failedOperationCount: Int
-    let conflictCount: Int
+    let behindDraftCount: Int
+    let reconciliationConflictCount: Int
     let lastSuccessAt: String?
 }
 
@@ -146,22 +147,19 @@ struct DaemonDraftSummary: Codable, Identifiable, Hashable, Sendable {
     let serverDraftId: String?
     let serverVersion: Int
     let baseCommitId: String?
+    let currentCommitId: String?
+    let freshness: DraftFreshness
+    let reconciliation: DraftReconciliationStatus
+    let reconciliationCandidateId: String?
     let scope: DaemonDraftScope
     let resourceKind: DaemonResourceKind
     let targetId: String?
     let path: String?
-    let conflict: DaemonDraftConflict?
     let status: DaemonLocalDraftStatus
     let createdAt: String
     let updatedAt: String
     let pendingOperationCount: Int
     let failedOperationCount: Int
-}
-
-struct DaemonDraftConflict: Codable, Hashable, Sendable {
-    let baseCommitId: String?
-    let currentCommitId: String?
-    let detectedAt: String
 }
 
 enum DaemonDraftScope: String, Codable, Hashable, Sendable {
@@ -178,19 +176,29 @@ enum DaemonResourceKind: String, Codable, Hashable, Sendable {
 enum DaemonLocalDraftStatus: String, Codable, Hashable, Sendable {
     case open
     case submitted
-    case discarded
-    case conflicted
     case merged
+    case discarded
 }
 
-enum DaemonDraftOperationSource: String, Codable, Sendable {
+enum DraftFreshness: String, Codable, Hashable, Sendable {
+    case current
+    case behind
+}
+
+enum DraftReconciliationStatus: String, Codable, Hashable, Sendable {
+    case unknown
+    case clean
+    case conflicts
+}
+
+enum DaemonDraftOperationSource: String, Codable, Hashable, Sendable {
     case desktop
     case cli
     case mcpStore = "mcp_store"
     case server
 }
 
-enum DaemonDraftSyncState: String, Codable, Sendable {
+enum DaemonDraftSyncState: String, Codable, Hashable, Sendable {
     case queued
     case syncing
     case retrying

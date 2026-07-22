@@ -10,6 +10,17 @@ pub const WorkspaceBinding = struct {
     name: []const u8,
 };
 
+pub const LegacyWorkspaceHint = struct {
+    name: []const u8,
+    workspace_root: []const u8,
+
+    pub fn deinit(self: *LegacyWorkspaceHint, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.workspace_root);
+        self.* = undefined;
+    }
+};
+
 pub const WorkspaceListEntry = struct {
     ws_id: []const u8,
     name: []const u8,
@@ -50,6 +61,19 @@ pub fn resolveWorkspace(allocator: std.mem.Allocator, cwd: []const u8) !Workspac
     return .{
         .ws_id = try allocator.dupe(u8, match.ws.ws_id),
         .name = try allocator.dupe(u8, match.ws.name),
+    };
+}
+
+/// Read only the path and display name needed to migrate a legacy binding.
+/// The legacy `ws_id` is deliberately not exposed as a Project identifier.
+pub fn resolveLegacyWorkspaceHint(allocator: std.mem.Allocator, cwd: []const u8) !LegacyWorkspaceHint {
+    var parsed = try loadConfig(allocator);
+    defer parsed.deinit();
+
+    const match = findBestWorkspaceMatch(parsed.value.workspaces, cwd) orelse return error.NoWorkspaceFound;
+    return .{
+        .name = try allocator.dupe(u8, match.ws.name),
+        .workspace_root = try allocator.dupe(u8, match.path),
     };
 }
 
@@ -304,6 +328,63 @@ pub fn removeWorkspace(allocator: std.mem.Allocator, ws_id: []const u8) !void {
     }
 }
 
+/// Remove one migrated path from the legacy TOML without deleting any legacy
+/// cache directory. Remaining paths stay available for their own migration.
+pub fn removeLegacyWorkspacePath(allocator: std.mem.Allocator, migrated_path: []const u8) !void {
+    const base = try auth.getBasePath(allocator);
+    defer allocator.free(base);
+    const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
+    defer allocator.free(config_path);
+
+    try removeLegacyWorkspacePathFromConfig(allocator, config_path, migrated_path);
+}
+
+fn removeLegacyWorkspacePathFromConfig(allocator: std.mem.Allocator, config_path: []const u8, migrated_path: []const u8) !void {
+    var parsed = try loadConfigFromPath(allocator, config_path);
+    defer parsed.deinit();
+
+    var workspaces: std.ArrayList(TomlWorkspaceOut) = .empty;
+    defer workspaces.deinit(allocator);
+    var owned_paths: std.ArrayList([]const []const u8) = .empty;
+    defer {
+        for (owned_paths.items) |paths| allocator.free(paths);
+        owned_paths.deinit(allocator);
+    }
+
+    for (parsed.value.workspaces) |ws| {
+        var filtered: std.ArrayList([]const u8) = .empty;
+        defer filtered.deinit(allocator);
+        for (ws.paths) |path| {
+            if (std.mem.eql(u8, path, migrated_path)) continue;
+            try filtered.append(allocator, path);
+        }
+        if (filtered.items.len == 0) continue;
+        const paths = try filtered.toOwnedSlice(allocator);
+        try owned_paths.append(allocator, paths);
+        try workspaces.append(allocator, .{
+            .name = ws.name,
+            .ws_id = ws.ws_id,
+            .paths = paths,
+        });
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try appendLine(allocator, &buf, "[server]");
+    try appendKv(allocator, &buf, "url", parsed.value.server.url);
+    try appendLine(allocator, &buf, "");
+    for (workspaces.items) |ws| {
+        try writeWorkspaceBlock(allocator, &buf, ws.name, ws.ws_id, ws.paths);
+    }
+
+    const file = try std.Io.Dir.createFileAbsolute(std.Options.debug_io, config_path, .{ .truncate = true });
+    defer file.close(std.Options.debug_io);
+    var write_buf: [4096]u8 = undefined;
+    var writer = std.Io.File.Writer.init(file, std.Options.debug_io, &write_buf);
+    try writer.interface.writeAll(buf.items);
+    try writer.interface.flush();
+}
+
 const ParsedConfig = struct {
     value: Config,
     parsed_result: toml.Parsed(Config),
@@ -319,6 +400,10 @@ fn loadConfig(allocator: std.mem.Allocator) !ParsedConfig {
     const config_path = try std.fs.path.join(allocator, &.{ base, "config.toml" });
     defer allocator.free(config_path);
 
+    return loadConfigFromPath(allocator, config_path);
+}
+
+fn loadConfigFromPath(allocator: std.mem.Allocator, config_path: []const u8) !ParsedConfig {
     const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, config_path, .{}) catch {
         return error.NoConfigFound;
     };
@@ -561,4 +646,50 @@ test "findBestWorkspaceMatch keeps first workspace for duplicate paths" {
 
     const match = findBestWorkspaceMatch(&workspaces, "/home/me/project") orelse unreachable;
     try testing.expectEqualStrings("ws-first", match.ws.ws_id);
+}
+
+test "removeLegacyWorkspacePath removes only the migrated path from a real config" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(std.Options.debug_io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[server]
+        \\url = "https://app.clumsies.ai"
+        \\
+        \\[[workspaces]]
+        \\name = "First Project"
+        \\ws_id = "legacy-first"
+        \\paths = [
+        \\  "/tmp/first",
+        \\  "/tmp/first-copy",
+        \\]
+        \\
+        \\[[workspaces]]
+        \\name = "Second Project"
+        \\ws_id = "legacy-second"
+        \\paths = [
+        \\  "/tmp/second",
+        \\]
+        \\
+        ,
+    });
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try tmp.dir.realPathFile(std.Options.debug_io, "config.toml", &path_buf);
+    const config_path = path_buf[0..path_len];
+
+    try removeLegacyWorkspacePathFromConfig(testing.allocator, config_path, "/tmp/first");
+
+    var parsed = try loadConfigFromPath(testing.allocator, config_path);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("https://app.clumsies.ai", parsed.value.server.url);
+    try testing.expectEqual(@as(usize, 2), parsed.value.workspaces.len);
+    try testing.expectEqualStrings("legacy-first", parsed.value.workspaces[0].ws_id);
+    try testing.expectEqual(@as(usize, 1), parsed.value.workspaces[0].paths.len);
+    try testing.expectEqualStrings("/tmp/first-copy", parsed.value.workspaces[0].paths[0]);
+    try testing.expectEqualStrings("legacy-second", parsed.value.workspaces[1].ws_id);
+    try testing.expectEqual(@as(usize, 1), parsed.value.workspaces[1].paths.len);
+    try testing.expectEqualStrings("/tmp/second", parsed.value.workspaces[1].paths[0]);
 }

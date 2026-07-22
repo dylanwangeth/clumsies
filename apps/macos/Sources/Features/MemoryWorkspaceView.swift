@@ -214,7 +214,7 @@ private struct FileTreeRow: View {
 
     private var titleColor: Color {
         guard let item else { return .primary }
-        if item.draft?.conflict != nil { return .red }
+        if item.draft?.freshness == .behind { return .orange }
         if item.draft != nil { return .accentColor }
         if item.inherited { return .secondary }
         return .primary
@@ -337,6 +337,8 @@ private struct DocumentSessionView: View {
     @State private var document: EditableMemoryDocument
     @State private var suppressesSaving = false
     @State private var reviewDraft: LocalDraft?
+    @State private var reconciliationCandidate: DraftReconciliationCandidate?
+    @State private var loadsReconciliation = false
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
@@ -392,6 +394,25 @@ private struct DocumentSessionView: View {
             .background(.bar)
             Divider()
 
+            if let draft = activeDraft, draft.freshness == .behind {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                        .foregroundStyle(.orange)
+                    Text("共享版本已有更新")
+                    Spacer()
+                    Button("查看更新") { loadReconciliation(for: draft) }
+                    Button("合并最新版本") { loadReconciliation(for: draft) }
+                        .buttonStyle(.borderedProminent)
+                    if loadsReconciliation {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 38)
+                .background(.orange.opacity(0.08))
+                Divider()
+            }
+
             if item.draft?.isDeletion == true {
                 ContentUnavailableView(
                     "Pending deletion",
@@ -408,8 +429,30 @@ private struct DocumentSessionView: View {
         .onChange(of: document) { _, _ in scheduleSave() }
         .onDisappear { flushSave() }
         .sheet(item: $reviewDraft) { draft in
-            ReviewRequestSheet(initialTitle: document.title) { title, description in
-                try await submitReview(draft, title: title, description: description)
+            ReviewRequestSheet(
+                initialTitle: document.title,
+                loadCandidate: { try await loadReviewCandidate(draft) }
+            ) { title, description, candidate, resolvedState in
+                try await submitReview(
+                    draft,
+                    title: title,
+                    description: description,
+                    candidate: candidate,
+                    resolvedState: resolvedState
+                )
+            }
+        }
+        .sheet(item: $reconciliationCandidate) { candidate in
+            DraftReconciliationSheet(candidate: candidate) { resolvedState in
+                guard let draft = activeDraft, let serverId = draft.serverId else {
+                    throw ReviewRequestError.draftNotSynchronized
+                }
+                try await store.applyReconciliation(
+                    draftId: serverId,
+                    draftVersion: draft.serverVersion,
+                    candidate: candidate,
+                    resolvedState: resolvedState
+                )
             }
         }
     }
@@ -435,6 +478,24 @@ private struct DocumentSessionView: View {
         return item.kind.supportsMarkdownPreview(path: path)
     }
 
+    private var activeDraft: LocalDraft? {
+        guard let draft = item.draft else { return nil }
+        return store.drafts.first(where: { $0.id == draft.id }) ?? draft
+    }
+
+    private func loadReconciliation(for draft: LocalDraft) {
+        guard !loadsReconciliation else { return }
+        loadsReconciliation = true
+        Task {
+            defer { loadsReconciliation = false }
+            do {
+                reconciliationCandidate = try await store.reconciliationCandidate(for: draft)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func scheduleSave() {
         guard !suppressesSaving, !item.inherited, mode == .source else { return }
         store.stageDocumentSave(item, document: document)
@@ -457,7 +518,9 @@ private struct DocumentSessionView: View {
     private func submitReview(
         _ draft: LocalDraft,
         title: String,
-        description: String
+        description: String,
+        candidate: DraftReconciliationCandidate?,
+        resolvedState: ReconciliationResourceState?
     ) async throws {
         try await store.flushDocumentSave(item.id)
         let latest = store.drafts.first {
@@ -466,8 +529,18 @@ private struct DocumentSessionView: View {
         try await store.requestReview(
             for: latest,
             title: title,
-            description: description
+            description: description,
+            candidate: candidate,
+            resolvedState: resolvedState
         )
+    }
+
+    private func loadReviewCandidate(_ draft: LocalDraft) async throws -> DraftReconciliationCandidate {
+        try await store.flushDocumentSave(item.id)
+        let latest = store.drafts.first {
+            $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
+        } ?? draft
+        return try await store.reconciliationCandidate(for: latest)
     }
 
     private func discard(_ draft: LocalDraft) {
@@ -487,21 +560,174 @@ private struct DocumentSessionView: View {
     }
 }
 
+struct DraftReconciliationSheet: View {
+    let candidate: DraftReconciliationCandidate
+    let onApply: (ReconciliationResourceState?) async throws -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedVersion = 3
+    @State private var resolvedExists: Bool
+    @State private var resolvedPath: String
+    @State private var resolvedContent: String
+    @State private var isApplying = false
+    @State private var errorMessage: String?
+
+    init(
+        candidate: DraftReconciliationCandidate,
+        onApply: @escaping (ReconciliationResourceState?) async throws -> Void
+    ) {
+        self.candidate = candidate
+        self.onApply = onApply
+        let initial = candidate.proposedState ?? candidate.draftState
+        _resolvedExists = State(initialValue: initial.exists)
+        _resolvedPath = State(initialValue: initial.resource.path ?? "")
+        _resolvedContent = State(initialValue: initial.content?.primaryText ?? "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("合并最新版本").font(.headline)
+                Spacer()
+                Text(candidate.status == .conflicts ? "需要解决冲突" : "可自动合并")
+                    .foregroundStyle(candidate.status == .conflicts ? .orange : .secondary)
+            }
+            .padding(16)
+            Divider()
+
+            Picker("Version", selection: $selectedVersion) {
+                Text("Base").tag(0)
+                Text("共享版本").tag(1)
+                Text("当前草稿").tag(2)
+                Text("合并结果").tag(3)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(12)
+
+            if selectedVersion == 3 && candidate.status == .conflicts {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("保留此资源", isOn: $resolvedExists)
+                    if resolvedExists {
+                        TextField("Path", text: $resolvedPath)
+                        TextEditor(text: $resolvedContent)
+                            .font(.body.monospaced())
+                            .frame(minHeight: 260)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(.separator)
+                            }
+                    }
+                    if !candidate.conflicts.isEmpty {
+                        Text(candidate.conflicts.map(\.field).joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 16)
+            } else {
+                ScrollView {
+                    Text(displayedText)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(16)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .padding(.horizontal, 16)
+            }
+            Divider()
+            HStack {
+                Button("取消") { dismiss() }
+                Spacer()
+                Button("合并最新版本") { apply() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isApplying || (resolvedExists && resolvedPath.isEmpty))
+            }
+            .padding(16)
+        }
+        .frame(minWidth: 720, minHeight: 520)
+    }
+
+    private var displayedText: String {
+        let state: ReconciliationResourceState? = switch selectedVersion {
+        case 0: candidate.baseState
+        case 1: candidate.currentState
+        case 2: candidate.draftState
+        default: candidate.proposedState ?? candidate.draftState
+        }
+        guard let state, state.exists else { return "此版本中资源不存在" }
+        return state.content?.renderedText ?? ""
+    }
+
+    private func apply() {
+        guard !isApplying else { return }
+        isApplying = true
+        Task {
+            defer { isApplying = false }
+            do {
+                let resolved = candidate.status == .conflicts ? resolvedState : nil
+                try await onApply(resolved)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var resolvedState: ReconciliationResourceState {
+        let template = candidate.proposedState ?? candidate.draftState
+        let resource = ServerDraftResourceReference(
+            scope: template.resource.scope,
+            kind: template.resource.kind,
+            id: template.resource.id,
+            path: resolvedExists ? resolvedPath : template.resource.path
+        )
+        return .init(
+            exists: resolvedExists,
+            resource: resource,
+            content: resolvedExists
+                ? template.content?.replacingPrimaryText(with: resolvedContent)
+                : nil
+        )
+    }
+}
+
 private struct ReviewRequestSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    let onSubmit: (String, String) async throws -> Void
+    let loadCandidate: () async throws -> DraftReconciliationCandidate
+    let onSubmit: (
+        String,
+        String,
+        DraftReconciliationCandidate?,
+        ReconciliationResourceState?
+    ) async throws -> Void
 
     @State private var title: String
     @State private var description = ""
     @State private var isSubmitting = false
     @State private var errorMessage: String?
+    @State private var reconciliationCandidate: DraftReconciliationCandidate?
+    @State private var reviewSubmitted = false
 
     init(
         initialTitle: String,
-        onSubmit: @escaping (String, String) async throws -> Void
+        loadCandidate: @escaping () async throws -> DraftReconciliationCandidate,
+        onSubmit: @escaping (
+            String,
+            String,
+            DraftReconciliationCandidate?,
+            ReconciliationResourceState?
+        ) async throws -> Void
     ) {
         _title = State(initialValue: initialTitle)
+        self.loadCandidate = loadCandidate
         self.onSubmit = onSubmit
     }
 
@@ -539,6 +765,20 @@ private struct ReviewRequestSheet: View {
         }
         .frame(width: 480, height: 270)
         .interactiveDismissDisabled(isSubmitting)
+        .sheet(item: $reconciliationCandidate) { candidate in
+            DraftReconciliationSheet(candidate: candidate) { resolvedState in
+                try await onSubmit(
+                    normalizedTitle,
+                    description.trimmingCharacters(in: .whitespacesAndNewlines),
+                    candidate,
+                    resolvedState
+                )
+                reviewSubmitted = true
+            }
+        }
+        .onChange(of: reviewSubmitted) { _, submitted in
+            if submitted { dismiss() }
+        }
         .alert(
             "Could Not Request Review",
             isPresented: Binding(
@@ -563,8 +803,16 @@ private struct ReviewRequestSheet: View {
         isSubmitting = true
         Task {
             do {
-                try await onSubmit(submittedTitle, submittedDescription)
+                try await onSubmit(submittedTitle, submittedDescription, nil, nil)
                 dismiss()
+            } catch ReviewRequestError.reconciliationRequired {
+                do {
+                    reconciliationCandidate = try await loadCandidate()
+                    isSubmitting = false
+                } catch {
+                    errorMessage = error.localizedDescription
+                    isSubmitting = false
+                }
             } catch {
                 errorMessage = error.localizedDescription
                 isSubmitting = false

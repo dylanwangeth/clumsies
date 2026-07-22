@@ -94,7 +94,7 @@ fn handleActivate(
     } else null;
     var operation = try daemon_ipc.activateMemoryOperation(
         allocator,
-        session.ws_id,
+        session.project_id,
         query,
         state,
     );
@@ -126,7 +126,7 @@ fn handleLoad(
     } else std.json.Value{ .object = .empty };
     var operation = try daemon_ipc.loadMemoryOperation(
         allocator,
-        session.ws_id,
+        session.project_id,
         ids.items,
         known_hashes,
     );
@@ -199,7 +199,7 @@ fn handleStore(
     );
     var operation = try daemon_ipc.storeDraftOperation(
         allocator,
-        session.ws_id,
+        session.project_id,
         daemonResourceName(resource),
         daemon_op,
     );
@@ -400,7 +400,7 @@ test "handleCall rejects removed retrieve tool without compatibility dispatch" {
     , .{});
     defer parsed.deinit();
     var session: session_mod.Session = .{
-        .ws_id = try testing.allocator.dupe(u8, "prj_test"),
+        .project_id = try testing.allocator.dupe(u8, "prj_test"),
         .workspace_root = try testing.allocator.dupe(u8, "/tmp/workspace"),
     };
     defer session.deinit(testing.allocator);

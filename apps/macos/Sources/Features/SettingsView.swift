@@ -56,7 +56,11 @@ struct NativeDiagnosticsView: View {
                     LabeledContent("Commit sync", value: runtime.sync.commitSync.state)
                     LabeledContent("Pending operations", value: String(runtime.sync.pendingOperationCount))
                     LabeledContent("Failed operations", value: String(runtime.sync.failedOperationCount))
-                    LabeledContent("Conflicts", value: String(runtime.sync.conflictCount))
+                    LabeledContent("Drafts behind", value: String(runtime.sync.behindDraftCount))
+                    LabeledContent(
+                        "Reconciliation conflicts",
+                        value: String(runtime.sync.reconciliationConflictCount)
+                    )
                     LabeledContent("MCP", value: runtime.mcp.running ? "Running" : "Stopped")
                     LabeledContent("Server data", value: runtime.serverDataSource.capitalized)
                     LabeledContent("Logs", value: runtime.health.logDir)
