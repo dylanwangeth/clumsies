@@ -337,6 +337,7 @@ private struct DocumentSessionView: View {
     @State private var document: EditableMemoryDocument
     @State private var suppressesSaving = false
     @State private var showsRuleDetails = false
+    @State private var reviewDraft: LocalDraft?
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
@@ -384,7 +385,7 @@ private struct DocumentSessionView: View {
                         }
                         if let draft = item.draft, draft.status == .open {
                             Button("Request Review") {
-                                requestReview(draft)
+                                reviewDraft = draft
                             }
                             Divider()
                         }
@@ -423,6 +424,11 @@ private struct DocumentSessionView: View {
         }
         .onChange(of: document) { _, _ in scheduleSave() }
         .onDisappear { flushSave() }
+        .sheet(item: $reviewDraft) { draft in
+            ReviewRequestSheet(initialTitle: document.title) { title, description in
+                try await submitReview(draft, title: title, description: description)
+            }
+        }
     }
 
     @ViewBuilder
@@ -465,19 +471,20 @@ private struct DocumentSessionView: View {
         }
     }
 
-    private func requestReview(_ draft: LocalDraft) {
-        let snapshot = document
-        Task {
-            do {
-                try await store.flushDocumentSave(item.id)
-                let latest = store.drafts.first {
-                    $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
-                } ?? draft
-                await store.requestReview(for: latest, title: snapshot.title)
-            } catch {
-                store.errorMessage = error.localizedDescription
-            }
-        }
+    private func submitReview(
+        _ draft: LocalDraft,
+        title: String,
+        description: String
+    ) async throws {
+        try await store.flushDocumentSave(item.id)
+        let latest = store.drafts.first {
+            $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
+        } ?? draft
+        try await store.requestReview(
+            for: latest,
+            title: title,
+            description: description
+        )
     }
 
     private func discard(_ draft: LocalDraft) {
@@ -494,6 +501,92 @@ private struct DocumentSessionView: View {
         suppressesSaving = true
         store.cancelDocumentSave(item.id)
         Task { await store.delete(item) }
+    }
+}
+
+private struct ReviewRequestSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onSubmit: (String, String) async throws -> Void
+
+    @State private var title: String
+    @State private var description = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    init(
+        initialTitle: String,
+        onSubmit: @escaping (String, String) async throws -> Void
+    ) {
+        _title = State(initialValue: initialTitle)
+        self.onSubmit = onSubmit
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section("Review") {
+                    TextField("Title", text: $title)
+                    TextField("Description", text: $description, axis: .vertical)
+                        .lineLimit(4...8)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button {
+                    submit()
+                } label: {
+                    if isSubmitting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Request Review")
+                    }
+                }
+                .disabled(isSubmitting || normalizedTitle.isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(width: 480, height: 270)
+        .interactiveDismissDisabled(isSubmitting)
+        .alert(
+            "Could Not Request Review",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var normalizedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func submit() {
+        let submittedTitle = normalizedTitle
+        let submittedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submittedTitle.isEmpty else { return }
+        isSubmitting = true
+        Task {
+            do {
+                try await onSubmit(submittedTitle, submittedDescription)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                isSubmitting = false
+            }
+        }
     }
 }
 

@@ -90,14 +90,23 @@ private struct BundleEditor: View {
                 } else {
                     ForEach(selectedResources) { resource in
                         HStack(spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(resource.document.title)
-                                    .lineLimit(1)
-                                Text(resourceLocation(resource))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            Button {
+                                open(resource)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(resource.document.title)
+                                        .lineLimit(1)
+                                    Text(resourceLocation(resource))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
-                            Spacer(minLength: 12)
+                            .buttonStyle(.plain)
+                            .help("Open \(resource.document.title)")
+                            .accessibilityLabel("Open \(resource.document.title)")
+
                             Button {
                                 resourceIds.remove(resource.id)
                             } label: {
@@ -160,6 +169,16 @@ private struct BundleEditor: View {
     private func resourceLocation(_ resource: MemoryResource) -> String {
         let scope = resource.scope == .org ? "Hub" : resource.projectName ?? "Project"
         return "\(scope) · \(resource.kind.singularTitle)"
+    }
+
+    private func open(_ resource: MemoryResource) {
+        let item = MemoryListItem(
+            id: resource.id,
+            resource: resource,
+            draft: nil,
+            inherited: false
+        )
+        Task { await store.reveal(item) }
     }
 
     private func scheduleSave() {

@@ -6,31 +6,39 @@ enum SyncToolbarPresentation: Equatable {
     case conflicts(count: Int)
     case failed(changeCount: Int, message: String?)
     case unavailable(message: String?)
+    case stale
 
-    static func resolve(status: DaemonSyncStatus?, isAvailable: Bool) -> Self? {
+    static func resolve(
+        status: DaemonSyncStatus?,
+        isAvailable: Bool,
+        serverDataSource: String?
+    ) -> Self? {
         guard isAvailable else { return .unavailable(message: nil) }
-        guard let status else { return nil }
 
-        if status.conflictCount > 0 || status.draftSync.state == "conflicted" {
-            return .conflicts(count: max(status.conflictCount, 1))
+        if let status {
+            if status.conflictCount > 0 || status.draftSync.state == "conflicted" {
+                return .conflicts(count: max(status.conflictCount, 1))
+            }
+
+            if status.failedOperationCount > 0 || status.draftSync.state == "failed" {
+                return .failed(
+                    changeCount: status.failedOperationCount,
+                    message: status.draftSync.lastError?.message
+                )
+            }
+            if status.draftSync.state == "degraded" {
+                return .unavailable(message: status.draftSync.lastError?.message)
+            }
+            if status.pendingOperationCount > 0
+                || ["queued", "syncing", "retrying"].contains(status.draftSync.state) {
+                return .syncing(changeCount: status.pendingOperationCount)
+            }
+            if ["failed", "degraded"].contains(status.commitSync.state) {
+                return .unavailable(message: status.commitSync.lastError?.message)
+            }
         }
 
-        if status.failedOperationCount > 0 || status.draftSync.state == "failed" {
-            return .failed(
-                changeCount: status.failedOperationCount,
-                message: status.draftSync.lastError?.message
-            )
-        }
-        if status.draftSync.state == "degraded" {
-            return .unavailable(message: status.draftSync.lastError?.message)
-        }
-        if status.pendingOperationCount > 0
-            || ["queued", "syncing", "retrying"].contains(status.draftSync.state) {
-            return .syncing(changeCount: status.pendingOperationCount)
-        }
-        if ["failed", "degraded"].contains(status.commitSync.state) {
-            return .unavailable(message: status.commitSync.lastError?.message)
-        }
+        if serverDataSource == "stale" { return .stale }
         return nil
     }
 
@@ -45,6 +53,7 @@ enum SyncToolbarPresentation: Equatable {
         case .conflicts: "exclamationmark.triangle"
         case .failed: "cloud.exclamationmark"
         case .unavailable: "icloud.slash"
+        case .stale: "icloud.slash"
         }
     }
 
@@ -58,6 +67,8 @@ enum SyncToolbarPresentation: Equatable {
             "Sync failed"
         case .unavailable:
             "Sync unavailable"
+        case .stale:
+            "Showing cached data"
         }
     }
 
@@ -79,6 +90,8 @@ enum SyncToolbarPresentation: Equatable {
         case .unavailable(let message):
             if let message, !message.isEmpty { return message }
             return "Clumsies could not read sync status from the background service."
+        case .stale:
+            return "Clumsies is showing cached Server data because the latest data could not be reached. Local edits remain saved."
         }
     }
 }
@@ -176,7 +189,7 @@ struct WorkspaceView: View {
                                     .frame(width: 24, height: 24)
                                     .help(syncToolbarPresentation.label)
                                     .accessibilityLabel(syncToolbarPresentation.label)
-                            case .conflicts, .failed, .unavailable:
+                            case .conflicts, .failed, .unavailable, .stale:
                                 Button {
                                     showsSyncIssuePopover.toggle()
                                 } label: {
@@ -397,7 +410,8 @@ struct WorkspaceView: View {
     private var syncToolbarPresentation: SyncToolbarPresentation? {
         SyncToolbarPresentation.resolve(
             status: store.runtime?.sync,
-            isAvailable: store.syncStatusAvailable
+            isAvailable: store.syncStatusAvailable,
+            serverDataSource: store.runtime?.serverDataSource
         )
     }
 }
@@ -409,6 +423,7 @@ private extension SyncToolbarPresentation {
         case .conflicts: .orange
         case .failed: .red
         case .unavailable: .secondary
+        case .stale: .secondary
         }
     }
 }
@@ -460,6 +475,24 @@ private struct SyncIssuePopover: View {
                                 .controlSize(.small)
                         } else {
                             Text("Try Again")
+                        }
+                    }
+                    .disabled(isRetrying)
+                    .keyboardShortcut(.defaultAction)
+                case .stale:
+                    Button {
+                        isRetrying = true
+                        Task {
+                            await store.reload()
+                            isRetrying = false
+                            isPresented = false
+                        }
+                    } label: {
+                        if isRetrying {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Refresh")
                         }
                     }
                     .disabled(isRetrying)

@@ -399,7 +399,8 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertNil(
             SyncToolbarPresentation.resolve(
                 status: syncStatus(),
-                isAvailable: true
+                isAvailable: true,
+                serverDataSource: "live"
             )
         )
     }
@@ -408,7 +409,8 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(
             SyncToolbarPresentation.resolve(
                 status: syncStatus(draftState: "queued", pendingCount: 2),
-                isAvailable: true
+                isAvailable: true,
+                serverDataSource: "live"
             ),
             .syncing(changeCount: 2)
         )
@@ -421,7 +423,8 @@ final class DaemonContractTests: XCTestCase {
                     commitState: "failed",
                     commitError: "The server could not be reached."
                 ),
-                isAvailable: true
+                isAvailable: true,
+                serverDataSource: "live"
             ),
             .unavailable(message: "The server could not be reached.")
         )
@@ -431,7 +434,8 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertNil(
             SyncToolbarPresentation.resolve(
                 status: syncStatus(commitState: "syncing"),
-                isAvailable: true
+                isAvailable: true,
+                serverDataSource: "live"
             )
         )
     }
@@ -444,7 +448,8 @@ final class DaemonContractTests: XCTestCase {
                     failedCount: 1,
                     conflictCount: 2
                 ),
-                isAvailable: true
+                isAvailable: true,
+                serverDataSource: "stale"
             ),
             .conflicts(count: 2)
         )
@@ -452,8 +457,23 @@ final class DaemonContractTests: XCTestCase {
 
     func testSyncToolbarSurfacesUnavailableStatusReader() {
         XCTAssertEqual(
-            SyncToolbarPresentation.resolve(status: syncStatus(), isAvailable: false),
+            SyncToolbarPresentation.resolve(
+                status: syncStatus(),
+                isAvailable: false,
+                serverDataSource: "stale"
+            ),
             .unavailable(message: nil)
+        )
+    }
+
+    func testSyncToolbarSurfacesCachedServerDataWhenSyncIsIdle() {
+        XCTAssertEqual(
+            SyncToolbarPresentation.resolve(
+                status: syncStatus(),
+                isAvailable: true,
+                serverDataSource: "stale"
+            ),
+            .stale
         )
     }
 

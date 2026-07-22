@@ -48,6 +48,17 @@ enum MemoryValidationError: LocalizedError, Sendable {
     }
 }
 
+enum ReviewRequestError: LocalizedError, Sendable {
+    case draftNotSynchronized
+
+    var errorDescription: String? {
+        switch self {
+        case .draftNotSynchronized:
+            "Wait for this draft to finish syncing before requesting a review."
+        }
+    }
+}
+
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published private(set) var phase: ApplicationPhase = .launching
@@ -687,7 +698,7 @@ final class WorkspaceStore: ObservableObject {
                 health: runtime.health,
                 sync: sync,
                 mcp: runtime.mcp,
-                serverDataSource: runtime.serverDataSource
+                serverDataSource: server.dataSource
             )
             syncStatusAvailable = true
             await refreshUnsettledDrafts(includeFailed: sync.pendingOperationCount > 0)
@@ -825,29 +836,24 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func requestReview(for draft: LocalDraft, title: String, description: String = "") async {
+    func requestReview(for draft: LocalDraft, title: String, description: String) async throws {
         guard let serverId = draft.serverId else {
-            errorMessage = "Wait for this draft to finish syncing before requesting a review."
-            return
+            throw ReviewRequestError.draftNotSynchronized
         }
-        do {
-            let detail: ReviewDetail = try await server.send(
-                method: "POST",
-                path: "/api/v1/reviews",
-                body: CreateReviewRequest(
-                    draftId: serverId,
-                    expectedDraftVersion: draft.serverVersion,
-                    title: title,
-                    description: description
-                )
+        let detail: ReviewDetail = try await server.send(
+            method: "POST",
+            path: "/api/v1/reviews",
+            body: CreateReviewRequest(
+                draftId: serverId,
+                expectedDraftVersion: draft.serverVersion,
+                title: title,
+                description: description
             )
-            let record = WorkspaceLoader.mapReview(detail)
-            reviews.insert(record, at: 0)
-            selectedReviewId = record.id
-            selectedSection = .reviews
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        )
+        let record = WorkspaceLoader.mapReview(detail)
+        reviews.insert(record, at: 0)
+        selectedReviewId = record.id
+        selectedSection = .reviews
     }
 
     func resubmit(_ review: ReviewRecord, detail: ReviewDetail) async throws {
