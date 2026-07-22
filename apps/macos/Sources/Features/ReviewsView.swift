@@ -64,10 +64,37 @@ private struct ReviewEditor: View {
     @State private var reconciliationCandidate: DraftReconciliationCandidate?
     @State private var loadsReconciliation = false
     @State private var reconciliationPurpose = ReviewReconciliationPurpose.updateDraft
+    @State private var reconciliationInitialComparison = DraftReconciliationComparison.shared
 
     var body: some View {
         Group {
-            if loading {
+            if let candidate = reconciliationCandidate {
+                DraftReconciliationView(
+                    candidate: candidate,
+                    initialComparison: reconciliationInitialComparison,
+                    onCancel: { reconciliationCandidate = nil }
+                ) { resolvedState in
+                    guard let detail else {
+                        throw ServerClientError.invalidResponse("Review detail is unavailable.")
+                    }
+                    switch reconciliationPurpose {
+                    case .updateDraft:
+                        try await store.applyReconciliation(
+                            draftId: detail.draft.draftId,
+                            draftVersion: detail.draft.version,
+                            candidate: candidate,
+                            resolvedState: resolvedState
+                        )
+                    case .resubmit:
+                        try await store.resubmit(
+                            review,
+                            detail: detail,
+                            candidate: candidate,
+                            resolvedState: resolvedState
+                        )
+                    }
+                }
+            } else if loading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -93,11 +120,21 @@ private struct ReviewEditor: View {
                             HStack(spacing: 10) {
                                 Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
                                     .foregroundStyle(.orange)
-                                Text("共享版本已有更新")
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text("Shared memory has changed")
+                                        .font(.callout.weight(.medium))
+                                    Text("This review is based on an older shared version.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
-                                Button("查看更新") { loadReconciliation(detail) }
+                                Button("Review") {
+                                    loadReconciliation(detail, comparison: .shared)
+                                }
                                 if store.isReviewAuthor(review) {
-                                    Button("合并最新版本") { loadReconciliation(detail) }
+                                    Button("Update…") {
+                                        loadReconciliation(detail, comparison: .result)
+                                    }
                                         .buttonStyle(.borderedProminent)
                                 }
                                 if loadsReconciliation {
@@ -159,10 +196,10 @@ private struct ReviewEditor: View {
                                 .padding(6)
                             }
                         } else if review.status == "rejected", let detail, store.isReviewAuthor(review) {
-                            Button("Resubmit Review") { resubmit(detail) }
+                            Button("Resubmit") { resubmit(detail) }
                                 .buttonStyle(.borderedProminent)
                         } else if review.status == "approved" && review.freshness == .current && store.canMergeReviews {
-                            Button("Merge Review") { merge() }
+                            Button("Merge") { merge() }
                                 .buttonStyle(.borderedProminent)
                         }
                     }
@@ -173,29 +210,6 @@ private struct ReviewEditor: View {
             }
         }
         .task { await load() }
-        .sheet(item: $reconciliationCandidate) { candidate in
-            DraftReconciliationSheet(candidate: candidate) { resolvedState in
-                guard let detail else {
-                    throw ServerClientError.invalidResponse("Review detail is unavailable.")
-                }
-                switch reconciliationPurpose {
-                case .updateDraft:
-                    try await store.applyReconciliation(
-                        draftId: detail.draft.draftId,
-                        draftVersion: detail.draft.version,
-                        candidate: candidate,
-                        resolvedState: resolvedState
-                    )
-                case .resubmit:
-                    try await store.resubmit(
-                        review,
-                        detail: detail,
-                        candidate: candidate,
-                        resolvedState: resolvedState
-                    )
-                }
-            }
-        }
     }
 
     private func load() async {
@@ -247,7 +261,7 @@ private struct ReviewEditor: View {
 
     private func resubmit(_ detail: ReviewDetail) {
         if detail.draft.coordination.freshness == .behind {
-            loadReconciliation(detail, purpose: .resubmit)
+            loadReconciliation(detail, purpose: .resubmit, comparison: .result)
             return
         }
         Task {
@@ -261,11 +275,13 @@ private struct ReviewEditor: View {
 
     private func loadReconciliation(
         _ detail: ReviewDetail,
-        purpose: ReviewReconciliationPurpose = .updateDraft
+        purpose: ReviewReconciliationPurpose = .updateDraft,
+        comparison: DraftReconciliationComparison = .shared
     ) {
         guard !loadsReconciliation else { return }
         loadsReconciliation = true
         reconciliationPurpose = purpose
+        reconciliationInitialComparison = comparison
         Task {
             defer { loadsReconciliation = false }
             do {

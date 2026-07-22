@@ -489,6 +489,17 @@ final class DaemonContractTests: XCTestCase {
 
         XCTAssertEqual(lines.map(\.kind), [.context, .removal, .insertion])
         XCTAssertEqual(lines.map(\.text), ["one", "two", "three"])
+        XCTAssertEqual(lines.map(\.oldLineNumber), [1, 2, nil])
+        XCTAssertEqual(lines.map(\.newLineNumber), [1, nil, 2])
+    }
+
+    func testReviewLineDiffTreatsEmptyContentAsNoLines() {
+        XCTAssertTrue(ReviewLineDiff.make(base: "", proposed: "").isEmpty)
+
+        let lines = ReviewLineDiff.make(base: "", proposed: "created")
+        XCTAssertEqual(lines.map(\.kind), [.insertion])
+        XCTAssertEqual(lines.map(\.oldLineNumber), [nil])
+        XCTAssertEqual(lines.map(\.newLineNumber), [1])
     }
 
     func testMarkdownPreviewAppliesToMarkdownContextAndStructuredMemory() {

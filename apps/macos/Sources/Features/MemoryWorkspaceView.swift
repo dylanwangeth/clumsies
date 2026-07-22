@@ -338,6 +338,7 @@ private struct DocumentSessionView: View {
     @State private var suppressesSaving = false
     @State private var reviewDraft: LocalDraft?
     @State private var reconciliationCandidate: DraftReconciliationCandidate?
+    @State private var reconciliationInitialComparison = DraftReconciliationComparison.shared
     @State private var loadsReconciliation = false
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
@@ -348,6 +349,46 @@ private struct DocumentSessionView: View {
     }
 
     var body: some View {
+        Group {
+            if let candidate = reconciliationCandidate {
+                DraftReconciliationView(
+                    candidate: candidate,
+                    initialComparison: reconciliationInitialComparison,
+                    onCancel: { reconciliationCandidate = nil }
+                ) { resolvedState in
+                    guard let draft = activeDraft, let serverId = draft.serverId else {
+                        throw ReviewRequestError.draftNotSynchronized
+                    }
+                    try await store.applyReconciliation(
+                        draftId: serverId,
+                        draftVersion: draft.serverVersion,
+                        candidate: candidate,
+                        resolvedState: resolvedState
+                    )
+                }
+            } else {
+                documentContent
+            }
+        }
+        .onChange(of: document) { _, _ in scheduleSave() }
+        .onDisappear { flushSave() }
+        .sheet(item: $reviewDraft) { draft in
+            ReviewRequestSheet(
+                initialTitle: document.title,
+                loadCandidate: { try await loadReviewCandidate(draft) }
+            ) { title, description, candidate, resolvedState in
+                try await submitReview(
+                    draft,
+                    title: title,
+                    description: description,
+                    candidate: candidate,
+                    resolvedState: resolvedState
+                )
+            }
+        }
+    }
+
+    private var documentContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 DocumentPathBreadcrumb(path: mode == .preview ? item.document.path : document.path)
@@ -398,10 +439,20 @@ private struct DocumentSessionView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
                         .foregroundStyle(.orange)
-                    Text("共享版本已有更新")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Shared memory has changed")
+                            .font(.callout.weight(.medium))
+                        Text("Review the latest shared version before updating this draft.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Button("查看更新") { loadReconciliation(for: draft) }
-                    Button("合并最新版本") { loadReconciliation(for: draft) }
+                    Button("Review") {
+                        loadReconciliation(for: draft, comparison: .shared)
+                    }
+                    Button("Update…") {
+                        loadReconciliation(for: draft, comparison: .result)
+                    }
                         .buttonStyle(.borderedProminent)
                     if loadsReconciliation {
                         ProgressView().controlSize(.small)
@@ -424,35 +475,6 @@ private struct DocumentSessionView: View {
             } else {
                 editor
                     .disabled(item.inherited)
-            }
-        }
-        .onChange(of: document) { _, _ in scheduleSave() }
-        .onDisappear { flushSave() }
-        .sheet(item: $reviewDraft) { draft in
-            ReviewRequestSheet(
-                initialTitle: document.title,
-                loadCandidate: { try await loadReviewCandidate(draft) }
-            ) { title, description, candidate, resolvedState in
-                try await submitReview(
-                    draft,
-                    title: title,
-                    description: description,
-                    candidate: candidate,
-                    resolvedState: resolvedState
-                )
-            }
-        }
-        .sheet(item: $reconciliationCandidate) { candidate in
-            DraftReconciliationSheet(candidate: candidate) { resolvedState in
-                guard let draft = activeDraft, let serverId = draft.serverId else {
-                    throw ReviewRequestError.draftNotSynchronized
-                }
-                try await store.applyReconciliation(
-                    draftId: serverId,
-                    draftVersion: draft.serverVersion,
-                    candidate: candidate,
-                    resolvedState: resolvedState
-                )
             }
         }
     }
@@ -483,8 +505,12 @@ private struct DocumentSessionView: View {
         return store.drafts.first(where: { $0.id == draft.id }) ?? draft
     }
 
-    private func loadReconciliation(for draft: LocalDraft) {
+    private func loadReconciliation(
+        for draft: LocalDraft,
+        comparison: DraftReconciliationComparison
+    ) {
         guard !loadsReconciliation else { return }
+        reconciliationInitialComparison = comparison
         loadsReconciliation = true
         Task {
             defer { loadsReconciliation = false }
@@ -560,12 +586,37 @@ private struct DocumentSessionView: View {
     }
 }
 
-struct DraftReconciliationSheet: View {
+enum DraftReconciliationComparison: String, CaseIterable, Identifiable {
+    case shared
+    case draft
+    case result
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .shared: "Shared Changes"
+        case .draft: "Your Changes"
+        case .result: "Result"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .shared: "Changes in the shared version since this draft started."
+        case .draft: "Changes made in this draft against its base."
+        case .result: "The changes that will update this draft to the latest shared version."
+        }
+    }
+}
+
+struct DraftReconciliationView: View {
     let candidate: DraftReconciliationCandidate
+    let onCancel: () -> Void
+    let onApplied: () -> Void
     let onApply: (ReconciliationResourceState?) async throws -> Void
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedVersion = 3
+    @State private var selectedComparison: DraftReconciliationComparison
     @State private var resolvedExists: Bool
     @State private var resolvedPath: String
     @State private var resolvedContent: String
@@ -574,10 +625,16 @@ struct DraftReconciliationSheet: View {
 
     init(
         candidate: DraftReconciliationCandidate,
+        initialComparison: DraftReconciliationComparison = .shared,
+        onCancel: @escaping () -> Void,
+        onApplied: (() -> Void)? = nil,
         onApply: @escaping (ReconciliationResourceState?) async throws -> Void
     ) {
         self.candidate = candidate
+        self.onCancel = onCancel
+        self.onApplied = onApplied ?? onCancel
         self.onApply = onApply
+        _selectedComparison = State(initialValue: initialComparison)
         let initial = candidate.proposedState ?? candidate.draftState
         _resolvedExists = State(initialValue: initial.exists)
         _resolvedPath = State(initialValue: initial.resource.path ?? "")
@@ -586,83 +643,222 @@ struct DraftReconciliationSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("合并最新版本").font(.headline)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Update Draft")
+                        .font(.headline)
+                    Text(candidate.draftState.resource.path ?? "Untitled")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 Spacer()
-                Text(candidate.status == .conflicts ? "需要解决冲突" : "可自动合并")
-                    .foregroundStyle(candidate.status == .conflicts ? .orange : .secondary)
+                statusLabel
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .frame(height: 52)
             Divider()
 
-            Picker("Version", selection: $selectedVersion) {
-                Text("Base").tag(0)
-                Text("共享版本").tag(1)
-                Text("当前草稿").tag(2)
-                Text("合并结果").tag(3)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(12)
-
-            if selectedVersion == 3 && candidate.status == .conflicts {
-                VStack(alignment: .leading, spacing: 10) {
-                    Toggle("保留此资源", isOn: $resolvedExists)
-                    if resolvedExists {
-                        TextField("Path", text: $resolvedPath)
-                        TextEditor(text: $resolvedContent)
-                            .font(.body.monospaced())
-                            .frame(minHeight: 260)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(.separator)
-                            }
-                    }
-                    if !candidate.conflicts.isEmpty {
-                        Text(candidate.conflicts.map(\.field).joined(separator: ", "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Comparison", selection: $selectedComparison) {
+                    ForEach(DraftReconciliationComparison.allCases) { comparison in
+                        Text(comparison.title).tag(comparison)
                     }
                 }
-                .padding(.horizontal, 16)
-            } else {
-                ScrollView {
-                    Text(displayedText)
-                        .font(.body.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(16)
-                }
-            }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-            if let errorMessage {
-                Text(errorMessage)
-                    .foregroundStyle(.red)
+                Text(selectedComparison.description)
                     .font(.caption)
-                    .padding(.horizontal, 16)
+                    .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            if selectedComparison == .result && candidate.status == .conflicts {
+                conflictResolution
+            } else {
+                comparisonDiff
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
+            }
+
             Divider()
             HStack {
-                Button("取消") { dismiss() }
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("合并最新版本") { apply() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isApplying || (resolvedExists && resolvedPath.isEmpty))
+                Button {
+                    apply()
+                } label: {
+                    if isApplying {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Update")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    isApplying
+                        || !candidate.valid
+                        || (candidate.status == .conflicts && resolvedExists && resolvedPath.isEmpty)
+                )
             }
-            .padding(16)
+            .padding(12)
         }
-        .frame(minWidth: 720, minHeight: 520)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert(
+            "Could Not Update Draft",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
     }
 
-    private var displayedText: String {
-        let state: ReconciliationResourceState? = switch selectedVersion {
-        case 0: candidate.baseState
-        case 1: candidate.currentState
-        case 2: candidate.draftState
-        default: candidate.proposedState ?? candidate.draftState
+    @ViewBuilder
+    private var statusLabel: some View {
+        if !candidate.valid {
+            Label("Out of date", systemImage: "clock.arrow.circlepath")
+                .foregroundStyle(.orange)
+        } else if candidate.status == .conflicts {
+            Label("Conflicts", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        } else {
+            Label("Ready to update", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
         }
-        guard let state, state.exists else { return "此版本中资源不存在" }
-        return state.content?.renderedText ?? ""
+    }
+
+    private var comparisonDiff: some View {
+        ReviewDiffView(
+            base: comparisonStates.before.exists
+                ? comparisonStates.before.content?.primaryText ?? ""
+                : "",
+            proposed: comparisonStates.after.exists
+                ? comparisonStates.after.content?.primaryText ?? ""
+                : "",
+            basePath: comparisonStates.before.exists
+                ? comparisonStates.before.resource.path
+                : nil,
+            proposedPath: comparisonStates.after.exists
+                ? comparisonStates.after.resource.path
+                : nil,
+            scrollAxes: [.horizontal, .vertical],
+            fillsAvailableWidth: true
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var conflictResolution: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Label(conflictSummary, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+
+                Spacer(minLength: 12)
+
+                Toggle("Keep File", isOn: $resolvedExists)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+
+                if resolvedExists {
+                    TextField("Path", text: $resolvedPath)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 280)
+                }
+            }
+
+            GeometryReader { proxy in
+                if proxy.size.width >= 820 {
+                    HSplitView {
+                        conflictDiffPane
+                            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+                        resolvedContentPane
+                            .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else {
+                    VSplitView {
+                        conflictDiffPane
+                            .frame(minHeight: 180, maxHeight: .infinity)
+                        resolvedContentPane
+                            .frame(minHeight: 180, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var conflictDiffPane: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Result Diff")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            comparisonDiff
+        }
+    }
+
+    private var resolvedContentPane: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Resolved Content")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            if resolvedExists {
+                TextEditor(text: $resolvedContent)
+                    .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(.separator)
+                    }
+            } else {
+                ContentUnavailableView(
+                    "File Removed",
+                    systemImage: "trash",
+                    description: Text("The resolved result removes this file.")
+                )
+            }
+        }
+    }
+
+    private var comparisonStates: (
+        before: ReconciliationResourceState,
+        after: ReconciliationResourceState
+    ) {
+        switch selectedComparison {
+        case .shared:
+            (candidate.baseState, candidate.currentState)
+        case .draft:
+            (candidate.baseState, candidate.draftState)
+        case .result:
+            (candidate.currentState, resultState)
+        }
+    }
+
+    private var resultState: ReconciliationResourceState {
+        candidate.status == .conflicts
+            ? resolvedState
+            : candidate.proposedState ?? candidate.draftState
+    }
+
+    private var conflictSummary: String {
+        let fields = Array(Set(candidate.conflicts.map(\.field))).sorted()
+        let noun = candidate.conflicts.count == 1 ? "conflict" : "conflicts"
+        guard !fields.isEmpty else { return "\(candidate.conflicts.count) \(noun)" }
+        return "\(candidate.conflicts.count) \(noun): \(fields.joined(separator: ", "))"
     }
 
     private func apply() {
@@ -673,7 +869,7 @@ struct DraftReconciliationSheet: View {
             do {
                 let resolved = candidate.status == .conflicts ? resolvedState : nil
                 try await onApply(resolved)
-                dismiss()
+                onApplied()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -714,7 +910,6 @@ private struct ReviewRequestSheet: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var reconciliationCandidate: DraftReconciliationCandidate?
-    @State private var reviewSubmitted = false
 
     init(
         initialTitle: String,
@@ -732,6 +927,41 @@ private struct ReviewRequestSheet: View {
     }
 
     var body: some View {
+        Group {
+            if let candidate = reconciliationCandidate {
+                DraftReconciliationView(
+                    candidate: candidate,
+                    initialComparison: .result,
+                    onCancel: { reconciliationCandidate = nil },
+                    onApplied: { dismiss() }
+                ) { resolvedState in
+                    try await onSubmit(
+                        normalizedTitle,
+                        description.trimmingCharacters(in: .whitespacesAndNewlines),
+                        candidate,
+                        resolvedState
+                    )
+                }
+                .frame(minWidth: 780, idealWidth: 980, minHeight: 560, idealHeight: 680)
+            } else {
+                requestForm
+            }
+        }
+        .interactiveDismissDisabled(isSubmitting)
+        .alert(
+            "Could Not Request Review",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var requestForm: some View {
         VStack(spacing: 0) {
             Form {
                 Section("Review") {
@@ -755,7 +985,7 @@ private struct ReviewRequestSheet: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text("Request Review")
+                        Text("Request")
                     }
                 }
                 .disabled(isSubmitting || normalizedTitle.isEmpty)
@@ -764,32 +994,6 @@ private struct ReviewRequestSheet: View {
             .padding(12)
         }
         .frame(width: 480, height: 270)
-        .interactiveDismissDisabled(isSubmitting)
-        .sheet(item: $reconciliationCandidate) { candidate in
-            DraftReconciliationSheet(candidate: candidate) { resolvedState in
-                try await onSubmit(
-                    normalizedTitle,
-                    description.trimmingCharacters(in: .whitespacesAndNewlines),
-                    candidate,
-                    resolvedState
-                )
-                reviewSubmitted = true
-            }
-        }
-        .onChange(of: reviewSubmitted) { _, submitted in
-            if submitted { dismiss() }
-        }
-        .alert(
-            "Could Not Request Review",
-            isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { errorMessage = nil }
-        } message: {
-            Text(errorMessage ?? "")
-        }
     }
 
     private var normalizedTitle: String {
