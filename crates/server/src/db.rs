@@ -1,6 +1,9 @@
 use sqlx::PgPool;
+use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use time::Duration;
+
+pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabaseConfig {
@@ -30,7 +33,15 @@ pub async fn connect(config: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    sqlx::migrate!("./migrations").run(pool).await
+    MIGRATOR.run(pool).await
+}
+
+pub fn current_schema_migration() -> i64 {
+    MIGRATOR
+        .iter()
+        .next_back()
+        .expect("Server must embed at least one migration")
+        .version
 }
 
 pub fn migration_statement_timeout() -> Duration {

@@ -2,6 +2,7 @@ mod common;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use server::db::current_schema_migration;
 use server::http::{AdminHealth, HealthStatus, router};
 use tower::ServiceExt;
 
@@ -25,6 +26,10 @@ async fn health_after_migrations_reports_database_and_schema_ready() {
     assert_eq!(health.status, HealthStatus::Down);
     assert_eq!(health.database.status, HealthStatus::Ok);
     assert_eq!(health.schema.status, HealthStatus::Ok);
+    assert_eq!(
+        health.schema.message,
+        format!("migration {} applied", current_schema_migration())
+    );
     assert_eq!(health.commit_service.status, HealthStatus::Ok);
     assert_eq!(health.oidc.status, HealthStatus::Down);
 }

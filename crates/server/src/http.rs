@@ -28,10 +28,9 @@ use crate::api::{
     UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
+use crate::db::current_schema_migration;
 use crate::installation::{InstallationError, InstallationService};
 use crate::repository::{ServerError, ServerRepository};
-
-const CURRENT_SCHEMA_MIGRATION: i64 = 20260716000200;
 
 #[derive(Clone)]
 struct AppState {
@@ -1049,6 +1048,7 @@ async fn check_database(pool: &PgPool) -> HealthCheck {
 }
 
 async fn check_schema(pool: &PgPool) -> HealthCheck {
+    let current_schema_migration = current_schema_migration();
     match sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (
             SELECT 1
@@ -1056,17 +1056,17 @@ async fn check_schema(pool: &PgPool) -> HealthCheck {
             WHERE version = $1 AND success = true
         )",
     )
-    .bind(CURRENT_SCHEMA_MIGRATION)
+    .bind(current_schema_migration)
     .fetch_one(pool)
     .await
     {
         Ok(true) => HealthCheck {
             status: HealthStatus::Ok,
-            message: format!("migration {CURRENT_SCHEMA_MIGRATION} applied"),
+            message: format!("migration {current_schema_migration} applied"),
         },
         Ok(false) => HealthCheck {
             status: HealthStatus::Down,
-            message: format!("migration {CURRENT_SCHEMA_MIGRATION} is not applied"),
+            message: format!("migration {current_schema_migration} is not applied"),
         },
         Err(error) => HealthCheck {
             status: HealthStatus::Down,
