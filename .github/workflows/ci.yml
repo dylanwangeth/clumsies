@@ -29,6 +29,7 @@ jobs:
         run: |
           bash -n deploy/server/*.sh
           shellcheck deploy/server/*.sh
+          bash deploy/server/server-release-test.sh
 
   cross-compile:
     runs-on: ubuntu-latest

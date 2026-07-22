@@ -260,6 +260,7 @@ record_release() {
   local image="$4"
   local previous_image="$5"
   local backup="$6"
+  local preflight_backup="${7:-}"
   local record="$RELEASE_DIR/deploy-${timestamp}-${commit:0:12}.env"
   local temp
 
@@ -271,21 +272,92 @@ record_release() {
     printf 'image=%s\n' "$image"
     printf 'previous_image=%s\n' "$previous_image"
     printf 'backup=%s\n' "$backup"
+    printf 'preflight_backup=%s\n' "$preflight_backup"
   } >"$temp"
   mv "$temp" "$record"
   log "release record: $record"
 }
 
-rollback_release() {
-  local previous_image="$1"
+validate_backup_archive() {
+  local backup="$1"
 
-  log "rolling back to $previous_image"
-  write_image_setting "$previous_image"
+  [[ -f "$backup" ]] || {
+    log "backup does not exist: $backup"
+    return 1
+  }
+  if [[ -f "$backup.sha256" ]] && ! sha256sum --check "$backup.sha256" >/dev/null; then
+    log "backup checksum failed: $backup"
+    return 1
+  fi
+  if ! compose exec -T postgres sh -c 'pg_restore --list >/dev/null' <"$backup"; then
+    log "pg_restore could not read backup: $backup"
+    return 1
+  fi
+}
+
+restore_database() {
+  local backup="$1"
+
+  validate_backup_archive "$backup" || return 1
+  log "restoring PostgreSQL from $backup"
+  # POSTGRES_USER and POSTGRES_DB are expanded inside the Postgres container.
+  # shellcheck disable=SC2016
+  if ! compose exec -T postgres sh -ceu '
+    case "$POSTGRES_DB" in
+      ""|postgres|template0|template1)
+        printf "refusing to replace protected database: %s\n" "$POSTGRES_DB" >&2
+        exit 64
+        ;;
+    esac
+    dropdb -U "$POSTGRES_USER" --if-exists --force "$POSTGRES_DB"
+    createdb -U "$POSTGRES_USER" --owner "$POSTGRES_USER" "$POSTGRES_DB"
+    pg_restore \
+      -U "$POSTGRES_USER" \
+      -d "$POSTGRES_DB" \
+      --exit-on-error \
+      --no-owner \
+      --no-privileges
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+      -c "SELECT count(*) FROM _sqlx_migrations" >/dev/null
+  ' <"$backup"; then
+    log "database restore failed: $backup"
+    return 1
+  fi
+  log "database restore completed: $backup"
+}
+
+resume_release() {
+  local image="$1"
+
+  write_image_setting "$image"
   if ! compose up --detach --no-deps --force-recreate --pull never \
     --wait --wait-timeout 180 server; then
-    die "rollback container recreation failed"
+    return 1
   fi
-  wait_public_health 30 || die "rollback did not restore public health"
+  wait_public_health 30
+}
+
+rollback_release() {
+  local previous_image="$1"
+  local backup="$2"
+
+  log "rolling back database and Server to $previous_image"
+  if ! compose stop --timeout 60 server; then
+    log "could not stop the failed Server before rollback"
+    return 1
+  fi
+  write_image_setting "$previous_image"
+  restore_database "$backup" || return 1
+  if ! compose up --detach --no-deps --force-recreate --pull never \
+    --wait --wait-timeout 180 server; then
+    log "rollback container recreation failed"
+    return 1
+  fi
+  if ! wait_public_health 30; then
+    log "rollback did not restore public health"
+    return 1
+  fi
+  log "database and Server rollback completed"
 }
 
 deploy_release() {
@@ -293,6 +365,7 @@ deploy_release() {
   local commit="$2"
   local previous_image
   local timestamp
+  local preflight_backup
   local backup
 
   validate_target "$image" "$commit"
@@ -310,24 +383,60 @@ deploy_release() {
     compose config --quiet
   )
 
-  backup="$(backup_database "pre-deploy-${commit:0:12}")"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  preflight_backup="$(backup_database "preflight-${commit:0:12}")"
+  if ! verify_backup_with_image "$preflight_backup" "$image" release-candidate; then
+    record_release preflight-failed "$timestamp" "$commit" "$image" \
+      "$previous_image" "$preflight_backup" "$preflight_backup"
+    die "target image failed against an isolated copy of production; production was not changed"
+  fi
+
+  log "stopping the current Server for a write-free database cutover"
+  if ! compose stop --timeout 60 server; then
+    resume_release "$previous_image" || true
+    record_release cutover-stop-failed "$timestamp" "$commit" "$image" \
+      "$previous_image" "$preflight_backup" "$preflight_backup"
+    die "current Server could not be stopped cleanly"
+  fi
+
+  if ! backup="$(backup_database "pre-deploy-${commit:0:12}")"; then
+    if ! resume_release "$previous_image"; then
+      record_release recovery-failed "$timestamp" "$commit" "$image" \
+        "$previous_image" "$preflight_backup" "$preflight_backup"
+      die "cutover backup failed and the previous Server did not recover"
+    fi
+    record_release cutover-backup-failed "$timestamp" "$commit" "$image" \
+      "$previous_image" "$preflight_backup" "$preflight_backup"
+    die "cutover backup failed; previous Server resumed without changing the database"
+  fi
+
   write_image_setting "$image"
 
   if ! compose up --detach --no-deps --pull never \
     --wait --wait-timeout 180 server; then
-    rollback_release "$previous_image"
-    record_release rolled-back "$timestamp" "$commit" "$image" "$previous_image" "$backup"
-    die "new Server container failed; previous image restored"
+    if ! rollback_release "$previous_image" "$backup"; then
+      record_release rollback-failed "$timestamp" "$commit" "$image" \
+        "$previous_image" "$backup" "$preflight_backup"
+      die "new Server failed and automatic database rollback failed; manual recovery is required"
+    fi
+    record_release rolled-back "$timestamp" "$commit" "$image" \
+      "$previous_image" "$backup" "$preflight_backup"
+    die "new Server container failed; database and previous image restored"
   fi
 
   if ! wait_public_health 30; then
-    rollback_release "$previous_image"
-    record_release rolled-back "$timestamp" "$commit" "$image" "$previous_image" "$backup"
-    die "public health check failed; previous image restored"
+    if ! rollback_release "$previous_image" "$backup"; then
+      record_release rollback-failed "$timestamp" "$commit" "$image" \
+        "$previous_image" "$backup" "$preflight_backup"
+      die "public health failed and automatic database rollback failed; manual recovery is required"
+    fi
+    record_release rolled-back "$timestamp" "$commit" "$image" \
+      "$previous_image" "$backup" "$preflight_backup"
+    die "public health check failed; database and previous image restored"
   fi
 
-  record_release success "$timestamp" "$commit" "$image" "$previous_image" "$backup"
+  record_release success "$timestamp" "$commit" "$image" \
+    "$previous_image" "$backup" "$preflight_backup"
   log "deployment healthy: $image"
 }
 
@@ -436,11 +545,12 @@ latest_backup() {
   printf '%s\n' "${candidates[0]#* }"
 }
 
-restore_drill() (
+verify_backup_with_image() (
   set -Eeuo pipefail
 
-  local backup="${1:-}"
-  local image
+  local backup="$1"
+  local image="$2"
+  local purpose="$3"
   local suffix
   local network
   local postgres_container
@@ -450,22 +560,13 @@ restore_drill() (
   local table_count
   local migration_count
 
-  if [[ -z "$backup" ]]; then
-    backup="$(latest_backup)"
-  elif [[ "$backup" != /* ]]; then
-    backup="$BACKUP_DIR/$backup"
-  fi
-  [[ -f "$backup" ]] || die "backup does not exist: $backup"
-  if [[ -f "$backup.sha256" ]]; then
-    sha256sum --check "$backup.sha256" >/dev/null
-  fi
-
-  image="$(current_image)"
+  [[ "$purpose" =~ ^[a-z0-9-]+$ ]] || die "invalid verification purpose"
+  validate_backup_archive "$backup" || die "backup archive validation failed"
   docker image inspect "$image" >/dev/null
   suffix="$(date -u +%Y%m%d%H%M%S)-$$"
-  network="clumsies-restore-$suffix"
-  postgres_container="clumsies-restore-postgres-$suffix"
-  server_container="clumsies-restore-server-$suffix"
+  network="clumsies-$purpose-$suffix"
+  postgres_container="clumsies-$purpose-postgres-$suffix"
+  server_container="clumsies-$purpose-server-$suffix"
   password="$(openssl rand -hex 24)"
 
   # Invoked by the EXIT trap for this isolated subshell.
@@ -483,7 +584,11 @@ restore_drill() (
     postgres:16-alpine >/dev/null
 
   for ((attempt = 1; attempt <= 60; attempt += 1)); do
-    if docker exec "$postgres_container" \
+    # The official image briefly exposes an initialization server and then
+    # restarts PostgreSQL. Wait until PID 1 is the final postgres process so a
+    # successful pg_isready cannot race that shutdown.
+    if [[ "$(docker exec "$postgres_container" cat /proc/1/comm 2>/dev/null || true)" == postgres ]] &&
+      docker exec "$postgres_container" \
       pg_isready -U postgres -d clumsies_restore >/dev/null 2>&1; then
       break
     fi
@@ -492,7 +597,8 @@ restore_drill() (
   ((attempt <= 60)) || die "restore PostgreSQL did not become ready"
 
   docker exec -i "$postgres_container" \
-    pg_restore -U postgres -d clumsies_restore --no-owner --no-privileges <"$backup"
+    pg_restore -U postgres -d clumsies_restore --exit-on-error \
+    --no-owner --no-privileges <"$backup"
 
   docker run --detach --name "$server_container" --network "$network" \
     --env-file "$ENV_FILE" \
@@ -518,8 +624,21 @@ restore_drill() (
     "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public';")"
   migration_count="$(docker exec "$postgres_container" psql -At -U postgres \
     -d clumsies_restore -c 'SELECT count(*) FROM _sqlx_migrations;')"
-  log "restore drill healthy: backup=$backup tables=$table_count migrations=$migration_count image=$image"
+  log "$purpose healthy: backup=$backup tables=$table_count migrations=$migration_count image=$image"
 )
+
+restore_drill() {
+  local backup="${1:-}"
+  local image
+
+  if [[ -z "$backup" ]]; then
+    backup="$(latest_backup)"
+  elif [[ "$backup" != /* ]]; then
+    backup="$BACKUP_DIR/$backup"
+  fi
+  image="$(current_image)"
+  verify_backup_with_image "$backup" "$image" restore-drill
+}
 
 preflight() {
   local image
@@ -582,4 +701,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

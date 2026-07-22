@@ -128,20 +128,27 @@ exclusive host lock:
 
 1. validate Compose v2, the digest, commit, current configuration, and public origin;
 2. pull the immutable image and render the Compose configuration;
-3. create a PostgreSQL custom-format backup and verify it with `pg_restore`;
-4. atomically persist the desired image digest;
-5. recreate only Server and wait for its container health;
-6. verify the public HTTPS health endpoint;
-7. record the commit, image, previous image, backup, timestamp, and result.
+3. create and validate an online PostgreSQL backup;
+4. restore that backup into isolated PostgreSQL, start the target image against
+   it, run its real SQLx migrations, and require Server health;
+5. stop the current Server so no writes can occur during the cutover;
+6. create a second, write-free PostgreSQL backup and verify it with `pg_restore`;
+7. atomically persist the desired image digest, start only Server, and require
+   both container and public HTTPS health;
+8. record the commit, target and previous images, both backups, timestamp, and result.
 
-If container or public health fails, the script restores the previous image and
-verifies it before returning failure to Actions. This application rollback
-depends on the migration policy: a released migration must remain readable by
-the immediately preceding Server image. Destructive schema changes require a
-separate, explicitly rehearsed database migration plan.
+If target container or public health fails after cutover, the script stops the
+target Server, replaces the production database from the write-free backup,
+then starts and verifies the previous image. Database and application rollback
+are one operation. Released migrations therefore do not need to remain readable
+by the previous Server image; destructive migrations still need migration tests,
+but they do not require a compatibility implementation.
 
-To retry or roll back, dispatch `Server Delivery` with a previously published
-digest and its original commit. Production never rebuilds source code.
+To retry a delivery, dispatch `Server Delivery` with its published digest and
+original commit. Do not treat an older image as a standalone rollback after a
+destructive migration: restoring such a release requires its recorded
+pre-deploy database backup and previous image as one recovery operation.
+Production never rebuilds source code.
 
 Changing the canonical origin is a separate configuration transaction:
 
