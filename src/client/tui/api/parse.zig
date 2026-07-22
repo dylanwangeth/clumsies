@@ -407,7 +407,7 @@ test "parseComments reads wrapped comments response" {
 test "parseReviewPrs reads target-aware review list" {
     const testing = std.testing;
     const body =
-        \\{"prs":[{"pr_id":"pr-1","target_kind":"mpf","target_path":"META_PROMPT.md","status":"open","title":"update bootstrap","body":"update bootstrap","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","operation_targets":[{"target_kind":"context","target_path":"spec/s1.md","type":"update"},{"target_kind":"context","target_path":"spec/s2.md","type":"create"}],"ws_id":"ws-1","status":"merged","title":"merge spec","body":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
+        \\{"prs":[{"pr_id":"pr-1","target_kind":"rule","target_path":"coding/STYLE.md","status":"open","title":"update style","body":"update style","created_at":"2026-05-02T00:00:00Z","author":"alice","operation_count":1,"op_type":"update","comment_count":3},{"pr_id":"pr-2","target_kind":"context","target_path":"spec/s1.md","operation_targets":[{"target_kind":"context","target_path":"spec/s1.md","type":"update"},{"target_kind":"context","target_path":"spec/s2.md","type":"create"}],"ws_id":"ws-1","status":"merged","title":"merge spec","body":"merge spec","created_at":"2026-05-01T00:00:00Z","author":"bob","operation_count":2,"op_type":"rename","comment_count":0}]}
     ;
 
     const prs = parseReviewPrs(testing.allocator, body) orelse return error.TestUnexpectedResult;
@@ -434,8 +434,8 @@ test "parseReviewPrs reads target-aware review list" {
     }
 
     try testing.expectEqual(@as(usize, 2), prs.len);
-    try testing.expectEqualStrings("mpf", prs[0].target_kind);
-    try testing.expectEqualStrings("META_PROMPT.md", prs[0].target_path);
+    try testing.expectEqualStrings("rule", prs[0].target_kind);
+    try testing.expectEqualStrings("coding/STYLE.md", prs[0].target_path);
     try testing.expectEqualStrings("update", prs[0].op_type);
     try testing.expectEqual(@as(i32, 3), prs[0].comment_count);
     try testing.expectEqualStrings("context", prs[1].target_kind);

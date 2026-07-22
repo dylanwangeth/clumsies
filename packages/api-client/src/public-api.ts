@@ -198,10 +198,6 @@ export class ClumsiesApi {
     );
   }
 
-  orgMetaprompt() {
-    return unwrap(this.raw.GET("/api/v1/org/metaprompt"));
-  }
-
   listProjectRules(projectId: string, query: PageQuery = {}) {
     return unwrap(
       this.raw.GET("/api/v1/projects/{project_id}/rules", {
@@ -248,14 +244,6 @@ export class ClumsiesApi {
         params: {
           path: { project_id: projectId, workflow_id: workflowId },
         },
-      }),
-    );
-  }
-
-  projectMetaprompt(projectId: string) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/metaprompt", {
-        params: { path: { project_id: projectId } },
       }),
     );
   }

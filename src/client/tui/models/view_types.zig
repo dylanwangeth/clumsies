@@ -48,14 +48,12 @@ pub const PrTargetKind = enum {
     context,
     rule,
     bundle,
-    mpf,
 
     pub fn label(self: PrTargetKind) []const u8 {
         return switch (self) {
             .context => "context",
             .rule => "rule",
             .bundle => "bundle",
-            .mpf => "mpf",
         };
     }
 };
@@ -241,10 +239,9 @@ pub const ALL_SCOPES = [_]struct { name: []const u8, description: []const u8 }{
 };
 
 // Derives kind short label from path prefix. Rule is the default kind;
-// workflow/ is the only explicit prefix. Reserved top-level paths (META_PROMPT.md,
-// PIN.md) produce an empty label since they are not searchable rules.
+// workflow/ is the only explicit prefix. PIN.md produces an empty label since
+// it is not a searchable rule.
 pub fn kindFromPath(path: []const u8) []const u8 {
-    if (std.mem.eql(u8, path, "META_PROMPT.md")) return "";
     if (std.mem.eql(u8, path, "PIN.md")) return "";
     if (std.mem.startsWith(u8, path, "workflow/")) return "wf";
     return "rule";

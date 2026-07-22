@@ -275,23 +275,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/org/metaprompt": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read organization metaprompt. */
-        get: operations["getOrgMetaprompt"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/projects/{project_id}/rules": {
         parameters: {
             query?: never;
@@ -401,25 +384,6 @@ export interface paths {
         };
         /** Read a project workflow. */
         get: operations["getProjectWorkflow"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/metaprompt": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        /** Read project metaprompt. */
-        get: operations["getProjectMetaprompt"];
         put?: never;
         post?: never;
         delete?: never;
@@ -874,7 +838,7 @@ export interface components {
         };
         RuleDetail: {
             rule: components["schemas"]["RuleMeta"];
-            content: components["schemas"]["RuleContent"];
+            content: string;
             etag: string;
         };
         ContextDetail: {
@@ -886,16 +850,6 @@ export interface components {
             workflow: components["schemas"]["WorkflowMeta"];
             content: string;
             etag: string;
-        };
-        MetapromptDetail: {
-            metaprompt: components["schemas"]["MetapromptMeta"];
-            content: string;
-            etag: string;
-        };
-        RuleContent: {
-            applies_when: string;
-            constraint: string;
-            tags: string[];
         };
         ReplaceProjectOrgSelectionRequest: {
             rule_ids?: string[];
@@ -960,7 +914,7 @@ export interface components {
             /** @description Portable normalized relative path used by a rename operation. */
             new_path?: string | null;
         };
-        DraftResourceContent: components["schemas"]["ContextDraftContent"] | components["schemas"]["RuleDraftContent"] | components["schemas"]["WorkflowDraftContent"] | components["schemas"]["MetapromptDraftContent"];
+        DraftResourceContent: components["schemas"]["ContextDraftContent"] | components["schemas"]["RuleDraftContent"] | components["schemas"]["WorkflowDraftContent"];
         ContextDraftContent: {
             /** @enum {string} */
             kind: "context";
@@ -969,19 +923,11 @@ export interface components {
         RuleDraftContent: {
             /** @enum {string} */
             kind: "rule";
-            name?: string | null;
-            applies_when?: string | null;
-            constraint: string;
-            tags?: string[] | null;
+            content: string;
         };
         WorkflowDraftContent: {
             /** @enum {string} */
             kind: "workflow";
-            content: string;
-        };
-        MetapromptDraftContent: {
-            /** @enum {string} */
-            kind: "metaprompt";
             content: string;
         };
         DraftResourceRef: {
@@ -1135,16 +1081,6 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        MetapromptMeta: {
-            metaprompt_id: string;
-            scope: components["schemas"]["ResourceScope"];
-            project_id: string | null;
-            path: string;
-            content_hash: string;
-            status: components["schemas"]["ResourceStatus"];
-            /** Format: date-time */
-            updated_at: string;
-        };
         CommitListResponse: {
             items: components["schemas"]["Commit"][];
             page_info: components["schemas"]["PageInfo"];
@@ -1190,7 +1126,7 @@ export interface components {
         TreeEntry: {
             id: string;
             /** @enum {string} */
-            type: "rule" | "context" | "workflow" | "metaprompt" | "project_org_selection";
+            type: "rule" | "context" | "workflow" | "project_org_selection";
             /** @enum {string} */
             scope: "org" | "project" | "daemon";
             project_id: string | null;
@@ -1253,7 +1189,7 @@ export interface components {
         /** @enum {string} */
         DraftStatus: "open" | "submitted" | "discarded" | "conflicted" | "merged";
         /** @enum {string} */
-        DraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
+        DraftResourceKind: "context" | "rule" | "workflow";
         /** @enum {string} */
         DraftOperationAction: "create" | "update" | "rename" | "delete";
         /** @enum {string} */
@@ -1846,36 +1782,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getOrgMetaprompt: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Organization metaprompt detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MetapromptDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     listProjectRules: {
         parameters: {
             query?: {
@@ -2041,38 +1947,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getProjectMetaprompt: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Project metaprompt detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MetapromptDetail"];
                 };
             };
             /** @description ETag matched. */

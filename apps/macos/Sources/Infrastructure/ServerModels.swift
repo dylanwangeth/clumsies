@@ -77,15 +77,9 @@ struct WorkflowMetadata: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: String
 }
 
-struct RuleContent: Codable, Hashable, Sendable {
-    let appliesWhen: String
-    let constraint: String
-    let tags: [String]
-}
-
 struct RuleDetail: Codable, Sendable {
     let rule: RuleMetadata
-    let content: RuleContent
+    let content: String
     let etag: String
 }
 

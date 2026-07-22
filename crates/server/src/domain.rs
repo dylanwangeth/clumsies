@@ -62,18 +62,6 @@ pub enum DraftResourceKind {
     Context,
     Rule,
     Workflow,
-    Metaprompt,
-}
-
-impl DraftResourceKind {
-    pub fn as_resource_kind(self) -> Option<ResourceKind> {
-        match self {
-            Self::Context => Some(ResourceKind::Context),
-            Self::Rule => Some(ResourceKind::Rule),
-            Self::Workflow => Some(ResourceKind::Workflow),
-            Self::Metaprompt => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,13 +82,6 @@ pub enum ContextKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuleContent {
-    pub applies_when: String,
-    pub constraint: String,
-    pub tags: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceRecord {
     pub resource_id: String,
     pub org_id: String,
@@ -114,20 +95,6 @@ pub struct ResourceRecord {
     pub content_hash: String,
     pub body: String,
     pub context_kind: Option<ContextKind>,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MetapromptRecord {
-    pub metaprompt_id: String,
-    pub org_id: String,
-    pub project_id: Option<String>,
-    pub scope: ResourceScope,
-    pub status: ResourceStatus,
-    pub revision: i64,
-    pub content_hash: String,
-    pub body: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -185,21 +152,9 @@ pub struct DraftResourceRef {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DraftResourceContent {
-    Context {
-        content: String,
-    },
-    Rule {
-        name: Option<String>,
-        applies_when: Option<String>,
-        constraint: String,
-        tags: Option<Vec<String>>,
-    },
-    Workflow {
-        content: String,
-    },
-    Metaprompt {
-        content: String,
-    },
+    Context { content: String },
+    Rule { content: String },
+    Workflow { content: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,7 +275,6 @@ pub enum TreeEntryKind {
     Rule,
     Context,
     Workflow,
-    Metaprompt,
     ProjectOrgSelection,
 }
 

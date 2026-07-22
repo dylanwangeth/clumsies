@@ -336,7 +336,6 @@ private struct DocumentSessionView: View {
 
     @State private var document: EditableMemoryDocument
     @State private var suppressesSaving = false
-    @State private var showsRuleDetails = false
     @State private var reviewDraft: LocalDraft?
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
@@ -353,22 +352,6 @@ private struct DocumentSessionView: View {
                     .accessibilityLabel("Path: \(mode == .preview ? item.document.path : document.path)")
                 Spacer()
                 HStack(spacing: 4) {
-                    if item.kind == .rules {
-                        Button {
-                            showsRuleDetails.toggle()
-                        } label: {
-                            Image(systemName: "info.circle")
-                        }
-                        .buttonStyle(DocumentToolButtonStyle(isSelected: showsRuleDetails))
-                        .help("Rule Details")
-                        .accessibilityLabel("Rule Details")
-                        .popover(isPresented: $showsRuleDetails, arrowEdge: .top) {
-                            RuleDetailsPopover(
-                                document: mode == .preview ? .constant(item.document) : $document,
-                                isEditable: mode == .source && !item.inherited
-                            )
-                        }
-                    }
                     if supportsMarkdownPreview {
                         Button {
                             store.open(item, mode: mode == .preview ? .source : .preview)
@@ -434,7 +417,7 @@ private struct DocumentSessionView: View {
     @ViewBuilder
     private var editor: some View {
         switch item.kind {
-        case .context, .rules, .workflows, .metaprompt:
+        case .context, .rules, .workflows:
             NativeTextEditor(text: $document.body)
         }
     }
@@ -442,7 +425,7 @@ private struct DocumentSessionView: View {
     private var renderedSource: String {
         let sourceDocument = mode == .preview ? item.document : document
         switch item.kind {
-        case .context, .rules, .workflows, .metaprompt:
+        case .context, .rules, .workflows:
             return sourceDocument.body
         }
     }
@@ -666,7 +649,7 @@ private struct ProjectOrgSelectionView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(MemoryKind.userMaintainedCases) { kind in
+                ForEach(MemoryKind.allCases) { kind in
                     Section(kind.title) {
                         ForEach(store.resources.filter { $0.scope == .org && $0.kind == kind }) { resource in
                             Toggle(isOn: Binding(
@@ -714,77 +697,5 @@ private struct ProjectOrgSelectionView: View {
                 saving = false
             }
         }
-    }
-}
-
-private struct RuleDetailsPopover: View {
-    @Binding var document: EditableMemoryDocument
-    let isEditable: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Rule Details")
-                .font(.headline)
-
-            metadataField("Name") {
-                if isEditable {
-                    TextField("", text: $document.title)
-                        .accessibilityLabel("Name")
-                } else {
-                    readOnlyValue(document.title)
-                }
-            }
-
-            metadataField("Applies when") {
-                if isEditable {
-                    TextField("", text: $document.appliesWhen, axis: .vertical)
-                        .accessibilityLabel("Applies when")
-                        .lineLimit(2...5)
-                } else {
-                    readOnlyValue(document.appliesWhen)
-                }
-            }
-
-            metadataField("Tags") {
-                if isEditable {
-                    TextField("", text: tagsBinding)
-                        .accessibilityLabel("Tags")
-                } else {
-                    readOnlyValue(document.tags.joined(separator: ", "))
-                }
-            }
-        }
-        .padding(16)
-        .frame(width: 360)
-    }
-
-    private var tagsBinding: Binding<String> {
-        Binding(
-            get: { document.tags.joined(separator: ", ") },
-            set: {
-                document.tags = $0
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            }
-        )
-    }
-
-    private func metadataField<Content: View>(
-        _ label: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            content()
-        }
-    }
-
-    private func readOnlyValue(_ value: String) -> some View {
-        Text(value.isEmpty ? "None" : value)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
     }
 }

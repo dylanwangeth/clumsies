@@ -419,23 +419,6 @@ paths:
           description: ETag matched.
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/metaprompt:
-    get:
-      operationId: getOrgMetaprompt
-      summary: Read organization metaprompt.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Organization metaprompt detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MetapromptDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/rules:
     parameters:
       - $ref: "#/components/parameters/ProjectId"
@@ -546,25 +529,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/metaprompt:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-    get:
-      operationId: getProjectMetaprompt
-      summary: Read project metaprompt.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Project metaprompt detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MetapromptDetail"
         "304":
           description: ETag matched.
         default:
@@ -1391,7 +1355,7 @@ components:
         rule:
           $ref: "#/components/schemas/RuleMeta"
         content:
-          $ref: "#/components/schemas/RuleContent"
+          type: string
         etag:
           type: string
     ContextDetail:
@@ -1414,29 +1378,6 @@ components:
           type: string
         etag:
           type: string
-    MetapromptDetail:
-      type: object
-      required: [metaprompt, content, etag]
-      properties:
-        metaprompt:
-          $ref: "#/components/schemas/MetapromptMeta"
-        content:
-          type: string
-        etag:
-          type: string
-    RuleContent:
-      type: object
-      required: [applies_when, constraint, tags]
-      properties:
-        applies_when:
-          type: string
-        constraint:
-          type: string
-          minLength: 1
-        tags:
-          type: array
-          items:
-            type: string
     ReplaceProjectOrgSelectionRequest:
       type: object
       properties:
@@ -1591,7 +1532,6 @@ components:
         - $ref: "#/components/schemas/ContextDraftContent"
         - $ref: "#/components/schemas/RuleDraftContent"
         - $ref: "#/components/schemas/WorkflowDraftContent"
-        - $ref: "#/components/schemas/MetapromptDraftContent"
     ContextDraftContent:
       type: object
       required: [kind, content]
@@ -1603,22 +1543,14 @@ components:
           type: string
     RuleDraftContent:
       type: object
-      required: [kind, constraint]
+      required: [kind, content]
       properties:
         kind:
           type: string
           enum: [rule]
-        name:
-          type: [string, "null"]
-        applies_when:
-          type: [string, "null"]
-        constraint:
+        content:
           type: string
           minLength: 1
-        tags:
-          type: [array, "null"]
-          items:
-            type: string
     WorkflowDraftContent:
       type: object
       required: [kind, content]
@@ -1626,15 +1558,6 @@ components:
         kind:
           type: string
           enum: [workflow]
-        content:
-          type: string
-    MetapromptDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [metaprompt]
         content:
           type: string
     DraftResourceRef:
@@ -1964,25 +1887,6 @@ components:
         updated_at:
           type: string
           format: date-time
-    MetapromptMeta:
-      type: object
-      required: [metaprompt_id, scope, project_id, path, content_hash, status, updated_at]
-      properties:
-        metaprompt_id:
-          type: string
-        scope:
-          $ref: "#/components/schemas/ResourceScope"
-        project_id:
-          type: [string, "null"]
-        path:
-          type: string
-        content_hash:
-          type: string
-        status:
-          $ref: "#/components/schemas/ResourceStatus"
-        updated_at:
-          type: string
-          format: date-time
     CommitListResponse:
       type: object
       required: [items, page_info]
@@ -2082,7 +1986,7 @@ components:
           type: string
         type:
           type: string
-          enum: [rule, context, workflow, metaprompt, project_org_selection]
+          enum: [rule, context, workflow, project_org_selection]
         scope:
           type: string
           enum: [org, project, daemon]
@@ -2199,7 +2103,7 @@ components:
       enum: [open, submitted, discarded, conflicted, merged]
     DraftResourceKind:
       type: string
-      enum: [context, rule, workflow, metaprompt]
+      enum: [context, rule, workflow]
     DraftOperationAction:
       type: string
       enum: [create, update, rename, delete]

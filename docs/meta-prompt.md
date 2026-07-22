@@ -10,9 +10,18 @@ state across an adapter hook, an MCP session object, an attestation log, and a
 special authority resource. The current `activate`, `load`, and `store` tools
 have no compatibility dispatch for that path.
 
-Existing Server and Desktop Metaprompt domain records remain historical data
-until the separately planned domain cleanup classifies and removes them. They
-must not enter Effective Memory or a new search index. Long-lived behavioral
+The removal migration rewrites affected Commit chains with Trees that omit the
+obsolete resource, advances every dependent Ref and draft base to the rewritten
+Commit, removes related drafts and reviews, and then drops the Metaprompt table.
+The daemon schema migration removes local Metaprompt drafts and operations while
+preserving Context, Rule, and Workflow drafts. Because Server Commit IDs change,
+it also resets rebuildable Commit and search caches, removes old materialized
+generations, and replays remote Draft projections so preserved drafts receive
+their rewritten base Commit IDs. No compatibility type, endpoint, or local
+record remains after migration.
+
+The removed bootstrap content is protocol instruction rather than durable
+memory, so it is deleted instead of reclassified. Long-lived behavioral
 constraints belong in Rules, reusable procedures belong in Workflows, and
 background material belongs in Context.
 

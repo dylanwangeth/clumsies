@@ -541,7 +541,6 @@ components:
         - $ref: "#/components/schemas/DaemonContextDraftContent"
         - $ref: "#/components/schemas/DaemonRuleDraftContent"
         - $ref: "#/components/schemas/DaemonWorkflowDraftContent"
-        - $ref: "#/components/schemas/DaemonMetapromptDraftContent"
     DaemonContextDraftContent:
       type: object
       required: [kind, content]
@@ -553,22 +552,14 @@ components:
           type: string
     DaemonRuleDraftContent:
       type: object
-      required: [kind, constraint]
+      required: [kind, content]
       properties:
         kind:
           type: string
           enum: [rule]
-        name:
-          type: [string, "null"]
-        applies_when:
-          type: [string, "null"]
-        constraint:
+        content:
           type: string
           minLength: 1
-        tags:
-          type: [array, "null"]
-          items:
-            type: string
     DaemonWorkflowDraftContent:
       type: object
       required: [kind, content]
@@ -576,15 +567,6 @@ components:
         kind:
           type: string
           enum: [workflow]
-        content:
-          type: string
-    DaemonMetapromptDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [metaprompt]
         content:
           type: string
     DaemonRenameDraftOperation:
@@ -649,7 +631,7 @@ components:
       enum: [idle, queued, syncing, retrying, degraded, conflicted, failed]
     DaemonDraftResourceKind:
       type: string
-      enum: [context, rule, workflow, metaprompt]
+      enum: [context, rule, workflow]
     DaemonDraftScope:
       type: string
       enum: [org, project]

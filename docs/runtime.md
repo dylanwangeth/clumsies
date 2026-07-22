@@ -37,7 +37,7 @@ dependency.
 
 Every local operation is persisted before synchronization is attempted. The
 queue supports create, update, rename, delete, and discard for Context, Rule,
-Workflow, and Metaprompt resources.
+and Workflow resources.
 
 Each draft carries:
 
@@ -96,7 +96,7 @@ timestamp or independent revision.
 
 Server currently publishes full Commit payloads, so incremental object transfer
 is not implemented. Cached immutable objects are retained for restart and
-integrity checks; type-aware diff and merge remain separate work.
+integrity checks; automatic three-way text merge remains separate work.
 
 ## Diagnostics
 

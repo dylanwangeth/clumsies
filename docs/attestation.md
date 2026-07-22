@@ -41,9 +41,6 @@ model in `src/client/attestation.zig` also includes:
 - `rule_propose_update`
 - `rule_propose_rename`
 - `rule_propose_delete`
-- `mpf_propose_create`
-- `mpf_propose_update`
-- `mpf_propose_delete`
 - `draft_discard`
 
 That matters because the local runtime records more than retrieval. It also has evidence around session setup, user input, and content change proposals.

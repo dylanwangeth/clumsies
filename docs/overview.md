@@ -12,8 +12,8 @@ Memory is a product concept, not one database table.
 | Type | Meaning |
 | --- | --- |
 | Context | file-oriented project or organization knowledge |
-| Rule | structured strong constraints |
-| Workflow | ordered operational behavior with its own lifecycle |
+| Rule | Markdown-backed strong constraints |
+| Workflow | Markdown-backed ordered operational behavior with its own lifecycle |
 | Bundle | a personal selection of shared memory resources |
 
 Organization resources are general and shared. Projects may consume selected
@@ -80,5 +80,5 @@ reranking, and activation delta state from that view. The Zig MCP server is a
 thin XPC adapter for `activate`, `load`, and `store`; it no longer scans the
 materialized generation itself.
 
-Type-aware automatic conflict resolution, the versioned production retrieval
+Automatic three-way conflict resolution, the versioned production retrieval
 query set, and the production installation lifecycle remain incomplete.

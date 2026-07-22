@@ -2,8 +2,8 @@
 
 > Legacy architecture reference. The current product term is `Project`, and
 > local runtime reads use daemon-owned Commit generations plus Draft overlay,
-> not the manifest/META_PROMPT bootstrap described below. See
-> [Architecture](/architecture), [Runtime surfaces](/runtime), and [MCP](/mcp).
+> not the manifest bootstrap described below. See [Architecture](/architecture),
+> [Runtime surfaces](/runtime), and [MCP](/mcp).
 
 ## What Workspace is
 
@@ -168,7 +168,6 @@ The current implementation materializes at least:
 | --- | --- |
 | `rule/` | synced rules and workflows selected by the workspace |
 | `context/` | synced workspace context files |
-| `META_PROMPT.md` | cached meta prompt used by agent bootstrap |
 
 This is where the workspace model touches runtime directly.
 

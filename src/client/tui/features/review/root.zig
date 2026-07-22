@@ -464,7 +464,6 @@ const target_chips = [_]FilterChip{
     .{ .label = "Context", .target = .context },
     .{ .label = "Rule", .target = .rule },
     .{ .label = "Bundle", .target = .bundle },
-    .{ .label = "MPF", .target = .mpf },
 };
 
 const sort_chips = [_]FilterChip{
@@ -1713,7 +1712,6 @@ test "review filter predicate handles status and target facets" {
     try testing.expect(reviewPrMatchesFilters(.open, null, open_rule));
     try testing.expect(!reviewPrMatchesFilters(.closed, null, open_rule));
     try testing.expect(reviewPrMatchesFilters(.all, .rule, open_rule));
-    try testing.expect(!reviewPrMatchesFilters(.all, .mpf, open_rule));
     try testing.expect(reviewPrMatchesFilters(.closed, .context, closed_context));
     try testing.expect(reviewPrMatchesFilters(.open, .bundle, bundle));
     try testing.expect(!reviewPrMatchesFilters(.open, .rule, bundle));
@@ -1778,9 +1776,9 @@ test "review sort orders newest timestamps first" {
 
 test "review chips wrap for narrow and medium widths" {
     const testing = std.testing;
-    const labels = [_][]const u8{ "All", "Context", "Rule", "Bundle", "MPF" };
-    try testing.expectEqual(@as(u16, 5), chipWrapRowCount(10, &labels));
-    try testing.expectEqual(@as(u16, 3), chipWrapRowCount(22, &labels));
+    const labels = [_][]const u8{ "All", "Context", "Rule", "Bundle" };
+    try testing.expectEqual(@as(u16, 4), chipWrapRowCount(10, &labels));
+    try testing.expectEqual(@as(u16, 2), chipWrapRowCount(22, &labels));
 }
 
 test "review labels normalize terminal state and op display" {
@@ -1863,7 +1861,7 @@ test "review filter cursor navigation clamps across groups and chips" {
     try testing.expectEqual(@as(usize, 1), cursor.group_idx);
     try testing.expectEqual(@as(usize, 2), cursor.chip_idx);
     moveFilterChip(&cursor, 10);
-    try testing.expectEqual(@as(usize, 4), cursor.chip_idx);
+    try testing.expectEqual(@as(usize, 3), cursor.chip_idx);
     moveFilterGroup(&cursor, 1);
     try testing.expectEqual(@as(usize, 2), cursor.group_idx);
     try testing.expectEqual(@as(usize, 1), cursor.chip_idx);

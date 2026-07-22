@@ -18,7 +18,7 @@ use super::{
     DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest, DaemonState,
 };
 
-const SEARCH_SCHEMA_VERSION: i64 = 1;
+const SEARCH_SCHEMA_VERSION: i64 = 2;
 const PARSER_VERSION: &str = "markdown-units.v1";
 const RANKING_CONFIG_VERSION: &str = "agent_activation.v2";
 const BM25_TOP_K: usize = 60;
@@ -221,21 +221,6 @@ struct EffectiveMemory {
 #[derive(Clone, Debug)]
 struct EffectiveResource {
     source: SourceResource,
-    rule: Option<RuleFields>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct RuleEnvelope {
-    format: String,
-    content: RuleFields,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct RuleFields {
-    name: String,
-    applies_when: String,
-    constraint: String,
-    tags: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -600,7 +585,6 @@ enum CachedMemoryKind {
     Context,
     Rule,
     Workflow,
-    Metaprompt,
     ProjectOrgSelection,
 }
 
@@ -692,7 +676,7 @@ async fn load_effective_memory(
                     entry.id, entry.blob_id
                 ))
             })?;
-            let (content, rule, title) = project_authority_content(kind, &path, blob)?;
+            let (content, title) = project_authority_content(kind, &path, blob)?;
             resources.insert(
                 entry.id.clone(),
                 EffectiveResource {
@@ -709,7 +693,6 @@ async fn load_effective_memory(
                         draft_id: None,
                         draft_revision: None,
                     },
-                    rule,
                 },
             );
         }
@@ -736,7 +719,7 @@ fn cached_memory_kind(kind: CachedMemoryKind) -> Option<MemoryKind> {
         CachedMemoryKind::Context => Some(MemoryKind::Context),
         CachedMemoryKind::Rule => Some(MemoryKind::Rule),
         CachedMemoryKind::Workflow => Some(MemoryKind::Workflow),
-        CachedMemoryKind::Metaprompt | CachedMemoryKind::ProjectOrgSelection => None,
+        CachedMemoryKind::ProjectOrgSelection => None,
     }
 }
 
@@ -752,31 +735,12 @@ fn project_authority_content(
     kind: MemoryKind,
     path: &str,
     blob: &str,
-) -> Result<(String, Option<RuleFields>, String), DaemonError> {
-    match kind {
-        MemoryKind::Context | MemoryKind::Workflow => {
-            let title = markdown_title(blob).unwrap_or_else(|| title_from_path(path));
-            Ok((blob.to_owned(), None, title))
-        }
-        MemoryKind::Rule => {
-            let envelope: RuleEnvelope = serde_json::from_str(blob).map_err(|error| {
-                SearchFailure::failed(format!(
-                    "Rule Blob at {path} is not canonical JSON: {error}"
-                ))
-            })?;
-            if envelope.format != "clumsies.rule.v1"
-                || envelope.content.constraint.trim().is_empty()
-            {
-                return Err(SearchFailure::failed(format!(
-                    "Rule Blob at {path} has an unsupported format or empty constraint"
-                ))
-                .into());
-            }
-            let title = envelope.content.name.clone();
-            let content = render_rule(&envelope.content);
-            Ok((content, Some(envelope.content), title))
-        }
+) -> Result<(String, String), DaemonError> {
+    if kind == MemoryKind::Rule && blob.trim().is_empty() {
+        return Err(SearchFailure::failed(format!("Rule Blob at {path} has empty content")).into());
     }
+    let title = markdown_title(blob).unwrap_or_else(|| title_from_path(path));
+    Ok((blob.to_owned(), title))
 }
 
 async fn load_draft_overlays(
@@ -930,43 +894,13 @@ fn draft_content_resource(
     let source_commit_id = existing
         .as_ref()
         .and_then(|resource| resource.source.source_commit_id.clone());
-    let (rendered, rule, title) = match (kind, content) {
+    let (rendered, title) = match (kind, content) {
         (MemoryKind::Context, DaemonDraftContent::Context { content })
+        | (MemoryKind::Rule, DaemonDraftContent::Rule { content })
         | (MemoryKind::Workflow, DaemonDraftContent::Workflow { content }) => (
             content.clone(),
-            None,
             markdown_title(content).unwrap_or_else(|| title_from_path(&path)),
         ),
-        (
-            MemoryKind::Rule,
-            DaemonDraftContent::Rule {
-                name,
-                applies_when,
-                constraint,
-                tags,
-            },
-        ) => {
-            let previous = existing
-                .as_ref()
-                .and_then(|resource| resource.rule.as_ref());
-            let fields = RuleFields {
-                name: name
-                    .clone()
-                    .or_else(|| previous.map(|rule| rule.name.clone()))
-                    .unwrap_or_else(|| title_from_path(&path)),
-                applies_when: applies_when
-                    .clone()
-                    .or_else(|| previous.map(|rule| rule.applies_when.clone()))
-                    .unwrap_or_default(),
-                constraint: constraint.clone(),
-                tags: tags
-                    .clone()
-                    .or_else(|| previous.map(|rule| rule.tags.clone()))
-                    .unwrap_or_default(),
-            };
-            let title = fields.name.clone();
-            (render_rule(&fields), Some(fields), title)
-        }
         _ => {
             return Err(SearchFailure::failed(
                 "Draft content kind does not match its indexed memory kind",
@@ -988,7 +922,6 @@ fn draft_content_resource(
             draft_id: Some(draft_id.to_owned()),
             draft_revision: Some(draft_revision.to_owned()),
         },
-        rule,
     })
 }
 
@@ -1005,33 +938,8 @@ fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
         "context" => Some(MemoryKind::Context),
         "rule" => Some(MemoryKind::Rule),
         "workflow" => Some(MemoryKind::Workflow),
-        "metaprompt" => None,
         _ => None,
     }
-}
-
-fn render_rule(rule: &RuleFields) -> String {
-    [
-        format!("# {}", rule.name),
-        String::new(),
-        "## Applies when".to_owned(),
-        String::new(),
-        rule.applies_when.clone(),
-        String::new(),
-        "## Constraint".to_owned(),
-        String::new(),
-        rule.constraint.clone(),
-        String::new(),
-        format!(
-            "Tags: {}",
-            if rule.tags.is_empty() {
-                "None".to_owned()
-            } else {
-                rule.tags.join(", ")
-            }
-        ),
-    ]
-    .join("\n")
 }
 
 fn markdown_title(content: &str) -> Option<String> {
@@ -2336,15 +2244,6 @@ mod tests {
                         "blob_id": "blob_workflow",
                         "source": "project"
                     },
-                    {
-                        "id": "mpf_ignored",
-                        "type": "metaprompt",
-                        "scope": "org",
-                        "project_id": null,
-                        "path": "META_PROMPT.md",
-                        "blob_id": "blob_mpf",
-                        "source": "selected_org"
-                    }
                 ]
             },
             "blobs": [
@@ -2354,13 +2253,12 @@ mod tests {
                 },
                 {
                     "blob_id": "blob_rule",
-                    "content": "{\"format\":\"clumsies.rule.v1\",\"content\":{\"name\":\"Testing\",\"applies_when\":\"changing retrieval\",\"constraint\":\"Run integration tests.\",\"tags\":[\"testing\"]}}"
+                    "content": "# Testing\n\nApply when changing retrieval.\n\nRun integration tests.\n\nTags: testing"
                 },
                 {
                     "blob_id": "blob_workflow",
                     "content": "# Coding Workflow\n\nImplement, test, and review."
-                },
-                {"blob_id": "blob_mpf", "content": "ignored bootstrap"}
+                }
             ],
             "project_org_selection": null
         });
@@ -2412,13 +2310,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|content| content.contains("BM25"))
         }));
-        assert!(
-            first
-                .fragments
-                .iter()
-                .all(|fragment| fragment.resource_id != "mpf_ignored")
-        );
-
         let second = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),

@@ -23,9 +23,9 @@ Desktop has two memory scopes:
 - **Hub** contains organization-shared Context, Rules, and Workflows.
 - **Local** contains the selected project's resources and local drafts.
 
-Choose a resource kind in the Content Region navigator, then open a file or
-structured resource in the workbench. Context behaves as a file tree; Rules
-and Workflows retain their domain identity even when their bodies are textual.
+Choose a resource kind in the Content Region navigator, then open its Markdown
+file in the workbench. Rules and Workflows retain their domain identity through
+resource metadata while using the same document editing model as Context.
 
 ## Edit and review
 

@@ -66,9 +66,6 @@ pub const RoundTool = struct {
     constraint_id: ?[]const u8 = null,
     constraint_name: ?[]const u8 = null,
     constraint_text: ?[]const u8 = null,
-    mpf_hash: ?[]const u8 = null,
-    mpf_content: ?[]const u8 = null,
-    mpf_changed: ?bool = null,
     discover_kind: ?[]const u8 = null,
     discover_group: ?[]const u8 = null,
     discover_query: ?[]const u8 = null,
@@ -108,9 +105,6 @@ const AttestationEvent = struct {
     constraint_id: ?[]const u8 = null,
     constraint_name: ?[]const u8 = null,
     constraint_text: ?[]const u8 = null,
-    mpf_hash: ?[]const u8 = null,
-    mpf_content: ?[]const u8 = null,
-    mpf_changed: ?bool = null,
     kind: ?[]const u8 = null,
     group: ?[]const u8 = null,
     query: ?[]const u8 = null,
@@ -273,9 +267,6 @@ fn cloneAttestationEvent(
         .constraint_id = null,
         .constraint_name = null,
         .constraint_text = null,
-        .mpf_hash = null,
-        .mpf_content = null,
-        .mpf_changed = src.mpf_changed,
         .kind = null,
         .group = null,
         .query = null,
@@ -306,12 +297,6 @@ fn cloneAttestationEvent(
 
     out.constraint_text = try dupeOptional(allocator, src.constraint_text);
     errdefer if (out.constraint_text) |s| allocator.free(s);
-
-    out.mpf_hash = try dupeOptional(allocator, src.mpf_hash);
-    errdefer if (out.mpf_hash) |s| allocator.free(s);
-
-    out.mpf_content = try dupeOptional(allocator, src.mpf_content);
-    errdefer if (out.mpf_content) |s| allocator.free(s);
 
     out.kind = try dupeOptional(allocator, src.kind);
     errdefer if (out.kind) |s| allocator.free(s);
@@ -361,8 +346,6 @@ fn freeAttestationEventOwned(allocator: std.mem.Allocator, ev: AttestationEvent)
     if (ev.constraint_id) |s| allocator.free(s);
     if (ev.constraint_name) |s| allocator.free(s);
     if (ev.constraint_text) |s| allocator.free(s);
-    if (ev.mpf_hash) |s| allocator.free(s);
-    if (ev.mpf_content) |s| allocator.free(s);
     if (ev.kind) |s| allocator.free(s);
     if (ev.group) |s| allocator.free(s);
     if (ev.query) |s| allocator.free(s);
@@ -781,9 +764,6 @@ fn appendRoundTool(allocator: std.mem.Allocator, builder: anytype, ev: Attestati
         .constraint_id = ev.constraint_id,
         .constraint_name = ev.constraint_name,
         .constraint_text = ev.constraint_text,
-        .mpf_hash = ev.mpf_hash,
-        .mpf_content = ev.mpf_content,
-        .mpf_changed = ev.mpf_changed,
         .discover_kind = ev.kind,
         .discover_group = ev.group,
         .discover_query = ev.query,
@@ -809,9 +789,6 @@ fn isProtocolToolEvent(kind: []const u8) bool {
         std.mem.eql(u8, kind, "rule_propose_update") or
         std.mem.eql(u8, kind, "rule_propose_rename") or
         std.mem.eql(u8, kind, "rule_propose_delete") or
-        std.mem.eql(u8, kind, "mpf_propose_create") or
-        std.mem.eql(u8, kind, "mpf_propose_update") or
-        std.mem.eql(u8, kind, "mpf_propose_delete") or
         std.mem.eql(u8, kind, "draft_discard");
 }
 

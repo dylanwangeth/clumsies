@@ -468,7 +468,6 @@ pub enum DraftResourceKind {
     Context,
     Rule,
     Workflow,
-    Metaprompt,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -509,21 +508,9 @@ pub struct DraftResourceRef {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DraftResourceContent {
-    Context {
-        content: String,
-    },
-    Rule {
-        name: Option<String>,
-        applies_when: Option<String>,
-        constraint: String,
-        tags: Option<Vec<String>>,
-    },
-    Workflow {
-        content: String,
-    },
-    Metaprompt {
-        content: String,
-    },
+    Context { content: String },
+    Rule { content: String },
+    Workflow { content: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -812,7 +799,6 @@ pub enum TreeEntryKind {
     Rule,
     Context,
     Workflow,
-    Metaprompt,
     ProjectOrgSelection,
 }
 
@@ -922,7 +908,7 @@ pub struct WorkflowListResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleDetail {
     pub rule: RuleMeta,
-    pub content: RuleContent,
+    pub content: String,
     pub etag: String,
 }
 
@@ -938,32 +924,6 @@ pub struct WorkflowDetail {
     pub workflow: WorkflowMeta,
     pub content: String,
     pub etag: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuleContent {
-    pub applies_when: String,
-    pub constraint: String,
-    pub tags: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MetapromptDetail {
-    pub metaprompt: MetapromptMeta,
-    pub content: String,
-    pub etag: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MetapromptMeta {
-    pub metaprompt_id: String,
-    pub scope: ResourceScope,
-    pub project_id: Option<String>,
-    pub path: String,
-    pub content_hash: String,
-    pub status: ResourceStatus,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1032,7 +992,6 @@ impl DraftResourceKind {
             Self::Context => "context",
             Self::Rule => "rule",
             Self::Workflow => "workflow",
-            Self::Metaprompt => "metaprompt",
         }
     }
 
@@ -1041,7 +1000,6 @@ impl DraftResourceKind {
             Self::Context => "ctx",
             Self::Rule => "rul",
             Self::Workflow => "wfl",
-            Self::Metaprompt => "mpf",
         }
     }
 }
@@ -1052,7 +1010,6 @@ impl DraftResourceContent {
             Self::Context { .. } => DraftResourceKind::Context,
             Self::Rule { .. } => DraftResourceKind::Rule,
             Self::Workflow { .. } => DraftResourceKind::Workflow,
-            Self::Metaprompt { .. } => DraftResourceKind::Metaprompt,
         }
     }
 }

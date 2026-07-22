@@ -120,8 +120,8 @@ Operations:
 
 | Operation | Required fields | Optional fields |
 |---|---|---|
-| `create` | `path`, `body` | `description`; Rule may also provide `name`, `applies_when`, `tags`. |
-| `update` | `id`, `body` | `description`; Rule may also provide `name`, `applies_when`, `tags`. |
+| `create` | `path`, `body` | `description` |
+| `update` | `id`, `body` | `description` |
 | `rename` | `id`, `new_path` | `description` |
 | `delete` | `id` | `description` |
 | `discard` | `id` | none |
@@ -140,9 +140,9 @@ Example:
 }
 ```
 
-Workflow paths use the `workflow/` namespace. Context and Workflow `body`
-values become complete text content. Rule `body` becomes the structured
-constraint; omitted optional Rule fields retain their current values on update.
+Workflow paths use the `workflow/` namespace. For Context, Rule, and Workflow,
+`body` is the complete resource content. Rule and Workflow bodies are Markdown;
+their domain identity is metadata on the resource, not an embedded wire format.
 Metaprompt and `mpf` are not valid wire values.
 
 A successful result contains the local operation ID, Draft ID, queue status,

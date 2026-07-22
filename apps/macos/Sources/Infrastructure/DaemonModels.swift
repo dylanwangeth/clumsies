@@ -173,7 +173,6 @@ enum DaemonResourceKind: String, Codable, Hashable, Sendable {
     case context
     case rule
     case workflow
-    case metaprompt
 }
 
 enum DaemonLocalDraftStatus: String, Codable, Hashable, Sendable {
@@ -231,17 +230,12 @@ struct DaemonDraftOperationResponse: Codable, Sendable {
 
 enum DaemonDraftContent: Codable, Hashable, Sendable {
     case context(content: String)
-    case rule(name: String?, appliesWhen: String?, constraint: String, tags: [String]?)
+    case rule(content: String)
     case workflow(content: String)
-    case metaprompt(content: String)
 
     private enum CodingKeys: String, CodingKey {
         case kind
         case content
-        case name
-        case appliesWhen
-        case constraint
-        case tags
     }
 
     init(from decoder: Decoder) throws {
@@ -251,16 +245,9 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
         case .context:
             self = .context(content: try container.decode(String.self, forKey: .content))
         case .rule:
-            self = .rule(
-                name: try container.decodeIfPresent(String.self, forKey: .name),
-                appliesWhen: try container.decodeIfPresent(String.self, forKey: .appliesWhen),
-                constraint: try container.decode(String.self, forKey: .constraint),
-                tags: try container.decodeIfPresent([String].self, forKey: .tags)
-            )
+            self = .rule(content: try container.decode(String.self, forKey: .content))
         case .workflow:
             self = .workflow(content: try container.decode(String.self, forKey: .content))
-        case .metaprompt:
-            self = .metaprompt(content: try container.decode(String.self, forKey: .content))
         }
     }
 
@@ -270,48 +257,26 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
         case .context(let content):
             try container.encode(DaemonResourceKind.context, forKey: .kind)
             try container.encode(content, forKey: .content)
-        case .rule(let name, let appliesWhen, let constraint, let tags):
+        case .rule(let content):
             try container.encode(DaemonResourceKind.rule, forKey: .kind)
-            try container.encodeIfPresent(name, forKey: .name)
-            try container.encodeIfPresent(appliesWhen, forKey: .appliesWhen)
-            try container.encode(constraint, forKey: .constraint)
-            try container.encodeIfPresent(tags, forKey: .tags)
+            try container.encode(content, forKey: .content)
         case .workflow(let content):
             try container.encode(DaemonResourceKind.workflow, forKey: .kind)
-            try container.encode(content, forKey: .content)
-        case .metaprompt(let content):
-            try container.encode(DaemonResourceKind.metaprompt, forKey: .kind)
             try container.encode(content, forKey: .content)
         }
     }
 
     var primaryText: String {
         switch self {
-        case .context(let content), .workflow(let content), .metaprompt(let content):
+        case .context(let content), .rule(let content), .workflow(let content):
             return content
-        case .rule(_, _, let constraint, _):
-            return constraint
         }
     }
 
     var renderedText: String {
         switch self {
-        case .context(let content), .workflow(let content), .metaprompt(let content):
+        case .context(let content), .rule(let content), .workflow(let content):
             return content
-        case .rule(let name, let appliesWhen, let constraint, let tags):
-            return [
-                "# \(name ?? "Rule")",
-                "",
-                "## Applies when",
-                "",
-                appliesWhen ?? "",
-                "",
-                "## Constraint",
-                "",
-                constraint,
-                "",
-                "Tags: \((tags ?? []).isEmpty ? "None" : (tags ?? []).joined(separator: ", "))"
-            ].joined(separator: "\n")
         }
     }
 
@@ -319,12 +284,10 @@ enum DaemonDraftContent: Codable, Hashable, Sendable {
         switch self {
         case .context:
             .context(content: text)
-        case .rule(let name, let appliesWhen, _, let tags):
-            .rule(name: name, appliesWhen: appliesWhen, constraint: text, tags: tags)
+        case .rule:
+            .rule(content: text)
         case .workflow:
             .workflow(content: text)
-        case .metaprompt:
-            .metaprompt(content: text)
         }
     }
 }

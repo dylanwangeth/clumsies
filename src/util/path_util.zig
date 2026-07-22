@@ -42,6 +42,6 @@ test "isSafeRelative rejects empty" {
 
 test "isSafeRelative accepts plain relative paths" {
     try testing.expect(isSafeRelative("rule/coding/STYLE.md"));
-    try testing.expect(isSafeRelative("META_PROMPT.md"));
+    try testing.expect(isSafeRelative("project-notes.md"));
     try testing.expect(isSafeRelative("workflow/cmd/COMMIT.md"));
 }

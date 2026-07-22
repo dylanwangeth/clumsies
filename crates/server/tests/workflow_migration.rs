@@ -1,17 +1,22 @@
 mod common;
 
-use server::repository::rebuild_refs_with_flat_workflows;
 use sqlx::Row;
 
 #[tokio::test]
 async fn structured_workflows_and_drafts_migrate_to_markdown() {
     let postgres = common::postgres_without_migrations().await;
-    sqlx::raw_sql(include_str!(
-        "../migrations/20260708000100_create_server_schema.sql"
-    ))
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
+    for migration in [
+        include_str!("../migrations/20260708000100_create_server_schema.sql"),
+        include_str!("../migrations/20260714000100_add_user_avatar.sql"),
+        include_str!("../migrations/20260715000100_add_draft_conflicts.sql"),
+        include_str!("../migrations/20260716000100_add_server_installation_setup.sql"),
+        include_str!("../migrations/20260716000200_add_web_admin_sessions.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&postgres.pool)
+            .await
+            .unwrap();
+    }
 
     sqlx::raw_sql(
         "INSERT INTO orgs (org_id, name) VALUES ('org_migration', 'Migration');
@@ -85,13 +90,14 @@ async fn structured_workflows_and_drafts_migrate_to_markdown() {
     .await
     .unwrap();
 
-    let expected = "# Release\n\nPublish safely.\n\n1. Run focused tests.\n2. Publish the release.";
+    let resource_expected =
+        "# Release\n\nPublish safely.\n\n1. Run focused tests.\n2. Publish the release.";
     let migrated = sqlx::query("SELECT body, content_hash FROM resources WHERE resource_id = $1")
         .bind("wfl_migration")
         .fetch_one(&postgres.pool)
         .await
         .unwrap();
-    assert_eq!(migrated.get::<String, _>("body"), expected);
+    assert_eq!(migrated.get::<String, _>("body"), resource_expected);
     assert!(
         migrated
             .get::<String, _>("content_hash")
@@ -105,12 +111,30 @@ async fn structured_workflows_and_drafts_migrate_to_markdown() {
         None
     );
 
-    rebuild_refs_with_flat_workflows(&postgres.pool)
-        .await
-        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20260720000200_flatten_workflow_draft_content.sql"
+    ))
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20260722000100_remove_metaprompt.sql"
+    ))
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/20260722000200_flatten_markdown_memory.sql"
+    ))
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
     let current = current_project_ref(&postgres.pool).await;
     assert_ne!(current, "commit_old_workflow");
-    assert_eq!(current_workflow_blob(&postgres.pool).await, expected);
+    assert_eq!(
+        current_workflow_blob(&postgres.pool).await,
+        "# Release\n\nPublish safely.\n\n1. Run focused tests."
+    );
 
     let migrated_draft: serde_json::Value = sqlx::query_scalar(
         "SELECT content FROM draft_operations WHERE operation_id = 'dop_migration'",
@@ -126,12 +150,6 @@ async fn structured_workflows_and_drafts_migrate_to_markdown() {
         })
     );
 
-    sqlx::raw_sql(include_str!(
-        "../migrations/20260720000200_flatten_workflow_draft_content.sql"
-    ))
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
     let rerun_draft: serde_json::Value = sqlx::query_scalar(
         "SELECT content FROM draft_operations WHERE operation_id = 'dop_migration'",
     )
@@ -139,11 +157,13 @@ async fn structured_workflows_and_drafts_migrate_to_markdown() {
     .await
     .unwrap();
     assert_eq!(rerun_draft, migrated_draft);
-
-    rebuild_refs_with_flat_workflows(&postgres.pool)
-        .await
-        .unwrap();
-    assert_eq!(current_project_ref(&postgres.pool).await, current);
+    let old_commit_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM commits WHERE commit_id = 'commit_old_workflow')",
+    )
+    .fetch_one(&postgres.pool)
+    .await
+    .unwrap();
+    assert!(!old_commit_exists);
 }
 
 async fn current_project_ref(pool: &sqlx::PgPool) -> String {

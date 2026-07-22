@@ -147,27 +147,17 @@ pub fn materializeWorkspace(
     var rule_path_for_id: std.StringHashMapUnmanaged([]const u8) = .empty;
     defer rule_path_for_id.deinit(allocator);
     var rule_skipped: usize = 0;
-    var regular_rule_to_fetch: usize = 0;
-    // Reserved paths (MPF) are reported on their own line so the
-    // "Rules: N unchanged, M to fetch" summary refers only to
-    // regular rules + workflows. The reserved file still shares the
-    // batch fetch below — it is just accounted for separately in
-    // the human-readable output.
-    var mpf_status: enum { absent, unchanged, to_fetch } = .absent;
     for (manifest.rules.items) |entry| {
         const rule_id = entry.key;
         const rule_path = entry.value.path;
         const remote_hash = stripHashPrefix(entry.value.hash);
-        const matches = try localFileMatchesHash(allocator, cache_dir, cacheSubDirForRulePath(rule_path), rule_path, remote_hash);
-        const is_mpf = std.mem.eql(u8, rule_path, "META_PROMPT.md");
-        if (is_mpf) mpf_status = if (matches) .unchanged else .to_fetch;
+        const matches = try localFileMatchesHash(allocator, cache_dir, "rule", rule_path, remote_hash);
         if (matches) {
-            if (!is_mpf) rule_skipped += 1;
+            rule_skipped += 1;
             continue;
         }
         try rule_to_fetch.append(allocator, rule_id);
         try rule_path_for_id.put(allocator, rule_id, rule_path);
-        if (!is_mpf) regular_rule_to_fetch += 1;
     }
 
     var contexts_to_fetch: std.ArrayList([]const u8) = .empty;
@@ -183,13 +173,8 @@ pub fn materializeWorkspace(
         try contexts_to_fetch.append(allocator, ctx_path);
     }
 
-    switch (mpf_status) {
-        .absent => {},
-        .unchanged => if (options.progress) |out| try out.print("{s}\xe2\x86\x92 META_PROMPT.md: unchanged\n", .{P}),
-        .to_fetch => if (options.progress) |out| try out.print("{s}\xe2\x86\x92 META_PROMPT.md: to fetch\n", .{P}),
-    }
     if (options.progress) |out| {
-        try out.print("{s}\xe2\x86\x92 Rules: {d} unchanged, {d} to fetch\n", .{ P, rule_skipped, regular_rule_to_fetch });
+        try out.print("{s}\xe2\x86\x92 Rules: {d} unchanged, {d} to fetch\n", .{ P, rule_skipped, rule_to_fetch.items.len });
         try out.flush();
     }
 
@@ -224,12 +209,7 @@ pub fn materializeWorkspace(
         }
     }
 
-    // MPF is intentionally excluded from `rule_skipped` so the
-    // "Rules" line only reports regular rules + workflows. Re-add
-    // it to the final rule_count when MPF was unchanged this sync
-    // so the totals still reflect every manifest entry.
-    const mpf_in_unchanged: usize = if (mpf_status == .unchanged) 1 else 0;
-    const rule_count = rule_fetched + rule_skipped + mpf_in_unchanged;
+    const rule_count = rule_fetched + rule_skipped;
     const context_count = context_fetched + context_skipped;
 
     // Write manifest.json to cache
@@ -254,7 +234,7 @@ pub fn materializeWorkspace(
     return .{
         .rules_total = rule_count,
         .rules_fetched = rule_fetched,
-        .rules_unchanged = rule_skipped + mpf_in_unchanged,
+        .rules_unchanged = rule_skipped,
         .context_total = context_count,
         .context_fetched = context_fetched,
         .context_unchanged = context_skipped,
@@ -277,7 +257,6 @@ fn pruneStaleWorkspaceCache(
     defer rule_keep.deinit(allocator);
     for (manifest.rules.items) |entry| {
         const rule_path = entry.value.path;
-        if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) continue;
         try rule_keep.put(allocator, rule_path, {});
     }
 
@@ -403,23 +382,13 @@ fn fetchRuleBatch(
                 if (stderr) |writer| try writer.print("  ! rule {s}: missing path in response\n", .{item.rule_id});
                 continue;
             };
-        writeToCache(allocator, cache_dir, cacheSubDirForRulePath(target_path), target_path, item.body) catch |err| {
+        writeToCache(allocator, cache_dir, "rule", target_path, item.body) catch |err| {
             if (stderr) |writer| try writer.print("  ! rule {s}: write failed ({s})\n", .{ target_path, @errorName(err) });
             continue;
         };
         written += 1;
     }
     return written;
-}
-
-/// Decide the cache subdirectory a given artifact rule path writes
-/// to. Reserved top-level names (`META_PROMPT.md`) land at the cache
-/// root so loaders can read them without knowing the rule
-/// namespace layout. Everything else lives under `cache/rule/` so
-/// the rule namespace cannot collide with context.
-fn cacheSubDirForRulePath(rule_path: []const u8) []const u8 {
-    if (std.mem.eql(u8, rule_path, "META_PROMPT.md")) return "";
-    return "rule";
 }
 
 /// Batch-fetch context file bodies. Mirrors `fetchRuleBatch` but
@@ -600,15 +569,6 @@ test "stripHashPrefix passes bare hex through unchanged" {
 
 test "stripHashPrefix handles empty input" {
     try testing.expectEqualStrings("", stripHashPrefix(""));
-}
-
-test "cacheSubDirForRulePath routes META_PROMPT to cache root" {
-    try testing.expectEqualStrings("", cacheSubDirForRulePath("META_PROMPT.md"));
-}
-
-test "cacheSubDirForRulePath routes regular paths under rule/" {
-    try testing.expectEqualStrings("rule", cacheSubDirForRulePath("coding/STYLE.md"));
-    try testing.expectEqualStrings("rule", cacheSubDirForRulePath("workflow/CODING.md"));
 }
 
 test "joinManifestPath preserves manifest separator" {

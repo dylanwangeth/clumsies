@@ -46,7 +46,6 @@ pub fn read(
     const abs_path = switch (category) {
         .rule => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "rule", rel_path }),
         .context => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "context", rel_path }),
-        .meta_prompt => try std.fs.path.join(allocator, &.{ ws_dir, "cache", rel_path }),
     };
     defer allocator.free(abs_path);
 
@@ -68,7 +67,6 @@ pub fn write(
     const abs_path = switch (category) {
         .rule => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "rule", rel_path }),
         .context => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "context", rel_path }),
-        .meta_prompt => try std.fs.path.join(allocator, &.{ ws_dir, "cache", rel_path }),
     };
     defer allocator.free(abs_path);
 
@@ -304,7 +302,6 @@ fn deleteCacheFile(
     const abs_path = switch (category) {
         .rule => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "rule", path }),
         .context => try std.fs.path.join(allocator, &.{ ws_dir, "cache", "context", path }),
-        .meta_prompt => return,
     };
     defer allocator.free(abs_path);
     std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, abs_path) catch |err| switch (err) {
@@ -338,15 +335,12 @@ test "freshness maps cache paths and detects fresh content" {
 
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/rule/coding");
     try tmp.dir.createDirPath(std.Options.debug_io, "cache/context/spec");
-    try tmp.dir.createDirPath(std.Options.debug_io, "cache");
     try writeTestFile(tmp.dir, "cache/rule/coding/STYLE.md", "hello");
     try writeTestFile(tmp.dir, "cache/context/spec/API.md", "hello");
-    try writeTestFile(tmp.dir, "cache/META_PROMPT.md", "hello");
 
     const remote = "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
     try std.testing.expectEqual(Freshness.fresh, freshness(std.testing.allocator, root, .rule, "coding/STYLE.md", remote));
     try std.testing.expectEqual(Freshness.fresh, freshness(std.testing.allocator, root, .context, "spec/API.md", remote));
-    try std.testing.expectEqual(Freshness.fresh, freshness(std.testing.allocator, root, .meta_prompt, "META_PROMPT.md", remote));
 }
 
 test "freshness treats missing or mismatched local content as stale" {

@@ -9,13 +9,11 @@ const util_hash = @import("clumsies_lib").util.hash;
 pub const DraftCategory = enum {
     rule,
     context,
-    meta_prompt,
 
     fn toString(self: DraftCategory) []const u8 {
         return switch (self) {
             .rule => "rule",
             .context => "context",
-            .meta_prompt => "meta_prompt",
         };
     }
 };
@@ -173,8 +171,6 @@ fn parseEntry(obj: std.json.ObjectMap) ?DraftEntry {
         .rule
     else if (std.mem.eql(u8, category_str, "context"))
         .context
-    else if (std.mem.eql(u8, category_str, "meta_prompt"))
-        .meta_prompt
     else
         return null;
 
@@ -289,10 +285,8 @@ const ArtifactPathCase = enum {
 
 pub fn canonicalArtifactDraftPath(
     allocator: std.mem.Allocator,
-    category: DraftCategory,
     path: []const u8,
 ) ![]u8 {
-    if (category == .meta_prompt) return allocator.dupe(u8, path);
     if (path.len == 0 or path[0] == '/') return error.UnsafeDraftPath;
 
     var out: std.ArrayList(u8) = .empty;
@@ -320,8 +314,7 @@ pub fn canonicalArtifactDraftPath(
     return out.toOwnedSlice(allocator);
 }
 
-fn shouldCanonicalizeDraftPath(category: DraftCategory, operation: DraftOperation) bool {
-    if (category == .meta_prompt) return false;
+fn shouldCanonicalizeDraftPath(operation: DraftOperation) bool {
     return operation == .create or operation == .rename;
 }
 
@@ -369,7 +362,6 @@ fn localTempIdPrefix(category: DraftCategory) []const u8 {
     return switch (category) {
         .rule => "rule",
         .context => "context",
-        .meta_prompt => "mpf",
     };
 }
 
@@ -513,7 +505,7 @@ pub fn upsertRenameDraft(
     new_path: []const u8,
     base_content: []const u8,
 ) !DraftIdentity {
-    const canonical_new_path = try canonicalArtifactDraftPath(allocator, params.category, new_path);
+    const canonical_new_path = try canonicalArtifactDraftPath(allocator, new_path);
     defer allocator.free(canonical_new_path);
     if (!path_util.isSafeRelative(canonical_new_path)) return error.UnsafeDraftPath;
 
@@ -625,8 +617,8 @@ pub fn createDraft(
     params: CreateDraftParams,
     initial_content: []const u8,
 ) !void {
-    const canonical_draft_path = if (shouldCanonicalizeDraftPath(params.category, params.operation))
-        try canonicalArtifactDraftPath(allocator, params.category, params.draft_path)
+    const canonical_draft_path = if (shouldCanonicalizeDraftPath(params.operation))
+        try canonicalArtifactDraftPath(allocator, params.draft_path)
     else
         try allocator.dupe(u8, params.draft_path);
     defer allocator.free(canonical_draft_path);
@@ -771,7 +763,7 @@ pub fn renameCreateDraftById(
     new_path: []const u8,
     description: ?[]const u8,
 ) !?DraftIdentity {
-    const canonical_new_path = try canonicalArtifactDraftPath(allocator, category, new_path);
+    const canonical_new_path = try canonicalArtifactDraftPath(allocator, new_path);
     defer allocator.free(canonical_new_path);
     if (!path_util.isSafeRelative(canonical_new_path)) return error.UnsafeDraftPath;
 
@@ -1180,11 +1172,9 @@ fn cacheFilePath(
     category: DraftCategory,
     rel_path: []const u8,
 ) ![]const u8 {
-    if (category == .meta_prompt) return std.fs.path.join(allocator, &.{ cache_dir, rel_path });
     const rel_dir: []const u8 = switch (category) {
         .rule => "rule",
         .context => "context",
-        .meta_prompt => unreachable,
     };
     return std.fs.path.join(allocator, &.{ cache_dir, rel_dir, rel_path });
 }
@@ -1540,18 +1530,18 @@ test "findByLocalTempId: returns entry matching temp_id" {
 }
 
 test "canonicalArtifactDraftPath: normalizes directories and filenames" {
-    const context_path = try canonicalArtifactDraftPath(testing.allocator, .context, "Mission/duckweed-project.md");
+    const context_path = try canonicalArtifactDraftPath(testing.allocator, "Mission/duckweed-project.md");
     defer testing.allocator.free(context_path);
     try testing.expectEqualStrings("mission/DUCKWEED_PROJECT.md", context_path);
 
-    const rule_path = try canonicalArtifactDraftPath(testing.allocator, .rule, "PITFALL/path format");
+    const rule_path = try canonicalArtifactDraftPath(testing.allocator, "PITFALL/path format");
     defer testing.allocator.free(rule_path);
     try testing.expectEqualStrings("pitfall/PATH_FORMAT.md", rule_path);
 }
 
 test "canonicalArtifactDraftPath: rejects unsafe traversal" {
-    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, .context, "../MISSION.md"));
-    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, .rule, "mission/../BAD.md"));
+    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, "../MISSION.md"));
+    try testing.expectError(error.UnsafeDraftPath, canonicalArtifactDraftPath(testing.allocator, "mission/../BAD.md"));
 }
 
 test "createDraft: canonicalizes create draft artifact paths" {

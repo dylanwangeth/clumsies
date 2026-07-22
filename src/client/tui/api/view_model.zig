@@ -231,7 +231,6 @@ fn changeDisplayPath(alloc: std.mem.Allocator, kind: data.PrTargetKind, path: []
 pub fn parseTargetKind(raw: []const u8) data.PrTargetKind {
     if (std.mem.eql(u8, raw, "context")) return .context;
     if (std.mem.eql(u8, raw, "bundle")) return .bundle;
-    if (std.mem.eql(u8, raw, "mpf")) return .mpf;
     return .rule;
 }
 

@@ -684,11 +684,6 @@ fn validate_resource_path(entry: &ServerTreeEntry) -> Result<(), DaemonError> {
                 entry.id
             )));
         }
-        ServerTreeEntryKind::Metaprompt if path != "META_PROMPT.md" => {
-            return Err(DaemonError::Server(
-                "Metaprompt Tree entry must use META_PROMPT.md".to_owned(),
-            ));
-        }
         _ => {}
     }
     Ok(())
@@ -726,7 +721,6 @@ fn materialization_output_path(entry: &ServerTreeEntry) -> Result<String, Daemon
         ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
             Ok(format!("cache/rule/{path}"))
         }
-        ServerTreeEntryKind::Metaprompt => Ok(format!("cache/{path}")),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
             "organization selection does not materialize as a file".to_owned(),
         )),
@@ -1141,7 +1135,6 @@ fn load_project_checkout(
             ServerTreeEntryKind::Rule => DaemonDraftResourceKind::Rule,
             ServerTreeEntryKind::Context => DaemonDraftResourceKind::Context,
             ServerTreeEntryKind::Workflow => DaemonDraftResourceKind::Workflow,
-            ServerTreeEntryKind::Metaprompt => DaemonDraftResourceKind::Metaprompt,
             ServerTreeEntryKind::ProjectOrgSelection => continue,
         };
         let path = entry.path.clone().ok_or_else(|| {
@@ -1181,27 +1174,13 @@ fn project_checkout_content(
         ServerTreeEntryKind::Context => Ok(DaemonDraftContent::Context {
             content: blob.to_owned(),
         }),
-        ServerTreeEntryKind::Rule => {
-            let decoded: StructuredRuleBlob = serde_json::from_str(blob).map_err(|error| {
-                DaemonError::Server(format!("Rule Blob is not canonical JSON: {error}"))
-            })?;
-            if decoded.format != "clumsies.rule.v1" {
-                return Err(DaemonError::Server(format!(
-                    "Unsupported Rule Blob format: {}",
-                    decoded.format
-                )));
-            }
-            Ok(DaemonDraftContent::Rule {
-                name: Some(decoded.content.name),
-                applies_when: Some(decoded.content.applies_when),
-                constraint: decoded.content.constraint,
-                tags: Some(decoded.content.tags),
-            })
-        }
-        ServerTreeEntryKind::Workflow => Ok(DaemonDraftContent::Workflow {
+        ServerTreeEntryKind::Rule if blob.trim().is_empty() => Err(DaemonError::Server(
+            "Rule Blob content must not be empty".to_owned(),
+        )),
+        ServerTreeEntryKind::Rule => Ok(DaemonDraftContent::Rule {
             content: blob.to_owned(),
         }),
-        ServerTreeEntryKind::Metaprompt => Ok(DaemonDraftContent::Metaprompt {
+        ServerTreeEntryKind::Workflow => Ok(DaemonDraftContent::Workflow {
             content: blob.to_owned(),
         }),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
@@ -1247,9 +1226,6 @@ fn materialize_payload(
             ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
                 rules.insert(entry.id.clone(), manifest_entry);
             }
-            ServerTreeEntryKind::Metaprompt => {
-                rules.insert(entry.id.clone(), manifest_entry);
-            }
             ServerTreeEntryKind::ProjectOrgSelection => unreachable!(),
         }
         let relative_output = PathBuf::from(materialization_output_path(entry)?);
@@ -1277,63 +1253,16 @@ fn materialize_payload(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct StructuredRuleBlob {
-    format: String,
-    content: StructuredRuleContent,
-}
-
-#[derive(Deserialize)]
-struct StructuredRuleContent {
-    name: String,
-    applies_when: String,
-    constraint: String,
-    tags: Vec<String>,
-}
-
 fn materialized_resource_content(
     kind: ServerTreeEntryKind,
     blob: &str,
 ) -> Result<String, DaemonError> {
     match kind {
-        ServerTreeEntryKind::Context | ServerTreeEntryKind::Metaprompt => Ok(blob.to_owned()),
-        ServerTreeEntryKind::Rule => {
-            let decoded: StructuredRuleBlob = serde_json::from_str(blob).map_err(|error| {
-                DaemonError::Server(format!("Rule Blob is not canonical JSON: {error}"))
-            })?;
-            if decoded.format != "clumsies.rule.v1" {
-                return Err(DaemonError::Server(format!(
-                    "Unsupported Rule Blob format: {}",
-                    decoded.format
-                )));
-            }
-            if decoded.content.constraint.trim().is_empty() {
-                return Err(DaemonError::Server(
-                    "Rule Blob constraint must not be empty".to_owned(),
-                ));
-            }
-            Ok([
-                format!("# {}", decoded.content.name),
-                String::new(),
-                "## Applies when".to_owned(),
-                String::new(),
-                decoded.content.applies_when,
-                String::new(),
-                "## Constraint".to_owned(),
-                String::new(),
-                decoded.content.constraint,
-                String::new(),
-                format!(
-                    "Tags: {}",
-                    if decoded.content.tags.is_empty() {
-                        "None".to_owned()
-                    } else {
-                        decoded.content.tags.join(", ")
-                    }
-                ),
-            ]
-            .join("\n"))
-        }
+        ServerTreeEntryKind::Context => Ok(blob.to_owned()),
+        ServerTreeEntryKind::Rule if blob.trim().is_empty() => Err(DaemonError::Server(
+            "Rule Blob content must not be empty".to_owned(),
+        )),
+        ServerTreeEntryKind::Rule => Ok(blob.to_owned()),
         ServerTreeEntryKind::Workflow => Ok(blob.to_owned()),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
             "Project organization selection cannot be materialized as memory".to_owned(),
@@ -1472,7 +1401,6 @@ enum ServerTreeEntryKind {
     Rule,
     Context,
     Workflow,
-    Metaprompt,
     ProjectOrgSelection,
 }
 
@@ -1584,17 +1512,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_rule_blobs_without_a_constraint() {
-        let error = materialized_resource_content(
-            ServerTreeEntryKind::Rule,
-            r#"{"format":"clumsies.rule.v1","content":{"name":"Empty","applies_when":"","constraint":"  ","tags":[]}}"#,
-        )
-        .unwrap_err();
+    fn rejects_blank_rule_blobs() {
+        let error = materialized_resource_content(ServerTreeEntryKind::Rule, "  \n").unwrap_err();
 
         assert!(
             error
                 .to_string()
-                .contains("Rule Blob constraint must not be empty")
+                .contains("Rule Blob content must not be empty")
         );
     }
 
@@ -1618,7 +1542,7 @@ mod tests {
                 None,
                 "coding/STYLE.md",
                 ServerTreeEntrySource::SelectedOrg,
-                r#"{"format":"clumsies.rule.v1","content":{"name":"Style","applies_when":"While coding","constraint":"Rule body","tags":["coding"]}}"#,
+                "# Style\n\nApply while coding.\n\nRule body",
             ),
             (
                 "workflow_test",
@@ -1628,15 +1552,6 @@ mod tests {
                 "workflow/CODING.md",
                 ServerTreeEntrySource::Project,
                 "# Coding\n\nWorkflow body\n\n1. Run tests",
-            ),
-            (
-                "mpf_test",
-                ServerTreeEntryKind::Metaprompt,
-                ServerTreeEntryScope::Project,
-                Some("prj_test"),
-                "META_PROMPT.md",
-                ServerTreeEntrySource::Project,
-                "Metaprompt body",
             ),
         ];
         let blobs = entries
@@ -1686,15 +1601,11 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(root.path().join("cache/rule/coding/STYLE.md")).unwrap(),
-            "# Style\n\n## Applies when\n\nWhile coding\n\n## Constraint\n\nRule body\n\nTags: coding"
+            "# Style\n\nApply while coding.\n\nRule body"
         );
         assert_eq!(
             std::fs::read_to_string(root.path().join("cache/rule/workflow/CODING.md")).unwrap(),
             "# Coding\n\nWorkflow body\n\n1. Run tests"
-        );
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("cache/META_PROMPT.md")).unwrap(),
-            "Metaprompt body"
         );
     }
 }

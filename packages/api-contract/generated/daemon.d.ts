@@ -234,7 +234,7 @@ export interface components {
             content: components["schemas"]["DaemonDraftContent"];
             description?: string;
         };
-        DaemonDraftContent: components["schemas"]["DaemonContextDraftContent"] | components["schemas"]["DaemonRuleDraftContent"] | components["schemas"]["DaemonWorkflowDraftContent"] | components["schemas"]["DaemonMetapromptDraftContent"];
+        DaemonDraftContent: components["schemas"]["DaemonContextDraftContent"] | components["schemas"]["DaemonRuleDraftContent"] | components["schemas"]["DaemonWorkflowDraftContent"];
         DaemonContextDraftContent: {
             /** @enum {string} */
             kind: "context";
@@ -243,19 +243,11 @@ export interface components {
         DaemonRuleDraftContent: {
             /** @enum {string} */
             kind: "rule";
-            name?: string | null;
-            applies_when?: string | null;
-            constraint: string;
-            tags?: string[] | null;
+            content: string;
         };
         DaemonWorkflowDraftContent: {
             /** @enum {string} */
             kind: "workflow";
-            content: string;
-        };
-        DaemonMetapromptDraftContent: {
-            /** @enum {string} */
-            kind: "metaprompt";
             content: string;
         };
         DaemonRenameDraftOperation: {
@@ -291,7 +283,7 @@ export interface components {
         /** @enum {string} */
         SyncState: "idle" | "queued" | "syncing" | "retrying" | "degraded" | "conflicted" | "failed";
         /** @enum {string} */
-        DaemonDraftResourceKind: "context" | "rule" | "workflow" | "metaprompt";
+        DaemonDraftResourceKind: "context" | "rule" | "workflow";
         /** @enum {string} */
         DaemonDraftScope: "org" | "project";
         /** @enum {string} */

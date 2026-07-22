@@ -40,17 +40,10 @@ pub const AttestationEvent = struct {
         rule_propose_update: ProposeUpdatePayload,
         rule_propose_rename: ProposeRenamePayload,
         rule_propose_delete: ProposeDeletePayload,
-        mpf_propose_create: ProposeCreatePayload,
-        mpf_propose_update: ProposeUpdatePayload,
-        mpf_propose_delete: ProposeDeletePayload,
         draft_discard: DraftDiscardPayload,
     };
 
-    pub const SetupPayload = struct {
-        mpf_hash: ?[]const u8 = null,
-        mpf_content: ?[]const u8 = null,
-        mpf_changed: ?bool = null,
-    };
+    pub const SetupPayload = struct {};
 
     pub const UserPromptPayload = struct {
         content_hash: []const u8,
@@ -141,9 +134,6 @@ pub fn payloadTypeTag(payload: AttestationEvent.Payload) []const u8 {
         .rule_propose_update => "rule_propose_update",
         .rule_propose_rename => "rule_propose_rename",
         .rule_propose_delete => "rule_propose_delete",
-        .mpf_propose_create => "mpf_propose_create",
-        .mpf_propose_update => "mpf_propose_update",
-        .mpf_propose_delete => "mpf_propose_delete",
         .draft_discard => "draft_discard",
     };
 }
@@ -245,11 +235,7 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
     );
 
     switch (event.payload) {
-        .setup => |p| {
-            try writeOptionalString(allocator, &buf, "mpf_hash", p.mpf_hash);
-            try writeOptionalString(allocator, &buf, "mpf_content", p.mpf_content);
-            try writeOptionalBool(allocator, &buf, "mpf_changed", p.mpf_changed);
-        },
+        .setup => {},
         .discover => |p| {
             try writeOptionalString(allocator, &buf, "kind", p.kind);
             try writeOptionalString(allocator, &buf, "group", p.group);
@@ -316,17 +302,6 @@ fn serializeAttestationEvent(allocator: std.mem.Allocator, event: AttestationEve
             try writeOptionalString(allocator, &buf, "rule_id", p.id);
             try writeOptionalString(allocator, &buf, "path", p.path);
         },
-        .mpf_propose_create => |p| {
-            try writeOptionalString(allocator, &buf, "path", p.path);
-        },
-        .mpf_propose_update => |p| {
-            try writeOptionalString(allocator, &buf, "mpf_id", p.id);
-            try writeOptionalString(allocator, &buf, "path", p.path);
-        },
-        .mpf_propose_delete => |p| {
-            try writeOptionalString(allocator, &buf, "mpf_id", p.id);
-            try writeOptionalString(allocator, &buf, "path", p.path);
-        },
         .draft_discard => |p| {
             try writeOptionalString(allocator, &buf, "resource", p.resource);
             try writeOptionalString(allocator, &buf, "id", p.id);
@@ -343,11 +318,6 @@ fn writeOptionalString(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ke
     const esc = try encoding.jsonEscapeAlloc(allocator, v);
     defer allocator.free(esc);
     try buf.print(allocator, ",\"{s}\":\"{s}\"", .{ key, esc });
-}
-
-fn writeOptionalBool(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?bool) !void {
-    const v = value orelse return;
-    try buf.print(allocator, ",\"{s}\":{s}", .{ key, if (v) "true" else "false" });
 }
 
 fn writeOptionalU32(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: ?u32) !void {
@@ -426,25 +396,6 @@ test "serializeAttestationEvent: setup omits payload fields" {
     try testing.expect(std.mem.indexOf(u8, line, "\"rule_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"constraint_id\"") == null);
     try testing.expect(std.mem.indexOf(u8, line, "\"type\":\"setup\"") != null);
-}
-
-test "serializeAttestationEvent: setup includes bootstrap metadata" {
-    const event: AttestationEvent = .{
-        .ws_id = "ws-1",
-        .session_id = "sess-1",
-        .event_id = 0,
-        .ts = 100,
-        .payload = .{ .setup = .{
-            .mpf_hash = "sha256:abc",
-            .mpf_content = "META_PROMPT",
-            .mpf_changed = true,
-        } },
-    };
-    const line = try serializeAttestationEvent(testing.allocator, event);
-    defer testing.allocator.free(line);
-    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_hash\":\"sha256:abc\"") != null);
-    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_content\":\"META_PROMPT\"") != null);
-    try testing.expect(std.mem.indexOf(u8, line, "\"mpf_changed\":true") != null);
 }
 
 test "serializeAttestationEvent: discover includes query metadata" {

@@ -25,18 +25,9 @@ fn context_content(content: &str) -> DaemonDraftContent {
     }
 }
 
-fn metaprompt_content(content: &str) -> DaemonDraftContent {
-    DaemonDraftContent::Metaprompt {
-        content: content.to_owned(),
-    }
-}
-
-fn rule_content(name: &str, constraint: &str, tags: &[&str]) -> DaemonDraftContent {
+fn rule_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Rule {
-        name: Some(name.to_owned()),
-        applies_when: Some("Publishing durable memory".to_owned()),
-        constraint: constraint.to_owned(),
-        tags: Some(tags.iter().map(|tag| (*tag).to_owned()).collect()),
+        content: content.to_owned(),
     }
 }
 
@@ -1241,342 +1232,6 @@ async fn offline_draft_converges_through_stale_ref_conflict_resolution() {
 }
 
 #[tokio::test]
-async fn project_metaprompt_is_independent_from_hub_and_converges_through_delete() {
-    let postgres = common::start_postgres().await;
-    let port = postgres.port;
-    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    server::db::run_migrations(&pool).await.unwrap();
-    let repository = ServerRepository::new(pool.clone());
-    let bootstrap = common::initialize_installation(pool.clone(), "Metaprompt Lifecycle").await;
-
-    let hub_draft = repository
-        .create_draft(
-            &bootstrap.user_id,
-            CreateDraftRequest {
-                daemon_installation_id: "daemon_seed_hub_metaprompt".to_owned(),
-                project_id: bootstrap.project_id.clone(),
-                base_commit_id: None,
-                title: "Create Hub metaprompt".to_owned(),
-                description: None,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Metaprompt,
-                    id: None,
-                    path: Some("META_PROMPT.md".to_owned()),
-                },
-                operations: vec![DraftOperationInput {
-                    action: DraftOperationAction::Create,
-                    resource: DraftResourceRef {
-                        scope: ResourceScope::Org,
-                        kind: DraftResourceKind::Metaprompt,
-                        id: None,
-                        path: Some("META_PROMPT.md".to_owned()),
-                    },
-                    content: Some(DraftResourceContent::Metaprompt {
-                        content: "# Hub metaprompt\n\nShared organization behavior.".to_owned(),
-                    }),
-                    new_path: None,
-                }],
-            },
-        )
-        .await
-        .unwrap();
-    let hub_merge = approve_and_merge(
-        &repository,
-        &hub_draft.draft.draft_id,
-        hub_draft.draft.version,
-        None,
-    )
-    .await;
-    assert!(hub_merge.commit_id.is_some());
-    assert_eq!(
-        repository
-            .get_org_metaprompt(&bootstrap.org_id)
-            .await
-            .unwrap()
-            .content,
-        "# Hub metaprompt\n\nShared organization behavior."
-    );
-
-    let access_token = "daemon-metaprompt-lifecycle-access-token";
-    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
-    sqlx::query(
-        "INSERT INTO auth_sessions (session_id, user_id, org_id)
-         VALUES ('ses_daemon_metaprompt_lifecycle', $1, $2)",
-    )
-    .bind(&bootstrap.user_id)
-    .bind(&bootstrap.org_id)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO access_tokens (
-            token_id, session_id, user_id, kind, token_hash, expires_at
-         ) VALUES (
-            'tok_daemon_metaprompt_lifecycle', 'ses_daemon_metaprompt_lifecycle', $1,
-            'access', $2, now() + interval '30 minutes'
-         )",
-    )
-    .bind(&bootstrap.user_id)
-    .bind(token_hash)
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let server_address = listener.local_addr().unwrap();
-    let server_task = tokio::spawn(async move {
-        axum::serve(listener, server::http::router(pool))
-            .await
-            .unwrap();
-    });
-    let root = tempfile::tempdir().unwrap();
-    let mut config = DaemonConfig::for_root(root.path());
-    config.project.server_url = format!("http://{server_address}");
-    config.project.project_id = Some(bootstrap.project_id.clone());
-    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
-    let service = DaemonIpcService::new(state);
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::Commits,
-        })
-        .await
-        .unwrap();
-    let empty_project_cache = service
-        .memory_cache(DaemonMemoryCacheRequest {
-            project_id: bootstrap.project_id.clone(),
-        })
-        .await
-        .unwrap();
-    let empty_project_root = std::path::PathBuf::from(empty_project_cache.root_path.unwrap());
-    assert!(!empty_project_root.join("cache/META_PROMPT.md").exists());
-
-    let create_draft = service
-        .store_draft_operation(DaemonDraftOperationRequest {
-            draft_id: None,
-            base_commit_id: None,
-            project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Metaprompt,
-            op: DaemonDraftOperation {
-                create: Some(DaemonCreateDraftOperation {
-                    path: "META_PROMPT.md".to_owned(),
-                    content: metaprompt_content(
-                        "# Project metaprompt\n\nInitial project behavior.",
-                    ),
-                    description: None,
-                }),
-                update: None,
-                rename: None,
-                delete: None,
-                discard: None,
-            },
-            source: Some(DaemonDraftOperationSource::Desktop),
-        })
-        .await
-        .unwrap();
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::Drafts,
-        })
-        .await
-        .unwrap();
-    let create_projection = service.get_draft(&create_draft.draft_id).await.unwrap();
-    let create_merge = approve_and_merge(
-        &repository,
-        create_projection.draft.server_draft_id.as_deref().unwrap(),
-        create_projection.draft.server_version,
-        None,
-    )
-    .await;
-    let create_commit_id = create_merge.commit_id.unwrap();
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::All,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        service
-            .get_draft(&create_draft.draft_id)
-            .await
-            .unwrap()
-            .draft
-            .status,
-        DaemonLocalDraftStatus::Merged
-    );
-    let created_metaprompt = repository
-        .get_project_metaprompt(&bootstrap.project_id)
-        .await
-        .unwrap();
-    let metaprompt_id = created_metaprompt.metaprompt.metaprompt_id.clone();
-    assert_eq!(
-        created_metaprompt.content,
-        "# Project metaprompt\n\nInitial project behavior."
-    );
-    let created_cache = service
-        .memory_cache(DaemonMemoryCacheRequest {
-            project_id: bootstrap.project_id.clone(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        created_cache.commit_id.as_deref(),
-        Some(create_commit_id.as_str())
-    );
-    let created_root = std::path::PathBuf::from(created_cache.root_path.unwrap());
-    assert_eq!(
-        std::fs::read_to_string(created_root.join("cache/META_PROMPT.md")).unwrap(),
-        "# Project metaprompt\n\nInitial project behavior."
-    );
-
-    let update_draft = service
-        .store_draft_operation(DaemonDraftOperationRequest {
-            draft_id: None,
-            base_commit_id: None,
-            project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Metaprompt,
-            op: DaemonDraftOperation {
-                create: None,
-                update: Some(DaemonUpdateDraftOperation {
-                    id: metaprompt_id.clone(),
-                    content: metaprompt_content(
-                        "# Project metaprompt\n\nUpdated project behavior.",
-                    ),
-                    description: None,
-                }),
-                rename: None,
-                delete: None,
-                discard: None,
-            },
-            source: Some(DaemonDraftOperationSource::McpStore),
-        })
-        .await
-        .unwrap();
-    assert_ne!(update_draft.draft_id, create_draft.draft_id);
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::Drafts,
-        })
-        .await
-        .unwrap();
-    let update_projection = service.get_draft(&update_draft.draft_id).await.unwrap();
-    let update_merge = approve_and_merge(
-        &repository,
-        update_projection.draft.server_draft_id.as_deref().unwrap(),
-        update_projection.draft.server_version,
-        Some(&create_commit_id),
-    )
-    .await;
-    let update_commit_id = update_merge.commit_id.unwrap();
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::All,
-        })
-        .await
-        .unwrap();
-    let updated_cache = service
-        .memory_cache(DaemonMemoryCacheRequest {
-            project_id: bootstrap.project_id.clone(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        updated_cache.commit_id.as_deref(),
-        Some(update_commit_id.as_str())
-    );
-    let updated_root = std::path::PathBuf::from(updated_cache.root_path.unwrap());
-    assert_ne!(updated_root, created_root);
-    assert_eq!(
-        std::fs::read_to_string(updated_root.join("cache/META_PROMPT.md")).unwrap(),
-        "# Project metaprompt\n\nUpdated project behavior."
-    );
-    assert_eq!(
-        std::fs::read_to_string(created_root.join("cache/META_PROMPT.md")).unwrap(),
-        "# Project metaprompt\n\nInitial project behavior."
-    );
-
-    let delete_draft = service
-        .store_draft_operation(DaemonDraftOperationRequest {
-            draft_id: None,
-            base_commit_id: None,
-            project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Metaprompt,
-            op: DaemonDraftOperation {
-                create: None,
-                update: None,
-                rename: None,
-                delete: Some(DaemonDeleteDraftOperation {
-                    id: metaprompt_id,
-                    description: None,
-                }),
-                discard: None,
-            },
-            source: Some(DaemonDraftOperationSource::Desktop),
-        })
-        .await
-        .unwrap();
-    assert_ne!(delete_draft.draft_id, update_draft.draft_id);
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::Drafts,
-        })
-        .await
-        .unwrap();
-    let delete_projection = service.get_draft(&delete_draft.draft_id).await.unwrap();
-    let delete_merge = approve_and_merge(
-        &repository,
-        delete_projection.draft.server_draft_id.as_deref().unwrap(),
-        delete_projection.draft.server_version,
-        Some(&update_commit_id),
-    )
-    .await;
-    let delete_commit_id = delete_merge.commit_id.unwrap();
-    service
-        .retry_sync(DaemonSyncRetryRequest {
-            channel: SyncRetryChannel::All,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        service
-            .get_draft(&delete_draft.draft_id)
-            .await
-            .unwrap()
-            .draft
-            .status,
-        DaemonLocalDraftStatus::Merged
-    );
-    assert!(matches!(
-        repository
-            .get_project_metaprompt(&bootstrap.project_id)
-            .await,
-        Err(server::repository::ServerError::NotFound {
-            entity: "metaprompt",
-            ..
-        })
-    ));
-    let deleted_cache = service
-        .memory_cache(DaemonMemoryCacheRequest {
-            project_id: bootstrap.project_id.clone(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        deleted_cache.commit_id.as_deref(),
-        Some(delete_commit_id.as_str())
-    );
-    let deleted_root = std::path::PathBuf::from(deleted_cache.root_path.unwrap());
-    assert!(!deleted_root.join("cache/META_PROMPT.md").exists());
-    assert!(updated_root.join("cache/META_PROMPT.md").exists());
-
-    server_task.abort();
-}
-
-#[tokio::test]
 async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let postgres = common::start_postgres().await;
     let port = postgres.port;
@@ -1632,9 +1287,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         DaemonDraftResourceKind::Rule,
         "rules/memory-review",
         rule_content(
-            "Memory review discipline",
-            "Review every memory change before merge.",
-            &["review", "memory"],
+            "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview every memory change before merge.\n\nTags: memory, review",
         ),
         DaemonDraftOperationSource::Desktop,
     )
@@ -1654,13 +1307,16 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         .get_project_rule(&bootstrap.project_id, &rule_id)
         .await
         .unwrap();
-    assert_eq!(created_rule.rule.name, "Memory review discipline");
-    assert_eq!(created_rule.content.tags, vec!["memory", "review"]);
+    assert_eq!(created_rule.rule.name, "memory-review");
+    assert_eq!(
+        created_rule.content,
+        "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview every memory change before merge.\n\nTags: memory, review"
+    );
     let rule_create_root =
         cache_root_for_commit(&service, &bootstrap.project_id, &rule_create_commit).await;
     assert_eq!(
         std::fs::read_to_string(rule_create_root.join("cache/rule/rules/memory-review")).unwrap(),
-        "# Memory review discipline\n\n## Applies when\n\nPublishing durable memory\n\n## Constraint\n\nReview every memory change before merge.\n\nTags: memory, review"
+        created_rule.content
     );
 
     let create_workflow = create_resource_draft(
@@ -1719,9 +1375,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         (DaemonDraftScope::Project, DaemonDraftResourceKind::Rule),
         &rule_id,
         rule_content(
-            "Memory review discipline",
-            "Review the change and its materialized result before merge.",
-            &["memory", "review", "verification"],
+            "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview the change and its materialized result before merge.\n\nTags: memory, review, verification",
         ),
         "rules/memory-review-policy",
         DaemonDraftOperationSource::McpStore,
@@ -1740,8 +1394,8 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         .unwrap();
     assert_eq!(updated_rule.rule.path, "rules/memory-review-policy");
     assert_eq!(
-        updated_rule.content.constraint,
-        "Review the change and its materialized result before merge."
+        updated_rule.content,
+        "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview the change and its materialized result before merge.\n\nTags: memory, review, verification"
     );
     let rule_update_root =
         cache_root_for_commit(&service, &bootstrap.project_id, &rule_update_commit).await;
@@ -1944,9 +1598,7 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
         DaemonDraftResourceKind::Rule,
         "rules/shared-review",
         rule_content(
-            "Shared review discipline",
-            "Review shared memory before merge.",
-            &["hub", "review"],
+            "# Shared review discipline\n\nReview shared memory before merge.\n\nTags: hub, review",
         ),
         DaemonDraftOperationSource::Desktop,
     )
@@ -2036,9 +1688,7 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
         (DaemonDraftScope::Org, DaemonDraftResourceKind::Rule),
         &rule_id,
         rule_content(
-            "Shared review discipline",
-            "Review shared memory and its project projections before merge.",
-            &["hub", "review", "projection"],
+            "# Shared review discipline\n\nReview shared memory and its project projections before merge.\n\nTags: hub, review, projection",
         ),
         "rules/shared-review-policy",
         DaemonDraftOperationSource::Desktop,
@@ -2070,7 +1720,7 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
     assert_eq!(
         std::fs::read_to_string(rule_update_root.join("cache/rule/rules/shared-review-policy"))
             .unwrap(),
-        "# Shared review discipline\n\n## Applies when\n\nPublishing durable memory\n\n## Constraint\n\nReview shared memory and its project projections before merge.\n\nTags: hub, projection, review"
+        "# Shared review discipline\n\nReview shared memory and its project projections before merge.\n\nTags: hub, review, projection"
     );
     assert!(
         selected_root

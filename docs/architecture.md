@@ -147,6 +147,6 @@ implemented as a degraded fallback.
 Draft upload, remote draft projection, Commit download, atomic local
 materialization, Effective Memory Draft overlay, hybrid retrieval, exact
 loading, and activation delta are operational. Explicit user-resolvable
-conflicts and macOS Keychain token storage are operational; type-aware automatic
-three-way merge, a representative versioned retrieval query set, and Windows
+conflicts and macOS Keychain token storage are operational; automatic
+three-way text merge, a representative versioned retrieval query set, and Windows
 service transport remain outside the implemented boundary.

@@ -1160,243 +1160,6 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
 }
 
 #[tokio::test]
-async fn org_metaprompt_lifecycle_is_independent_from_project_refs() {
-    let postgres = common::migrated_postgres().await;
-    let repo = ServerRepository::new(postgres.pool.clone());
-    let bootstrap = common::initialize_installation(
-        postgres.pool.clone(),
-        "Acme Memory",
-        "owner@example.com",
-        "Owner",
-        "oidc-subject-owner",
-        "Metaprompt Isolation",
-    )
-    .await;
-    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
-    let project_state_uri = format!("/api/v1/projects/{}/commit-state", bootstrap.project_id);
-    let project_before: CommitStateResponse = get_json(app.clone(), &project_state_uri).await;
-    let (org_before, org_etag): (CommitStateResponse, String) =
-        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
-
-    let approved = create_approved_review(
-        app.clone(),
-        CreateDraftRequest {
-            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
-            project_id: bootstrap.project_id.clone(),
-            base_commit_id: org_before.reference.commit_id,
-            title: "Create Hub metaprompt".to_owned(),
-            description: None,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Org,
-                kind: DraftResourceKind::Metaprompt,
-                id: None,
-                path: Some("META_PROMPT.md".to_owned()),
-            },
-            operations: vec![DraftOperationInput {
-                action: DraftOperationAction::Create,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Metaprompt,
-                    id: None,
-                    path: Some("META_PROMPT.md".to_owned()),
-                },
-                content: Some(DraftResourceContent::Metaprompt {
-                    content: "# Hub metaprompt\n\nInitial organization behavior.".to_owned(),
-                }),
-                new_path: None,
-            }],
-        },
-    )
-    .await;
-    let created: ReviewMergeResult = post_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/reviews/{}/merges", approved.review_id),
-        &org_etag,
-        &CreateReviewMergeRequest {
-            expected_review_version: approved.version,
-        },
-    )
-    .await;
-    let created_commit_id = created.commit_id.unwrap();
-    let created_metaprompt = repo.get_org_metaprompt(&bootstrap.org_id).await.unwrap();
-    let metaprompt_id = created_metaprompt.metaprompt.metaprompt_id.clone();
-    assert_eq!(
-        created_metaprompt.content,
-        "# Hub metaprompt\n\nInitial organization behavior."
-    );
-    let project_after_create: CommitStateResponse = get_json(app.clone(), &project_state_uri).await;
-    assert_eq!(
-        project_after_create.reference.commit_id,
-        project_before.reference.commit_id
-    );
-
-    let (_, org_etag): (CommitStateResponse, String) =
-        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
-    let approved = create_approved_review(
-        app.clone(),
-        CreateDraftRequest {
-            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
-            project_id: bootstrap.project_id.clone(),
-            base_commit_id: Some(created_commit_id.clone()),
-            title: "Update Hub metaprompt".to_owned(),
-            description: None,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Org,
-                kind: DraftResourceKind::Metaprompt,
-                id: Some(metaprompt_id.clone()),
-                path: None,
-            },
-            operations: vec![DraftOperationInput {
-                action: DraftOperationAction::Update,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Metaprompt,
-                    id: Some(metaprompt_id.clone()),
-                    path: None,
-                },
-                content: Some(DraftResourceContent::Metaprompt {
-                    content: "# Hub metaprompt\n\nUpdated organization behavior.".to_owned(),
-                }),
-                new_path: None,
-            }],
-        },
-    )
-    .await;
-    let updated: ReviewMergeResult = post_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/reviews/{}/merges", approved.review_id),
-        &org_etag,
-        &CreateReviewMergeRequest {
-            expected_review_version: approved.version,
-        },
-    )
-    .await;
-    let updated_commit_id = updated.commit_id.unwrap();
-    assert_eq!(
-        repo.get_org_metaprompt(&bootstrap.org_id)
-            .await
-            .unwrap()
-            .content,
-        "# Hub metaprompt\n\nUpdated organization behavior."
-    );
-    let created_payload: CommitPayload =
-        get_json(app.clone(), &format!("/api/v1/commits/{created_commit_id}")).await;
-    let created_entry = created_payload
-        .tree
-        .entries
-        .iter()
-        .find(|entry| entry.kind == TreeEntryKind::Metaprompt)
-        .unwrap();
-    assert_eq!(
-        created_payload
-            .blobs
-            .iter()
-            .find(|blob| blob.blob_id == created_entry.blob_id)
-            .unwrap()
-            .content,
-        "# Hub metaprompt\n\nInitial organization behavior."
-    );
-
-    let (_, org_etag): (CommitStateResponse, String) =
-        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
-    let approved = create_approved_review(
-        app.clone(),
-        CreateDraftRequest {
-            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
-            project_id: bootstrap.project_id.clone(),
-            base_commit_id: Some(updated_commit_id.clone()),
-            title: "Delete Hub metaprompt".to_owned(),
-            description: None,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Org,
-                kind: DraftResourceKind::Metaprompt,
-                id: Some(metaprompt_id.clone()),
-                path: None,
-            },
-            operations: vec![DraftOperationInput {
-                action: DraftOperationAction::Delete,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Metaprompt,
-                    id: Some(metaprompt_id.clone()),
-                    path: None,
-                },
-                content: None,
-                new_path: None,
-            }],
-        },
-    )
-    .await;
-    let deleted: ReviewMergeResult = post_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/reviews/{}/merges", approved.review_id),
-        &org_etag,
-        &CreateReviewMergeRequest {
-            expected_review_version: approved.version,
-        },
-    )
-    .await;
-    let deleted_commit_id = deleted.commit_id.unwrap();
-    assert!(matches!(
-        repo.get_org_metaprompt(&bootstrap.org_id).await,
-        Err(server::repository::ServerError::NotFound { .. })
-    ));
-
-    let (_, org_etag): (CommitStateResponse, String) =
-        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
-    let approved = create_approved_review(
-        app.clone(),
-        CreateDraftRequest {
-            daemon_installation_id: "daemon_hub_metaprompt".to_owned(),
-            project_id: bootstrap.project_id.clone(),
-            base_commit_id: Some(deleted_commit_id),
-            title: "Recreate Hub metaprompt".to_owned(),
-            description: None,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Org,
-                kind: DraftResourceKind::Metaprompt,
-                id: None,
-                path: Some("META_PROMPT.md".to_owned()),
-            },
-            operations: vec![DraftOperationInput {
-                action: DraftOperationAction::Create,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Metaprompt,
-                    id: None,
-                    path: Some("META_PROMPT.md".to_owned()),
-                },
-                content: Some(DraftResourceContent::Metaprompt {
-                    content: "# Hub metaprompt\n\nRecreated organization behavior.".to_owned(),
-                }),
-                new_path: None,
-            }],
-        },
-    )
-    .await;
-    let _: ReviewMergeResult = post_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/reviews/{}/merges", approved.review_id),
-        &org_etag,
-        &CreateReviewMergeRequest {
-            expected_review_version: approved.version,
-        },
-    )
-    .await;
-    let recreated = repo.get_org_metaprompt(&bootstrap.org_id).await.unwrap();
-    assert_ne!(recreated.metaprompt.metaprompt_id, metaprompt_id);
-    assert_eq!(
-        recreated.content,
-        "# Hub metaprompt\n\nRecreated organization behavior."
-    );
-    let project_after_recreate: CommitStateResponse = get_json(app, &project_state_uri).await;
-    assert_eq!(
-        project_after_recreate.reference.commit_id,
-        project_before.reference.commit_id
-    );
-}
-
-#[tokio::test]
 async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
@@ -2190,10 +1953,7 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
                 path: Some("rules/empty".to_owned()),
             },
             content: Some(DraftResourceContent::Rule {
-                name: Some("Empty Rule".to_owned()),
-                applies_when: None,
-                constraint: "  ".to_owned(),
-                tags: None,
+                content: "  ".to_owned(),
             }),
             new_path: None,
         }],
@@ -2238,38 +1998,6 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         StatusCode::BAD_REQUEST
     );
 
-    let invalid_metaprompt = CreateDraftRequest {
-        daemon_installation_id: "daemon_paths".to_owned(),
-        project_id: bootstrap.project_id,
-        base_commit_id: None,
-        title: "Invalid Metaprompt path".to_owned(),
-        description: None,
-        resource: DraftResourceRef {
-            scope: ResourceScope::Project,
-            kind: DraftResourceKind::Metaprompt,
-            id: None,
-            path: Some("prompts/META_PROMPT.md".to_owned()),
-        },
-        operations: vec![DraftOperationInput {
-            action: DraftOperationAction::Create,
-            resource: DraftResourceRef {
-                scope: ResourceScope::Project,
-                kind: DraftResourceKind::Metaprompt,
-                id: None,
-                path: Some("prompts/META_PROMPT.md".to_owned()),
-            },
-            content: Some(DraftResourceContent::Metaprompt {
-                content: "# Metaprompt".to_owned(),
-            }),
-            new_path: None,
-        }],
-    };
-    assert_eq!(
-        post_response(app, "/api/v1/drafts", &invalid_metaprompt)
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
     let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drafts")
         .fetch_one(&postgres.pool)
         .await
@@ -2278,7 +2006,7 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
 }
 
 #[tokio::test]
-async fn structured_rule_and_markdown_workflow_survive_draft_review_and_commit_round_trip() {
+async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
         postgres.pool.clone(),
@@ -2321,10 +2049,8 @@ async fn structured_rule_and_markdown_workflow_survive_draft_review_and_commit_r
                     path: Some("rules/coding".to_owned()),
                 },
                 content: Some(DraftResourceContent::Rule {
-                    name: Some("Coding discipline".to_owned()),
-                    applies_when: Some("While changing production code".to_owned()),
-                    constraint: "Run the focused tests before committing.".to_owned(),
-                    tags: Some(vec!["quality".to_owned(), "coding".to_owned()]),
+                    content: "# Coding discipline\n\nApply while changing production code.\n\nRun the focused tests before committing.\n\nTags: coding, quality"
+                        .to_owned(),
                 }),
                 new_path: None,
             }],
@@ -2378,21 +2104,17 @@ async fn structured_rule_and_markdown_workflow_survive_draft_review_and_commit_r
         &format!("/api/v1/projects/{project_id}/rules/{rule_id}"),
     )
     .await;
-    assert_eq!(rule.rule.name, "Coding discipline");
-    assert_eq!(rule.content.applies_when, "While changing production code");
+    assert_eq!(rule.rule.name, "coding");
     assert_eq!(
-        rule.content.constraint,
-        "Run the focused tests before committing."
+        rule.content,
+        "# Coding discipline\n\nApply while changing production code.\n\nRun the focused tests before committing.\n\nTags: coding, quality"
     );
-    assert_eq!(rule.content.tags, vec!["coding", "quality"]);
     let rule_blob = rule_commit
         .blobs
         .iter()
         .find(|blob| blob.blob_id == rule_entry.blob_id)
         .expect("rule Blob should be present");
-    let encoded_rule: serde_json::Value = serde_json::from_str(&rule_blob.content).unwrap();
-    assert_eq!(encoded_rule["format"], "clumsies.rule.v1");
-    assert_eq!(encoded_rule["content"]["name"], "Coding discipline");
+    assert_eq!(rule_blob.content, rule.content);
 
     let (_, rule_ref_etag): (CommitStateResponse, String) = get_json_with_etag(
         app.clone(),

@@ -27,13 +27,10 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum MemoryKind: String, Codable, Identifiable, Sendable {
+enum MemoryKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case context
     case rules
     case workflows
-    case metaprompt
-
-    static let userMaintainedCases: [MemoryKind] = [.context, .rules, .workflows]
 
     var id: String { rawValue }
 
@@ -42,12 +39,7 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         case .context: "Context"
         case .rules: "Rules"
         case .workflows: "Workflow"
-        case .metaprompt: "Metaprompt"
         }
-    }
-
-    var isUserMaintained: Bool {
-        Self.userMaintainedCases.contains(self)
     }
 
     var singularTitle: String {
@@ -55,7 +47,6 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         case .context: "Context"
         case .rules: "Rule"
         case .workflows: "Workflow"
-        case .metaprompt: "Metaprompt"
         }
     }
 
@@ -64,7 +55,6 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         case .context: "doc.text"
         case .rules: "checklist"
         case .workflows: "point.3.connected.trianglepath.dotted"
-        case .metaprompt: "text.bubble"
         }
     }
 
@@ -73,13 +63,12 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         case .context: .context
         case .rules: .rule
         case .workflows: .workflow
-        case .metaprompt: .metaprompt
         }
     }
 
     func supportsMarkdownPreview(path: String) -> Bool {
         switch self {
-        case .rules, .workflows, .metaprompt:
+        case .rules, .workflows:
             return true
         case .context:
             let pathExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
@@ -92,7 +81,6 @@ enum MemoryKind: String, Codable, Identifiable, Sendable {
         case .context: self = .context
         case .rule: self = .rules
         case .workflow: self = .workflows
-        case .metaprompt: self = .metaprompt
         }
     }
 }
@@ -106,8 +94,6 @@ struct EditableMemoryDocument: Hashable, Sendable {
     var title: String
     var path: String
     var body: String
-    var appliesWhen: String
-    var tags: [String]
 }
 
 struct MemoryResource: Identifiable, Hashable, Sendable {
@@ -151,9 +137,7 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
         draft?.document ?? resource?.document ?? .init(
             title: "Untitled",
             path: "",
-            body: "",
-            appliesWhen: "",
-            tags: []
+            body: ""
         )
     }
 

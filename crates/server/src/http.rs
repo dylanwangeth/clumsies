@@ -148,14 +148,12 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
     "/api/v1/org/context/{context_id}" => { get: get_org_context };
     "/api/v1/org/workflows" => { get: list_org_workflows };
     "/api/v1/org/workflows/{workflow_id}" => { get: get_org_workflow };
-    "/api/v1/org/metaprompt" => { get: get_org_metaprompt };
     "/api/v1/projects/{project_id}/rules" => { get: list_project_rules };
     "/api/v1/projects/{project_id}/rules/{rule_id}" => { get: get_project_rule };
     "/api/v1/projects/{project_id}/context" => { get: list_project_context };
     "/api/v1/projects/{project_id}/context/{context_id}" => { get: get_project_context };
     "/api/v1/projects/{project_id}/workflows" => { get: list_project_workflows };
     "/api/v1/projects/{project_id}/workflows/{workflow_id}" => { get: get_project_workflow };
-    "/api/v1/projects/{project_id}/metaprompt" => { get: get_project_metaprompt };
     "/api/v1/projects/{project_id}/org-selections" => {
         get: get_project_org_selection,
         put: replace_project_org_selection,
@@ -1323,18 +1321,6 @@ async fn get_org_workflow(
     ))
 }
 
-async fn get_org_metaprompt(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-) -> Result<Json<crate::api::MetapromptDetail>, HttpError> {
-    Ok(Json(
-        state
-            .repository
-            .get_org_metaprompt(&principal.org_id)
-            .await?,
-    ))
-}
-
 async fn list_project_rules(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
@@ -1425,20 +1411,6 @@ async fn get_project_workflow(
             .repository
             .get_project_workflow(&project_id, &workflow_id)
             .await?,
-    ))
-}
-
-async fn get_project_metaprompt(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-) -> Result<Json<crate::api::MetapromptDetail>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state.repository.get_project_metaprompt(&project_id).await?,
     ))
 }
 

@@ -42,12 +42,9 @@ fn context_content(content: &str) -> DaemonDraftContent {
     }
 }
 
-fn rule_content(constraint: &str) -> DaemonDraftContent {
+fn rule_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Rule {
-        name: None,
-        applies_when: None,
-        constraint: constraint.to_owned(),
-        tags: None,
+        content: content.to_owned(),
     }
 }
 
@@ -101,6 +98,201 @@ async fn initialization_rejects_an_old_local_schema() {
 
     assert!(matches!(error, DaemonError::InvalidConfig(_)));
     assert!(error.to_string().contains("recreate the daemon database"));
+}
+
+#[tokio::test]
+async fn schema_13_migration_removes_metaprompt_and_resets_rebuildable_memory_state() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES
+            ('schema_version', '13'),
+            ('search_schema_version', '1'),
+            ('draft_events_cursor', 'cursor_old')",
+        "CREATE TABLE local_drafts (
+            draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            server_draft_id TEXT,
+            server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
+            target_id TEXT,
+            path TEXT,
+            conflict_base_commit_id TEXT,
+            conflict_current_commit_id TEXT,
+            conflicted_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted', 'merged')) DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "CREATE TABLE local_draft_operations (
+            local_operation_id TEXT PRIMARY KEY,
+            draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+            server_operation_id TEXT,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
+            operation_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
+            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "INSERT INTO local_drafts (
+            draft_id, project_id, resource_scope, resource_kind, path, status,
+            created_at, updated_at
+         ) VALUES
+            ('draft_context', 'project', 'project', 'context', 'context/keep.md', 'open', 'now', 'now'),
+            ('draft_rule', 'project', 'project', 'rule', 'rules/testing.md', 'open', 'now', 'now'),
+            ('draft_metaprompt', 'project', 'project', 'metaprompt', 'META_PROMPT.md', 'open', 'now', 'now')",
+        r##"INSERT INTO local_draft_operations (
+            local_operation_id, draft_id, resource_kind, operation_json, source,
+            sync_status, created_at, updated_at
+         ) VALUES
+            ('operation_context', 'draft_context', 'context', '{}', 'desktop', 'queued', 'now', 'now'),
+            ('operation_rule', 'draft_rule', 'rule', '{"create":{"path":"rules/testing.md","content":{"kind":"rule","name":"Testing","applies_when":"While coding","constraint":"# Testing\n\nRun focused tests.","tags":["testing"]},"description":null},"update":null,"rename":null,"delete":null,"discard":null}', 'desktop', 'queued', 'now', 'now'),
+            ('operation_metaprompt', 'draft_metaprompt', 'metaprompt', '{}', 'desktop', 'queued', 'now', 'now')"##,
+        "CREATE TABLE cached_blobs (
+            blob_id TEXT PRIMARY KEY,
+            content TEXT NOT NULL
+        )",
+        "CREATE TABLE cached_trees (
+            tree_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL
+        )",
+        "CREATE TABLE cached_commits (
+            commit_id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
+            org_id TEXT NOT NULL,
+            project_id TEXT,
+            tree_id TEXT NOT NULL,
+            parent_commit_id TEXT,
+            version BIGINT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )",
+        "CREATE TABLE cached_refs (
+            ref_key TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
+            org_id TEXT NOT NULL,
+            project_id TEXT,
+            commit_id TEXT,
+            etag TEXT NOT NULL,
+            server_updated_at TEXT NOT NULL,
+            installed_at TEXT NOT NULL
+        )",
+        "INSERT INTO cached_blobs (blob_id, content)
+         VALUES ('blob_old', 'obsolete bootstrap')",
+        "INSERT INTO cached_trees (tree_id, payload_json)
+         VALUES ('tree_old', '{\"tree_id\":\"tree_old\",\"entries\":[{\"type\":\"metaprompt\"}]}')",
+        "INSERT INTO cached_commits (
+            commit_id, scope, org_id, tree_id, version, created_at, payload_json
+         ) VALUES ('commit_old', 'org', 'org', 'tree_old', 1, 'now', '{}')",
+        "INSERT INTO cached_refs (
+            ref_key, name, scope, org_id, commit_id, etag, server_updated_at, installed_at
+         ) VALUES ('org:org', 'refs/heads/main', 'org', 'org', 'commit_old', 'commit_old', 'now', 'now')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let stale_generation = root
+        .path()
+        .join("cache/projects/project/generations/commit_old");
+    std::fs::create_dir_all(&stale_generation).unwrap();
+    std::fs::write(
+        stale_generation.join("META_PROMPT.md"),
+        "obsolete bootstrap",
+    )
+    .unwrap();
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    let drafts: Vec<String> =
+        sqlx::query_scalar("SELECT draft_id FROM local_drafts ORDER BY draft_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(drafts, vec!["draft_context", "draft_rule"]);
+    let operations: Vec<String> = sqlx::query_scalar(
+        "SELECT local_operation_id FROM local_draft_operations ORDER BY local_operation_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(operations, vec!["operation_context", "operation_rule"]);
+    let migrated_rule_operation: String = sqlx::query_scalar(
+        "SELECT operation_json
+         FROM local_draft_operations
+         WHERE local_operation_id = 'operation_rule'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let migrated_rule_operation: serde_json::Value =
+        serde_json::from_str(&migrated_rule_operation).unwrap();
+    assert_eq!(
+        migrated_rule_operation["create"]["content"],
+        json!({
+            "kind": "rule",
+            "content": "# Testing\n\n## Applies when\n\nWhile coding\n\n## Constraint\n\n# Testing\n\nRun focused tests.\n\nTags: testing"
+        })
+    );
+    for table in [
+        "cached_refs",
+        "cached_commits",
+        "cached_trees",
+        "cached_blobs",
+    ] {
+        let query = format!("SELECT COUNT(*) FROM {table}");
+        let count: i64 = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 0, "{table} was not reset");
+    }
+    let replay_cursor: Option<String> =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'draft_events_cursor'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(replay_cursor.is_none());
+    let reset_marker: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM daemon_meta WHERE key = 'memory_cache_reset_required'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(reset_marker.is_none());
+    let search_schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'search_schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(search_schema_version, "2");
+    assert!(!root.path().join("cache/projects").exists());
+
+    let rejected = sqlx::query(
+        "INSERT INTO local_drafts (
+            draft_id, project_id, resource_scope, resource_kind, status
+         ) VALUES ('draft_rejected', 'project', 'project', 'metaprompt', 'open')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(rejected.is_err());
 }
 
 #[test]

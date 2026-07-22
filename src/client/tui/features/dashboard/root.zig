@@ -1212,12 +1212,6 @@ fn appendToolMetadata(
         } else {
             try appendDetailField(self, ctx, out, width, "session", "unknown", is_selected);
         }
-        if (tool.mpf_hash) |hash| {
-            try appendDetailField(self, ctx, out, width, "MPF hash", hash, is_selected);
-        }
-        if (tool.mpf_content) |content| {
-            try appendDetailField(self, ctx, out, width, "MPF text", content, is_selected);
-        }
         return;
     }
 
@@ -1486,7 +1480,7 @@ fn appendEvidenceText(
 }
 
 fn briefLabel(kind: []const u8) []const u8 {
-    if (std.mem.eql(u8, kind, "setup")) return "MPF";
+    if (std.mem.eql(u8, kind, "setup")) return "setup";
     if (std.mem.eql(u8, kind, "discover")) return "query";
     if (std.mem.eql(u8, kind, "refer")) return "content";
     if (std.mem.eql(u8, kind, "agent_report")) return "summary";
@@ -1498,13 +1492,7 @@ fn briefLabel(kind: []const u8) []const u8 {
 fn toolBriefText(tool: attestation_reader.RoundTool) ?[]const u8 {
     if (std.mem.eql(u8, tool.kind, "agent_report")) return tool.summary;
     if (std.mem.eql(u8, tool.kind, "reject")) return tool.reason;
-    if (std.mem.eql(u8, tool.kind, "setup")) {
-        if (tool.mpf_content) |content| {
-            const line = firstMeaningfulLine(content);
-            if (line.len > 0) return line;
-        }
-        return "session bound";
-    }
+    if (std.mem.eql(u8, tool.kind, "setup")) return "session bound";
     if (std.mem.eql(u8, tool.kind, "discover")) {
         if (tool.discover_result_names) |names| return names;
         if (tool.discover_query) |query| return query;
@@ -1610,14 +1598,12 @@ fn toolExpandedText(tool: attestation_reader.RoundTool) ?[]const u8 {
 
 fn isProposeTool(kind: []const u8) bool {
     return std.mem.startsWith(u8, kind, "context_propose_") or
-        std.mem.startsWith(u8, kind, "rule_propose_") or
-        std.mem.startsWith(u8, kind, "mpf_propose_");
+        std.mem.startsWith(u8, kind, "rule_propose_");
 }
 
 fn proposeCategory(kind: []const u8) []const u8 {
     if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
     if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
-    if (std.mem.startsWith(u8, kind, "mpf_propose_")) return "mpf";
     return "draft";
 }
 
@@ -1647,7 +1633,6 @@ fn proposeDisplayName(
     tool: attestation_reader.RoundTool,
 ) ?[]const u8 {
     const path = proposePath(tool);
-    if (path != null and std.mem.eql(u8, path.?, "META_PROMPT.md")) return path;
     if (tool.rule_id) |rule_id| {
         const rule = resolveRulePreview(ctx, ws_id, rule_id) catch return proposePath(tool) orelse rule_id;
         if (std.mem.eql(u8, rule.name, rule_id)) return path orelse rule_id;
@@ -1674,7 +1659,6 @@ fn proposeId(tool: attestation_reader.RoundTool) ?[]const u8 {
 fn proposeEntityLabel(kind: []const u8) []const u8 {
     if (std.mem.startsWith(u8, kind, "context_propose_")) return "context";
     if (std.mem.startsWith(u8, kind, "rule_propose_")) return "rule";
-    if (std.mem.startsWith(u8, kind, "mpf_propose_")) return "mpf";
     return "draft";
 }
 
@@ -1761,14 +1745,7 @@ fn findProposeDraft(
 }
 
 fn proposeDraftCategory(tool: attestation_reader.RoundTool) drafts_mod.DraftCategory {
-    if (tool.path) |path| {
-        if (std.mem.eql(u8, path, "META_PROMPT.md")) return .meta_prompt;
-    }
-    if (tool.new_path) |path| {
-        if (std.mem.eql(u8, path, "META_PROMPT.md")) return .meta_prompt;
-    }
     if (std.mem.startsWith(u8, tool.kind, "context_propose_")) return .context;
-    if (std.mem.startsWith(u8, tool.kind, "mpf_propose_")) return .meta_prompt;
     return .rule;
 }
 
@@ -1788,7 +1765,6 @@ fn readCacheBytes(
     path: []const u8,
 ) ![]const u8 {
     const abs_path = switch (category) {
-        .meta_prompt => try std.fs.path.join(arena, &.{ ws_dir, "cache", path }),
         .rule => try std.fs.path.join(arena, &.{ ws_dir, "cache", "rule", path }),
         .context => try std.fs.path.join(arena, &.{ ws_dir, "cache", "context", path }),
     };

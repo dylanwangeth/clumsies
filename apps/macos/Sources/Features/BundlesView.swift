@@ -147,7 +147,7 @@ private struct BundleEditor: View {
     }
 
     private var selectableResources: [MemoryResource] {
-        store.resources.filter { $0.kind.isUserMaintained }
+        store.resources
     }
 
     private var selectedResources: [MemoryResource] {
@@ -219,7 +219,7 @@ private struct BundleResourcePicker: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(MemoryKind.userMaintainedCases) { kind in
+                ForEach(MemoryKind.allCases) { kind in
                     let candidates = filteredResources.filter { $0.kind == kind }
                     if !candidates.isEmpty {
                         Section(kind.title) {

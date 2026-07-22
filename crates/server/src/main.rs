@@ -6,7 +6,6 @@ use server::config::PublicOrigin;
 use server::db::{DatabaseConfig, connect, run_migrations};
 use server::http;
 use server::installation::InstallationService;
-use server::repository::rebuild_refs_with_flat_workflows;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +19,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_config = DatabaseConfig::from_url(database_url);
     let pool = connect(&database_config).await?;
     run_migrations(&pool).await?;
-    rebuild_refs_with_flat_workflows(&pool).await?;
     let installation = InstallationService::from_env(pool.clone(), public_origin.secure_cookies())?;
     let auth = AuthService::from_env(pool.clone(), &public_origin).await?;
 

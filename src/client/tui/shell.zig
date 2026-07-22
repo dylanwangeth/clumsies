@@ -2448,7 +2448,7 @@ pub const Shell = struct {
         path: []const u8,
     ) ?[]const u8 {
         return switch (category) {
-            .rule, .meta_prompt => self.remoteRuleBody(path),
+            .rule => self.remoteRuleBody(path),
             .context => null,
         };
     }
@@ -2473,7 +2473,6 @@ pub const Shell = struct {
         return switch (category) {
             .rule => self.localRuleBody(path),
             .context => null,
-            .meta_prompt => self.localMetaPromptBody(),
         };
     }
 
@@ -2483,18 +2482,6 @@ pub const Shell = struct {
         path: []const u8,
     ) ?[]const u8 {
         return self.remoteArtifactRuleBody(category, path) orelse self.localArtifactRuleBody(category, path);
-    }
-
-    pub fn localMetaPromptBody(self: *Shell) ?[]const u8 {
-        const ws_id = self.activeWsId() orelse return null;
-        const arena = self.viewAllocator();
-        const ws_dir = workspace_config.getWsDir(arena, ws_id) catch return null;
-        const path = std.fs.path.join(arena, &.{ ws_dir, "cache", "META_PROMPT.md" }) catch return null;
-        const file = std.Io.Dir.openFileAbsolute(std.Options.debug_io, path, .{}) catch return null;
-        defer file.close(std.Options.debug_io);
-        var read_buf: [4096]u8 = undefined;
-        var fr = std.Io.File.Reader.init(file, std.Options.debug_io, &read_buf);
-        return fr.interface.allocRemaining(arena, std.Io.Limit.limited(10 * 1024 * 1024)) catch null;
     }
 
     pub fn isLocalContentFresh(
@@ -2680,7 +2667,8 @@ pub const Shell = struct {
         path: []const u8,
     ) drafts_mod.DraftCategory {
         _ = self;
-        return if (std.mem.eql(u8, path, "META_PROMPT.md")) .meta_prompt else .rule;
+        _ = path;
+        return .rule;
     }
 
     pub fn invalidateRemoteDetailRequests(self: *Shell) void {
@@ -3254,7 +3242,6 @@ pub const Shell = struct {
     fn draftCategoryForPrTargetKind(target_kind: []const u8) ?drafts_mod.DraftCategory {
         if (std.mem.eql(u8, target_kind, "context")) return .context;
         if (std.mem.eql(u8, target_kind, "rule")) return .rule;
-        if (std.mem.eql(u8, target_kind, "mpf")) return .meta_prompt;
         return null;
     }
 
@@ -3891,7 +3878,7 @@ pub const Shell = struct {
                 impact.workspace_detail_ws_id = pending.target.ws_id;
                 impact.settle_after_workspace_refresh = self.shouldSettlePrActionAfterWorkspaceRefresh();
                 switch (pending.target.category) {
-                    .rule, .meta_prompt => {
+                    .rule => {
                         impact.artifact_catalog = true;
                         impact.artifact_detail = true;
                     },
@@ -3903,7 +3890,7 @@ pub const Shell = struct {
 
         const pr = acted_pr orelse return impact;
         switch (pr.target_kind) {
-            .rule, .mpf, .bundle => {
+            .rule, .bundle => {
                 impact.artifact_catalog = true;
                 impact.artifact_detail = true;
             },
@@ -5330,13 +5317,10 @@ pub const Shell = struct {
     pub fn refreshDraftsCache(self: *Shell) void {
         self.drafts.by_rule_path = .{};
         self.drafts.by_context_path = .{};
-        self.drafts.by_meta_prompt_path = .{};
         self.drafts.by_rule_draft_path = .{};
         self.drafts.by_context_draft_path = .{};
-        self.drafts.by_meta_prompt_draft_path = .{};
         self.drafts.by_rule_local_id = .{};
         self.drafts.by_context_local_id = .{};
-        self.drafts.by_meta_prompt_local_id = .{};
         // drafts_create_*_paths are handed to the file tree, which
         // stores them in its `expanded` StringHashMap and `dir_paths`
         // array without duping. Both the hashmap key and the dir
@@ -5395,14 +5379,12 @@ pub const Shell = struct {
             const target_map = switch (entry.category) {
                 .rule => &self.drafts.by_rule_path,
                 .context => &self.drafts.by_context_path,
-                .meta_prompt => &self.drafts.by_meta_prompt_path,
             };
             target_map.put(arena, key, entry.status) catch {};
             const draft_path = arena.dupe(u8, entry.draft_path) catch continue;
             const draft_path_map = switch (entry.category) {
                 .rule => &self.drafts.by_rule_draft_path,
                 .context => &self.drafts.by_context_draft_path,
-                .meta_prompt => &self.drafts.by_meta_prompt_draft_path,
             };
             draft_path_map.put(arena, key, draft_path) catch {};
             if (!std.mem.eql(u8, key_src, entry.draft_path)) {
@@ -5410,14 +5392,13 @@ pub const Shell = struct {
                 target_map.put(arena, draft_key, entry.status) catch {};
                 draft_path_map.put(arena, draft_key, draft_path) catch {};
             }
-            if (entry.operation == .create and entry.category != .meta_prompt) {
+            if (entry.operation == .create) {
                 const local_id = entry.local_temp_id orelse continue;
                 const local_key = arena.dupe(u8, key_src) catch continue;
                 const local_value = arena.dupe(u8, local_id) catch continue;
                 const local_map = switch (entry.category) {
                     .rule => &self.drafts.by_rule_local_id,
                     .context => &self.drafts.by_context_local_id,
-                    .meta_prompt => unreachable,
                 };
                 local_map.put(arena, local_key, local_value) catch {};
 
@@ -5428,7 +5409,6 @@ pub const Shell = struct {
                 const dest = switch (entry.category) {
                     .rule => &create_rules,
                     .context => &create_contexts,
-                    .meta_prompt => unreachable,
                 };
                 dest.append(api_alloc, path_copy) catch {};
             }
@@ -5482,7 +5462,6 @@ pub const Shell = struct {
         return switch (category) {
             .rule => self.drafts.by_rule_path.get(path),
             .context => self.drafts.by_context_path.get(path),
-            .meta_prompt => self.drafts.by_meta_prompt_path.get(path),
         };
     }
 
@@ -5494,7 +5473,6 @@ pub const Shell = struct {
         return switch (category) {
             .rule => self.drafts.by_rule_local_id.get(path),
             .context => self.drafts.by_context_local_id.get(path),
-            .meta_prompt => self.drafts.by_meta_prompt_local_id.get(path),
         };
     }
 
@@ -5506,7 +5484,6 @@ pub const Shell = struct {
         return switch (category) {
             .rule => self.drafts.by_rule_draft_path.get(path),
             .context => self.drafts.by_context_draft_path.get(path),
-            .meta_prompt => self.drafts.by_meta_prompt_draft_path.get(path),
         } orelse path;
     }
 
@@ -5525,7 +5502,6 @@ pub const Shell = struct {
         const has_draft = switch (category) {
             .rule => self.drafts.by_rule_path.contains(path),
             .context => self.drafts.by_context_path.contains(path),
-            .meta_prompt => self.drafts.by_meta_prompt_path.contains(path),
         };
         if (!has_draft) return null;
         const draft_path = self.draftPathForSelection(category, path);
@@ -5791,14 +5767,13 @@ pub const Shell = struct {
     fn seedContentForTarget(self: *Shell, target: DraftTarget) ?[]const u8 {
         if (self.selected_module == .workspace) {
             return switch (target.category) {
-                .rule, .meta_prompt => self.localArtifactRuleBody(target.category, target.path),
+                .rule => self.localArtifactRuleBody(target.category, target.path),
                 .context => self.localWorkspaceContextBody(target.ws_id, target.path),
             };
         }
         return switch (target.category) {
             .rule => self.cachedRuleBody(target.path),
             .context => self.cachedWorkspaceContextBody(target.ws_id, target.path),
-            .meta_prompt => self.cachedArtifactRuleBody(.meta_prompt, target.path),
         };
     }
 
@@ -5873,7 +5848,6 @@ pub const Shell = struct {
         const category: drafts_mod.DraftCategory = switch (pr.target_kind) {
             .context => .context,
             .rule => .rule,
-            .mpf => .meta_prompt,
             .bundle => return false,
         };
 
@@ -5904,8 +5878,7 @@ pub const Shell = struct {
 
     fn shouldSettlePrActionAfterWorkspaceRefresh(self: *const Shell) bool {
         const pending = self.drafts.pending_pr_action orelse return false;
-        return pending.status_on_success == .applied and
-            (pending.target.category == .context or pending.target.category == .rule or pending.target.category == .meta_prompt);
+        return pending.status_on_success == .applied;
     }
 
     fn settlePendingWorkspacePrAction(self: *Shell, ws_id: []const u8) void {
@@ -6214,13 +6187,13 @@ pub const Shell = struct {
                 }
                 break :blk null;
             },
-            .rule, .meta_prompt => null,
+            .rule => null,
         };
     }
 
     fn existingRuleTarget(self: *Shell, target: DraftTarget) ?ExistingRuleTarget {
         return switch (target.category) {
-            .rule, .meta_prompt => blk: {
+            .rule => blk: {
                 const remote = self.api_state.workspace_manifest_cache.lookup(.{ .value = target.ws_id });
                 if (remote) |rules| {
                     if (self.findRuleFor(rules, target.path, target.rule_id)) |rule| {
@@ -6283,7 +6256,7 @@ pub const Shell = struct {
         if (operation != .create) return false;
         return switch (target.category) {
             .context => self.existingContextTarget(target) != null,
-            .rule, .meta_prompt => self.existingRuleTarget(target) != null,
+            .rule => self.existingRuleTarget(target) != null,
         };
     }
 
@@ -6400,7 +6373,6 @@ pub const Shell = struct {
         switch (target.category) {
             .rule => self.submitRulePr(target),
             .context => self.submitContextPr(target),
-            .meta_prompt => self.submitRulePr(target),
         }
     }
 
@@ -6500,7 +6472,7 @@ pub const Shell = struct {
                 if (std.mem.eql(u8, value, target.path)) return entry;
             }
             switch (target.category) {
-                .rule, .meta_prompt => if (entry.rule_id) |value| {
+                .rule => if (entry.rule_id) |value| {
                     if (std.mem.eql(u8, value, target.path)) return entry;
                 },
                 .context => if (entry.context_id) |value| {
@@ -6531,7 +6503,7 @@ pub const Shell = struct {
                 if (std.mem.eql(u8, value, target.path)) return entry;
             }
             switch (target.category) {
-                .rule, .meta_prompt => if (entry.rule_id) |value| {
+                .rule => if (entry.rule_id) |value| {
                     if (std.mem.eql(u8, value, target.path)) return entry;
                 },
                 .context => if (entry.context_id) |value| {
@@ -6584,7 +6556,7 @@ pub const Shell = struct {
                         const item = findContextAtPath(remote, path, context_id) orelse break :hash null;
                         break :hash item.hash;
                     },
-                    .rule, .meta_prompt => hash: {
+                    .rule => hash: {
                         const remote = self.api_state.workspace_manifest_cache.lookup(.{ .value = target.ws_id }) orelse break :hash null;
                         const path = if (effective_operation == .rename or effective_operation == .create) entry.draft_path else target.path;
                         const rule_id: ?[]const u8 = if (effective_operation == .create) null else target.rule_id orelse entry.rule_id orelse break :hash null;
@@ -7665,7 +7637,6 @@ pub const Shell = struct {
         const modal_title = switch (target.category) {
             .rule => "New Rule PR",
             .context => "New Context PR",
-            .meta_prompt => "New Meta-Prompt PR",
         };
         const box_h: u16 = if (self.drafts.pr_composer_submitting) 11 else 10;
         const modal = Modal{
@@ -7805,12 +7776,10 @@ pub const Shell = struct {
         const title = switch (self.drafts.new_draft_category) {
             .rule => "New Rule Draft",
             .context => "New Context Draft",
-            .meta_prompt => "New Meta-Prompt Draft",
         };
         const hint = switch (self.drafts.new_draft_category) {
             .rule => "e.g. rule/00_MY_RULE.md",
             .context => "e.g. spec/NEW_SPEC.md",
-            .meta_prompt => "META_PROMPT.md",
         };
         const modal = Modal{
             .title = title,
@@ -8027,7 +7996,7 @@ pub const Shell = struct {
         };
         const existing_remote = switch (target.category) {
             .context => self.existingContextTarget(target) != null,
-            .rule, .meta_prompt => self.existingRuleTarget(target) != null,
+            .rule => self.existingRuleTarget(target) != null,
         };
         const effective_operation: drafts_mod.DraftOperation = if (entry.operation == .create and existing_remote) .update else entry.operation;
         const status: drafts_mod.DraftStatus = if (self.draftAlreadyMatchesRemote(target, submit_entry, effective_operation, content)) .applied else .conflicted;

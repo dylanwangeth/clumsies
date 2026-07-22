@@ -276,7 +276,7 @@ struct WorkspaceView: View {
         case .hub, .local:
             ToolbarItem {
                 Picker("Memory Type", selection: $store.selectedKind) {
-                    ForEach(MemoryKind.userMaintainedCases) { kind in
+                    ForEach(MemoryKind.allCases) { kind in
                         Text(kind.title)
                             .tag(kind)
                     }

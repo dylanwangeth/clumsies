@@ -9,7 +9,7 @@ memory. The Rust binary and container are named Server.
 Server owns:
 
 - organization membership, project membership, roles, and token sessions
-- organization and project Context, Rules, Workflows, and Metaprompt resources
+- organization and project Context, Rules, and Workflows
 - personal Bundles
 - drafts, draft operation history, reviews, decisions, comments, and merges
 - immutable Commit history, Trees, Blobs, and movable organization/project Refs

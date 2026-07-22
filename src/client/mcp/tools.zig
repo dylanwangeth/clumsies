@@ -35,8 +35,8 @@ const store_schema =
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false," ++
     "\"$defs\":{" ++
-    "\"writeCreate\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"name\":{\"type\":\"string\"},\"applies_when\":{\"type\":\"string\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
-    "\"writeUpdate\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"name\":{\"type\":\"string\"},\"applies_when\":{\"type\":\"string\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}" ++
+    "\"writeCreate\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
+    "\"writeUpdate\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}" ++
     "}}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
@@ -232,15 +232,7 @@ fn daemonDraftOperationValue(
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     var content: std.json.ObjectMap = .empty;
     try content.put(allocator, "kind", .{ .string = daemonResourceName(resource) });
-    switch (resource) {
-        .context, .workflow => try content.put(allocator, "content", .{ .string = body }),
-        .rule => {
-            try content.put(allocator, "constraint", .{ .string = body });
-            inline for (.{ "name", "applies_when", "tags" }) |field| {
-                if (args.get(field)) |value| try content.put(allocator, field, value);
-            }
-        },
-    }
+    try content.put(allocator, "content", .{ .string = body });
 
     var details: std.json.ObjectMap = .empty;
     if (op == .create) {
@@ -264,22 +256,14 @@ fn validateStoreOperation(
     args: std.json.ObjectMap,
 ) !?[]u8 {
     const allowed: []const []const u8 = switch (op) {
-        .create => &.{ "path", "body", "name", "applies_when", "tags", "description" },
-        .update => &.{ "id", "body", "name", "applies_when", "tags", "description" },
+        .create => &.{ "path", "body", "description" },
+        .update => &.{ "id", "body", "description" },
         .rename => &.{ "id", "new_path", "description" },
         .delete => &.{ "id", "description" },
         .discard => &.{"id"},
     };
     if (try rejectUnexpectedFields(allocator, args, allowed, draftOpName(op))) |result| {
         return result;
-    }
-    if (resource != .rule and
-        (args.get("name") != null or args.get("applies_when") != null or args.get("tags") != null))
-    {
-        return try tool_result.buildErrorResult(
-            allocator,
-            "name, applies_when, and tags are valid only for Rule writes",
-        );
     }
     switch (op) {
         .create => {
@@ -307,14 +291,6 @@ fn validateStoreOperation(
             const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
             if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
         },
-    }
-    if (resource == .rule and (op == .create or op == .update)) {
-        if (args.get("tags")) |tags| switch (tags) {
-            .array => |array| for (array.items) |item| if (item != .string) {
-                return try tool_result.buildErrorResult(allocator, "rule tags must be an array of strings");
-            },
-            else => return try tool_result.buildErrorResult(allocator, "rule tags must be an array of strings"),
-        };
     }
     return null;
 }
@@ -461,9 +437,9 @@ test "store maps Workflow text to typed daemon content" {
     try testing.expect(std.mem.indexOf(u8, json, "\"body\"") == null);
 }
 
-test "store maps optional Rule fields without inventing defaults" {
+test "store maps Rule Markdown to daemon content" {
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"update":{"id":"rule_test","body":"Use Rust","applies_when":"coding","tags":["rust"]}}
+        \\{"update":{"id":"rule_test","body":"# Rust\n\nUse Rust"}}
     , .{});
     defer parsed.deinit();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -477,10 +453,8 @@ test "store maps optional Rule fields without inventing defaults" {
     );
     const json = try std.json.Stringify.valueAlloc(testing.allocator, value, .{});
     defer testing.allocator.free(json);
-    try testing.expect(std.mem.indexOf(u8, json, "\"constraint\":\"Use Rust\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"applies_when\":\"coding\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"tags\":[\"rust\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"name\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"# Rust\\n\\nUse Rust\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"constraint\"") == null);
 }
 
 test "tool validation rejects undeclared and type-specific fields" {
@@ -516,5 +490,5 @@ test "tool validation rejects undeclared and type-specific fields" {
         context_write.value.object,
     )).?;
     defer testing.allocator.free(invalid_metadata);
-    try testing.expect(std.mem.indexOf(u8, invalid_metadata, "valid only for Rule writes") != null);
+    try testing.expect(std.mem.indexOf(u8, invalid_metadata, "unsupported field 'tags'") != null);
 }

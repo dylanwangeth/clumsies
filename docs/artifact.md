@@ -1,10 +1,9 @@
 # Artifact
 
 > Legacy architecture reference. `Artifact` has been replaced by the Hub view
-> of organization-scoped Context, Rules, and Workflows. Reserved Metaprompt,
-> manifest-bootstrap, TUI, and attestation behavior below is not a current
-> runtime contract. See [Overview](/overview), [Architecture](/architecture),
-> and [MCP](/mcp).
+> of organization-scoped Context, Rules, and Workflows. Manifest-bootstrap,
+> TUI, and attestation behavior below is not a current runtime contract. See
+> [Overview](/overview), [Architecture](/architecture), and [MCP](/mcp).
 
 ## What Artifact is
 
@@ -82,12 +81,6 @@ graph LR
 ```
 
 This is one of the most important model choices in the system. If docs flatten that distinction, later pages about workspace sync and trace stop making sense. The docs should still keep using `rule` when they mean a single behavioral instruction, even though the identity system retains the broader `prompt` term.
-
-## Reserved paths
-
-Artifact also carries a small number of special paths. The most important one is `META_PROMPT.md`.
-
-That file is not just another rule. It is bootstrap material. It exists so session start can inject the meta-prompt layer before normal task-specific loading begins.
 
 ## Review and propagation
 

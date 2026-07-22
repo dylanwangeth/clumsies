@@ -43,8 +43,9 @@ pub use search::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 13;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 14;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
+const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
 const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_success_at";
 
@@ -708,6 +709,7 @@ impl DaemonState {
         prepare_directories(&config)?;
         let pool = connect_local_db(&config.local_db_path()).await?;
         migrate_local_db(&pool).await?;
+        reset_memory_cache_if_required(&pool, &config.cache_dir).await?;
         recover_interrupted_operations(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
         let credentials = load_server_credentials(credential_store.clone()).await?;
@@ -2607,7 +2609,6 @@ fn draft_resource_kind_from_str(value: &str) -> Result<DaemonDraftResourceKind, 
         "context" => Ok(DaemonDraftResourceKind::Context),
         "rule" => Ok(DaemonDraftResourceKind::Rule),
         "workflow" => Ok(DaemonDraftResourceKind::Workflow),
-        "metaprompt" => Ok(DaemonDraftResourceKind::Metaprompt),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown draft resource kind: {other}"
         ))),
@@ -3115,7 +3116,11 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     let existing_schema_version = current_schema_version(pool).await?;
-    if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
+    if existing_schema_version == 13 {
+        migrate_local_schema_13_to_14(pool).await?;
+    } else if existing_schema_version != 0
+        && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION
+    {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
         )));
@@ -3134,7 +3139,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             server_version BIGINT NOT NULL DEFAULT 0,
             base_commit_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
             target_id TEXT,
             path TEXT,
             conflict_base_commit_id TEXT,
@@ -3165,7 +3170,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
             local_operation_id TEXT PRIMARY KEY,
             draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
             server_operation_id TEXT,
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'metaprompt')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
             operation_json TEXT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
             sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
@@ -3234,6 +3239,247 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .bind(CURRENT_LOCAL_SCHEMA_VERSION.to_string())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    for statement in [
+        "DROP INDEX IF EXISTS idx_local_drafts_target_id",
+        "DROP INDEX IF EXISTS idx_local_drafts_server_draft_id",
+        "DROP INDEX IF EXISTS idx_local_draft_operations_server_operation_id",
+        "DROP INDEX IF EXISTS idx_local_draft_operations_sync_status",
+        "ALTER TABLE local_draft_operations RENAME TO local_draft_operations_v13",
+        "ALTER TABLE local_drafts RENAME TO local_drafts_v13",
+        "CREATE TABLE local_drafts (
+            draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            server_draft_id TEXT,
+            server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            target_id TEXT,
+            path TEXT,
+            conflict_base_commit_id TEXT,
+            conflict_current_commit_id TEXT,
+            conflicted_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'discarded', 'conflicted', 'merged')) DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+        "INSERT INTO local_drafts (
+            draft_id, project_id, server_draft_id, server_version, base_commit_id,
+            resource_scope, resource_kind, target_id, path, conflict_base_commit_id,
+            conflict_current_commit_id, conflicted_at, status, created_at, updated_at
+         )
+         SELECT
+            draft_id, project_id, server_draft_id, server_version, base_commit_id,
+            resource_scope, resource_kind, target_id, path, conflict_base_commit_id,
+            conflict_current_commit_id, conflicted_at, status, created_at, updated_at
+         FROM local_drafts_v13
+         WHERE resource_kind <> 'metaprompt'",
+        "CREATE TABLE local_draft_operations (
+            local_operation_id TEXT PRIMARY KEY,
+            draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+            server_operation_id TEXT,
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            operation_json TEXT NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
+            sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+        "INSERT INTO local_draft_operations (
+            local_operation_id, draft_id, server_operation_id, resource_kind,
+            operation_json, source, sync_status, last_error, created_at, updated_at
+         )
+         SELECT
+            operation.local_operation_id, operation.draft_id, operation.server_operation_id,
+            operation.resource_kind, operation.operation_json, operation.source,
+            operation.sync_status, operation.last_error, operation.created_at, operation.updated_at
+         FROM local_draft_operations_v13 AS operation
+         JOIN local_drafts AS draft ON draft.draft_id = operation.draft_id
+         WHERE operation.resource_kind <> 'metaprompt'",
+        "DROP TABLE local_draft_operations_v13",
+        "DROP TABLE local_drafts_v13",
+        "DELETE FROM daemon_meta WHERE key = 'draft_events_cursor'",
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('memory_cache_reset_required', '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    migrate_legacy_rule_operations(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migrate_legacy_rule_operations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), DaemonError> {
+    let rows = sqlx::query(
+        "SELECT operation.local_operation_id, operation.operation_json, draft.path
+         FROM local_draft_operations AS operation
+         JOIN local_drafts AS draft ON draft.draft_id = operation.draft_id
+         WHERE operation.resource_kind = 'rule'",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        let operation_id: String = row.try_get("local_operation_id")?;
+        let operation_json: String = row.try_get("operation_json")?;
+        let fallback_path: Option<String> = row.try_get("path")?;
+        let Some(operation_json) =
+            flatten_legacy_rule_operation(&operation_json, fallback_path.as_deref())?
+        else {
+            continue;
+        };
+        sqlx::query(
+            "UPDATE local_draft_operations SET operation_json = $2
+             WHERE local_operation_id = $1",
+        )
+        .bind(operation_id)
+        .bind(operation_json)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+fn flatten_legacy_rule_operation(
+    operation_json: &str,
+    fallback_path: Option<&str>,
+) -> Result<Option<String>, DaemonError> {
+    let mut operation: serde_json::Value = serde_json::from_str(operation_json)?;
+    let mut changed = false;
+    for action in ["create", "update"] {
+        let Some(action_value) = operation
+            .get_mut(action)
+            .and_then(|value| value.as_object_mut())
+        else {
+            continue;
+        };
+        let fallback_name = action_value
+            .get("path")
+            .and_then(|value| value.as_str())
+            .or(fallback_path)
+            .and_then(legacy_rule_name_from_path)
+            .unwrap_or("Rule")
+            .to_owned();
+        let Some(content) = action_value
+            .get_mut("content")
+            .and_then(|value| value.as_object_mut())
+        else {
+            continue;
+        };
+        if content.get("kind").and_then(|value| value.as_str()) != Some("rule") {
+            continue;
+        }
+        let Some(constraint) = content
+            .get("constraint")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let name = content
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&fallback_name)
+            .to_owned();
+        let applies_when = content
+            .get("applies_when")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let tags = content
+            .get("tags")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        *content = serde_json::Map::from_iter([
+            ("kind".to_owned(), json!("rule")),
+            (
+                "content".to_owned(),
+                json!(render_legacy_rule_markdown(
+                    &name,
+                    &applies_when,
+                    &constraint,
+                    &tags,
+                )),
+            ),
+        ]);
+        changed = true;
+    }
+    if changed {
+        Ok(Some(serde_json::to_string(&operation)?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn legacy_rule_name_from_path(path: &str) -> Option<&str> {
+    Path::new(path).file_stem().and_then(|name| name.to_str())
+}
+
+fn render_legacy_rule_markdown(
+    name: &str,
+    applies_when: &str,
+    constraint: &str,
+    tags: &[String],
+) -> String {
+    format!(
+        "# {name}\n\n## Applies when\n\n{applies_when}\n\n## Constraint\n\n{constraint}\n\nTags: {}",
+        if tags.is_empty() {
+            "None".to_owned()
+        } else {
+            tags.join(", ")
+        }
+    )
+}
+
+async fn reset_memory_cache_if_required(
+    pool: &SqlitePool,
+    cache_dir: &Path,
+) -> Result<(), DaemonError> {
+    let required: Option<String> =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = $1")
+            .bind(META_MEMORY_CACHE_RESET_REQUIRED)
+            .fetch_optional(pool)
+            .await?;
+    if required.as_deref() != Some("1") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    for statement in [
+        "DELETE FROM cached_refs",
+        "DELETE FROM cached_commits",
+        "DELETE FROM cached_trees",
+        "DELETE FROM cached_blobs",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+
+    match std::fs::remove_dir_all(cache_dir.join("projects")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    sqlx::query("DELETE FROM daemon_meta WHERE key = $1")
+        .bind(META_MEMORY_CACHE_RESET_REQUIRED)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -3825,7 +4071,6 @@ pub enum DaemonDraftResourceKind {
     Context,
     Rule,
     Workflow,
-    Metaprompt,
 }
 
 impl DaemonDraftResourceKind {
@@ -3834,7 +4079,6 @@ impl DaemonDraftResourceKind {
             Self::Context => "context",
             Self::Rule => "rule",
             Self::Workflow => "workflow",
-            Self::Metaprompt => "metaprompt",
         }
     }
 }
@@ -3896,11 +4140,6 @@ impl DaemonDraftOperation {
             validate_draft_resource_path(resource, &create.path)?;
         }
         if let Some(rename) = &self.rename {
-            if resource == DaemonDraftResourceKind::Metaprompt {
-                return Err(DaemonError::InvalidRequest(
-                    "metaprompt does not support rename".to_owned(),
-                ));
-            }
             validate_draft_resource_path(resource, &rename.new_path)?;
         }
         let content = self
@@ -3982,9 +4221,6 @@ fn validate_draft_resource_path(
         DaemonDraftResourceKind::Rule if path.to_ascii_lowercase().starts_with("workflow/") => Err(
             DaemonError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
         ),
-        DaemonDraftResourceKind::Metaprompt if path != "META_PROMPT.md" => Err(
-            DaemonError::InvalidRequest("metaprompt path must be META_PROMPT.md".to_owned()),
-        ),
         _ => Ok(()),
     }
 }
@@ -4006,21 +4242,9 @@ pub struct DaemonUpdateDraftOperation {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DaemonDraftContent {
-    Context {
-        content: String,
-    },
-    Rule {
-        name: Option<String>,
-        applies_when: Option<String>,
-        constraint: String,
-        tags: Option<Vec<String>>,
-    },
-    Workflow {
-        content: String,
-    },
-    Metaprompt {
-        content: String,
-    },
+    Context { content: String },
+    Rule { content: String },
+    Workflow { content: String },
 }
 
 impl DaemonDraftContent {
@@ -4029,14 +4253,13 @@ impl DaemonDraftContent {
             Self::Context { .. } => DaemonDraftResourceKind::Context,
             Self::Rule { .. } => DaemonDraftResourceKind::Rule,
             Self::Workflow { .. } => DaemonDraftResourceKind::Workflow,
-            Self::Metaprompt { .. } => DaemonDraftResourceKind::Metaprompt,
         }
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
         match self {
-            Self::Rule { constraint, .. } if constraint.trim().is_empty() => Err(
-                DaemonError::InvalidRequest("rule constraint must not be empty".to_owned()),
+            Self::Rule { content } if content.trim().is_empty() => Err(
+                DaemonError::InvalidRequest("rule content must not be empty".to_owned()),
             ),
             _ => Ok(()),
         }
@@ -4052,7 +4275,6 @@ mod draft_operation_validation_tests {
             DaemonDraftResourceKind::Context => "context/test.md",
             DaemonDraftResourceKind::Rule => "rules/test",
             DaemonDraftResourceKind::Workflow => "workflow/test",
-            DaemonDraftResourceKind::Metaprompt => "META_PROMPT.md",
         };
         DaemonDraftOperation {
             create: Some(DaemonCreateDraftOperation {
@@ -4068,12 +4290,9 @@ mod draft_operation_validation_tests {
     }
 
     #[test]
-    fn rejects_blank_rule_constraints_before_storage() {
+    fn rejects_blank_rule_content_before_storage() {
         let operation = create_operation(DaemonDraftContent::Rule {
-            name: Some("Empty".to_owned()),
-            applies_when: None,
-            constraint: "  ".to_owned(),
-            tags: None,
+            content: "  ".to_owned(),
         });
 
         assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
@@ -4108,27 +4327,6 @@ mod draft_operation_validation_tests {
                 "path should be rejected: {path}"
             );
         }
-    }
-
-    #[test]
-    fn rejects_metaprompt_rename_before_storage() {
-        let operation = DaemonDraftOperation {
-            create: None,
-            update: None,
-            rename: Some(DaemonRenameDraftOperation {
-                id: "metaprompt".to_owned(),
-                new_path: "META_PROMPT.md".to_owned(),
-                description: None,
-            }),
-            delete: None,
-            discard: None,
-        };
-
-        assert!(
-            operation
-                .validate(DaemonDraftResourceKind::Metaprompt)
-                .is_err()
-        );
     }
 }
 

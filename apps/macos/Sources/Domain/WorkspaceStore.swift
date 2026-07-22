@@ -43,7 +43,7 @@ enum MemoryValidationError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidPath(let message): message
-        case .emptyRule: "A Rule needs a constraint."
+        case .emptyRule: "A Rule needs content."
         }
     }
 }
@@ -125,7 +125,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func canCreateMemory(kind: MemoryKind, scope: MemoryScope) -> Bool {
-        kind.isUserMaintained
+        true
     }
 
     var selectedItem: MemoryListItem? {
@@ -1189,7 +1189,6 @@ final class WorkspaceStore: ObservableObject {
         case .context: base = "untitled.md"
         case .rules: base = "untitled.md"
         case .workflows: base = "workflow/untitled.md"
-        case .metaprompt: return "META_PROMPT.md"
         }
         let paths = Set(resources.filter { $0.kind == kind && $0.scope == scope }.map(\.document.path))
             .union(drafts.filter { $0.kind == kind && $0.scope == scope }.map(\.document.path))
@@ -1205,19 +1204,15 @@ final class WorkspaceStore: ObservableObject {
     private func defaultDocument(kind: MemoryKind, path: String) -> EditableMemoryDocument {
         switch kind {
         case .context:
-            .init(title: "Untitled", path: path, body: "", appliesWhen: "", tags: [])
+            .init(title: "Untitled", path: path, body: "")
         case .rules:
-            .init(title: "Untitled rule", path: path, body: "Describe the constraint.", appliesWhen: "", tags: [])
+            .init(title: "Untitled rule", path: path, body: "# Untitled rule\n")
         case .workflows:
             .init(
                 title: "Untitled workflow",
                 path: path,
-                body: "# Untitled workflow\n",
-                appliesWhen: "",
-                tags: []
+                body: "# Untitled workflow\n"
             )
-        case .metaprompt:
-            .init(title: "Metaprompt", path: path, body: "", appliesWhen: "", tags: [])
         }
     }
 
@@ -1226,24 +1221,14 @@ final class WorkspaceStore: ObservableObject {
         case .context:
             .context(content: document.body)
         case .rules:
-            .rule(
-                name: document.title,
-                appliesWhen: document.appliesWhen,
-                constraint: document.body,
-                tags: document.tags
-            )
+            .rule(content: document.body)
         case .workflows:
             .workflow(content: document.body)
-        case .metaprompt:
-            .metaprompt(content: document.body)
         }
     }
 
     private func validate(kind: MemoryKind, document: EditableMemoryDocument) throws {
         let path = document.path
-        if kind == .metaprompt && path != "META_PROMPT.md" {
-            throw MemoryValidationError.invalidPath("Metaprompt must use META_PROMPT.md.")
-        }
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)
         if path.isEmpty
             || path.hasPrefix("/")
@@ -1317,7 +1302,6 @@ struct WorkspaceLoader: Sendable {
         let activeDrafts = draftPage.items.filter {
             $0.status != .discarded
                 && $0.status != .merged
-                && $0.resourceKind != .metaprompt
         }
         let targetIds = Set(activeDrafts.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
@@ -1383,14 +1367,12 @@ struct WorkspaceLoader: Sendable {
         projectName: String
     ) -> (state: ProjectState, resources: [MemoryResource]) {
         let resources = checkout.resources.compactMap { resource -> MemoryResource? in
-            guard resource.scope == .project, resource.resourceKind != .metaprompt else { return nil }
+            guard resource.scope == .project else { return nil }
             let kind = MemoryKind(resource.resourceKind)
             var document = EditableMemoryDocument(
                 title: title(from: resource.path),
                 path: resource.path,
-                body: "",
-                appliesWhen: "",
-                tags: []
+                body: ""
             )
             document = apply(content: resource.content, to: document)
             return .init(
@@ -1427,17 +1409,13 @@ struct WorkspaceLoader: Sendable {
         switch resource.kind {
         case .rules:
             let detail: RuleDetail = try await server.get("\(prefix)/rules/\(resource.id)")
-            loaded.document.body = detail.content.constraint
-            loaded.document.appliesWhen = detail.content.appliesWhen
-            loaded.document.tags = detail.content.tags
+            loaded.document.body = detail.content
         case .context:
             let detail: ContextDetail = try await server.get("\(prefix)/context/\(resource.id)")
             loaded.document.body = detail.content
         case .workflows:
             let detail: WorkflowDetail = try await server.get("\(prefix)/workflows/\(resource.id)")
             loaded.document.body = detail.content
-        case .metaprompt:
-            throw ServerClientError.invalidResponse("Metaprompt is not a user-maintained memory type.")
         }
         loaded.contentLoaded = true
         return loaded
@@ -1558,9 +1536,7 @@ struct WorkspaceLoader: Sendable {
                 document: .init(
                     title: metadata.name,
                     path: metadata.path,
-                    body: "",
-                    appliesWhen: "",
-                    tags: []
+                    body: ""
                 )
             )
         }
@@ -1587,9 +1563,7 @@ struct WorkspaceLoader: Sendable {
                 document: .init(
                     title: title(from: metadata.path),
                     path: metadata.path,
-                    body: "",
-                    appliesWhen: "",
-                    tags: []
+                    body: ""
                 )
             )
         }
@@ -1616,9 +1590,7 @@ struct WorkspaceLoader: Sendable {
                 document: .init(
                     title: metadata.name,
                     path: metadata.path,
-                    body: "",
-                    appliesWhen: "",
-                    tags: []
+                    body: ""
                 )
             )
         }
@@ -1648,7 +1620,6 @@ struct WorkspaceLoader: Sendable {
             return detail
         }
         return details
-            .filter { $0.draft.resource.kind != .metaprompt }
             .map(Self.mapReview)
     }
 
@@ -1739,26 +1710,8 @@ struct WorkspaceLoader: Sendable {
         guard let entry,
               let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }) else { return nil }
         switch resource.kind {
-        case .context, .workflow, .metaprompt:
+        case .context, .rule, .workflow:
             return blob.content
-        case .rule:
-            let document = try JSONCoding.decoder().decode(RuleCommitDocument.self, from: Data(blob.content.utf8))
-            guard document.format == "clumsies.rule.v1" else {
-                throw ServerClientError.invalidResponse("Rule commit blob uses an unsupported format.")
-            }
-            return [
-                "# \(document.content.name)",
-                "",
-                "## Applies when",
-                "",
-                document.content.appliesWhen,
-                "",
-                "## Constraint",
-                "",
-                document.content.constraint,
-                "",
-                "Tags: \(document.content.tags.isEmpty ? "None" : document.content.tags.joined(separator: ", "))"
-            ].joined(separator: "\n")
         }
     }
 
@@ -1768,9 +1721,7 @@ struct WorkspaceLoader: Sendable {
         var document = base?.document ?? .init(
             title: title(from: summary.path ?? "Untitled"),
             path: summary.path ?? "untitled.md",
-            body: "",
-            appliesWhen: "",
-            tags: []
+            body: ""
         )
         var deletion = false
         for operation in detail.operations {
@@ -1815,13 +1766,8 @@ struct WorkspaceLoader: Sendable {
     ) -> EditableMemoryDocument {
         var document = document
         switch content {
-        case .context(let content), .workflow(let content), .metaprompt(let content):
+        case .context(let content), .rule(let content), .workflow(let content):
             document.body = content
-        case .rule(let name, let appliesWhen, let constraint, let tags):
-            document.title = name ?? document.title
-            document.appliesWhen = appliesWhen ?? ""
-            document.body = constraint
-            document.tags = tags ?? []
         }
         return document
     }
@@ -1833,18 +1779,6 @@ struct WorkspaceLoader: Sendable {
     private func title(from path: String) -> String {
         Self.title(from: path)
     }
-}
-
-private struct RuleCommitDocument: Decodable {
-    struct Content: Decodable {
-        let name: String
-        let appliesWhen: String
-        let constraint: String
-        let tags: [String]
-    }
-
-    let format: String
-    let content: Content
 }
 
 private struct ResourceLoadScope: Sendable {

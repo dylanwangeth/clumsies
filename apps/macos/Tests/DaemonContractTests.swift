@@ -42,10 +42,7 @@ final class DaemonContractTests: XCTestCase {
             op: .update(
                 id: "rule-1",
                 content: .rule(
-                    name: "No compatibility shims",
-                    appliesWhen: "Changing an internal contract",
-                    constraint: "Migrate the contract directly.",
-                    tags: ["coding"]
+                    content: "# No compatibility shims\n\nMigrate the contract directly."
                 ),
                 description: nil
             ),
@@ -61,7 +58,10 @@ final class DaemonContractTests: XCTestCase {
         let update = try XCTUnwrap(operation["update"] as? [String: Any])
         let content = try XCTUnwrap(update["content"] as? [String: Any])
         XCTAssertEqual(content["kind"] as? String, "rule")
-        XCTAssertEqual(content["applies_when"] as? String, "Changing an internal contract")
+        XCTAssertEqual(
+            content["content"] as? String,
+            "# No compatibility shims\n\nMigrate the contract directly."
+        )
     }
 
     func testProjectConfigDecodesDaemonResponse() throws {
@@ -135,20 +135,16 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(draft.syncStatus, .queued)
     }
 
-    func testDraftProjectionPreservesRuleMetadataAndWorkflowMarkdown() {
+    func testDraftProjectionPreservesRuleAndWorkflowMarkdown() {
         let rule = projectedDraft(
             kind: .rule,
             path: "rules/review.md",
             content: .rule(
-                name: "Review carefully",
-                appliesWhen: "Reviewing changes",
-                constraint: "Inspect behavior before style.",
-                tags: ["review"]
+                content: "# Review carefully\n\nInspect behavior before style."
             )
         )
-        XCTAssertEqual(rule.document.title, "Review carefully")
-        XCTAssertEqual(rule.document.appliesWhen, "Reviewing changes")
-        XCTAssertEqual(rule.document.tags, ["review"])
+        XCTAssertEqual(rule.document.title, "review")
+        XCTAssertEqual(rule.document.body, "# Review carefully\n\nInspect behavior before style.")
 
         let workflow = projectedDraft(
             kind: .workflow,
@@ -160,8 +156,8 @@ final class DaemonContractTests: XCTestCase {
     }
 
     func testUserMaintainedMemoryKindsMatchProductModel() {
-        XCTAssertEqual(MemoryKind.userMaintainedCases, [.context, .rules, .workflows])
-        XCTAssertEqual(MemoryKind.userMaintainedCases.map(\.title), ["Context", "Rules", "Workflow"])
+        XCTAssertEqual(MemoryKind.allCases, [.context, .rules, .workflows])
+        XCTAssertEqual(MemoryKind.allCases.map(\.title), ["Context", "Rules", "Workflow"])
     }
 
     func testCachedProjectCheckoutHydratesProjectMemoryWithoutInheritedDuplicates() {
@@ -181,10 +177,7 @@ final class DaemonContractTests: XCTestCase {
                     path: "rules/review.md",
                     contentHash: "sha256:rule",
                     content: .rule(
-                        name: "Review carefully",
-                        appliesWhen: "Reviewing changes",
-                        constraint: "Inspect behavior before style.",
-                        tags: ["review"]
+                        content: "# Review carefully\n\nInspect behavior before style."
                     )
                 ),
                 .init(
@@ -207,8 +200,11 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(loaded.state.orgSelectionRevision, 3)
         XCTAssertEqual(loaded.state.selectedOrgResourceIds, ["context-org"])
         XCTAssertEqual(loaded.resources.count, 1)
-        XCTAssertEqual(loaded.resources[0].document.title, "Review carefully")
-        XCTAssertEqual(loaded.resources[0].document.body, "Inspect behavior before style.")
+        XCTAssertEqual(loaded.resources[0].document.title, "review")
+        XCTAssertEqual(
+            loaded.resources[0].document.body,
+            "# Review carefully\n\nInspect behavior before style."
+        )
         XCTAssertTrue(loaded.resources[0].contentLoaded)
     }
 
@@ -307,18 +303,15 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(sources.draftContent, "Draft body")
     }
 
-    func testStructuredDraftRenderingIncludesRuleMetadata() {
+    func testRuleDraftRenderingPreservesMarkdown() {
         let content = DaemonDraftContent.rule(
-            name: "No compatibility shims",
-            appliesWhen: "Changing an internal contract",
-            constraint: "Migrate the contract directly.",
-            tags: ["coding", "migration"]
+            content: "# No compatibility shims\n\nMigrate the contract directly."
         )
 
-        XCTAssertTrue(content.renderedText.contains("# No compatibility shims"))
-        XCTAssertTrue(content.renderedText.contains("## Applies when"))
-        XCTAssertTrue(content.renderedText.contains("Migrate the contract directly."))
-        XCTAssertTrue(content.renderedText.contains("coding, migration"))
+        XCTAssertEqual(
+            content.renderedText,
+            "# No compatibility shims\n\nMigrate the contract directly."
+        )
     }
 
     func testReviewLineDiffIdentifiesInsertionsAndRemovals() {
@@ -376,22 +369,14 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertFalse(tab.isVisible(in: .local, projectId: "project-1"))
     }
 
-    func testReplacingRulePrimaryTextPreservesStructuredFields() {
+    func testReplacingRulePrimaryTextReplacesMarkdown() {
         let content = DaemonDraftContent.rule(
-            name: "Rule name",
-            appliesWhen: "During review",
-            constraint: "Old constraint",
-            tags: ["review"]
+            content: "# Rule name\n\nOld content"
         )
 
         XCTAssertEqual(
-            content.replacingPrimaryText(with: "New constraint"),
-            .rule(
-                name: "Rule name",
-                appliesWhen: "During review",
-                constraint: "New constraint",
-                tags: ["review"]
-            )
+            content.replacingPrimaryText(with: "# Rule name\n\nNew content"),
+            .rule(content: "# Rule name\n\nNew content")
         )
     }
 
@@ -567,9 +552,7 @@ final class DaemonContractTests: XCTestCase {
             document: .init(
                 title: "Readme",
                 path: path,
-                body: "Body",
-                appliesWhen: "",
-                tags: []
+                body: "Body"
             )
         )
         return .init(id: resource.id, resource: resource, draft: nil, inherited: false)

@@ -46,14 +46,12 @@ describe("Clumsies API", () => {
     await api.orgContext("context");
     await api.listOrgWorkflows();
     await api.orgWorkflow("workflow");
-    await api.orgMetaprompt();
     await api.listProjectRules("project");
     await api.projectRule("project", "rule");
     await api.listProjectContext("project");
     await api.projectContext("project", "context");
     await api.listProjectWorkflows("project");
     await api.projectWorkflow("project", "workflow");
-    await api.projectMetaprompt("project");
     await api.projectOrgSelection("project");
     await api.replaceProjectOrgSelection("project", 1, {});
     await api.listDrafts();
@@ -127,14 +125,12 @@ describe("Clumsies API", () => {
       "GET /api/v1/org/context/context",
       "GET /api/v1/org/workflows",
       "GET /api/v1/org/workflows/workflow",
-      "GET /api/v1/org/metaprompt",
       "GET /api/v1/projects/project/rules",
       "GET /api/v1/projects/project/rules/rule",
       "GET /api/v1/projects/project/context",
       "GET /api/v1/projects/project/context/context",
       "GET /api/v1/projects/project/workflows",
       "GET /api/v1/projects/project/workflows/workflow",
-      "GET /api/v1/projects/project/metaprompt",
       "GET /api/v1/projects/project/org-selections",
       "PUT /api/v1/projects/project/org-selections",
       "GET /api/v1/drafts",
