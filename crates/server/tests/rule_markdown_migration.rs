@@ -43,14 +43,36 @@ Run focused tests before committing.',
 
             INSERT INTO blobs (blob_id, content) VALUES
                 ('blob_rule_old', '{"format":"clumsies.rule.v1","content":{"name":"Testing","applies_when":"Changing production code","constraint":"# Testing\n\nRun focused tests before committing.","tags":["testing"]}}'),
-                ('blob_context', '# Context');
+                ('blob_context', '# Context'),
+                ('blob_workflow_plain', '# Existing Workflow');
             INSERT INTO trees (tree_id) VALUES ('tree_rule_old'), ('tree_context');
             INSERT INTO tree_entries (
                 tree_id, item_id, resource_kind, scope, project_id, path, blob_id, source
             ) VALUES
                 ('tree_rule_old', 'rule_test', 'rule', 'org', NULL, 'testing/TESTING.md', 'blob_rule_old', 'org'),
                 ('tree_rule_old', 'context_shared_blob', 'context', 'org', NULL, 'context/envelope.json', 'blob_rule_old', 'org'),
-                ('tree_context', 'context_test', 'context', 'org', NULL, 'context/test.md', 'blob_context', 'org');
+                ('tree_context', 'context_test', 'context', 'org', NULL, 'context/test.md', 'blob_context', 'org'),
+                ('tree_context', 'workflow_plain', 'workflow', 'org', NULL, 'workflows/existing.md', 'blob_workflow_plain', 'org');
+
+            INSERT INTO blobs (blob_id, content)
+            SELECT 'blob_markdown_' || value, '# Context ' || value
+            FROM generate_series(1, 1000) AS value;
+            INSERT INTO tree_entries (
+                tree_id, item_id, resource_kind, scope, project_id, path, blob_id, source
+            )
+            SELECT
+                'tree_context',
+                'context_' || value,
+                'context',
+                'org',
+                NULL,
+                'context/' || value || '.md',
+                'blob_markdown_' || value,
+                'org'
+            FROM generate_series(1, 1000) AS value;
+            ANALYZE blobs;
+            ANALYZE tree_entries;
+
             INSERT INTO commits (
                 commit_id, scope, org_id, project_id, tree_id, parent_commit_id, version, created_at
             ) VALUES

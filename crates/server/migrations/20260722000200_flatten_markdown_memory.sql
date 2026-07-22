@@ -69,7 +69,17 @@ BEGIN
         FROM tree_entries AS entry
         JOIN blobs AS blob ON blob.blob_id = entry.blob_id
         WHERE entry.resource_kind = 'rule'
-          AND NULLIF(btrim(blob.content::jsonb #>> '{content,constraint}'), '') IS NULL
+          -- The planner may inspect joined non-Rule rows before applying the
+          -- resource_kind predicate. Guard the cast inside CASE so ordinary
+          -- Markdown Blobs can never be parsed as JSON.
+          AND CASE
+              WHEN blob.content LIKE '{"format":"clumsies.rule.v1"%'
+                  THEN NULLIF(
+                      btrim(blob.content::jsonb #>> '{content,constraint}'),
+                      ''
+                  ) IS NULL
+              ELSE FALSE
+          END
     ) THEN
         RAISE EXCEPTION 'Rule Blob has an empty Markdown body';
     END IF;
@@ -88,14 +98,18 @@ WITH markdown_content AS (
     SELECT DISTINCT
         blob.blob_id AS old_blob_id,
         entry.resource_kind,
-        CASE entry.resource_kind
-            WHEN 'rule' THEN pg_temp.render_legacy_rule(
+        CASE
+            WHEN entry.resource_kind = 'rule'
+             AND blob.content LIKE '{"format":"clumsies.rule.v1"%'
+            THEN pg_temp.render_legacy_rule(
                 blob.content::jsonb->'content',
                 NULL,
                 NULL,
                 NULL
             )
-            WHEN 'workflow' THEN concat_ws(
+            WHEN entry.resource_kind = 'workflow'
+             AND blob.content LIKE '{"format":"clumsies.workflow.v1"%'
+            THEN concat_ws(
                 E'\n\n',
                 CASE
                     WHEN NULLIF(blob.content::jsonb #>> '{content,name}', '') IS NOT NULL
