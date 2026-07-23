@@ -575,7 +575,12 @@ components:
         description:
           type: string
     DaemonUpdateDraftOperation:
+      oneOf:
+        - $ref: "#/components/schemas/DaemonContentDraftUpdate"
+        - $ref: "#/components/schemas/DaemonTextDraftUpdate"
+    DaemonContentDraftUpdate:
       type: object
+      additionalProperties: false
       required: [id, content]
       properties:
         id:
@@ -583,6 +588,36 @@ components:
         content:
           $ref: "#/components/schemas/DaemonDraftContent"
         description:
+          type: string
+    DaemonTextDraftUpdate:
+      type: object
+      additionalProperties: false
+      required: [id, expected_hash, replacements]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Stable resource ID returned by load_memory, not a path.
+        expected_hash:
+          type: string
+          minLength: 1
+          description: Complete Effective Memory content hash returned by load_memory.
+        replacements:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/DaemonTextReplacement"
+        description:
+          type: string
+    DaemonTextReplacement:
+      type: object
+      additionalProperties: false
+      required: [old_text, new_text]
+      properties:
+        old_text:
+          type: string
+          minLength: 1
+        new_text:
           type: string
     DaemonDraftContent:
       oneOf:

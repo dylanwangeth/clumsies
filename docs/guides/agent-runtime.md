@@ -64,6 +64,10 @@ activate(query, optional state)
   -> store only when the user explicitly requests memory maintenance
 ```
 
+For an update, `load` is mandatory: use the returned complete-resource hash and
+exact source text in one or more atomic `store.update` replacements. The agent
+does not send a reconstructed complete document.
+
 There is no setup call, host-session binding, or `META_PROMPT.md` bootstrap.
 Protocol guidance comes from the MCP initialization instructions and tool
 descriptions. The `state` returned by `activate` is only a bounded fragment

@@ -23,7 +23,7 @@ const load_schema =
     "},\"required\":[\"ids\"],\"additionalProperties\":false}}";
 
 const store_schema =
-    "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\",\"description\":\"Create, update, rename, delete, or discard a local Context, Rule, or Workflow Draft only when the user explicitly requests memory maintenance. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.\"," ++
+    "{\"name\":\"" ++ tool_names.store ++ "\",\"title\":\"Store\",\"description\":\"Create, update, rename, delete, or discard a local Context, Rule, or Workflow Draft only when the user explicitly requests memory maintenance. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"resource\":{\"type\":\"string\",\"enum\":[\"context\",\"rule\",\"workflow\"],\"description\":\"Memory resource type.\"}," ++
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
@@ -36,7 +36,8 @@ const store_schema =
     "},\"required\":[\"resource\",\"op\"],\"additionalProperties\":false," ++
     "\"$defs\":{" ++
     "\"writeCreate\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"path\",\"body\"],\"additionalProperties\":false}," ++
-    "\"writeUpdate\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"body\":{\"type\":\"string\",\"minLength\":1},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"body\"],\"additionalProperties\":false}" ++
+    "\"writeUpdate\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Stable resource_id returned by load, not a path.\"},\"expected_hash\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Complete-resource content_hash returned by load.\"},\"replacements\":{\"type\":\"array\",\"minItems\":1,\"description\":\"Atomic, non-overlapping exact text replacements matched against the loaded resource.\",\"items\":{\"$ref\":\"#/$defs/textReplacement\"}},\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"expected_hash\",\"replacements\"],\"additionalProperties\":false}," ++
+    "\"textReplacement\":{\"type\":\"object\",\"properties\":{\"old_text\":{\"type\":\"string\",\"minLength\":1},\"new_text\":{\"type\":\"string\"}},\"required\":[\"old_text\",\"new_text\"],\"additionalProperties\":false}" ++
     "}}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
@@ -228,18 +229,14 @@ fn daemonDraftOperationValue(
     args: std.json.ObjectMap,
     original: std.json.Value,
 ) !std.json.Value {
-    if (op != .create and op != .update) return original;
+    if (op != .create) return original;
     const body = requiredString(args, "body") orelse return error.InvalidParams;
     var content: std.json.ObjectMap = .empty;
     try content.put(allocator, "kind", .{ .string = daemonResourceName(resource) });
     try content.put(allocator, "content", .{ .string = body });
 
     var details: std.json.ObjectMap = .empty;
-    if (op == .create) {
-        try details.put(allocator, "path", .{ .string = requiredString(args, "path").? });
-    } else {
-        try details.put(allocator, "id", .{ .string = requiredString(args, "id").? });
-    }
+    try details.put(allocator, "path", .{ .string = requiredString(args, "path").? });
     try details.put(allocator, "content", .{ .object = content });
     if (args.get("description")) |description| {
         try details.put(allocator, "description", description);
@@ -257,7 +254,7 @@ fn validateStoreOperation(
 ) !?[]u8 {
     const allowed: []const []const u8 = switch (op) {
         .create => &.{ "path", "body", "description" },
-        .update => &.{ "id", "body", "description" },
+        .update => &.{ "id", "expected_hash", "replacements", "description" },
         .rename => &.{ "id", "new_path", "description" },
         .delete => &.{ "id", "description" },
         .discard => &.{"id"},
@@ -276,8 +273,13 @@ fn validateStoreOperation(
         },
         .update => {
             const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
-            const body = requiredString(args, "body") orelse return try tool_result.buildErrorResult(allocator, "body is required and must not be empty");
-            if (id.len == 0 or body.len == 0) return try tool_result.buildErrorResult(allocator, "id and body must not be empty");
+            const expected_hash = requiredString(args, "expected_hash") orelse return try tool_result.buildErrorResult(allocator, "expected_hash is required and must not be empty");
+            if (id.len == 0 or expected_hash.len == 0) {
+                return try tool_result.buildErrorResult(allocator, "id and expected_hash must not be empty");
+            }
+            if (try validateTextReplacements(allocator, args.get("replacements"))) |error_result| {
+                return error_result;
+            }
         },
         .rename => {
             const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
@@ -291,6 +293,42 @@ fn validateStoreOperation(
             const id = requiredString(args, "id") orelse return try tool_result.buildErrorResult(allocator, "id is required and must not be empty");
             if (id.len == 0) return try tool_result.buildErrorResult(allocator, "id must not be empty");
         },
+    }
+    return null;
+}
+
+fn validateTextReplacements(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) !?[]u8 {
+    const replacements = switch (value orelse
+        return try tool_result.buildErrorResult(allocator, "replacements is required")) {
+        .array => |array| array,
+        else => return try tool_result.buildErrorResult(allocator, "replacements must be an array"),
+    };
+    if (replacements.items.len == 0) {
+        return try tool_result.buildErrorResult(allocator, "replacements must contain at least one text replacement");
+    }
+    for (replacements.items) |replacement| {
+        const object = switch (replacement) {
+            .object => |object| object,
+            else => return try tool_result.buildErrorResult(allocator, "each replacement must be a JSON object"),
+        };
+        if (try rejectUnexpectedFields(
+            allocator,
+            object,
+            &.{ "old_text", "new_text" },
+            "replacement",
+        )) |result| {
+            return result;
+        }
+        const old_text = requiredString(object, "old_text") orelse
+            return try tool_result.buildErrorResult(allocator, "replacement old_text is required and must be a string");
+        _ = requiredString(object, "new_text") orelse
+            return try tool_result.buildErrorResult(allocator, "replacement new_text is required and must be a string");
+        if (old_text.len == 0) {
+            return try tool_result.buildErrorResult(allocator, "replacement old_text must not be empty");
+        }
     }
     return null;
 }
@@ -437,9 +475,9 @@ test "store maps Workflow text to typed daemon content" {
     try testing.expect(std.mem.indexOf(u8, json, "\"body\"") == null);
 }
 
-test "store maps Rule Markdown to daemon content" {
+test "store forwards Rule text replacements without full content" {
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
-        \\{"update":{"id":"rule_test","body":"# Rust\n\nUse Rust"}}
+        \\{"update":{"id":"rule_test","expected_hash":"sha256:old","replacements":[{"old_text":"Use Zig","new_text":"Use Rust"}]}}
     , .{});
     defer parsed.deinit();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -453,8 +491,11 @@ test "store maps Rule Markdown to daemon content" {
     );
     const json = try std.json.Stringify.valueAlloc(testing.allocator, value, .{});
     defer testing.allocator.free(json);
-    try testing.expect(std.mem.indexOf(u8, json, "\"content\":\"# Rust\\n\\nUse Rust\"") != null);
-    try testing.expect(std.mem.indexOf(u8, json, "\"constraint\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"expected_hash\":\"sha256:old\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"old_text\":\"Use Zig\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"new_text\":\"Use Rust\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"body\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"content\"") == null);
 }
 
 test "tool validation rejects undeclared and type-specific fields" {
@@ -491,4 +532,36 @@ test "tool validation rejects undeclared and type-specific fields" {
     )).?;
     defer testing.allocator.free(invalid_metadata);
     try testing.expect(std.mem.indexOf(u8, invalid_metadata, "unsupported field 'tags'") != null);
+
+    const full_body_update = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"id":"ctx_test","body":"complete replacement"}
+    ,
+        .{},
+    );
+    defer full_body_update.deinit();
+    const rejected_body = (try validateStoreOperation(
+        testing.allocator,
+        .context,
+        .update,
+        full_body_update.value.object,
+    )).?;
+    defer testing.allocator.free(rejected_body);
+    try testing.expect(std.mem.indexOf(u8, rejected_body, "unsupported field 'body'") != null);
+
+    const exact_update = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"id":"ctx_test","expected_hash":"sha256:test","replacements":[{"old_text":"first","new_text":"one"},{"old_text":"second","new_text":""}]}
+    ,
+        .{},
+    );
+    defer exact_update.deinit();
+    try testing.expect((try validateStoreOperation(
+        testing.allocator,
+        .context,
+        .update,
+        exact_update.value.object,
+    )) == null);
 }

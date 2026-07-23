@@ -10,12 +10,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
     ActivateMemoryRequest, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
-    DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
-    DaemonDiscardDraftOperation, DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
-    DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
-    DaemonDraftResourceKind, DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest,
-    DaemonIpcService, DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheState, DaemonMemoryCacheStatus, DaemonProjectBindingReplaceRequest,
+    DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonContentDraftUpdate, DaemonCreateDraftOperation,
+    DaemonDeleteDraftOperation, DaemonDiscardDraftOperation, DaemonDraftContent,
+    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
+    DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
+    DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
+    DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonMemoryCacheState,
+    DaemonMemoryCacheStatus, DaemonProjectBindingReplaceRequest,
     DaemonProjectBindingResolveRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonServerRequest,
     DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
@@ -864,11 +865,13 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: None,
-                update: Some(DaemonUpdateDraftOperation {
-                    id: created.draft_id.clone(),
-                    content: context_content("Local draft v2"),
-                    description: None,
-                }),
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: created.draft_id.clone(),
+                        content: context_content("Local draft v2"),
+                        description: None,
+                    },
+                )),
                 rename: None,
                 delete: None,
                 discard: None,
@@ -927,8 +930,8 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             .update
             .as_ref()
             .unwrap()
-            .content,
-        context_content("Local draft v2")
+            .content(),
+        Some(&context_content("Local draft v2"))
     );
 
     assert!(matches!(
@@ -1743,8 +1746,8 @@ async fn server_reconciliation_projection_keeps_lifecycle_separate_from_coordina
             .update
             .as_ref()
             .unwrap()
-            .content,
-        context_content("Resolved content")
+            .content(),
+        Some(&context_content("Resolved content"))
     );
     let sync = service.sync_status().await.unwrap();
     assert_eq!(sync.behind_draft_count, 0);

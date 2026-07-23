@@ -1,13 +1,14 @@
 mod common;
 
 use daemon::{
-    DaemonConfig, DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftContent,
-    DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
-    DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
-    DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheState, DaemonProjectCheckoutRequest, DaemonProjectSelectionRequest,
-    DaemonRenameDraftOperation, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
-    DraftOperationSyncStatus, LoadMemoryRequest, SyncRetryChannel, SyncState,
+    DaemonConfig, DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
+    DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
+    DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
+    DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus,
+    DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonProjectCheckoutRequest,
+    DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LoadMemoryRequest, SyncRetryChannel,
+    SyncState,
 };
 use server::api::{
     CreateDraftRebaseRequest, CreateDraftRequest, CreateReviewDecisionRequest,
@@ -174,11 +175,13 @@ async fn update_and_rename_resource_draft(
             resource,
             op: DaemonDraftOperation {
                 create: None,
-                update: Some(DaemonUpdateDraftOperation {
-                    id: resource_id.to_owned(),
-                    content,
-                    description: None,
-                }),
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: resource_id.to_owned(),
+                        content,
+                        description: None,
+                    },
+                )),
                 rename: None,
                 delete: None,
                 discard: None,
@@ -609,11 +612,13 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             resource: DaemonDraftResourceKind::Context,
             op: DaemonDraftOperation {
                 create: None,
-                update: Some(DaemonUpdateDraftOperation {
-                    id: context_id.clone(),
-                    content: context_content("# Renamed\n\nUpdated through the daemon."),
-                    description: None,
-                }),
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: context_id.clone(),
+                        content: context_content("# Renamed\n\nUpdated through the daemon."),
+                        description: None,
+                    },
+                )),
                 rename: None,
                 delete: None,
                 discard: None,

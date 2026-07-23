@@ -16,7 +16,7 @@ use self::chunker::build_units;
 use self::models::{FastEmbedSearchModels, SearchModelRuntimeStatus, SearchModels};
 use super::{
     DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheState, DaemonState,
+    DaemonMemoryCacheState, DaemonState, DaemonUpdateDraftOperation,
 };
 
 const SEARCH_SCHEMA_VERSION: i64 = 2;
@@ -943,6 +943,13 @@ fn apply_draft_overlay(
             draft_resources.insert(resource_id, resource);
         }
         if let Some(update) = &operation.update {
+            let DaemonUpdateDraftOperation::Content(update) = update else {
+                return Err(SearchFailure::failed(format!(
+                    "Draft {} contains an unmaterialized text replacement",
+                    draft.draft_id
+                ))
+                .into());
+            };
             let existing = draft_resources.remove(&update.id).ok_or_else(|| {
                 SearchFailure::failed(format!(
                     "Draft {} update target {} is absent from its Base Commit",
@@ -2073,8 +2080,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CredentialStore, CredentialStoreError, DaemonCreateDraftOperation,
-        DaemonDeleteDraftOperation, DaemonDraftOperationRequest, DaemonDraftOperationSource,
+        CredentialStore, CredentialStoreError, DaemonContentDraftUpdate,
+        DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftOperationRecordSource,
+        DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonDraftOperationSource,
         DaemonIpcRequest, DaemonIpcService, DaemonRenameDraftOperation, DaemonUpdateDraftOperation,
         ServerCredentials,
     };
@@ -2469,14 +2477,16 @@ mod tests {
                 resource: crate::DaemonDraftResourceKind::Context,
                 op: DaemonDraftOperation {
                     create: None,
-                    update: Some(DaemonUpdateDraftOperation {
+                    update: Some(DaemonUpdateDraftOperation::Content(
+                        DaemonContentDraftUpdate {
                         id: "ctx_retrieval".to_owned(),
                         content: DaemonDraftContent::Context {
                             content: "# Retrieval\n\nHybrid search now uses BM25, vectors, RRF, and reranking."
                                 .to_owned(),
                         },
                         description: None,
-                    }),
+                        },
+                    )),
                     rename: None,
                     delete: None,
                     discard: None,
@@ -2550,6 +2560,146 @@ mod tests {
         assert_eq!(indexed_kinds, ["context", "rule", "workflow"]);
     }
 
+    #[tokio::test]
+    async fn mcp_text_replacements_are_atomic_and_persist_as_complete_content() {
+        let (_temp, state) = test_state().await;
+        let service = DaemonIpcService::new(state);
+        let original = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["ctx_retrieval".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap()
+            .resources
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let response = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "project",
+                    "resource": "context",
+                    "op": {
+                        "update": {
+                            "id": "ctx_retrieval",
+                            "expected_hash": original.content_hash,
+                            "replacements": [
+                                {
+                                    "old_text": "Hybrid search",
+                                    "new_text": "Memory activation"
+                                },
+                                {
+                                    "old_text": "dense vectors",
+                                    "new_text": "vector retrieval"
+                                }
+                            ]
+                        }
+                    },
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(
+            response.ok,
+            "daemon rejected text replacement envelope: {:?}",
+            response.error
+        );
+        let stored: DaemonDraftOperationResponse =
+            serde_json::from_value(response.payload).unwrap();
+
+        let loaded = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["ctx_retrieval".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded.resources[0].content.as_deref(),
+            Some("# Retrieval\n\nMemory activation combines BM25 and vector retrieval.")
+        );
+        let updated_hash = loaded.resources[0].content_hash.clone();
+
+        let repeated = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "project",
+                    "resource": "context",
+                    "op": {
+                        "update": {
+                            "id": "ctx_retrieval",
+                            "expected_hash": updated_hash,
+                            "replacements": [{
+                                "old_text": "Memory activation",
+                                "new_text": "Agent memory activation"
+                            }]
+                        }
+                    },
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(repeated.ok);
+        let repeated: DaemonDraftOperationResponse =
+            serde_json::from_value(repeated.payload).unwrap();
+        assert_eq!(repeated.draft_id, stored.draft_id);
+
+        let stale = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "project",
+                    "resource": "context",
+                    "op": {
+                        "update": {
+                            "id": "ctx_retrieval",
+                            "expected_hash": original.content_hash,
+                            "replacements": [{
+                                "old_text": "Memory activation",
+                                "new_text": "stale write"
+                            }]
+                        }
+                    },
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(!stale.ok);
+        assert_eq!(
+            stale.error.as_ref().map(|error| error.code.as_str()),
+            Some("memory_content_changed")
+        );
+
+        let detail = service.get_draft(&stored.draft_id).await.unwrap();
+        assert_eq!(detail.operations.len(), 2);
+        assert_eq!(
+            detail.operations[1].source,
+            DaemonDraftOperationRecordSource::McpStore
+        );
+        let DaemonUpdateDraftOperation::Content(update) =
+            detail.operations[1].operation.update.as_ref().unwrap()
+        else {
+            panic!("text replacement must be materialized before persistence");
+        };
+        assert_eq!(
+            update.content,
+            DaemonDraftContent::Context {
+                content:
+                    "# Retrieval\n\nAgent memory activation combines BM25 and vector retrieval."
+                        .to_owned()
+            }
+        );
+    }
+
     #[test]
     fn draft_overlay_uses_the_complete_base_result_for_every_crud_action() {
         fn context_resource(path: &str, content: &str, commit_id: &str) -> EffectiveResource {
@@ -2602,13 +2752,15 @@ mod tests {
                 Some(base.clone()),
                 DaemonDraftOperation {
                     create: None,
-                    update: Some(DaemonUpdateDraftOperation {
-                        id: "ctx_target".to_owned(),
-                        content: DaemonDraftContent::Context {
-                            content: "# Personal Draft".to_owned(),
+                    update: Some(DaemonUpdateDraftOperation::Content(
+                        DaemonContentDraftUpdate {
+                            id: "ctx_target".to_owned(),
+                            content: DaemonDraftContent::Context {
+                                content: "# Personal Draft".to_owned(),
+                            },
+                            description: None,
                         },
-                        description: None,
-                    }),
+                    )),
                     rename: None,
                     delete: None,
                     discard: None,

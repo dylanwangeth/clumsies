@@ -121,7 +121,7 @@ Operations:
 | Operation | Required fields | Optional fields |
 |---|---|---|
 | `create` | `path`, `body` | `description` |
-| `update` | `id`, `body` | `description` |
+| `update` | `id`, `expected_hash`, `replacements` | `description` |
 | `rename` | `id`, `new_path` | `description` |
 | `delete` | `id` | `description` |
 | `discard` | `id` | none |
@@ -140,10 +140,40 @@ Example:
 }
 ```
 
+Before updating a resource, call `load` and pass its complete-resource
+`content_hash` as `expected_hash`. An update contains one or more exact text
+replacements:
+
+```json
+{
+  "resource": "context",
+  "op": {
+    "update": {
+      "id": "ctx_123",
+      "expected_hash": "sha256:...",
+      "replacements": [
+        {
+          "old_text": "The original exact text.",
+          "new_text": "The replacement text."
+        }
+      ]
+    }
+  }
+}
+```
+
+Every `old_text` must occur exactly once in the current Effective Memory
+resource. Replacements in one update must not overlap and are applied
+atomically against the same original content. A stale hash, missing match,
+ambiguous match, or overlap rejects the complete update without creating a
+Draft operation. `new_text` may be empty to delete text.
+
 Workflow paths use the `workflow/` namespace. For Context, Rule, and Workflow,
-`body` is the complete resource content. Rule and Workflow bodies are Markdown;
-their domain identity is metadata on the resource, not an embedded wire format.
-Metaprompt and `mpf` are not valid wire values.
+create `body` is the complete resource content. Updates never accept a complete
+body from the agent; daemon materializes the verified replacements into the
+complete Draft result. Rule and Workflow bodies are Markdown; their domain
+identity is metadata on the resource, not an embedded wire format. Metaprompt
+and `mpf` are not valid wire values.
 
 A successful result contains the local operation ID, Draft ID, queue status,
 and sync status. It means the operation is durably stored locally and queued

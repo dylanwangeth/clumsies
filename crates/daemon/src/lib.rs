@@ -707,6 +707,7 @@ struct DaemonInner {
     token_refresh: Mutex<()>,
     search_models: Arc<dyn search::models::SearchModels>,
     search_lock: Mutex<()>,
+    draft_mutation_lock: Mutex<()>,
 }
 
 impl DaemonState {
@@ -756,6 +757,7 @@ impl DaemonState {
                 token_refresh: Mutex::new(()),
                 search_models,
                 search_lock: Mutex::new(()),
+                draft_mutation_lock: Mutex::new(()),
             }),
         })
     }
@@ -1205,6 +1207,85 @@ impl DaemonState {
         request: DaemonDraftOperationRequest,
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
         request.op.validate(request.resource)?;
+        if request.op.has_text_update() {
+            let _sync_guard = self.inner.sync_lock.lock().await;
+            let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
+            let request = self.materialize_text_update(request).await?;
+            return self.persist_draft_operation(request).await;
+        }
+
+        let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
+        self.persist_draft_operation(request).await
+    }
+
+    async fn materialize_text_update(
+        &self,
+        mut request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationRequest, DaemonError> {
+        let update = request
+            .op
+            .update
+            .take()
+            .and_then(DaemonUpdateDraftOperation::into_text)
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(
+                    "draft operation does not contain a text replacement update".to_owned(),
+                )
+            })?;
+        let loaded = search::load_memory(
+            self,
+            LoadMemoryRequest {
+                project_id: request.project_id.clone(),
+                ids: vec![update.id.clone()],
+                known_hashes: BTreeMap::new(),
+            },
+        )
+        .await?;
+        let resource = loaded.resources.into_iter().next().ok_or_else(|| {
+            DaemonError::NotFound(format!("memory resource {} is not available", update.id))
+        })?;
+        if resource.resource_id != update.id {
+            return Err(DaemonError::InvalidRequest(
+                "text replacement update id must be a stable resource id, not a path".to_owned(),
+            ));
+        }
+        if !memory_kind_matches_resource(resource.kind, request.resource) {
+            return Err(DaemonError::InvalidRequest(
+                "text replacement resource kind does not match its target".to_owned(),
+            ));
+        }
+        if resource.content_hash != update.expected_hash {
+            return Err(DaemonError::State {
+                code: "memory_content_changed",
+                message: format!(
+                    "Memory resource {} changed from expected hash {}; reload it before updating (current hash: {})",
+                    update.id, update.expected_hash, resource.content_hash
+                ),
+            });
+        }
+        let content = resource.content.ok_or_else(|| DaemonError::State {
+            code: "memory_content_unavailable",
+            message: format!(
+                "Memory resource {} did not include content for replacement",
+                update.id
+            ),
+        })?;
+        let content = apply_exact_text_replacements(&content, &update.replacements)?;
+        request.op.update = Some(DaemonUpdateDraftOperation::Content(
+            DaemonContentDraftUpdate {
+                id: update.id,
+                content: DaemonDraftContent::from_resource(request.resource, content),
+                description: update.description,
+            },
+        ));
+        request.op.validate(request.resource)?;
+        Ok(request)
+    }
+
+    async fn persist_draft_operation(
+        &self,
+        request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationResponse, DaemonError> {
         let source = request
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);
@@ -2790,6 +2871,15 @@ fn map_daemon_operation_to_server(
         }));
     }
     if let Some(update) = &operation.update {
+        let update = match update {
+            DaemonUpdateDraftOperation::Content(update) => update,
+            DaemonUpdateDraftOperation::Text(_) => {
+                return Err(DaemonError::InvalidRequest(
+                    "text replacement update was not materialized before synchronization"
+                        .to_owned(),
+                ));
+            }
+        };
         return Ok(Some(ServerDraftOperationInput {
             action: ServerDraftOperationAction::Update,
             resource: ServerDraftResourceRef {
@@ -3236,14 +3326,16 @@ fn map_server_operation_to_daemon(
             });
         }
         ServerDraftOperationAction::Update => {
-            mapped.update = Some(DaemonUpdateDraftOperation {
-                id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
-                content: operation
-                    .content
-                    .clone()
-                    .ok_or_else(|| missing("content"))?,
-                description: None,
-            });
+            mapped.update = Some(DaemonUpdateDraftOperation::Content(
+                DaemonContentDraftUpdate {
+                    id: operation.resource.id.clone().ok_or_else(|| missing("id"))?,
+                    content: operation
+                        .content
+                        .clone()
+                        .ok_or_else(|| missing("content"))?,
+                    description: None,
+                },
+            ));
         }
         ServerDraftOperationAction::Rename => {
             mapped.rename = Some(DaemonRenameDraftOperation {
@@ -3284,7 +3376,13 @@ fn draft_operations_match(left: &DaemonDraftOperation, right: &DaemonDraftOperat
                 update: Some(right),
                 ..
             },
-        ) => left.id == right.id && left.content == right.content,
+        ) => match (left, right) {
+            (
+                DaemonUpdateDraftOperation::Content(left),
+                DaemonUpdateDraftOperation::Content(right),
+            ) => left.id == right.id && left.content == right.content,
+            _ => false,
+        },
         (
             DaemonDraftOperation {
                 rename: Some(left), ..
@@ -4562,11 +4660,18 @@ impl DaemonDraftOperation {
         if let Some(rename) = &self.rename {
             validate_draft_resource_path(resource, &rename.new_path)?;
         }
+        if let Some(update) = &self.update {
+            update.validate()?;
+        }
         let content = self
             .create
             .as_ref()
             .map(|operation| &operation.content)
-            .or_else(|| self.update.as_ref().map(|operation| &operation.content));
+            .or_else(|| {
+                self.update
+                    .as_ref()
+                    .and_then(DaemonUpdateDraftOperation::content)
+            });
         if let Some(content) = content {
             if content.resource_kind() != resource {
                 return Err(DaemonError::InvalidRequest(
@@ -4581,10 +4686,17 @@ impl DaemonDraftOperation {
     fn target_id(&self) -> Option<&str> {
         self.update
             .as_ref()
-            .map(|operation| operation.id.as_str())
+            .map(DaemonUpdateDraftOperation::id)
             .or_else(|| self.rename.as_ref().map(|operation| operation.id.as_str()))
             .or_else(|| self.delete.as_ref().map(|operation| operation.id.as_str()))
             .or_else(|| self.discard.as_ref().map(|operation| operation.id.as_str()))
+    }
+
+    fn has_text_update(&self) -> bool {
+        matches!(
+            self.update.as_ref(),
+            Some(DaemonUpdateDraftOperation::Text(_))
+        )
     }
 }
 
@@ -4653,10 +4765,163 @@ pub struct DaemonCreateDraftOperation {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DaemonUpdateDraftOperation {
+#[serde(untagged)]
+pub enum DaemonUpdateDraftOperation {
+    Content(DaemonContentDraftUpdate),
+    Text(DaemonTextDraftUpdate),
+}
+
+impl DaemonUpdateDraftOperation {
+    fn id(&self) -> &str {
+        match self {
+            Self::Content(update) => &update.id,
+            Self::Text(update) => &update.id,
+        }
+    }
+
+    pub fn content(&self) -> Option<&DaemonDraftContent> {
+        match self {
+            Self::Content(update) => Some(&update.content),
+            Self::Text(_) => None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), DaemonError> {
+        if self.id().trim().is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "draft update id must not be empty".to_owned(),
+            ));
+        }
+        let Self::Text(update) = self else {
+            return Ok(());
+        };
+        if update.expected_hash.trim().is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "text replacement expected_hash must not be empty".to_owned(),
+            ));
+        }
+        if update.replacements.is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "text replacement update requires at least one replacement".to_owned(),
+            ));
+        }
+        if update
+            .replacements
+            .iter()
+            .any(|replacement| replacement.old_text.is_empty())
+        {
+            return Err(DaemonError::InvalidRequest(
+                "text replacement old_text must not be empty".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn into_text(self) -> Option<DaemonTextDraftUpdate> {
+        match self {
+            Self::Text(update) => Some(update),
+            Self::Content(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonContentDraftUpdate {
     pub id: String,
     pub content: DaemonDraftContent,
     pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonTextDraftUpdate {
+    pub id: String,
+    pub expected_hash: String,
+    pub replacements: Vec<DaemonTextReplacement>,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonTextReplacement {
+    pub old_text: String,
+    pub new_text: String,
+}
+
+fn memory_kind_matches_resource(kind: MemoryKind, resource: DaemonDraftResourceKind) -> bool {
+    matches!(
+        (kind, resource),
+        (MemoryKind::Context, DaemonDraftResourceKind::Context)
+            | (MemoryKind::Rule, DaemonDraftResourceKind::Rule)
+            | (MemoryKind::Workflow, DaemonDraftResourceKind::Workflow)
+    )
+}
+
+fn apply_exact_text_replacements(
+    source: &str,
+    replacements: &[DaemonTextReplacement],
+) -> Result<String, DaemonError> {
+    struct ReplacementSpan<'a> {
+        start: usize,
+        end: usize,
+        new_text: &'a str,
+        input_index: usize,
+    }
+
+    let mut spans = Vec::with_capacity(replacements.len());
+    for (index, replacement) in replacements.iter().enumerate() {
+        let mut matches = source.match_indices(&replacement.old_text);
+        let Some((start, _)) = matches.next() else {
+            return Err(DaemonError::State {
+                code: "text_replacement_not_found",
+                message: format!(
+                    "Text replacement {} did not match the current resource",
+                    index + 1
+                ),
+            });
+        };
+        if matches.next().is_some() {
+            return Err(DaemonError::State {
+                code: "text_replacement_ambiguous",
+                message: format!(
+                    "Text replacement {} matched more than once; include more surrounding text",
+                    index + 1
+                ),
+            });
+        }
+        spans.push(ReplacementSpan {
+            start,
+            end: start + replacement.old_text.len(),
+            new_text: &replacement.new_text,
+            input_index: index,
+        });
+    }
+    spans.sort_by_key(|span| span.start);
+    for pair in spans.windows(2) {
+        if pair[1].start < pair[0].end {
+            return Err(DaemonError::State {
+                code: "text_replacement_overlap",
+                message: format!(
+                    "Text replacements {} and {} overlap",
+                    pair[0].input_index + 1,
+                    pair[1].input_index + 1
+                ),
+            });
+        }
+    }
+
+    let mut result = source.to_owned();
+    for span in spans.into_iter().rev() {
+        result.replace_range(span.start..span.end, span.new_text);
+    }
+    if result == source {
+        return Err(DaemonError::State {
+            code: "text_replacement_no_change",
+            message: "Text replacements did not change the resource".to_owned(),
+        });
+    }
+    Ok(result)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -4668,6 +4933,14 @@ pub enum DaemonDraftContent {
 }
 
 impl DaemonDraftContent {
+    fn from_resource(resource: DaemonDraftResourceKind, content: String) -> Self {
+        match resource {
+            DaemonDraftResourceKind::Context => Self::Context { content },
+            DaemonDraftResourceKind::Rule => Self::Rule { content },
+            DaemonDraftResourceKind::Workflow => Self::Workflow { content },
+        }
+    }
+
     fn resource_kind(&self) -> DaemonDraftResourceKind {
         match self {
             Self::Context { .. } => DaemonDraftResourceKind::Context,
@@ -4746,6 +5019,71 @@ mod draft_operation_validation_tests {
                     .is_err(),
                 "path should be rejected: {path}"
             );
+        }
+    }
+
+    #[test]
+    fn exact_text_replacements_apply_atomically_against_the_original_text() {
+        let result = apply_exact_text_replacements(
+            "# Guide\n\nAlpha section.\n\nBeta section.\n",
+            &[
+                DaemonTextReplacement {
+                    old_text: "Beta section.".to_owned(),
+                    new_text: "Gamma section.".to_owned(),
+                },
+                DaemonTextReplacement {
+                    old_text: "Alpha section.".to_owned(),
+                    new_text: "First section.".to_owned(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result, "# Guide\n\nFirst section.\n\nGamma section.\n");
+    }
+
+    #[test]
+    fn exact_text_replacements_reject_missing_ambiguous_and_overlapping_matches() {
+        let cases = [
+            (
+                "one",
+                vec![DaemonTextReplacement {
+                    old_text: "missing".to_owned(),
+                    new_text: "replacement".to_owned(),
+                }],
+                "text_replacement_not_found",
+            ),
+            (
+                "repeat repeat",
+                vec![DaemonTextReplacement {
+                    old_text: "repeat".to_owned(),
+                    new_text: "replacement".to_owned(),
+                }],
+                "text_replacement_ambiguous",
+            ),
+            (
+                "abcdef",
+                vec![
+                    DaemonTextReplacement {
+                        old_text: "abc".to_owned(),
+                        new_text: "first".to_owned(),
+                    },
+                    DaemonTextReplacement {
+                        old_text: "bcde".to_owned(),
+                        new_text: "second".to_owned(),
+                    },
+                ],
+                "text_replacement_overlap",
+            ),
+        ];
+
+        for (source, replacements, expected_code) in cases {
+            let error = apply_exact_text_replacements(source, &replacements).unwrap_err();
+            let actual_code = match &error {
+                DaemonError::State { code, .. } => *code,
+                _ => panic!("unexpected error: {error}"),
+            };
+            assert_eq!(actual_code, expected_code);
         }
     }
 }

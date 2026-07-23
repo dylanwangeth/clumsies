@@ -251,10 +251,23 @@ export interface components {
             content: components["schemas"]["DaemonDraftContent"];
             description?: string;
         };
-        DaemonUpdateDraftOperation: {
+        DaemonUpdateDraftOperation: components["schemas"]["DaemonContentDraftUpdate"] | components["schemas"]["DaemonTextDraftUpdate"];
+        DaemonContentDraftUpdate: {
             id: string;
             content: components["schemas"]["DaemonDraftContent"];
             description?: string;
+        };
+        DaemonTextDraftUpdate: {
+            /** @description Stable resource ID returned by load_memory, not a path. */
+            id: string;
+            /** @description Complete Effective Memory content hash returned by load_memory. */
+            expected_hash: string;
+            replacements: components["schemas"]["DaemonTextReplacement"][];
+            description?: string;
+        };
+        DaemonTextReplacement: {
+            old_text: string;
+            new_text: string;
         };
         DaemonDraftContent: components["schemas"]["DaemonContextDraftContent"] | components["schemas"]["DaemonRuleDraftContent"] | components["schemas"]["DaemonWorkflowDraftContent"];
         DaemonContextDraftContent: {

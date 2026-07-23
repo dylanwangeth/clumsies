@@ -66,6 +66,15 @@ SQLite. MCP never treats a legacy Workspace ID as a Project ID. The Rust daemon
 test suite consumes a literal Zig MCP envelope to keep that cross-language
 contract executable.
 
+Agent-originated updates are exact text replacements, not complete-document
+writes. MCP forwards the resource ID, the complete-resource hash returned by
+`load`, and one or more `old_text`/`new_text` pairs. While draft and commit sync
+are excluded, daemon resolves the current Effective Memory resource, verifies
+the hash and unique non-overlapping matches, and applies the complete batch
+atomically. Only the materialized complete result is persisted as the ordinary
+Draft update operation, so Server synchronization and Commit storage remain
+independent of the agent-facing editing protocol.
+
 An old `~/.clumsies/config.toml` entry is used only when no daemon binding
 exists. MCP matches its display name against the signed-in user's Server
 Projects, persists the unique canonical `project_id` in daemon, and removes the
