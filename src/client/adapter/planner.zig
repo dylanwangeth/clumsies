@@ -4,6 +4,7 @@
 const std = @import("std");
 const model = @import("model.zig");
 const packages = @import("packages/root.zig");
+const remove_mod = @import("remove.zig");
 const store = @import("store.zig");
 const toml_ops = @import("primitives/toml_ops.zig");
 const json_ops = @import("primitives/json_ops.zig");
@@ -281,6 +282,102 @@ pub fn buildAdaptPlan(
         });
     }
 
+    if (is_update) {
+        const loaded = loaded_opt.?;
+        for (loaded.parsed.value.managed_resources) |resource| {
+            if (!resource.active or managedResourceStillRendered(resource, runtime_assets)) continue;
+
+            const absolute_path = remove_mod.resolveManagedAbsolutePath(
+                allocator,
+                target_root,
+                resource,
+            ) catch |err| {
+                return .{ .conflict = .{
+                    .install_id = try allocator.dupe(u8, install_id),
+                    .target_root = try allocator.dupe(u8, target_root),
+                    .path = try allocator.dupe(u8, resource.relative_path),
+                    .message = try std.fmt.allocPrint(
+                        allocator,
+                        "The retired managed resource has an invalid path and cannot be removed safely: {s}.",
+                        .{@errorName(err)},
+                    ),
+                } };
+            };
+            defer allocator.free(absolute_path);
+
+            if (!std.mem.eql(u8, resource.resource_kind, "plain_file") or
+                !std.mem.eql(u8, resource.ownership, "exclusive"))
+            {
+                return .{ .conflict = .{
+                    .install_id = try allocator.dupe(u8, install_id),
+                    .target_root = try allocator.dupe(u8, target_root),
+                    .path = try allocator.dupe(u8, absolute_path),
+                    .message = try allocator.dupe(
+                        u8,
+                        "The adapter no longer declares this managed shared resource, but cannot retire it automatically. Remove the adapter install before reinstalling it.",
+                    ),
+                } };
+            }
+
+            const existing = readFileIfExists(allocator, absolute_path) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => return err,
+            };
+            defer if (existing) |content| allocator.free(content);
+
+            if (existing) |content| {
+                const fingerprint = try store.fingerprintForContent(allocator, content);
+                defer allocator.free(fingerprint);
+                if (!std.mem.eql(u8, fingerprint, resource.fingerprint)) {
+                    if (isSharedWorkflowSkillResource(resource)) {
+                        try steps.append(allocator, .{
+                            .step_id = try std.fmt.allocPrint(allocator, "retire:{s}", .{resource.resource_id}),
+                            .resource_id = try allocator.dupe(u8, resource.resource_id),
+                            .resource_kind = "plain_file",
+                            .relative_path = try allocator.dupe(u8, resource.relative_path),
+                            .absolute_path = if (resource.absolute_path) |absolute_path_value|
+                                try allocator.dupe(u8, absolute_path_value)
+                            else
+                                null,
+                            .ownership = "exclusive",
+                            .action = "skip",
+                            .label = try std.fmt.allocPrint(allocator, "Preserved retired {s}", .{resource.resource_id}),
+                            .content = try allocator.dupe(u8, content),
+                            .file_mode = 0,
+                        });
+                        continue;
+                    }
+                    return .{ .conflict = .{
+                        .install_id = try allocator.dupe(u8, install_id),
+                        .target_root = try allocator.dupe(u8, target_root),
+                        .path = try allocator.dupe(u8, absolute_path),
+                        .message = try allocator.dupe(
+                            u8,
+                            "The adapter no longer declares this managed file, but the file has changed since installation. It was not removed.",
+                        ),
+                    } };
+                }
+            }
+
+            try steps.append(allocator, .{
+                .step_id = try std.fmt.allocPrint(allocator, "retire:{s}", .{resource.resource_id}),
+                .resource_id = try allocator.dupe(u8, resource.resource_id),
+                .resource_kind = "plain_file",
+                .relative_path = try allocator.dupe(u8, resource.relative_path),
+                .absolute_path = if (resource.absolute_path) |absolute_path_value|
+                    try allocator.dupe(u8, absolute_path_value)
+                else
+                    null,
+                .ownership = "exclusive",
+                .action = "remove",
+                .label = try std.fmt.allocPrint(allocator, "Retired {s}", .{resource.resource_id}),
+                .content = try allocator.dupe(u8, ""),
+                .expected_fingerprint = try allocator.dupe(u8, resource.fingerprint),
+                .file_mode = 0,
+            });
+        }
+    }
+
     const revision: u32 = if (loaded_opt) |loaded|
         loaded.parsed.value.active_revision + 1
     else
@@ -375,6 +472,10 @@ fn isSharedWorkflowSkillAsset(asset: model.RenderedAsset) bool {
     return std.mem.indexOf(u8, asset.resource_id, ".skills.workflow.") != null;
 }
 
+fn isSharedWorkflowSkillResource(resource: model.ManagedResource) bool {
+    return std.mem.indexOf(u8, resource.resource_id, ".skills.workflow.") != null;
+}
+
 fn isAdoptableCoreSkillAsset(asset: model.RenderedAsset, existing_content: []const u8) bool {
     if (!std.mem.eql(u8, asset.resource_kind, "plain_file")) return false;
     if (std.mem.indexOf(u8, asset.resource_id, ".skills.") == null) return false;
@@ -402,4 +503,60 @@ fn resourcePathMatches(
             false;
     }
     return std.mem.eql(u8, resource.relative_path, asset_relative_path);
+}
+
+fn managedResourceStillRendered(
+    resource: model.ManagedResource,
+    runtime_assets: []const model.RenderedAsset,
+) bool {
+    for (runtime_assets) |asset| {
+        if (!std.mem.eql(u8, resource.resource_id, asset.resource_id)) continue;
+        if (asset.absolute_path) |asset_absolute_path| {
+            if (resource.absolute_path) |resource_absolute_path| {
+                if (std.mem.eql(u8, resource_absolute_path, asset_absolute_path)) return true;
+            }
+            continue;
+        }
+        if (resource.absolute_path == null and
+            std.mem.eql(u8, resource.relative_path, asset.relative_path))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+test "managedResourceStillRendered compares identity and managed path" {
+    const resource = model.ManagedResource{
+        .resource_id = "codex.skills.setup",
+        .relative_path = ".agents/skills/setup/SKILL.md",
+        .absolute_path = "/tmp/workspace/.agents/skills/setup/SKILL.md",
+        .ownership = "exclusive",
+        .fingerprint = "sha256:test",
+        .active = true,
+    };
+    const same = [_]model.RenderedAsset{.{
+        .resource_id = "codex.skills.setup",
+        .resource_kind = "plain_file",
+        .relative_path = ".agents/skills/setup/SKILL.md",
+        .absolute_path = "/tmp/workspace/.agents/skills/setup/SKILL.md",
+        .ownership = "exclusive",
+        .label = "Setup",
+        .file_mode = 0o644,
+        .content = "content",
+    }};
+    const moved = [_]model.RenderedAsset{.{
+        .resource_id = "codex.skills.setup",
+        .resource_kind = "plain_file",
+        .relative_path = ".agents/skills/bootstrap/SKILL.md",
+        .absolute_path = "/tmp/workspace/.agents/skills/bootstrap/SKILL.md",
+        .ownership = "exclusive",
+        .label = "Setup",
+        .file_mode = 0o644,
+        .content = "content",
+    }};
+
+    try std.testing.expect(managedResourceStillRendered(resource, &same));
+    try std.testing.expect(!managedResourceStillRendered(resource, &moved));
+    try std.testing.expect(!managedResourceStillRendered(resource, &.{}));
 }

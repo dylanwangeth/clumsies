@@ -61,7 +61,7 @@ pub fn prepareJsonHooksRegistry(
     const arena = current_parsed.arena.allocator();
     const hooks_object = ensureHooksObject(current_root, arena) catch return .{ .conflict = conflict_invalid_hooks };
 
-    var did_change = false;
+    var did_change = try pruneRetiredClumsiesHookItems(allocator, hooks_object, managed_hooks);
 
     var event_it = managed_hooks.iterator();
     while (event_it.next()) |event_entry| {
@@ -347,6 +347,72 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
     return .absent;
 }
 
+fn pruneRetiredClumsiesHookItems(
+    allocator: std.mem.Allocator,
+    current_hooks: *std.json.ObjectMap,
+    managed_hooks: std.json.ObjectMap,
+) !bool {
+    var empty_events: std.ArrayList([]const u8) = .empty;
+    defer empty_events.deinit(allocator);
+
+    var did_change = false;
+    var event_it = current_hooks.iterator();
+    while (event_it.next()) |event_entry| {
+        const current_items = asArrayPtr(event_entry.value_ptr) orelse continue;
+        var index = current_items.items.len;
+        while (index > 0) {
+            index -= 1;
+            if (!isRetiredClumsiesHookItem(current_items.items[index], managed_hooks)) continue;
+            _ = current_items.orderedRemove(index);
+            did_change = true;
+        }
+        if (current_items.items.len == 0) {
+            try empty_events.append(allocator, event_entry.key_ptr.*);
+        }
+    }
+
+    for (empty_events.items) |event_name| {
+        _ = current_hooks.orderedRemove(event_name);
+    }
+    return did_change;
+}
+
+fn isRetiredClumsiesHookItem(
+    item: std.json.Value,
+    managed_hooks: std.json.ObjectMap,
+) bool {
+    const hooks = nestedHooksArray(item) orelse return false;
+    if (hooks.len == 0) return false;
+
+    var found_clumsies_hook = false;
+    for (hooks) |hook| {
+        const command = hookCommand(hook) orelse return false;
+        const kind = clumsiesHookScriptName(command) orelse return false;
+        found_clumsies_hook = true;
+        if (managedHooksContainKind(managed_hooks, kind)) return false;
+    }
+    return found_clumsies_hook;
+}
+
+fn managedHooksContainKind(
+    managed_hooks: std.json.ObjectMap,
+    expected_kind: []const u8,
+) bool {
+    var event_it = managed_hooks.iterator();
+    while (event_it.next()) |event_entry| {
+        const items = asArray(event_entry.value_ptr.*) orelse continue;
+        for (items.items) |item| {
+            const hooks = nestedHooksArray(item) orelse continue;
+            for (hooks) |hook| {
+                const command = hookCommand(hook) orelse continue;
+                const kind = clumsiesHookScriptName(command) orelse continue;
+                if (std.mem.eql(u8, kind, expected_kind)) return true;
+            }
+        }
+    }
+    return false;
+}
+
 fn inspectManagedNamedHook(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
     var exact_index: ?usize = null;
     var replace_index: ?usize = null;
@@ -601,6 +667,7 @@ fn managedNamedHookCanReplace(current_item: std.json.Value, managed_item: std.js
 fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
     const names = [_][]const u8{
         "session-start.sh",
+        "stop-refer-check.sh",
         "user-prompt-submit.sh",
         "pre-invocation.sh",
     };
@@ -713,6 +780,89 @@ test "prepareJsonHooksRegistry appends managed entries without dropping foreign 
             try std.testing.expectEqualStrings("update", prepared.action);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "session-start.sh") != null);
+        },
+    }
+}
+
+test "prepareJsonHooksRegistry removes retired clumsies hooks and keeps foreign hooks" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/workspace/.codex/hooks/session-start.sh\""
+        \\          }
+        \\        ]
+        \\      },
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "echo foreign"
+        \\          }
+        \\        ]
+        \\      }
+        \\    ],
+        \\    "Stop": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/workspace/.codex/hooks/stop-refer-check.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ],
+        \\    "UserPromptSubmit": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/workspace/.codex/hooks/user-prompt-submit.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {
+        \\        "hooks": [
+        \\          {
+        \\            "type": "command",
+        \\            "command": "bash \"/workspace/.codex/hooks/user-prompt-submit.sh\""
+        \\          }
+        \\        ]
+        \\      }
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "session-start.sh") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "stop-refer-check.sh") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "user-prompt-submit.sh") != null);
         },
     }
 }

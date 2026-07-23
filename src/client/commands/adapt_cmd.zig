@@ -96,6 +96,9 @@ fn runInstall(
     }
 
     var workspace_root_opt = try workspace_config.resolveCurrentWorkspaceRoot(allocator);
+    if (workspace_root_opt == null and parsed.boolean(FLAG_UPDATE)) {
+        workspace_root_opt = try std.Io.Dir.cwd().realPathFileAlloc(std.Options.debug_io, ".", allocator);
+    }
     defer if (workspace_root_opt) |workspace_root| allocator.free(workspace_root);
 
     const pkg = if (parsed.value(FLAG_AGENT)) |agent_name|
@@ -242,7 +245,7 @@ fn runInstall(
 
             const summary = try adapter.apply.applyAdaptPlan(stdout, allocator, &plan);
             try stdout.print(
-                "{s}{s}{s}Clumsies adapted {s}.{s} Wrote {d} file(s), left {d} unchanged.\n",
+                "{s}{s}{s}Clumsies adapted {s}.{s} Wrote {d} file(s), removed {d}, left {d} unchanged.\n",
                 .{
                     P,
                     Color.bold,
@@ -250,6 +253,7 @@ fn runInstall(
                     pkg.display_name,
                     Color.reset,
                     summary.wrote_count,
+                    summary.removed_count,
                     summary.kept_count,
                 },
             );

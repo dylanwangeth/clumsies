@@ -736,7 +736,7 @@ fn isJsonMcpRegistryResource(resource: model.ManagedResource) bool {
     return std.mem.eql(u8, resource.resource_kind, "json_mcp_registry");
 }
 
-fn resolveManagedAbsolutePath(
+pub fn resolveManagedAbsolutePath(
     allocator: std.mem.Allocator,
     target_root: []const u8,
     resource: model.ManagedResource,

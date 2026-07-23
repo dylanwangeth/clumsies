@@ -1,5 +1,5 @@
 //! Adapter data model: plans, steps, manifests, and conflicts. An adapter install is planned
-//! before execution — the planner produces a Plan of PlanSteps (create/update/keep), and the
+//! before execution — the planner produces a Plan of PlanSteps, and the
 //! install manifest tracks what was written for safe removal later.
 const std = @import("std");
 
@@ -32,6 +32,7 @@ pub const PlanStep = struct {
     label: []const u8,
     content: []const u8,
     managed_content: ?[]const u8 = null,
+    expected_fingerprint: ?[]const u8 = null,
     file_mode: u16,
 };
 
@@ -127,6 +128,7 @@ pub const BuildResult = union(enum) {
 
 pub const ApplySummary = struct {
     wrote_count: usize,
+    removed_count: usize,
     kept_count: usize,
 };
 
@@ -149,6 +151,7 @@ pub fn deinitPlanStepsSlice(allocator: std.mem.Allocator, steps: []const PlanSte
         allocator.free(step.label);
         allocator.free(step.content);
         if (step.managed_content) |managed_content| allocator.free(managed_content);
+        if (step.expected_fingerprint) |fingerprint| allocator.free(fingerprint);
     }
 }
 
