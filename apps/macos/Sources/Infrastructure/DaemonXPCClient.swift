@@ -65,6 +65,35 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "sync_status", payload: EmptyPayload())
     }
 
+    func projectStorage(_ projectId: String) async throws -> DaemonProjectStorage {
+        try await call(
+            method: "project_storage",
+            payload: DaemonProjectStorageRequest(projectId: projectId)
+        )
+    }
+
+    func replaceProjectStorage(_ request: DaemonProjectStorageReplaceRequest) async throws
+        -> DaemonProjectStorageMove {
+        try await call(method: "replace_project_storage", payload: request)
+    }
+
+    func projectStorageMove(_ moveId: String) async throws -> DaemonProjectStorageMove {
+        try await call(
+            method: "project_storage_move",
+            payload: DaemonProjectStorageMoveRequest(moveId: moveId)
+        )
+    }
+
+    func resetProjectStorage(_ request: DaemonProjectStorageResetRequest) async throws
+        -> DaemonProjectStorageMove {
+        try await call(method: "reset_project_storage", payload: request)
+    }
+
+    func clearProjectCache(_ request: DaemonProjectCacheClearRequest) async throws
+        -> DaemonProjectStorage {
+        try await call(method: "clear_project_cache", payload: request)
+    }
+
     func retrySync(channel: String = "all") async throws -> DaemonRetryResponse {
         try await call(method: "retry_sync", payload: DaemonSyncRetryRequest(channel: channel))
     }
@@ -83,6 +112,43 @@ struct DaemonXPCClient: Sendable {
 
     func store(_ request: DaemonDraftOperationRequest) async throws -> DaemonDraftOperationResponse {
         try await call(method: "store_draft_operation", payload: request)
+    }
+
+    func listRetrievalRuns(_ request: RetrievalRunListRequest) async throws
+        -> RetrievalRunListResponse {
+        try await call(method: "list_retrieval_runs", payload: request)
+    }
+
+    func retrievalRun(_ runId: String) async throws -> RetrievalRunDetail {
+        try await call(
+            method: "get_retrieval_run",
+            payload: RetrievalRunRequest(runId: runId)
+        )
+    }
+
+    func createEvaluationCase(_ request: CreateEvaluationCaseRequest) async throws
+        -> EvaluationCaseDetail {
+        try await call(method: "create_evaluation_case", payload: request)
+    }
+
+    func replaceEvaluationJudgments(_ request: ReplaceEvaluationJudgmentsRequest) async throws
+        -> EvaluationCaseDetail {
+        try await call(method: "replace_evaluation_judgments", payload: request)
+    }
+
+    func clearRetrievalRuns(projectId: String?) async throws -> ClearRetrievalRunsResponse {
+        try await call(
+            method: "clear_retrieval_runs",
+            payload: ClearRetrievalRunsRequest(projectId: projectId)
+        )
+    }
+
+    func exportEvaluationSet(projectId: String?, caseIds: [String] = []) async throws
+        -> ExportEvaluationSetResponse {
+        try await call(
+            method: "export_evaluation_set",
+            payload: ExportEvaluationSetRequest(projectId: projectId, caseIds: caseIds)
+        )
     }
 
     func serverRequest(_ request: DaemonServerRequest) async throws -> DaemonServerResponse {

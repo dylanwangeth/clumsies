@@ -24,6 +24,8 @@ use uuid::Uuid;
 mod commit_sync;
 mod credentials;
 mod ipc;
+mod project_storage;
+mod retrieval_history;
 mod search;
 pub use commit_sync::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,
@@ -34,6 +36,21 @@ pub use credentials::{
     SystemCredentialStore,
 };
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
+pub use project_storage::{
+    DaemonProjectCacheClearRequest, DaemonProjectStorage, DaemonProjectStorageAvailability,
+    DaemonProjectStorageMode, DaemonProjectStorageMove, DaemonProjectStorageMoveRequest,
+    DaemonProjectStorageMoveState, DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
+    DaemonProjectStorageResetRequest,
+};
+pub use retrieval_history::{
+    ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
+    EvaluationCase, EvaluationCaseDetail, EvaluationCorpusResource, EvaluationJudgment,
+    EvaluationJudgmentInput, ExportEvaluationSetRequest, ExportEvaluationSetResponse,
+    ReplaceEvaluationJudgmentsRequest, RetrievalBenchmarkMetrics, RetrievalBenchmarkReport,
+    RetrievalBenchmarkVariant, RetrievalCandidate, RetrievalDeltaAction, RetrievalExclusionReason,
+    RetrievalRun, RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse,
+    RetrievalRunRequest, RetrievalRunStatus, RetrievalStageLatencies,
+};
 pub use search::{
     ActivateMemoryRequest, ActivateMemoryResponse, ActivationAction, ActivationFragment,
     ActivationRemoval, LoadMemoryRequest, LoadMemoryResponse, LoadedMemoryResource, MemoryKind,
@@ -43,7 +60,7 @@ pub use search::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 18;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
@@ -707,7 +724,9 @@ struct DaemonInner {
     token_refresh: Mutex<()>,
     search_models: Arc<dyn search::models::SearchModels>,
     search_lock: Mutex<()>,
+    retrieval_history_lock: Mutex<()>,
     draft_mutation_lock: Mutex<()>,
+    storage_access: tokio::sync::RwLock<()>,
 }
 
 impl DaemonState {
@@ -739,11 +758,12 @@ impl DaemonState {
         migrate_local_db(&pool).await?;
         reset_memory_cache_if_required(&pool, &config.cache_dir).await?;
         recover_interrupted_operations(&pool).await?;
+        retrieval_history::recover_interrupted_runs(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
         let credentials = load_server_credentials(credential_store.clone()).await?;
         let project_config = load_project_config(&pool, &config.project, credentials).await?;
 
-        Ok(Self {
+        let state = Self {
             inner: Arc::new(DaemonInner {
                 config,
                 project_config: RwLock::new(project_config),
@@ -757,9 +777,13 @@ impl DaemonState {
                 token_refresh: Mutex::new(()),
                 search_models,
                 search_lock: Mutex::new(()),
+                retrieval_history_lock: Mutex::new(()),
                 draft_mutation_lock: Mutex::new(()),
+                storage_access: tokio::sync::RwLock::new(()),
             }),
-        })
+        };
+        project_storage::resume_pending_moves(&state);
+        Ok(state)
     }
 
     pub fn local_db_path(&self) -> PathBuf {
@@ -1118,6 +1142,41 @@ impl DaemonState {
         load_sync_status(self).await
     }
 
+    pub async fn project_storage(
+        &self,
+        request: DaemonProjectStorageRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        project_storage::project_storage(self, request).await
+    }
+
+    pub async fn replace_project_storage(
+        &self,
+        request: DaemonProjectStorageReplaceRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        project_storage::replace_project_storage(self, request).await
+    }
+
+    pub async fn project_storage_move(
+        &self,
+        request: DaemonProjectStorageMoveRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        project_storage::project_storage_move(self, request).await
+    }
+
+    pub async fn reset_project_storage(
+        &self,
+        request: DaemonProjectStorageResetRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        project_storage::reset_project_storage(self, request).await
+    }
+
+    pub async fn clear_project_cache(
+        &self,
+        request: DaemonProjectCacheClearRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        project_storage::clear_project_cache(self, request).await
+    }
+
     pub async fn memory_cache(
         &self,
         request: DaemonMemoryCacheRequest,
@@ -1158,6 +1217,48 @@ impl DaemonState {
         request: SearchIndexProjectRequest,
     ) -> Result<SearchIndexStatus, DaemonError> {
         search::rebuild_search_index(self, request).await
+    }
+
+    pub async fn list_retrieval_runs(
+        &self,
+        request: RetrievalRunListRequest,
+    ) -> Result<RetrievalRunListResponse, DaemonError> {
+        retrieval_history::list_retrieval_runs(self, request).await
+    }
+
+    pub async fn get_retrieval_run(
+        &self,
+        request: RetrievalRunRequest,
+    ) -> Result<RetrievalRunDetail, DaemonError> {
+        retrieval_history::get_retrieval_run(self, request).await
+    }
+
+    pub async fn create_evaluation_case(
+        &self,
+        request: CreateEvaluationCaseRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        retrieval_history::create_evaluation_case(self, request).await
+    }
+
+    pub async fn replace_evaluation_judgments(
+        &self,
+        request: ReplaceEvaluationJudgmentsRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        retrieval_history::replace_evaluation_judgments(self, request).await
+    }
+
+    pub async fn clear_retrieval_runs(
+        &self,
+        request: ClearRetrievalRunsRequest,
+    ) -> Result<ClearRetrievalRunsResponse, DaemonError> {
+        retrieval_history::clear_retrieval_runs(self, request).await
+    }
+
+    pub async fn export_evaluation_set(
+        &self,
+        request: ExportEvaluationSetRequest,
+    ) -> Result<ExportEvaluationSetResponse, DaemonError> {
+        retrieval_history::export_evaluation_set(self, request).await
     }
 
     pub async fn retry_sync(
@@ -1211,6 +1312,11 @@ impl DaemonState {
             let _sync_guard = self.inner.sync_lock.lock().await;
             let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
             let request = self.materialize_text_update(request).await?;
+            return self.persist_draft_operation(request).await;
+        }
+        if request.op.delete.is_some() || request.op.discard.is_some() {
+            let _sync_guard = self.inner.sync_lock.lock().await;
+            let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
             return self.persist_draft_operation(request).await;
         }
 
@@ -1284,12 +1390,11 @@ impl DaemonState {
 
     async fn persist_draft_operation(
         &self,
-        request: DaemonDraftOperationRequest,
+        mut request: DaemonDraftOperationRequest,
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
         let source = request
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);
-        let operation_json = serde_json::to_string(&request.op)?;
         let requested_base_commit_id = request.base_commit_id;
         let new_draft_base_commit_id = match requested_base_commit_id.as_deref() {
             Some(commit_id) => Some(commit_id.to_owned()),
@@ -1313,10 +1418,11 @@ impl DaemonState {
                 new_draft_base_commit_id: new_draft_base_commit_id.as_deref(),
                 scope: request.scope,
                 resource: request.resource,
-                op: &request.op,
+                op: &mut request.op,
             },
         )
         .await?;
+        let operation_json = serde_json::to_string(&request.op)?;
         let local_operation_id = format!("op_{}", Uuid::new_v4().simple());
 
         sqlx::query(
@@ -1522,6 +1628,41 @@ impl DaemonIpcService {
         self.state.sync_status().await
     }
 
+    pub async fn project_storage(
+        &self,
+        request: DaemonProjectStorageRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        self.state.project_storage(request).await
+    }
+
+    pub async fn replace_project_storage(
+        &self,
+        request: DaemonProjectStorageReplaceRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.state.replace_project_storage(request).await
+    }
+
+    pub async fn project_storage_move(
+        &self,
+        request: DaemonProjectStorageMoveRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.state.project_storage_move(request).await
+    }
+
+    pub async fn reset_project_storage(
+        &self,
+        request: DaemonProjectStorageResetRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.state.reset_project_storage(request).await
+    }
+
+    pub async fn clear_project_cache(
+        &self,
+        request: DaemonProjectCacheClearRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        self.state.clear_project_cache(request).await
+    }
+
     pub async fn memory_cache(
         &self,
         request: DaemonMemoryCacheRequest,
@@ -1562,6 +1703,48 @@ impl DaemonIpcService {
         request: SearchIndexProjectRequest,
     ) -> Result<SearchIndexStatus, DaemonError> {
         self.state.rebuild_search_index(request).await
+    }
+
+    pub async fn list_retrieval_runs(
+        &self,
+        request: RetrievalRunListRequest,
+    ) -> Result<RetrievalRunListResponse, DaemonError> {
+        self.state.list_retrieval_runs(request).await
+    }
+
+    pub async fn get_retrieval_run(
+        &self,
+        request: RetrievalRunRequest,
+    ) -> Result<RetrievalRunDetail, DaemonError> {
+        self.state.get_retrieval_run(request).await
+    }
+
+    pub async fn create_evaluation_case(
+        &self,
+        request: CreateEvaluationCaseRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        self.state.create_evaluation_case(request).await
+    }
+
+    pub async fn replace_evaluation_judgments(
+        &self,
+        request: ReplaceEvaluationJudgmentsRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        self.state.replace_evaluation_judgments(request).await
+    }
+
+    pub async fn clear_retrieval_runs(
+        &self,
+        request: ClearRetrievalRunsRequest,
+    ) -> Result<ClearRetrievalRunsResponse, DaemonError> {
+        self.state.clear_retrieval_runs(request).await
+    }
+
+    pub async fn export_evaluation_set(
+        &self,
+        request: ExportEvaluationSetRequest,
+    ) -> Result<ExportEvaluationSetResponse, DaemonError> {
+        self.state.export_evaluation_set(request).await
     }
 
     pub async fn retry_sync(
@@ -1654,6 +1837,61 @@ impl DaemonIpcService {
                 .sync_status()
                 .await
                 .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+            "project_storage" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonProjectStorageRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .project_storage(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "replace_project_storage" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectStorageReplaceRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .replace_project_storage(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "project_storage_move" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectStorageMoveRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .project_storage_move(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "reset_project_storage" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectStorageResetRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .reset_project_storage(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "clear_project_cache" => {
+                let payload =
+                    self.decode_dispatch_payload::<DaemonProjectCacheClearRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .clear_project_cache(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
             "memory_cache" => {
                 let payload =
                     self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
@@ -1714,6 +1952,71 @@ impl DaemonIpcService {
                 match payload {
                     Ok(payload) => self
                         .rebuild_search_index(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "list_retrieval_runs" => {
+                let payload =
+                    self.decode_dispatch_payload::<RetrievalRunListRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .list_retrieval_runs(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "get_retrieval_run" => {
+                let payload = self.decode_dispatch_payload::<RetrievalRunRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .get_retrieval_run(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "create_evaluation_case" => {
+                let payload =
+                    self.decode_dispatch_payload::<CreateEvaluationCaseRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .create_evaluation_case(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "replace_evaluation_judgments" => {
+                let payload = self
+                    .decode_dispatch_payload::<ReplaceEvaluationJudgmentsRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .replace_evaluation_judgments(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "clear_retrieval_runs" => {
+                let payload =
+                    self.decode_dispatch_payload::<ClearRetrievalRunsRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .clear_retrieval_runs(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "export_evaluation_set" => {
+                let payload =
+                    self.decode_dispatch_payload::<ExportEvaluationSetRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .export_evaluation_set(payload)
                         .await
                         .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
                     Err(error) => Err(error),
@@ -1795,7 +2098,7 @@ struct LocalDraftResolutionInput<'a> {
     new_draft_base_commit_id: Option<&'a str>,
     scope: DaemonDraftScope,
     resource: DaemonDraftResourceKind,
-    op: &'a DaemonDraftOperation,
+    op: &'a mut DaemonDraftOperation,
 }
 
 async fn resolve_local_draft(
@@ -1846,6 +2149,7 @@ async fn resolve_local_draft(
                 "local draft {draft_id} is {status}"
             )));
         }
+        normalize_unpublished_delete(tx, draft_id, op).await?;
         if op.discard.is_some() {
             mark_local_draft_discarded(tx, draft_id).await?;
         }
@@ -1914,6 +2218,7 @@ async fn resolve_local_draft(
                 "local draft {draft_id} has a different base commit"
             )));
         }
+        normalize_unpublished_delete(tx, &draft_id, op).await?;
         if op.discard.is_some() {
             mark_local_draft_discarded(tx, &draft_id).await?;
         }
@@ -1942,6 +2247,34 @@ async fn resolve_local_draft(
     .execute(&mut **tx)
     .await?;
     Ok(draft_id)
+}
+
+async fn normalize_unpublished_delete(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    draft_id: &str,
+    operation: &mut DaemonDraftOperation,
+) -> Result<(), DaemonError> {
+    if operation.delete.is_none() {
+        return Ok(());
+    }
+    let creates_resource: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM local_draft_operations
+            WHERE draft_id = $1
+              AND json_type(operation_json, '$.create') = 'object'
+         )",
+    )
+    .bind(draft_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if creates_resource {
+        operation.delete = None;
+        operation.discard = Some(DaemonDiscardDraftOperation {
+            id: draft_id.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 async fn mark_local_draft_discarded(
@@ -2348,7 +2681,14 @@ async fn load_next_queued_operation(
          FROM local_draft_operations o
          JOIN local_drafts d ON d.draft_id = o.draft_id
          WHERE o.sync_status = 'queued'
-         ORDER BY o.created_at
+           AND NOT EXISTS (
+               SELECT 1
+               FROM local_draft_operations AS prior
+               WHERE prior.draft_id = o.draft_id
+                 AND prior.rowid < o.rowid
+                 AND prior.sync_status != 'synced'
+           )
+         ORDER BY o.created_at, o.rowid
          LIMIT 1",
     )
     .fetch_optional(pool)
@@ -3412,9 +3752,9 @@ struct UnlinkedLocalOperation {
 }
 
 fn prepare_directories(config: &DaemonConfig) -> Result<(), DaemonError> {
-    std::fs::create_dir_all(&config.root_dir)?;
-    std::fs::create_dir_all(&config.cache_dir)?;
-    std::fs::create_dir_all(config.logs_dir())?;
+    project_storage::ensure_private_directory(&config.root_dir)?;
+    project_storage::ensure_private_directory(&config.cache_dir)?;
+    project_storage::ensure_private_directory(&config.logs_dir())?;
     Ok(())
 }
 
@@ -3450,6 +3790,14 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     if existing_schema_version == 15 {
         migrate_local_schema_15_to_16(pool).await?;
         existing_schema_version = 16;
+    }
+    if existing_schema_version == 16 {
+        migrate_local_schema_16_to_17(pool).await?;
+        existing_schema_version = 17;
+    }
+    if existing_schema_version == 17 {
+        migrate_local_schema_17_to_18(pool).await?;
+        existing_schema_version = 18;
     }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
@@ -3563,7 +3911,9 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     commit_sync::migrate(pool).await?;
+    project_storage::migrate(pool).await?;
     search::migrate(pool).await?;
+    retrieval_history::migrate(pool).await?;
     sqlx::query(
         "INSERT INTO daemon_meta (key, value)
          VALUES ('schema_version', $1)
@@ -3720,6 +4070,14 @@ async fn migrate_local_schema_14_to_15(pool: &SqlitePool) -> Result<(), DaemonEr
 
 async fn migrate_local_schema_15_to_16(pool: &SqlitePool) -> Result<(), DaemonError> {
     create_project_bindings_table(pool).await
+}
+
+async fn migrate_local_schema_16_to_17(pool: &SqlitePool) -> Result<(), DaemonError> {
+    project_storage::migrate(pool).await
+}
+
+async fn migrate_local_schema_17_to_18(pool: &SqlitePool) -> Result<(), DaemonError> {
+    retrieval_history::migrate(pool).await
 }
 
 async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {

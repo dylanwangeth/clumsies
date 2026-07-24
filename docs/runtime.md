@@ -4,7 +4,8 @@
 
 `clumsiesd` is an owner-scoped macOS launchd service. The macOS app installs and
 starts it, while both the app and MCP connect to the same process over XPC. The
-daemon has one local SQLite database for durable client state.
+daemon has one central SQLite database for durable client state and one derived
+search database inside each Project's active local storage.
 
 The database currently stores:
 
@@ -15,8 +16,12 @@ The database currently stores:
 - synchronization status, failures, and Server draft identity
 - immutable Blob, Tree, and Commit metadata
 - installed organization and project Refs
-- derived search revisions, complete effective resources, Markdown units,
-  FTS5 rows, and local vectors
+- the active search head and storage-location revision for each Project
+
+Each Project search database stores its derived search revisions, complete
+Effective Memory resources, Markdown units, FTS5 rows, and vectors. Embedding
+and reranking models remain in the shared daemon cache and are not copied per
+Project.
 
 File permissions are owner-only. Access and refresh tokens are stored as one
 Server-bound generic-password item in macOS Keychain. SQLite never persists
@@ -39,6 +44,12 @@ dependency.
 Every local operation is persisted before synchronization is attempted. The
 queue supports create, update, rename, delete, and discard for Context, Rule,
 and Workflow resources.
+
+Deleting an authoritative resource keeps an open deletion Draft until Review
+merge. Deleting a resource created only by the current Draft cancels that
+creation instead: daemon records a discard, and the Draft leaves Effective
+Memory without creating a deletion proposal for a resource that never existed
+in the Ref.
 
 Each draft carries:
 
@@ -151,12 +162,77 @@ Cache diagnostics preserve layer boundaries: an unknown local Ref reports
 `commit_generation_missing` or `commit_generation_corrupt`; only derived search
 index preparation and build failures use search-index error codes.
 
+## Project local storage
+
+Project Local Storage is an installation-local cache setting keyed by normalized
+Server authority and canonical `project_id`. It is not part of Server Project
+metadata and is not synchronized to another installation. An absent setting
+resolves to
+`<daemon-cache>/projects/<authority-hash>/<project-id>`. A preexisting
+`projects/<project-id>` generation is adopted once into that authority-scoped
+layout with its permissions hardened; daemon does not maintain both layouts.
+
+For a custom location, the selected directory is only a parent. Daemon owns the
+following subtree and never treats it as an editable working directory:
+
+```text
+<selected-root>/.clumsies/cache-v1/<authority-hash>/<project-id>/
+  ownership.json
+  generations/
+  search/index.sqlite
+  staging/
+```
+
+Changing the location creates a persistent daemon move. Daemon materializes and
+verifies the generations and Project search index under destination staging,
+then switches the location with `expected_location_revision` CAS while holding
+the same synchronization boundary used by Commit installation. Readers retain
+the old location until the switch obtains its write gate. A restart resumes any
+nonterminal move; cleanup failure after a successful switch is diagnostic and
+does not roll back the new active location.
+
+The macOS app uses `NSOpenPanel` to create a one-time ordinary bookmark for the
+selected directory. Daemon resolves that handoff while Desktop is running,
+creates a security-scoped bookmark under the daemon's own code-signing identity,
+and persists only that daemon-owned bookmark. This is required because an
+app-scoped bookmark created by Desktop cannot be resolved by a separately signed
+LaunchAgent. Daemon holds security-scoped access for each filesystem operation
+and refreshes stale persisted bookmark data. It refuses network filesystems,
+symbolic links, invalid ownership markers, unsafe nesting, and paths without
+capacity or write access. Managed directories and files use `0700` and `0600`.
+
+An unavailable custom location never falls back to the default cache or advances
+the local Project Ref without a complete generation. Drafts, operation queues,
+and their synchronization continue in central SQLite. `activate`, `load`, and
+checkout return an explicit storage/search readiness error until the same
+location becomes available again.
+
+The daemon IPC methods are `project_storage`, `replace_project_storage`,
+`project_storage_move`, `reset_project_storage`, and `clear_project_cache`.
+Clear Cache removes only marker-owned generations, search data, and staging;
+Drafts, settings, models, and files outside the managed subtree are preserved.
+
 ## Diagnostics
 
 Desktop can read daemon health, bootstrap state, project configuration, sync
 status, MCP status, draft lists, draft details, and operation results through
 typed XPC requests. It can request explicit retry without directly mutating queue
 rows.
+
+The native Diagnostics window has separate Runtime and Retrieval pages.
+Retrieval lists the active Project's latest Runs and loads one complete trace on
+demand. Candidate columns show exact/BM25, vector, RRF, reranker, final rank,
+score, exclusion reason, and activation delta action. A successful Run can be
+added to the local Evaluation Set, graded from 0–3, supplemented with missed
+resource evidence, exported as a versioned fixture, or retained while unpinned
+history is cleared.
+
+The local methods are `list_retrieval_runs`, `get_retrieval_run`,
+`create_evaluation_case`, `replace_evaluation_judgments`,
+`clear_retrieval_runs`, and `export_evaluation_set`. Retrieval history is
+central daemon state and remains independent from Project Local Storage.
+Retention keeps the latest 500 unpinned Runs per Project; Evaluation Cases pin
+their source Runs and immutable corpora. See `docs/retrieval-evaluation.md`.
 
 Server diagnostics are available at `/api/v1/admin/health`. Database, schema,
 Commit service, and OIDC are reported as separate components.

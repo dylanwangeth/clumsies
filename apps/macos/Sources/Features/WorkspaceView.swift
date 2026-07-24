@@ -87,7 +87,8 @@ enum SyncToolbarPresentation: Equatable {
 struct WorkspaceView: View {
     @ObservedObject var store: WorkspaceStore
     let onOpenSettings: () -> Void
-    let onOpenDiagnostics: () -> Void
+    let onOpenDiagnostics: (DiagnosticsDestination) -> Void
+    let onShowLogs: () -> Void
     @State private var reviewStatusFilter = "open"
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
@@ -104,7 +105,8 @@ struct WorkspaceView: View {
                 GlobalSidebar(
                     store: store,
                     onOpenSettings: onOpenSettings,
-                    onOpenDiagnostics: onOpenDiagnostics
+                    onOpenDiagnostics: onOpenDiagnostics,
+                    onShowLogs: onShowLogs
                 )
                 .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
             } content: {
@@ -562,7 +564,8 @@ private struct WorkspaceSearchPopover: View {
 private struct GlobalSidebar: View {
     @ObservedObject var store: WorkspaceStore
     let onOpenSettings: () -> Void
-    let onOpenDiagnostics: () -> Void
+    let onOpenDiagnostics: (DiagnosticsDestination) -> Void
+    let onShowLogs: () -> Void
     @State private var localExpanded = true
 
     var body: some View {
@@ -634,27 +637,15 @@ private struct GlobalSidebar: View {
     }
 
     private var accountMenu: some View {
-        Menu {
-            accountMenuItems
-        } label: {
-            HStack(spacing: 9) {
-                AvatarView(account: store.account)
-                Text(accountDisplayName)
-                    .lineLimit(1)
-                Spacer()
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-            }
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .accessibilityLabel("Account menu for \(accountDisplayName)")
+        NativeAccountMenu(
+            account: store.account,
+            displayName: accountDisplayName,
+            onOpenSettings: onOpenSettings,
+            onOpenDiagnostics: onOpenDiagnostics,
+            onShowLogs: onShowLogs,
+            onRefresh: { Task { await store.reload() } },
+            onSignOut: { Task { await store.signOut() } }
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -664,19 +655,6 @@ private struct GlobalSidebar: View {
             return displayName
         }
         return store.account?.email ?? "Account"
-    }
-
-    @ViewBuilder
-    private var accountMenuItems: some View {
-        if let account = store.account {
-            Text(account.displayName ?? account.email)
-            Divider()
-        }
-        Button("Settings") { onOpenSettings() }
-        Button("Diagnostics") { onOpenDiagnostics() }
-        Button("Refresh") { Task { await store.reload() } }
-        Divider()
-        Button("Sign Out") { Task { await store.signOut() } }
     }
 
     private var selection: Binding<GlobalSidebarDestination?> {
@@ -766,7 +744,7 @@ private struct SearchEntry: Identifiable {
     }
 }
 
-private struct AvatarView: View {
+struct AvatarView: View {
     let account: UserReference?
 
     var body: some View {

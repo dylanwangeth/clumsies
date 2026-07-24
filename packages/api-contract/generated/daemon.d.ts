@@ -14,7 +14,7 @@ export interface components {
             service_name: string;
         };
         DaemonIpcRequest: {
-            method: string;
+            method: components["schemas"]["DaemonIpcMethod"];
             payload: {
                 [key: string]: unknown;
             };
@@ -26,6 +26,8 @@ export interface components {
             };
             error: components["schemas"]["ApiError"] | null;
         };
+        /** @enum {string} */
+        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "replace_project_binding" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "replace_evaluation_judgments" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
         DaemonBootstrapStatus: {
             label: string;
             mach_service_name: string;
@@ -89,13 +91,72 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        DaemonProjectStorageRequest: {
+            project_id: string;
+        };
+        DaemonProjectStorageMoveRequest: {
+            move_id: string;
+        };
+        DaemonProjectStorageReplaceRequest: {
+            project_id: string;
+            /** @description Canonical display path selected by the user; daemon validates it against the handoff bookmark. */
+            selected_root_path: string;
+            /**
+             * Format: byte
+             * @description Base64-encoded one-time macOS bookmark used by Desktop to hand the selected directory to daemon. Daemon replaces it with its own security-scoped bookmark and never persists this value.
+             */
+            handoff_bookmark_data: string;
+            expected_location_revision: number;
+        };
+        DaemonProjectStorageResetRequest: {
+            project_id: string;
+            expected_location_revision: number;
+        };
+        DaemonProjectCacheClearRequest: {
+            project_id: string;
+            expected_location_revision: number;
+        };
+        DaemonProjectStorage: {
+            /** Format: uri */
+            authority_key: string;
+            project_id: string;
+            mode: components["schemas"]["DaemonProjectStorageMode"];
+            selected_root_path: string;
+            managed_root_path: string;
+            active_generation_path: string | null;
+            search_index_path: string;
+            availability: components["schemas"]["DaemonProjectStorageAvailability"];
+            location_revision: number;
+            size_bytes: number;
+            active_move_id: string | null;
+            issue_code: string | null;
+            diagnostic: string | null;
+        };
+        DaemonProjectStorageMove: {
+            move_id: string;
+            project_id: string;
+            source_mode: components["schemas"]["DaemonProjectStorageMode"];
+            destination_mode: components["schemas"]["DaemonProjectStorageMode"];
+            source_managed_root_path: string;
+            destination_managed_root_path: string;
+            source_location_revision: number;
+            state: components["schemas"]["DaemonProjectStorageMoveState"];
+            error_code: string | null;
+            error_message: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            completed_at: string | null;
+        };
         DaemonMemoryCacheRequest: {
             project_id: string;
         };
         DaemonMemoryCacheStatus: {
             project_id: string;
             commit_id: string | null;
-            root_path: string | null;
+            active_generation_path: string | null;
             state: components["schemas"]["DaemonMemoryCacheState"];
             diagnostic: string | null;
         };
@@ -121,6 +182,190 @@ export interface components {
             path: string;
             content_hash: string;
             content: components["schemas"]["DaemonDraftContent"];
+        };
+        RetrievalRunListRequest: {
+            project_id?: string | null;
+            status?: components["schemas"]["RetrievalRunStatus"] | null;
+            cursor?: string | null;
+            limit?: number | null;
+        };
+        RetrievalRunRequest: {
+            run_id: string;
+        };
+        RetrievalRunListResponse: {
+            items: components["schemas"]["RetrievalRun"][];
+            next_cursor: string | null;
+        };
+        RetrievalRun: {
+            run_id: string;
+            project_id: string;
+            query: string;
+            activation_state_fingerprint: string;
+            status: components["schemas"]["RetrievalRunStatus"];
+            effective_hash: string | null;
+            index_revision: string | null;
+            resource_count: number;
+            unit_count: number;
+            parser_version: string | null;
+            chunker_version: string | null;
+            model_revision: string | null;
+            ranking_profile: string | null;
+            latencies: components["schemas"]["RetrievalStageLatencies"];
+            returned_fragment_count: number;
+            returned_token_count: number;
+            error_stage: string | null;
+            error_code: string | null;
+            error_summary: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            completed_at: string | null;
+            evaluation_case_id: string | null;
+        };
+        RetrievalStageLatencies: {
+            effective_memory_us: number;
+            index_ensure_us: number;
+            bm25_us: number;
+            embedding_us: number;
+            vector_us: number;
+            rrf_us: number;
+            rerank_us: number;
+            assembly_us: number;
+            persistence_us: number;
+            total_us: number;
+        };
+        RetrievalCandidate: {
+            unit_key: string;
+            resource_id: string;
+            scope: components["schemas"]["DaemonDraftScope"];
+            kind: components["schemas"]["DaemonDraftResourceKind"];
+            path: string;
+            heading_path: string[];
+            locator: components["schemas"]["RetrievalSourceLocator"];
+            content_hash: string;
+            resource_content_hash: string;
+            token_count: number;
+            evidence_excerpt: string;
+            exact_rank: number | null;
+            bm25_rank: number | null;
+            bm25_score: number | null;
+            vector_rank: number | null;
+            vector_score: number | null;
+            rrf_rank: number | null;
+            rrf_score: number | null;
+            reranker_rank: number | null;
+            reranker_logit: number | null;
+            reranker_relevance: number | null;
+            final_rank: number | null;
+            selected: boolean;
+            exclusion_reason: components["schemas"]["RetrievalExclusionReason"];
+            delta_action: components["schemas"]["RetrievalDeltaAction"] | null;
+        };
+        RetrievalSourceLocator: {
+            /** @enum {string} */
+            type: "markdown_span";
+            start_byte: number;
+            end_byte: number;
+            heading_path: string[];
+        };
+        RetrievalRunDetail: {
+            run: components["schemas"]["RetrievalRun"];
+            candidates: components["schemas"]["RetrievalCandidate"][];
+            evaluation_case: components["schemas"]["EvaluationCase"] | null;
+            judgments: components["schemas"]["EvaluationJudgment"][];
+            corpus_resources: components["schemas"]["EvaluationCorpusResource"][];
+            report: components["schemas"]["RetrievalBenchmarkReport"] | null;
+        };
+        CreateEvaluationCaseRequest: {
+            run_id: string;
+            query_category?: string | null;
+            notes?: string | null;
+        };
+        ReplaceEvaluationJudgmentsRequest: {
+            case_id: string;
+            expected_judgment_version: number;
+            judgments: components["schemas"]["EvaluationJudgmentInput"][];
+        };
+        EvaluationJudgmentInput: {
+            resource_id: string;
+            unit_key?: string | null;
+            relevance: number;
+            /** @default false */
+            missed: boolean;
+            notes?: string | null;
+        };
+        EvaluationCase: {
+            case_id: string;
+            source_run_id: string;
+            corpus_id: string;
+            project_id: string;
+            query: string;
+            query_category: string | null;
+            notes: string | null;
+            judgment_version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        EvaluationJudgment: {
+            judgment_id: string;
+            case_id: string;
+            resource_id: string;
+            unit_key: string | null;
+            relevance: number;
+            missed: boolean;
+            evidence_excerpt: string;
+            notes: string | null;
+        };
+        EvaluationCorpusResource: {
+            resource_id: string;
+            scope: components["schemas"]["DaemonDraftScope"];
+            kind: components["schemas"]["DaemonDraftResourceKind"];
+            path: string;
+            title: string;
+            content_hash: string;
+            source_commit_id: string | null;
+            draft_id: string | null;
+            draft_revision: string | null;
+            preview: string;
+        };
+        EvaluationCaseDetail: {
+            evaluation_case: components["schemas"]["EvaluationCase"];
+            judgments: components["schemas"]["EvaluationJudgment"][];
+            corpus_resources: components["schemas"]["EvaluationCorpusResource"][];
+            report: components["schemas"]["RetrievalBenchmarkReport"];
+        };
+        ClearRetrievalRunsRequest: {
+            project_id?: string | null;
+        };
+        ClearRetrievalRunsResponse: {
+            deleted_run_count: number;
+        };
+        ExportEvaluationSetRequest: {
+            project_id?: string | null;
+            /** @default [] */
+            case_ids: string[];
+        };
+        ExportEvaluationSetResponse: {
+            fixture_json: string;
+            report: components["schemas"]["RetrievalBenchmarkReport"];
+        };
+        RetrievalBenchmarkReport: {
+            variants: {
+                [key: string]: components["schemas"]["RetrievalBenchmarkMetrics"];
+            };
+        };
+        RetrievalBenchmarkMetrics: {
+            case_count: number;
+            recall_at_20: number;
+            ndcg_at_10: number;
+            mrr: number;
+            resource_diversity: number;
+            scope_violation: number;
+            stale_result: number;
+            warm_p50_us: number;
+            warm_p95_us: number;
         };
         DaemonServerRequest: {
             /** @enum {string} */
@@ -328,7 +573,19 @@ export interface components {
         /** @enum {string} */
         DaemonDraftReconciliationStatus: "unknown" | "clean" | "conflicts";
         /** @enum {string} */
-        DaemonMemoryCacheState: "project_ref_not_synced" | "generation_missing" | "generation_corrupt" | "ready";
+        DaemonMemoryCacheState: "project_ref_not_synced" | "storage_unavailable" | "generation_missing" | "generation_corrupt" | "ready";
+        /** @enum {string} */
+        DaemonProjectStorageMode: "default" | "custom";
+        /** @enum {string} */
+        DaemonProjectStorageAvailability: "ready" | "moving" | "unavailable";
+        /** @enum {string} */
+        DaemonProjectStorageMoveState: "preparing" | "materializing" | "verifying" | "switching" | "cleaning" | "completed" | "failed";
+        /** @enum {string} */
+        RetrievalRunStatus: "running" | "succeeded" | "failed";
+        /** @enum {string} */
+        RetrievalExclusionReason: "selected" | "below_relevance" | "overlap" | "per_resource_limit" | "token_budget" | "fragment_limit" | "not_reranked";
+        /** @enum {string} */
+        RetrievalDeltaAction: "add" | "replace" | "reuse";
         /** @enum {string} */
         DaemonDraftOperationSource: "desktop" | "cli" | "mcp_store";
         /** @enum {string} */

@@ -62,6 +62,11 @@ enum ReviewRequestError: LocalizedError, Sendable {
     }
 }
 
+struct DraftInventoryPlan: Equatable, Sendable {
+    let refreshIds: Set<String>
+    let terminalIds: Set<String>
+}
+
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published private(set) var phase: ApplicationPhase = .launching
@@ -247,6 +252,13 @@ final class WorkspaceStore: ObservableObject {
             }
         }
         do {
+            _ = try await daemon.selectProject(projectId)
+            guard projectSelectionGeneration == generation else { return }
+            activeProjectId = projectId
+            let tab = visibleTabs.last
+            activeTabId = tab?.id
+            selectedItemId = tab?.itemId
+
             let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
             var loadedProject: (state: ProjectState, resources: [MemoryResource])?
             var needsBackgroundRefresh = project.isLoaded
@@ -259,8 +271,6 @@ final class WorkspaceStore: ObservableObject {
                 }
             }
             guard projectSelectionGeneration == generation else { return }
-            _ = try await daemon.selectProject(projectId)
-            guard projectSelectionGeneration == generation else { return }
             if let loadedProject {
                 if let index = projects.firstIndex(where: { $0.id == projectId }) {
                     projects[index] = loadedProject.state
@@ -270,10 +280,6 @@ final class WorkspaceStore: ObservableObject {
                 try await remapDrafts(projectId: projectId)
             }
             guard projectSelectionGeneration == generation else { return }
-            activeProjectId = projectId
-            let tab = visibleTabs.last
-            activeTabId = tab?.id
-            selectedItemId = tab?.itemId
             if needsBackgroundRefresh {
                 Task { [weak self] in
                     await self?.refreshProjectFromServer(
@@ -704,7 +710,7 @@ final class WorkspaceStore: ObservableObject {
                 serverDataSource: server.dataSource
             )
             syncStatusAvailable = true
-            await refreshUnsettledDrafts(includeFailed: sync.pendingOperationCount > 0)
+            await refreshDraftInventory(includeFailed: sync.pendingOperationCount > 0)
         } catch {
             syncStatusAvailable = false
         }
@@ -1123,16 +1129,92 @@ final class WorkspaceStore: ObservableObject {
         drafts += mapped
     }
 
-    private func refreshUnsettledDrafts(includeFailed: Bool) async {
-        let draftIds = drafts.filter {
-            [.queued, .syncing, .retrying].contains($0.syncStatus)
-                || (includeFailed && $0.syncStatus == .failed)
-        }.map(\.id)
-        guard !draftIds.isEmpty else { return }
+    nonisolated static func draftInventoryPlan(
+        summaries: [DaemonDraftSummary],
+        currentDrafts: [LocalDraft],
+        includeFailed: Bool
+    ) -> DraftInventoryPlan {
+        let currentById = Dictionary(
+            currentDrafts.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        var refreshIds = Set<String>()
+        var terminalIds = Set<String>()
+
+        for summary in summaries {
+            guard summary.status == .open || summary.status == .submitted else {
+                terminalIds.insert(summary.draftId)
+                continue
+            }
+            guard let current = currentById[summary.draftId] else {
+                refreshIds.insert(summary.draftId)
+                continue
+            }
+            let summaryChanged = current.projectId != summary.projectId
+                || current.serverId != summary.serverDraftId
+                || current.serverVersion != summary.serverVersion
+                || current.baseCommitId != summary.baseCommitId
+                || current.currentCommitId != summary.currentCommitId
+                || current.freshness != summary.freshness
+                || current.reconciliation != summary.reconciliation
+                || current.reconciliationCandidateId != summary.reconciliationCandidateId
+                || current.scope != (summary.scope == .org ? .org : .project)
+                || current.kind.daemonKind != summary.resourceKind
+                || current.targetId != summary.targetId
+                || current.status != summary.status
+                || current.updatedAt != summary.updatedAt
+                || (summary.path != nil && current.document.path != summary.path)
+            let syncUnsettled = [.queued, .syncing, .retrying].contains(current.syncStatus)
+                || (includeFailed && current.syncStatus == .failed)
+            if summaryChanged || syncUnsettled {
+                refreshIds.insert(summary.draftId)
+            }
+        }
+
+        return .init(refreshIds: refreshIds, terminalIds: terminalIds)
+    }
+
+    private func refreshDraftInventory(includeFailed: Bool) async {
+        guard let page = try? await daemon.listDrafts(.init(limit: 500)) else { return }
+        let plan = Self.draftInventoryPlan(
+            summaries: page.items,
+            currentDrafts: drafts,
+            includeFailed: includeFailed
+        )
+        let pendingDraftIds = Set(drafts.compactMap { draft in
+            if pendingDocumentSaves[draft.id] != nil {
+                return draft.id
+            }
+            if let targetId = draft.targetId, pendingDocumentSaves[targetId] != nil {
+                return draft.id
+            }
+            return nil
+        })
+        drafts.removeAll {
+            plan.terminalIds.contains($0.id) && !pendingDraftIds.contains($0.id)
+        }
+
+        let refreshIds = plan.refreshIds.subtracting(pendingDraftIds)
+        guard !refreshIds.isEmpty else { return }
+        let summaries = page.items.filter { refreshIds.contains($0.draftId) }
+        let targetIds = Set(summaries.compactMap(\.targetId))
+        let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
+        let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
+        let loadedBaselines = try? await concurrentMap(baselines) {
+            try await loader.loadContent(for: $0)
+        }
+        if let loadedBaselines {
+            for loaded in loadedBaselines {
+                if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
+                    resources[index] = loaded
+                }
+            }
+        }
+
         let resourceSnapshot = resources
-        let mappedDrafts = try? await concurrentMap(draftIds) { draftId in
+        let mappedDrafts = try? await concurrentMap(summaries) { summary in
             WorkspaceLoader.mapDraft(
-                try await self.daemon.draft(draftId),
+                try await self.daemon.draft(summary.draftId),
                 resources: resourceSnapshot
             )
         }

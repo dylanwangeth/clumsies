@@ -10,7 +10,8 @@ flowchart LR
         CLI["CLI"]
         Daemon["Rust daemon"]
         LocalDB[("Local SQLite")]
-        Files["Immutable memory generations"]
+        ProjectStorage["Project Local Storage<br/>generations + search index"]
+        Models["Shared model cache"]
     end
 
     subgraph Deployment["Self-hosted deployment"]
@@ -25,7 +26,8 @@ flowchart LR
     MCP -->|"activate / load / store over XPC"| Daemon
     CLI -.->|"client operations"| Daemon
     Daemon --> LocalDB
-    Daemon -->|"atomic materialization"| Files
+    Daemon -->|"resolve + atomic materialization"| ProjectStorage
+    Daemon --> Models
     Daemon -->|"authenticated HTTPS"| Server
     Desktop --> Browser
     Browser --> Server
@@ -50,7 +52,7 @@ because it was not stored in renderer state.
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | Server | authority resources, identity, authorization, review state, Commit graph, audit | local files and client process lifecycle |
-| daemon | local Project bindings, local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, refresh handling, native Server proxy | authority decisions and merge policy |
+| daemon | local Project bindings, Project storage registry, local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, derived search indexes, refresh handling, native Server proxy | authority decisions and merge policy |
 | Desktop | interaction state, editors, navigation, review workflows | bearer tokens and durable authority |
 | MCP | activation, exact loading, and agent-originated store calls | a parallel draft database or search implementation |
 | Web Admin | administrative operations | memory editing and review workflows |
@@ -132,6 +134,61 @@ hash. For Draft resources, that memory uses `Base + operations`; for all other
 resources it uses the latest installed Commit. MCP never scans cache files or
 falls back to an old generation when daemon has no matching ready index.
 
+## Project Local Storage
+
+Project Local Storage controls where one installation keeps a Project's
+rebuildable generations and search index. Its registry key is:
+
+```text
+(normalized Server authority, canonical project_id)
+```
+
+The setting belongs to daemon even though Desktop presents it under Project
+settings. Server never receives the path or macOS bookmark. Central SQLite keeps
+Drafts, queued operations, cached authority objects, local Refs, storage move
+state, and the Project search-head registration. Shared retrieval models remain
+in the daemon cache.
+
+```mermaid
+sequenceDiagram
+    participant UI as Desktop Settings
+    participant D as daemon
+    participant S as Source cache
+    participant T as Destination managed subtree
+
+    UI->>D: replace_project_storage(handoff_bookmark, expected_location_revision)
+    D->>D: resolve handoff and create daemon-owned security-scoped bookmark
+    D-->>UI: persistent move_id
+    D->>T: materialize staging generations and search index
+    D->>T: verify Commit markers, Ref generation, Effective Memory hash
+    D->>D: acquire storage write gate and CAS location revision
+    D->>T: promote staging atomically
+    D->>S: remove only the verified marker-owned subtree
+    D-->>UI: completed location
+```
+
+Commit sync and storage moves share one sync mutex, so a local Ref cannot advance
+during the switch. Requests already reading the source hold a storage read gate;
+cleanup waits for them. If a custom volume is unavailable, daemon reports that
+location as unavailable and does not create an active cache elsewhere. Draft
+editing and Draft sync remain available because they do not live in Project
+Local Storage.
+
+## Retrieval history and evaluation
+
+Every valid memory activation produces one local Retrieval Run. The daemon
+persists the exact/BM25, vector, RRF, reranker, and final rank values from the
+same candidate trace used to assemble the MCP response. It also records the
+Effective Memory and Index Revision identities, stage latency, stable exclusion
+reason, delta action, and bounded failure details.
+
+Retrieval Runs and Evaluation Cases live in central local SQLite, while frozen
+resource bodies use a daemon-owned content-addressed blob store. They do not
+move with Project Local Storage and are never uploaded to Server. A user may
+pin a successful Run as a versioned Evaluation Case, label retrieved units or
+missed resources with relevance 0–3, and export a self-contained fixture with
+B1–B4 metrics. See `docs/retrieval-evaluation.md`.
+
 ## Local Project binding
 
 The Server connection, the Desktop-selected Project, and a local directory
@@ -172,6 +229,7 @@ implemented as a degraded fallback.
 Draft upload, remote projection, Commit download, atomic local materialization,
 Effective Memory Draft overlay, canonical three-way reconciliation, explicit
 rebase, Review freshness, hybrid retrieval, exact loading, activation delta, and
-macOS Keychain token storage are operational. A representative versioned
-retrieval query set and Windows service transport remain outside the implemented
-boundary.
+macOS Keychain token storage, local Retrieval Run history, Evaluation Case
+labeling, B1–B4 metric calculation, and native Retrieval Diagnostics are
+operational. A representative human-reviewed retrieval query set and Windows
+service transport remain outside the implemented boundary.

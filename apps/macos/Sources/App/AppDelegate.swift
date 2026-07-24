@@ -9,6 +9,23 @@ private enum MainWindowSurface: Equatable {
 }
 
 @MainActor
+enum SettingsWindowLayout {
+    static let defaultContentSize = NSSize(width: 620, height: 470)
+    static let minimumContentSize = NSSize(width: 520, height: 400)
+
+    static func normalize(_ window: NSWindow) {
+        window.contentMinSize = minimumContentSize
+        let contentSize = window.contentLayoutRect.size
+        guard contentSize.width < minimumContentSize.width
+            || contentSize.height < minimumContentSize.height
+        else {
+            return
+        }
+        window.setContentSize(defaultContentSize)
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store = WorkspaceStore()
     private let softwareUpdateController = SoftwareUpdateController()
@@ -117,7 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             WorkspaceView(
                 store: store,
                 onOpenSettings: { [weak self] in self?.presentSettingsWindow() },
-                onOpenDiagnostics: { [weak self] in self?.presentDiagnosticsWindow() }
+                onOpenDiagnostics: { [weak self] destination in
+                    self?.presentDiagnosticsWindow(destination)
+                },
+                onShowLogs: { [weak self] in self?.showLogsInFinder() }
             ),
             surface: .workspace,
             title: store.organization?.name ?? "Clumsies Lab"
@@ -209,50 +229,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func presentSettingsWindow() {
         if let settingsWindow {
+            SettingsWindowLayout.normalize(settingsWindow)
             settingsWindow.makeKeyAndOrderFront(nil)
             return
         }
         let controller = NSHostingController(
             rootView: NativeSettingsView(
                 store: store,
-                softwareUpdateController: softwareUpdateController,
-                onOpenDiagnostics: { [weak self] in self?.presentDiagnosticsWindow() }
+                softwareUpdateController: softwareUpdateController
             )
         )
+        controller.sizingOptions = []
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 470),
+            contentRect: NSRect(origin: .zero, size: SettingsWindowLayout.defaultContentSize),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Settings"
         window.contentViewController = controller
-        window.minSize = NSSize(width: 520, height: 400)
+        SettingsWindowLayout.normalize(window)
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
     }
 
-    private func presentDiagnosticsWindow() {
+    private func presentDiagnosticsWindow(_ destination: DiagnosticsDestination) {
+        let controller = NSHostingController(
+            rootView: NativeDiagnosticsView(store: store, destination: destination)
+        )
+        controller.sizingOptions = []
         if let diagnosticsWindow {
+            diagnosticsWindow.title = destination.title
+            diagnosticsWindow.contentViewController = controller
+            diagnosticsWindow.contentMinSize = destination.minimumContentSize
+            let currentSize = diagnosticsWindow.contentLayoutRect.size
+            if currentSize.width < destination.minimumContentSize.width
+                || currentSize.height < destination.minimumContentSize.height {
+                diagnosticsWindow.setContentSize(destination.defaultContentSize)
+            }
             diagnosticsWindow.makeKeyAndOrderFront(nil)
             return
         }
-        let controller = NSHostingController(rootView: NativeDiagnosticsView(store: store))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
+            contentRect: NSRect(origin: .zero, size: destination.defaultContentSize),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Diagnostics"
+        window.title = destination.title
         window.contentViewController = controller
-        window.minSize = NSSize(width: 560, height: 440)
+        window.contentMinSize = destination.minimumContentSize
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
         diagnosticsWindow = window
+    }
+
+    private func showLogsInFinder() {
+        guard let path = store.runtime?.health.logDir, !path.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     private func installStatusItem() {

@@ -496,6 +496,7 @@ private struct DocumentSessionView: View {
     }
 
     private var supportsMarkdownPreview: Bool {
+        guard item.draft?.isDeletion != true else { return false }
         let path = mode == .preview ? item.document.path : document.path
         return item.kind.supportsMarkdownPreview(path: path)
     }
@@ -515,7 +516,11 @@ private struct DocumentSessionView: View {
         Task {
             defer { loadsReconciliation = false }
             do {
-                reconciliationCandidate = try await store.reconciliationCandidate(for: draft)
+                try await store.flushDocumentSave(item.id)
+                let latest = store.drafts.first {
+                    $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
+                } ?? draft
+                reconciliationCandidate = try await store.reconciliationCandidate(for: latest)
             } catch {
                 store.errorMessage = error.localizedDescription
             }

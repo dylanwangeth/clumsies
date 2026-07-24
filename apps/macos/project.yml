@@ -68,6 +68,8 @@ targets:
       - name: Embed clumsiesd
         path: Scripts/embed-daemon.sh
         basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/clumsiesd
   ClumsiesTests:
     type: bundle.unit-test
     platform: macOS

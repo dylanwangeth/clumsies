@@ -1,13 +1,19 @@
 use crate::{
-    ActivateMemoryRequest, ActivateMemoryResponse, DaemonDraftDetail, DaemonDraftDetailRequest,
-    DaemonDraftListQuery, DaemonDraftListResponse, DaemonDraftOperationRequest,
-    DaemonDraftOperationResponse, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse,
-    DaemonIpcService, DaemonMcpStatus, DaemonProjectBinding, DaemonProjectBindingReplaceRequest,
-    DaemonProjectBindingResolveRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    ActivateMemoryRequest, ActivateMemoryResponse, ClearRetrievalRunsRequest,
+    ClearRetrievalRunsResponse, CreateEvaluationCaseRequest, DaemonDraftDetail,
+    DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
+    DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
+    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonProjectBinding,
+    DaemonProjectBindingReplaceRequest, DaemonProjectBindingResolveRequest,
+    DaemonProjectCacheClearRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfig, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
-    DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest,
-    DaemonSyncStatus, LoadMemoryRequest, LoadMemoryResponse, SearchIndexProjectRequest,
-    SearchIndexStatus,
+    DaemonProjectStorage, DaemonProjectStorageMove, DaemonProjectStorageMoveRequest,
+    DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
+    DaemonProjectStorageResetRequest, DaemonRetryResponse, DaemonServerRequest,
+    DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, EvaluationCaseDetail,
+    ExportEvaluationSetRequest, ExportEvaluationSetResponse, LoadMemoryRequest, LoadMemoryResponse,
+    ReplaceEvaluationJudgmentsRequest, RetrievalRunDetail, RetrievalRunListRequest,
+    RetrievalRunListResponse, RetrievalRunRequest, SearchIndexProjectRequest, SearchIndexStatus,
 };
 
 #[derive(Clone, Debug)]
@@ -88,6 +94,61 @@ impl DaemonIpcClient {
             .into_payload()
     }
 
+    pub fn project_storage(
+        &self,
+        request: DaemonProjectStorageRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "project_storage",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn replace_project_storage(
+        &self,
+        request: DaemonProjectStorageReplaceRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "replace_project_storage",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn project_storage_move(
+        &self,
+        request: DaemonProjectStorageMoveRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "project_storage_move",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn reset_project_storage(
+        &self,
+        request: DaemonProjectStorageResetRequest,
+    ) -> Result<DaemonProjectStorageMove, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "reset_project_storage",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn clear_project_cache(
+        &self,
+        request: DaemonProjectCacheClearRequest,
+    ) -> Result<DaemonProjectStorage, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "clear_project_cache",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
     pub fn project_checkout(
         &self,
         request: DaemonProjectCheckoutRequest,
@@ -138,6 +199,72 @@ impl DaemonIpcClient {
     ) -> Result<SearchIndexStatus, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "rebuild_search_index",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_retrieval_runs(
+        &self,
+        request: RetrievalRunListRequest,
+    ) -> Result<RetrievalRunListResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_retrieval_runs",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn get_retrieval_run(
+        &self,
+        request: RetrievalRunRequest,
+    ) -> Result<RetrievalRunDetail, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "get_retrieval_run",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn create_evaluation_case(
+        &self,
+        request: CreateEvaluationCaseRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "create_evaluation_case",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn replace_evaluation_judgments(
+        &self,
+        request: ReplaceEvaluationJudgmentsRequest,
+    ) -> Result<EvaluationCaseDetail, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "replace_evaluation_judgments",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn clear_retrieval_runs(
+        &self,
+        request: ClearRetrievalRunsRequest,
+    ) -> Result<ClearRetrievalRunsResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "clear_retrieval_runs",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn export_evaluation_set(
+        &self,
+        request: ExportEvaluationSetRequest,
+    ) -> Result<ExportEvaluationSetResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "export_evaluation_set",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

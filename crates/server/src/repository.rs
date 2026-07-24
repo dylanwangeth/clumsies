@@ -1516,6 +1516,7 @@ impl ServerRepository {
         for operation in &request.operations {
             validate_draft_operation_resource(&request.resource, operation)?;
         }
+        validate_new_resource_draft_operations(&request.operations)?;
 
         let draft_id = prefixed_id("drf");
         sqlx::query(
@@ -2795,6 +2796,23 @@ fn validate_draft_operation_resource(
     }
 }
 
+fn validate_new_resource_draft_operations(
+    operations: &[DraftOperationInput],
+) -> Result<(), ServerError> {
+    let creates_resource = operations
+        .iter()
+        .any(|operation| operation.action == DraftOperationAction::Create);
+    let deletes_resource = operations
+        .iter()
+        .any(|operation| operation.action == DraftOperationAction::Delete);
+    if creates_resource && deletes_resource {
+        return Err(ServerError::InvalidRequest(
+            "a draft-created resource must be discarded instead of deleted".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_draft_content_shape(content: &DraftResourceContent) -> Result<(), ServerError> {
     match content {
         DraftResourceContent::Rule { content } => validate_rule_content(content),
@@ -2939,9 +2957,15 @@ async fn append_draft_operation_in_tx(
     event_daemon_installation_id: Option<&str>,
 ) -> Result<i64, ServerError> {
     let row = sqlx::query(
-        "SELECT status, version, resource_scope, resource_kind
-         FROM drafts
-         WHERE draft_id = $1
+        "SELECT d.status, d.version, d.resource_scope, d.resource_kind,
+                EXISTS (
+                    SELECT 1
+                    FROM draft_operations AS operation
+                    WHERE operation.draft_id = d.draft_id
+                      AND operation.action = 'create'
+                ) AS creates_resource
+         FROM drafts AS d
+         WHERE d.draft_id = $1
          FOR UPDATE",
     )
     .bind(draft_id)
@@ -2965,6 +2989,12 @@ async fn append_draft_operation_in_tx(
             "draft",
             expected_draft_version,
             version,
+        ));
+    }
+    let creates_resource: bool = row.try_get("creates_resource")?;
+    if creates_resource && operation.action == DraftOperationAction::Delete {
+        return Err(ServerError::InvalidRequest(
+            "a draft-created resource must be discarded instead of deleted".to_owned(),
         ));
     }
     validate_draft_operation_resource(&draft_resource, &operation)?;

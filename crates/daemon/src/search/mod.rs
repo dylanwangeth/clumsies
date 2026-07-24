@@ -2,25 +2,33 @@ mod chunker;
 pub(crate) mod models;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use self::chunker::build_units;
 use self::models::{FastEmbedSearchModels, SearchModelRuntimeStatus, SearchModels};
+use super::retrieval_history::{
+    RetrievalCandidateInput, RetrievalCorpusResourceInput, RetrievalDeltaAction,
+    RetrievalExclusionReason, RetrievalRunCompletion,
+};
 use super::{
     DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest,
     DaemonMemoryCacheState, DaemonState, DaemonUpdateDraftOperation,
 };
 
-const SEARCH_SCHEMA_VERSION: i64 = 2;
+const SEARCH_SCHEMA_VERSION: i64 = 3;
 const PARSER_VERSION: &str = "markdown-units.v1";
+const CHUNKER_VERSION: &str = "markdown-chunker.v1";
 const RANKING_CONFIG_VERSION: &str = "agent_activation.v2";
 const BM25_TOP_K: usize = 60;
 const VECTOR_TOP_K: usize = 60;
@@ -44,7 +52,7 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Context => "context",
             Self::Rule => "rule",
@@ -61,7 +69,7 @@ pub enum SourceScope {
 }
 
 impl SourceScope {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Org => "org",
             Self::Project => "project",
@@ -290,6 +298,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             .fetch_optional(pool)
             .await?;
     let version = existing.and_then(|value| value.parse::<i64>().ok());
+    let removed_legacy_index = version.is_some() && version != Some(SEARCH_SCHEMA_VERSION);
     if version != Some(SEARCH_SCHEMA_VERSION) {
         let mut tx = pool.begin().await?;
         sqlx::query("DROP TABLE IF EXISTS search_units_fts")
@@ -310,6 +319,78 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
         tx.commit().await?;
     }
 
+    if removed_legacy_index {
+        sqlx::query("VACUUM").execute(pool).await?;
+    }
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS search_heads (
+            project_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL,
+            effective_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('ready', 'failed')),
+            last_error TEXT,
+            location_revision BIGINT NOT NULL CHECK (location_revision > 0),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('search_schema_version', $1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(SEARCH_SCHEMA_VERSION.to_string())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn connect_project_index(path: &Path) -> Result<SqlitePool, DaemonError> {
+    if let Some(parent) = path.parent() {
+        super::project_storage::ensure_private_directory(parent)?;
+    }
+    let options = SqliteConnectOptions::from_str(&path.display().to_string())?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await?;
+    migrate_project_index(&pool).await?;
+    super::project_storage::secure_managed_tree(path.parent().unwrap_or(path))?;
+    Ok(pool)
+}
+
+async fn migrate_project_index(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS search_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT value FROM search_meta WHERE key = 'schema_version'")
+            .fetch_optional(pool)
+            .await?;
+    let expected_version = SEARCH_SCHEMA_VERSION.to_string();
+    if existing.as_deref() != Some(expected_version.as_str()) {
+        let mut tx = pool.begin().await?;
+        for statement in [
+            "DROP TABLE IF EXISTS search_units_fts",
+            "DROP TABLE IF EXISTS search_heads",
+            "DROP TABLE IF EXISTS search_units",
+            "DROP TABLE IF EXISTS search_resources",
+            "DROP TABLE IF EXISTS search_revisions",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+    }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS search_revisions (
             revision_id TEXT PRIMARY KEY,
@@ -393,13 +474,152 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     sqlx::query(
-        "INSERT INTO daemon_meta (key, value)
-         VALUES ('search_schema_version', $1)
+        "INSERT INTO search_meta (key, value) VALUES ('schema_version', $1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .bind(SEARCH_SCHEMA_VERSION.to_string())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn active_project_index(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<(SqlitePool, super::project_storage::ActiveProjectStorage), DaemonError> {
+    let storage = super::project_storage::resolve_active(state, project_id).await?;
+    let pool = connect_project_index(&storage.search_index_path()).await?;
+    Ok((pool, storage))
+}
+
+async fn publish_search_head(
+    state: &DaemonState,
+    pool: &SqlitePool,
+    project_id: &str,
+    location_revision: i64,
+) -> Result<(), DaemonError> {
+    let row = sqlx::query(
+        "SELECT r.revision_id, r.effective_hash, r.status, r.last_error
+         FROM search_heads h
+         JOIN search_revisions r ON r.revision_id = h.revision_id
+         WHERE h.project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some(row) => {
+            sqlx::query(
+                "INSERT INTO search_heads (
+                    project_id, revision_id, effective_hash, status, last_error, location_revision
+                 ) VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                    revision_id = excluded.revision_id,
+                    effective_hash = excluded.effective_hash,
+                    status = excluded.status,
+                    last_error = excluded.last_error,
+                    location_revision = excluded.location_revision,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            )
+            .bind(project_id)
+            .bind(row.try_get::<String, _>("revision_id")?)
+            .bind(row.try_get::<String, _>("effective_hash")?)
+            .bind(row.try_get::<String, _>("status")?)
+            .bind(row.try_get::<Option<String>, _>("last_error")?)
+            .bind(location_revision)
+            .execute(&state.inner.pool)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM search_heads WHERE project_id = $1")
+                .bind(project_id)
+                .execute(&state.inner.pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn materialize_project_index_at(
+    state: &DaemonState,
+    project_id: &str,
+    path: &Path,
+) -> Result<Option<String>, DaemonError> {
+    let pool = connect_project_index(path).await?;
+    delete_project_index(&pool, project_id).await?;
+    let effective_hash = match load_effective_memory(state, project_id).await {
+        Ok(effective) => {
+            let effective_hash = effective.effective_hash.clone();
+            ensure_index(state, &pool, &effective).await?;
+            Some(effective_hash)
+        }
+        Err(DaemonError::State {
+            code: "project_ref_not_synced",
+            ..
+        }) => None,
+        Err(error) => return Err(error),
+    };
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&pool)
+        .await?;
+    pool.close().await;
+    super::project_storage::secure_managed_tree(path.parent().unwrap_or(path))?;
+    Ok(effective_hash)
+}
+
+pub(crate) async fn verify_project_index_at(
+    project_id: &str,
+    path: &Path,
+    expected_effective_hash: Option<&str>,
+) -> Result<(), DaemonError> {
+    if !path.exists() {
+        return Err(DaemonError::State {
+            code: "storage_verification_failed",
+            message: format!("Project search index {} is missing", path.display()),
+        });
+    }
+    let pool = connect_project_index(path).await?;
+    let ready: i64 = match expected_effective_hash {
+        Some(effective_hash) => {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_heads h
+                 JOIN search_revisions r ON r.revision_id = h.revision_id
+                 WHERE h.project_id = $1 AND r.effective_hash = $2 AND r.status = 'ready'",
+            )
+            .bind(project_id)
+            .bind(effective_hash)
+            .fetch_one(&pool)
+            .await?
+        }
+        None => {
+            sqlx::query_scalar("SELECT COUNT(*) FROM search_heads WHERE project_id = $1")
+                .bind(project_id)
+                .fetch_one(&pool)
+                .await?
+        }
+    };
+    pool.close().await;
+    let verified = if expected_effective_hash.is_some() {
+        ready == 1
+    } else {
+        ready == 0
+    };
+    if !verified {
+        return Err(DaemonError::State {
+            code: "storage_verification_failed",
+            message: "Project search index does not match its migration snapshot".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) async fn publish_project_index_head(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<(), DaemonError> {
+    let (pool, storage) = active_project_index(state, project_id).await?;
+    publish_search_head(state, &pool, project_id, storage.location_revision).await?;
+    pool.close().await;
     Ok(())
 }
 
@@ -413,11 +633,131 @@ pub(crate) async fn activate_memory(
             "project_id and a non-empty query are required".to_owned(),
         ));
     }
-    let previous_state = decode_activation_state(request.state.as_deref())?;
-    let _guard = state.inner.search_lock.lock().await;
-    let effective = load_effective_memory(state, &request.project_id).await?;
-    let revision_id = ensure_index(state, &effective).await?;
-    query_index(state, &revision_id, query, previous_state).await
+    let project_id = request.project_id.trim().to_owned();
+    let query = query.to_owned();
+    let total_started = Instant::now();
+    let fingerprint =
+        super::retrieval_history::activation_state_fingerprint(request.state.as_deref());
+    let run_id =
+        match super::retrieval_history::start_run(state, &project_id, &query, &fingerprint).await {
+            Ok(run_id) => Some(run_id),
+            Err(error) => {
+                eprintln!("failed to start Retrieval Run recording: {error}");
+                None
+            }
+        };
+    let mut completion = RetrievalRunCompletion {
+        parser_version: Some(PARSER_VERSION.to_owned()),
+        chunker_version: Some(CHUNKER_VERSION.to_owned()),
+        ranking_profile: Some(RANKING_CONFIG_VERSION.to_owned()),
+        ..RetrievalRunCompletion::default()
+    };
+    let mut failure_stage = "activation_state";
+
+    let result = async {
+        let previous_state = decode_activation_state(request.state.as_deref())?;
+        let _guard = state.inner.search_lock.lock().await;
+
+        failure_stage = "effective_memory";
+        let started = Instant::now();
+        let effective = load_effective_memory(state, &project_id).await?;
+        completion.latencies.effective_memory_us = elapsed_us(started);
+        completion.effective_hash = Some(effective.effective_hash.clone());
+        completion.resources = effective
+            .resources
+            .iter()
+            .map(retrieval_corpus_resource)
+            .collect();
+
+        failure_stage = "index_ensure";
+        let started = Instant::now();
+        let (pool, storage) = active_project_index(state, &project_id).await?;
+        let revision_id = match ensure_index(state, &pool, &effective).await {
+            Ok(revision_id) => revision_id,
+            Err(error) => {
+                pool.close().await;
+                return Err(error);
+            }
+        };
+        completion.latencies.index_ensure_us = elapsed_us(started);
+        completion.index_revision = Some(revision_id.clone());
+        publish_search_head(state, &pool, &project_id, storage.location_revision).await?;
+
+        let response = query_index(
+            state,
+            &pool,
+            &revision_id,
+            &query,
+            previous_state,
+            &mut completion,
+            &mut failure_stage,
+        )
+        .await;
+        pool.close().await;
+        response
+    }
+    .await;
+
+    completion.latencies.total_us = elapsed_us(total_started);
+    match &result {
+        Ok(response) => {
+            completion.returned_fragment_count = response.fragments.len();
+        }
+        Err(error) => {
+            let (code, summary) = retrieval_error(error);
+            completion.error_stage = Some(failure_stage.to_owned());
+            completion.error_code = Some(code);
+            completion.error_summary = Some(summary);
+        }
+    }
+    if let Some(run_id) = run_id
+        && let Err(error) = super::retrieval_history::finish_run(state, &run_id, completion).await
+    {
+        eprintln!("failed to finish Retrieval Run {run_id}: {error}");
+        if let Err(record_error) =
+            super::retrieval_history::record_persistence_failure(state, &run_id, &error).await
+        {
+            eprintln!(
+                "failed to record Retrieval Run persistence failure {run_id}: {record_error}"
+            );
+        }
+    }
+    result
+}
+
+fn retrieval_corpus_resource(resource: &SourceResource) -> RetrievalCorpusResourceInput {
+    RetrievalCorpusResourceInput {
+        resource_id: resource.resource_id.clone(),
+        scope: resource.scope,
+        kind: resource.kind,
+        path: resource.path.clone(),
+        title: resource.title.clone(),
+        content: resource.content.clone(),
+        content_hash: resource.content_hash.clone(),
+        source_commit_id: resource.source_commit_id.clone(),
+        draft_id: resource.draft_id.clone(),
+        draft_revision: resource.draft_revision.clone(),
+    }
+}
+
+fn retrieval_error(error: &DaemonError) -> (String, String) {
+    let code = match error {
+        DaemonError::Search { code, .. } => code.clone(),
+        DaemonError::State { code, .. } => (*code).to_owned(),
+        DaemonError::InvalidRequest(_) => "invalid_request".to_owned(),
+        DaemonError::NotFound(_) => "not_found".to_owned(),
+        DaemonError::Io(_) => "io_error".to_owned(),
+        DaemonError::Sqlx(_) => "database_error".to_owned(),
+        DaemonError::SerdeJson(_) => "serialization_error".to_owned(),
+        DaemonError::Reqwest(_) | DaemonError::Server(_) | DaemonError::ServerResponse { .. } => {
+            "server_error".to_owned()
+        }
+        DaemonError::CredentialStore(_) => "credential_store_error".to_owned(),
+        DaemonError::InvalidConfig(_) => "invalid_config".to_owned(),
+        DaemonError::Launchctl(_) => "launchctl_error".to_owned(),
+        DaemonError::Ipc(_) => "ipc_error".to_owned(),
+    };
+    (code, error.to_string())
 }
 
 pub(crate) async fn load_memory(
@@ -479,6 +819,7 @@ pub(crate) async fn search_index_status(
     request: SearchIndexProjectRequest,
 ) -> Result<SearchIndexStatus, DaemonError> {
     let effective = load_effective_memory(state, &request.project_id).await?;
+    let (pool, storage) = active_project_index(state, &request.project_id).await?;
     let row = sqlx::query(
         "SELECT r.revision_id, r.effective_hash, r.status, r.last_error
          FROM search_heads h
@@ -486,7 +827,7 @@ pub(crate) async fn search_index_status(
          WHERE h.project_id = $1",
     )
     .bind(&request.project_id)
-    .fetch_optional(&state.inner.pool)
+    .fetch_optional(&pool)
     .await?;
     let (active_revision, active_effective_hash, revision_ready, last_error) = match row {
         Some(row) => {
@@ -523,12 +864,15 @@ pub(crate) async fn search_index_status(
     )
     .bind(&request.project_id)
     .bind(&effective.effective_hash)
-    .fetch_optional(&state.inner.pool)
+    .fetch_optional(&pool)
     .await?
     .flatten();
     let ready = revision_ready
         && active_effective_hash.as_deref() == Some(effective.effective_hash.as_str());
-    Ok(SearchIndexStatus {
+    if active_revision.is_some() {
+        publish_search_head(state, &pool, &request.project_id, storage.location_revision).await?;
+    }
+    let status = SearchIndexStatus {
         project_id: request.project_id,
         effective_hash: effective.effective_hash,
         active_revision,
@@ -538,7 +882,9 @@ pub(crate) async fn search_index_status(
         model_downloaded_bytes,
         model_total_bytes,
         last_error: current_failure.or(last_error),
-    })
+    };
+    pool.close().await;
+    Ok(status)
 }
 
 pub(crate) async fn rebuild_search_index(
@@ -546,9 +892,12 @@ pub(crate) async fn rebuild_search_index(
     request: SearchIndexProjectRequest,
 ) -> Result<SearchIndexStatus, DaemonError> {
     let _guard = state.inner.search_lock.lock().await;
-    delete_project_index(&state.inner.pool, &request.project_id).await?;
+    let (pool, storage) = active_project_index(state, &request.project_id).await?;
+    delete_project_index(&pool, &request.project_id).await?;
     let effective = load_effective_memory(state, &request.project_id).await?;
-    ensure_index(state, &effective).await?;
+    ensure_index(state, &pool, &effective).await?;
+    publish_search_head(state, &pool, &request.project_id, storage.location_revision).await?;
+    pool.close().await;
     drop(_guard);
     search_index_status(state, request).await
 }
@@ -620,11 +969,14 @@ async fn load_effective_memory(
     state: &DaemonState,
     project_id: &str,
 ) -> Result<EffectiveMemory, DaemonError> {
-    let cache = state
-        .memory_cache(DaemonMemoryCacheRequest {
+    let _storage_guard = state.inner.storage_access.read().await;
+    let cache = super::commit_sync::memory_cache_under_storage_guard(
+        state,
+        DaemonMemoryCacheRequest {
             project_id: project_id.to_owned(),
-        })
-        .await?;
+        },
+    )
+    .await?;
     match cache.state {
         DaemonMemoryCacheState::Ready => {}
         DaemonMemoryCacheState::ProjectRefNotSynced => {
@@ -633,6 +985,14 @@ async fn load_effective_memory(
                 message: cache.diagnostic.unwrap_or_else(|| {
                     format!("the Project Ref for {project_id} has not been synchronized")
                 }),
+            });
+        }
+        DaemonMemoryCacheState::StorageUnavailable => {
+            return Err(DaemonError::State {
+                code: "project_storage_unavailable",
+                message: cache
+                    .diagnostic
+                    .unwrap_or_else(|| format!("Project storage for {project_id} is unavailable")),
             });
         }
         DaemonMemoryCacheState::GenerationMissing => {
@@ -652,11 +1012,13 @@ async fn load_effective_memory(
             });
         }
     }
+    let _active_storage = super::project_storage::resolve_active(state, project_id).await?;
 
     let mut resources = BTreeMap::<String, EffectiveResource>::new();
-    if let (Some(root_path), Some(base_commit_id)) =
-        (cache.root_path.as_deref(), cache.commit_id.as_deref())
-    {
+    if let (Some(root_path), Some(base_commit_id)) = (
+        cache.active_generation_path.as_deref(),
+        cache.commit_id.as_deref(),
+    ) {
         let marker_path = PathBuf::from(root_path).join("commit-payload.json");
         let payload: CachedCommitPayload =
             serde_json::from_slice(&std::fs::read(&marker_path).map_err(|error| {
@@ -1132,6 +1494,7 @@ const INDEX_EMBED_BATCH_SIZE: usize = 32;
 
 async fn ensure_index(
     state: &DaemonState,
+    pool: &SqlitePool,
     effective: &EffectiveMemory,
 ) -> Result<String, DaemonError> {
     match state.inner.search_models.status() {
@@ -1169,7 +1532,7 @@ async fn ensure_index(
     )
     .bind(&effective.project_id)
     .bind(&revision_id)
-    .fetch_optional(&state.inner.pool)
+    .fetch_optional(pool)
     .await?;
     if existing.unwrap_or_default() == 1 {
         return Ok(revision_id);
@@ -1181,7 +1544,7 @@ async fn ensure_index(
         Ok(built) => built,
         Err(error) => {
             let _ = record_failed_index(
-                &state.inner.pool,
+                pool,
                 effective,
                 &revision_id,
                 &model_revision,
@@ -1199,7 +1562,7 @@ async fn ensure_index(
         .into());
     }
     if let Err(error) = install_index(
-        &state.inner.pool,
+        pool,
         effective,
         &revision_id,
         &model_revision,
@@ -1209,7 +1572,7 @@ async fn ensure_index(
     .await
     {
         let _ = record_failed_index(
-            &state.inner.pool,
+            pool,
             effective,
             &revision_id,
             &model_revision,
@@ -1566,6 +1929,7 @@ struct IndexRow {
     locator: SourceLocator,
     text: String,
     text_hash: String,
+    resource_content_hash: String,
     token_count: usize,
     vector: Vec<f32>,
 }
@@ -1573,43 +1937,94 @@ struct IndexRow {
 #[derive(Clone, Debug)]
 struct RankedRow {
     row: IndexRow,
+    exact_rank: Option<usize>,
+    bm25_rank: Option<usize>,
+    bm25_score: Option<f32>,
+    vector_rank: Option<usize>,
+    vector_score: Option<f32>,
+    rrf_rank: usize,
     rrf_score: f32,
-    rerank_score: f32,
+    reranker_rank: Option<usize>,
+    rerank_score: Option<f32>,
+    final_rank: Option<usize>,
+    exclusion_reason: RetrievalExclusionReason,
+    delta_action: Option<RetrievalDeltaAction>,
+}
+
+#[derive(Clone, Debug)]
+struct LexicalRank {
+    rowid: i64,
+    exact_rank: Option<usize>,
+    bm25_rank: Option<usize>,
+    bm25_score: Option<f32>,
+}
+
+#[derive(Clone, Debug)]
+struct VectorRank {
+    rowid: i64,
+    rank: usize,
+    score: f32,
 }
 
 async fn query_index(
     state: &DaemonState,
+    pool: &SqlitePool,
     revision_id: &str,
     query: &str,
     previous_state: ActivationStateToken,
+    completion: &mut RetrievalRunCompletion,
+    failure_stage: &mut &str,
 ) -> Result<ActivateMemoryResponse, DaemonError> {
-    let rows = fetch_index_rows(
-        &state.inner.pool,
-        revision_id,
-        state.inner.search_models.dimensions(),
-    )
-    .await?;
+    let rows = fetch_index_rows(pool, revision_id, state.inner.search_models.dimensions()).await?;
+    completion.unit_count = rows.len();
+    completion.model_revision =
+        sqlx::query_scalar("SELECT model_revision FROM search_revisions WHERE revision_id = $1")
+            .bind(revision_id)
+            .fetch_optional(pool)
+            .await?;
     if rows.is_empty() {
-        return activation_response(revision_id, Vec::new(), &rows, previous_state);
+        *failure_stage = "assembly";
+        let started = Instant::now();
+        let response = activation_response(revision_id, &mut [], &rows, previous_state)?;
+        completion.latencies.assembly_us = elapsed_us(started);
+        return Ok(response);
     }
-    let lexical = lexical_ranks(&state.inner.pool, revision_id, query, &rows).await?;
+
+    *failure_stage = "bm25";
+    let started = Instant::now();
+    let lexical = lexical_ranks(pool, revision_id, query, &rows).await?;
+    completion.latencies.bm25_us = elapsed_us(started);
+
+    *failure_stage = "embedding";
+    let started = Instant::now();
     let query_owned = query.to_owned();
     let models = state.inner.search_models.clone();
     let query_vector = run_model_work(move || models.embed_query(&query_owned)).await?;
+    completion.latencies.embedding_us = elapsed_us(started);
     if query_vector.len() != state.inner.search_models.dimensions()
         || !valid_normalized_vector(&query_vector)
     {
         return Err(SearchFailure::vector("query embedding is corrupt").into());
     }
+
+    *failure_stage = "vector";
+    let started = Instant::now();
     let vector = vector_ranks(&rows, &query_vector);
-    let fused = rrf_candidates(&rows, &lexical, &vector);
-    let mut candidates = fused
-        .into_iter()
-        .take(RERANK_CANDIDATES)
-        .collect::<Vec<_>>();
-    if !candidates.is_empty() {
+    completion.latencies.vector_us = elapsed_us(started);
+
+    *failure_stage = "rrf";
+    let started = Instant::now();
+    let mut candidates = rrf_candidates(&rows, &lexical, &vector);
+    completion.latencies.rrf_us = elapsed_us(started);
+    completion.candidates = candidates.iter().map(retrieval_candidate_input).collect();
+
+    let rerank_count = candidates.len().min(RRF_CANDIDATES).min(RERANK_CANDIDATES);
+    if rerank_count > 0 {
+        *failure_stage = "rerank";
+        let started = Instant::now();
         let documents = candidates
             .iter()
+            .take(rerank_count)
             .map(|candidate| {
                 format!(
                     "{}\n{}\n{}",
@@ -1622,7 +2037,8 @@ async fn query_index(
         let query_owned = query.to_owned();
         let models = state.inner.search_models.clone();
         let scores = run_model_work(move || models.rerank(&query_owned, &documents)).await?;
-        if scores.len() != candidates.len() {
+        completion.latencies.rerank_us = elapsed_us(started);
+        if scores.len() != rerank_count {
             return Err(SearchFailure::failed(
                 "reranker result count does not match its candidate count",
             )
@@ -1631,20 +2047,48 @@ async fn query_index(
         if scores.iter().any(|score| !score.is_finite()) {
             return Err(SearchFailure::model("reranker returned a non-finite score").into());
         }
-        for (candidate, score) in candidates.iter_mut().zip(scores) {
-            candidate.rerank_score = score;
+        for (candidate, score) in candidates.iter_mut().take(rerank_count).zip(scores) {
+            candidate.rerank_score = Some(score);
         }
-        candidates.sort_by(|left, right| {
-            right
+        let mut reranked = (0..rerank_count).collect::<Vec<_>>();
+        reranked.sort_by(|left, right| {
+            candidates[*right]
                 .rerank_score
-                .total_cmp(&left.rerank_score)
-                .then_with(|| right.rrf_score.total_cmp(&left.rrf_score))
-                .then_with(|| left.row.unit_key.cmp(&right.row.unit_key))
+                .expect("reranked candidate score")
+                .total_cmp(
+                    &candidates[*left]
+                        .rerank_score
+                        .expect("reranked candidate score"),
+                )
+                .then_with(|| {
+                    candidates[*right]
+                        .rrf_score
+                        .total_cmp(&candidates[*left].rrf_score)
+                })
+                .then_with(|| {
+                    candidates[*left]
+                        .row
+                        .unit_key
+                        .cmp(&candidates[*right].row.unit_key)
+                })
         });
+        for (index, candidate_index) in reranked.into_iter().enumerate() {
+            candidates[candidate_index].reranker_rank = Some(index + 1);
+        }
     }
 
-    let selected = apply_fragment_budget(candidates);
-    activation_response(revision_id, selected, &rows, previous_state)
+    *failure_stage = "assembly";
+    let started = Instant::now();
+    apply_fragment_budget(&mut candidates);
+    let response = activation_response(revision_id, &mut candidates, &rows, previous_state)?;
+    completion.latencies.assembly_us = elapsed_us(started);
+    completion.returned_token_count = candidates
+        .iter()
+        .filter(|candidate| candidate.final_rank.is_some())
+        .map(|candidate| candidate.row.token_count)
+        .sum();
+    completion.candidates = candidates.iter().map(retrieval_candidate_input).collect();
+    Ok(response)
 }
 
 async fn fetch_index_rows(
@@ -1655,7 +2099,7 @@ async fn fetch_index_rows(
     let rows = sqlx::query(
         "SELECT u.unit_rowid, u.unit_key, u.resource_id, u.heading_path_json,
                 u.locator_json, u.text, u.text_hash, u.token_count, u.vector,
-                r.scope, r.kind, r.path, r.title
+                r.scope, r.kind, r.path, r.title, r.content_hash AS resource_content_hash
          FROM search_units u
          JOIN search_resources r
            ON r.revision_id = u.revision_id AND r.resource_id = u.resource_id
@@ -1690,6 +2134,7 @@ async fn fetch_index_rows(
                 locator: serde_json::from_str(row.try_get::<String, _>("locator_json")?.as_str())?,
                 text: row.try_get("text")?,
                 text_hash: row.try_get("text_hash")?,
+                resource_content_hash: row.try_get("resource_content_hash")?,
                 token_count: token_count as usize,
                 vector: decode_vector(&vector_bytes, dimensions)?,
             })
@@ -1702,7 +2147,7 @@ async fn lexical_ranks(
     revision_id: &str,
     query: &str,
     rows: &[IndexRow],
-) -> Result<Vec<i64>, DaemonError> {
+) -> Result<Vec<LexicalRank>, DaemonError> {
     let normalized = query.trim().to_lowercase();
     let mut exact = rows
         .iter()
@@ -1726,10 +2171,20 @@ async fn lexical_ranks(
         })
         .collect::<Vec<_>>();
     exact.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
-    let mut ordered = exact
-        .into_iter()
-        .map(|(_, _, rowid)| rowid)
-        .collect::<Vec<_>>();
+    let mut ranks = HashMap::<i64, LexicalRank>::new();
+    let mut ordered = Vec::new();
+    for (index, (_, _, rowid)) in exact.into_iter().enumerate() {
+        ranks.insert(
+            rowid,
+            LexicalRank {
+                rowid,
+                exact_rank: Some(index + 1),
+                bm25_rank: None,
+                bm25_score: None,
+            },
+        );
+        ordered.push(rowid);
+    }
     let mut seen = ordered.iter().copied().collect::<HashSet<_>>();
 
     if let Some(expression) = fts_expression(query) {
@@ -1745,15 +2200,30 @@ async fn lexical_ranks(
         .bind(BM25_TOP_K as i64)
         .fetch_all(pool)
         .await?;
-        for row in matches {
+        for (index, row) in matches.into_iter().enumerate() {
             let rowid: i64 = row.try_get("rowid")?;
+            let score: f64 = row.try_get("score")?;
+            if !score.is_finite() {
+                return Err(SearchFailure::failed("BM25 returned a non-finite score").into());
+            }
+            let rank = ranks.entry(rowid).or_insert(LexicalRank {
+                rowid,
+                exact_rank: None,
+                bm25_rank: None,
+                bm25_score: None,
+            });
+            rank.bm25_rank = Some(index + 1);
+            rank.bm25_score = Some(score as f32);
             if seen.insert(rowid) {
                 ordered.push(rowid);
             }
         }
     }
     ordered.truncate(BM25_TOP_K);
-    Ok(ordered)
+    Ok(ordered
+        .into_iter()
+        .filter_map(|rowid| ranks.remove(&rowid))
+        .collect())
 }
 
 fn fts_expression(query: &str) -> Option<String> {
@@ -1802,7 +2272,7 @@ fn fts_expression(query: &str) -> Option<String> {
     })
 }
 
-fn vector_ranks(rows: &[IndexRow], query_vector: &[f32]) -> Vec<i64> {
+fn vector_ranks(rows: &[IndexRow], query_vector: &[f32]) -> Vec<VectorRank> {
     let mut scored = rows
         .iter()
         .map(|row| {
@@ -1819,20 +2289,40 @@ fn vector_ranks(rows: &[IndexRow], query_vector: &[f32]) -> Vec<i64> {
     scored
         .into_iter()
         .take(VECTOR_TOP_K)
-        .map(|(_, _, rowid)| rowid)
+        .enumerate()
+        .map(|(index, (score, _, rowid))| VectorRank {
+            rowid,
+            rank: index + 1,
+            score,
+        })
         .collect()
 }
 
-fn rrf_candidates(rows: &[IndexRow], lexical: &[i64], vector: &[i64]) -> Vec<RankedRow> {
+fn rrf_candidates(
+    rows: &[IndexRow],
+    lexical: &[LexicalRank],
+    vector: &[VectorRank],
+) -> Vec<RankedRow> {
     let mut scores = HashMap::<i64, (f32, usize)>::new();
-    for channel in [lexical, vector] {
-        for (index, rowid) in channel.iter().enumerate() {
-            let rank = index + 1;
-            let entry = scores.entry(*rowid).or_insert((0.0, usize::MAX));
-            entry.0 += 1.0 / (RRF_CONSTANT + rank as f32);
-            entry.1 = entry.1.min(rank);
-        }
+    for (index, lexical) in lexical.iter().enumerate() {
+        let rank = index + 1;
+        let entry = scores.entry(lexical.rowid).or_insert((0.0, usize::MAX));
+        entry.0 += 1.0 / (RRF_CONSTANT + rank as f32);
+        entry.1 = entry.1.min(rank);
     }
+    for vector in vector {
+        let entry = scores.entry(vector.rowid).or_insert((0.0, usize::MAX));
+        entry.0 += 1.0 / (RRF_CONSTANT + vector.rank as f32);
+        entry.1 = entry.1.min(vector.rank);
+    }
+    let lexical_by_rowid = lexical
+        .iter()
+        .map(|rank| (rank.rowid, rank))
+        .collect::<HashMap<_, _>>();
+    let vector_by_rowid = vector
+        .iter()
+        .map(|rank| (rank.rowid, rank))
+        .collect::<HashMap<_, _>>();
     let by_rowid = rows
         .iter()
         .map(|row| (row.rowid, row))
@@ -1844,8 +2334,22 @@ fn rrf_candidates(rows: &[IndexRow], lexical: &[i64], vector: &[i64]) -> Vec<Ran
                 (
                     RankedRow {
                         row: (*row).clone(),
+                        exact_rank: lexical_by_rowid
+                            .get(&rowid)
+                            .and_then(|rank| rank.exact_rank),
+                        bm25_rank: lexical_by_rowid.get(&rowid).and_then(|rank| rank.bm25_rank),
+                        bm25_score: lexical_by_rowid
+                            .get(&rowid)
+                            .and_then(|rank| rank.bm25_score),
+                        vector_rank: vector_by_rowid.get(&rowid).map(|rank| rank.rank),
+                        vector_score: vector_by_rowid.get(&rowid).map(|rank| rank.score),
+                        rrf_rank: 0,
                         rrf_score,
-                        rerank_score: f32::NEG_INFINITY,
+                        reranker_rank: None,
+                        rerank_score: None,
+                        final_rank: None,
+                        exclusion_reason: RetrievalExclusionReason::NotReranked,
+                        delta_action: None,
                     },
                     best_rank,
                 )
@@ -1862,26 +2366,50 @@ fn rrf_candidates(rows: &[IndexRow], lexical: &[i64], vector: &[i64]) -> Vec<Ran
     });
     fused
         .into_iter()
-        .take(RRF_CANDIDATES)
-        .map(|(row, _)| row)
+        .enumerate()
+        .map(|(index, (mut row, _))| {
+            row.rrf_rank = index + 1;
+            row
+        })
         .collect()
 }
 
-fn apply_fragment_budget(candidates: Vec<RankedRow>) -> Vec<RankedRow> {
-    let mut selected = Vec::new();
+fn apply_fragment_budget(candidates: &mut [RankedRow]) {
+    let mut reranked = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| candidate.reranker_rank.map(|rank| (rank, index)))
+        .collect::<Vec<_>>();
+    reranked.sort_by_key(|(rank, _)| *rank);
+    let mut selected_indices = Vec::new();
     let mut per_resource = HashMap::<String, usize>::new();
     let mut tokens = 0usize;
-    for candidate in candidates {
-        if selected.len() >= FINAL_FRAGMENTS {
-            break;
+    let mut terminal_reason = None;
+    for (_, candidate_index) in reranked {
+        let candidate = &candidates[candidate_index];
+        if let Some(reason) = terminal_reason {
+            candidates[candidate_index].exclusion_reason = reason;
+            continue;
         }
-        if rerank_relevance(candidate.rerank_score) < MIN_RERANK_RELEVANCE {
-            break;
+        if selected_indices.len() >= FINAL_FRAGMENTS {
+            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::FragmentLimit;
+            terminal_reason = Some(RetrievalExclusionReason::FragmentLimit);
+            continue;
         }
-        if selected
+        let relevance = candidate
+            .rerank_score
+            .map(rerank_relevance)
+            .unwrap_or_default();
+        if relevance < MIN_RERANK_RELEVANCE {
+            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::BelowRelevance;
+            terminal_reason = Some(RetrievalExclusionReason::BelowRelevance);
+            continue;
+        }
+        if selected_indices
             .iter()
-            .any(|existing| fragments_overlap(existing, &candidate))
+            .any(|selected| fragments_overlap(&candidates[*selected], candidate))
         {
+            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::Overlap;
             continue;
         }
         let count = per_resource
@@ -1889,20 +2417,54 @@ fn apply_fragment_budget(candidates: Vec<RankedRow>) -> Vec<RankedRow> {
             .copied()
             .unwrap_or_default();
         if count >= PER_RESOURCE_LIMIT {
+            candidates[candidate_index].exclusion_reason =
+                RetrievalExclusionReason::PerResourceLimit;
             continue;
         }
-        if !selected.is_empty()
+        if !selected_indices.is_empty()
             && tokens.saturating_add(candidate.row.token_count) > FRAGMENT_TOKEN_BUDGET
         {
-            break;
+            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::TokenBudget;
+            terminal_reason = Some(RetrievalExclusionReason::TokenBudget);
+            continue;
         }
         tokens = tokens.saturating_add(candidate.row.token_count);
         *per_resource
             .entry(candidate.row.resource_id.clone())
             .or_default() += 1;
-        selected.push(candidate);
+        candidates[candidate_index].final_rank = Some(selected_indices.len() + 1);
+        candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::Selected;
+        selected_indices.push(candidate_index);
     }
-    selected
+}
+
+fn retrieval_candidate_input(candidate: &RankedRow) -> RetrievalCandidateInput {
+    RetrievalCandidateInput {
+        unit_key: candidate.row.unit_key.clone(),
+        resource_id: candidate.row.resource_id.clone(),
+        scope: candidate.row.scope,
+        kind: candidate.row.kind,
+        path: candidate.row.path.clone(),
+        heading_path: candidate.row.heading_path.clone(),
+        locator: candidate.row.locator.clone(),
+        content_hash: candidate.row.text_hash.clone(),
+        resource_content_hash: candidate.row.resource_content_hash.clone(),
+        token_count: candidate.row.token_count,
+        evidence_excerpt: candidate.row.text.clone(),
+        exact_rank: candidate.exact_rank,
+        bm25_rank: candidate.bm25_rank,
+        bm25_score: candidate.bm25_score,
+        vector_rank: candidate.vector_rank,
+        vector_score: candidate.vector_score,
+        rrf_rank: Some(candidate.rrf_rank),
+        rrf_score: Some(candidate.rrf_score),
+        reranker_rank: candidate.reranker_rank,
+        reranker_logit: candidate.rerank_score,
+        reranker_relevance: candidate.rerank_score.map(rerank_relevance),
+        final_rank: candidate.final_rank,
+        exclusion_reason: candidate.exclusion_reason,
+        delta_action: candidate.delta_action,
+    }
 }
 
 fn rerank_relevance(score: f32) -> f32 {
@@ -1912,6 +2474,10 @@ fn rerank_relevance(score: f32) -> f32 {
         let exponential = score.exp();
         exponential / (1.0 + exponential)
     }
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn fragments_overlap(left: &RankedRow, right: &RankedRow) -> bool {
@@ -1989,7 +2555,7 @@ fn decode_activation_state(state: Option<&str>) -> Result<ActivationStateToken, 
 
 fn activation_response(
     revision_id: &str,
-    selected: Vec<RankedRow>,
+    candidates: &mut [RankedRow],
     all_rows: &[IndexRow],
     previous_state: ActivationStateToken,
 ) -> Result<ActivateMemoryResponse, DaemonError> {
@@ -2020,7 +2586,14 @@ fn activation_response(
         .map(|identity| (identity.unit_key.clone(), identity))
         .collect::<HashMap<_, _>>();
     let mut fragments = Vec::new();
-    for candidate in selected {
+    let mut selected = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| candidate.final_rank.map(|rank| (rank, index)))
+        .collect::<Vec<_>>();
+    selected.sort_by_key(|(rank, _)| *rank);
+    for (_, candidate_index) in selected {
+        let candidate = &mut candidates[candidate_index];
         let action = match previous.get(candidate.row.unit_key.as_str()) {
             Some(content_hash) if *content_hash == candidate.row.text_hash => {
                 ActivationAction::Reuse
@@ -2028,6 +2601,11 @@ fn activation_response(
             Some(_) => ActivationAction::Replace,
             None => ActivationAction::Add,
         };
+        candidate.delta_action = Some(match action {
+            ActivationAction::Add => RetrievalDeltaAction::Add,
+            ActivationAction::Replace => RetrievalDeltaAction::Replace,
+            ActivationAction::Reuse => RetrievalDeltaAction::Reuse,
+        });
         next_known.insert(
             candidate.row.unit_key.clone(),
             KnownActivationIdentity {
@@ -2038,14 +2616,14 @@ fn activation_response(
         );
         fragments.push(ActivationFragment {
             action,
-            unit_key: candidate.row.unit_key,
-            content_hash: candidate.row.text_hash,
-            resource_id: candidate.row.resource_id,
+            unit_key: candidate.row.unit_key.clone(),
+            content_hash: candidate.row.text_hash.clone(),
+            resource_id: candidate.row.resource_id.clone(),
             scope: candidate.row.scope,
             kind: candidate.row.kind,
-            path: candidate.row.path,
-            heading_path: candidate.row.heading_path,
-            content: (action != ActivationAction::Reuse).then_some(candidate.row.text),
+            path: candidate.row.path.clone(),
+            heading_path: candidate.row.heading_path.clone(),
+            content: (action != ActivationAction::Reuse).then(|| candidate.row.text.clone()),
         });
     }
     let mut known = next_known.into_values().collect::<Vec<_>>();
@@ -2080,10 +2658,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        CredentialStore, CredentialStoreError, DaemonContentDraftUpdate,
-        DaemonCreateDraftOperation, DaemonDeleteDraftOperation, DaemonDraftOperationRecordSource,
-        DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonDraftOperationSource,
-        DaemonIpcRequest, DaemonIpcService, DaemonRenameDraftOperation, DaemonUpdateDraftOperation,
+        ClearRetrievalRunsRequest, CreateEvaluationCaseRequest, CredentialStore,
+        CredentialStoreError, DaemonContentDraftUpdate, DaemonCreateDraftOperation,
+        DaemonDeleteDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
+        DaemonDraftOperationResponse, DaemonDraftOperationSource, DaemonIpcRequest,
+        DaemonIpcService, DaemonProjectCacheClearRequest, DaemonProjectStorageRequest,
+        DaemonRenameDraftOperation, DaemonUpdateDraftOperation, EvaluationJudgmentInput,
+        ExportEvaluationSetRequest, ReplaceEvaluationJudgmentsRequest, RetrievalDeltaAction,
+        RetrievalExclusionReason, RetrievalRunListRequest, RetrievalRunRequest, RetrievalRunStatus,
         ServerCredentials,
     };
 
@@ -2292,11 +2874,22 @@ mod tests {
                 },
                 text: unit_key.to_owned(),
                 text_hash: sha256(unit_key),
+                resource_content_hash: sha256(unit_key),
                 token_count,
                 vector: vec![1.0, 0.0, 0.0],
             },
+            exact_rank: None,
+            bm25_rank: None,
+            bm25_score: None,
+            vector_rank: None,
+            vector_score: None,
+            rrf_rank: 1,
             rrf_score: 0.01,
-            rerank_score,
+            reranker_rank: Some(1),
+            rerank_score: Some(rerank_score),
+            final_rank: None,
+            exclusion_reason: RetrievalExclusionReason::NotReranked,
+            delta_action: None,
         }
     }
 
@@ -2308,8 +2901,9 @@ mod tests {
         search_models: Arc<dyn SearchModels>,
     ) -> (TempDir, DaemonState) {
         let temp = tempfile::tempdir().unwrap();
-        let config = crate::DaemonConfig::for_root(temp.path().join("daemon"));
-        let cache_dir = config.cache_dir.clone();
+        let mut config = crate::DaemonConfig::for_root(temp.path().join("daemon"));
+        config.project.server_url = "https://clumsies.test".to_owned();
+        config.project.project_id = Some("prj_test".to_owned());
         let state = DaemonState::initialize_with_credential_store_and_search_models(
             config,
             Arc::new(NoCredentials),
@@ -2378,7 +2972,10 @@ mod tests {
             "project_org_selection": null
         });
         let marker = serde_json::to_vec(&payload).unwrap();
-        let root = cache_dir.join("projects/prj_test/generations/commit_test");
+        let storage = super::super::project_storage::resolve_active(&state, "prj_test")
+            .await
+            .unwrap();
+        let root = storage.generation_path("commit_test");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("commit-payload.json"), marker).unwrap();
         fs::write(
@@ -2549,15 +3146,298 @@ mod tests {
                 .is_some_and(|content| content.contains("reranking"))
         );
 
+        let (index_pool, _storage) = active_project_index(&state, "prj_test").await.unwrap();
         let indexed_kinds = sqlx::query_scalar::<_, String>(
             "SELECT kind FROM search_resources
              WHERE revision_id = $1 ORDER BY kind",
         )
         .bind(&third.index_revision)
-        .fetch_all(&state.inner.pool)
+        .fetch_all(&index_pool)
         .await
         .unwrap();
+        index_pool.close().await;
         assert_eq!(indexed_kinds, ["context", "rule", "workflow"]);
+    }
+
+    #[tokio::test]
+    async fn activation_trace_and_evaluation_case_share_one_ranked_result() {
+        let (_temp, state) = test_state().await;
+        let response = state
+            .activate_memory(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "hybrid retrieval testing".to_owned(),
+                state: None,
+            })
+            .await
+            .unwrap();
+
+        let runs = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: Some(RetrievalRunStatus::Succeeded),
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(runs.items.len(), 1);
+        let run = &runs.items[0];
+        assert_eq!(run.query, "hybrid retrieval testing");
+        assert!(run.completed_at.is_some());
+        assert_eq!(run.returned_fragment_count, response.fragments.len() as u64);
+        assert_eq!(run.parser_version.as_deref(), Some(PARSER_VERSION));
+        assert_eq!(run.chunker_version.as_deref(), Some(CHUNKER_VERSION));
+        assert_eq!(run.ranking_profile.as_deref(), Some(RANKING_CONFIG_VERSION));
+
+        let detail = state
+            .get_retrieval_run(RetrievalRunRequest {
+                run_id: run.run_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(!detail.candidates.is_empty());
+        let selected = detail
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.selected)
+            .collect::<Vec<_>>();
+        assert_eq!(selected.len(), response.fragments.len());
+        for candidate in &detail.candidates {
+            assert!(
+                candidate.exact_rank.is_some()
+                    || candidate.bm25_rank.is_some()
+                    || candidate.vector_rank.is_some()
+            );
+            if candidate.selected {
+                assert_eq!(
+                    candidate.exclusion_reason,
+                    RetrievalExclusionReason::Selected
+                );
+                let fragment = response
+                    .fragments
+                    .iter()
+                    .find(|fragment| {
+                        fragment.resource_id == candidate.resource_id
+                            && fragment.heading_path == candidate.heading_path
+                    })
+                    .expect("selected trace candidate must be returned");
+                let expected_action = match fragment.action {
+                    ActivationAction::Add => RetrievalDeltaAction::Add,
+                    ActivationAction::Replace => RetrievalDeltaAction::Replace,
+                    ActivationAction::Reuse => RetrievalDeltaAction::Reuse,
+                };
+                assert_eq!(candidate.delta_action, Some(expected_action));
+            } else {
+                assert_ne!(
+                    candidate.exclusion_reason,
+                    RetrievalExclusionReason::Selected
+                );
+            }
+        }
+
+        let evaluation = state
+            .create_evaluation_case(CreateEvaluationCaseRequest {
+                run_id: run.run_id.clone(),
+                query_category: Some("retrieval".to_owned()),
+                notes: Some("deterministic fixture".to_owned()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(evaluation.evaluation_case.judgment_version, 1);
+        assert_eq!(evaluation.corpus_resources.len(), 3);
+        let relevant = selected[0];
+        let missed = evaluation
+            .corpus_resources
+            .iter()
+            .find(|resource| resource.resource_id != relevant.resource_id)
+            .unwrap();
+        let judged = state
+            .replace_evaluation_judgments(ReplaceEvaluationJudgmentsRequest {
+                case_id: evaluation.evaluation_case.case_id.clone(),
+                expected_judgment_version: 1,
+                judgments: vec![
+                    EvaluationJudgmentInput {
+                        resource_id: relevant.resource_id.clone(),
+                        unit_key: Some(relevant.unit_key.clone()),
+                        relevance: 3,
+                        missed: false,
+                        notes: None,
+                    },
+                    EvaluationJudgmentInput {
+                        resource_id: missed.resource_id.clone(),
+                        unit_key: None,
+                        relevance: 2,
+                        missed: true,
+                        notes: Some("Relevant evidence was not retrieved".to_owned()),
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+        assert_eq!(judged.evaluation_case.judgment_version, 2);
+        assert_eq!(judged.judgments.len(), 2);
+        assert!(judged.judgments.iter().any(|judgment| judgment.missed));
+
+        let stale = state
+            .replace_evaluation_judgments(ReplaceEvaluationJudgmentsRequest {
+                case_id: judged.evaluation_case.case_id.clone(),
+                expected_judgment_version: 1,
+                judgments: Vec::new(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            stale,
+            DaemonError::State {
+                code: "evaluation_judgment_conflict",
+                ..
+            }
+        ));
+
+        let exported = state
+            .export_evaluation_set(ExportEvaluationSetRequest {
+                project_id: Some("prj_test".to_owned()),
+                case_ids: vec![judged.evaluation_case.case_id.clone()],
+            })
+            .await
+            .unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(&exported.fixture_json).unwrap();
+        assert_eq!(fixture["version"], 1);
+        assert_eq!(fixture["cases"].as_array().unwrap().len(), 1);
+        assert_eq!(exported.report.variants.len(), 4);
+        for variant in ["b1_bm25", "b2_dense_vector", "b3_hybrid_rrf", "b4_reranked"] {
+            assert_eq!(exported.report.variants[variant].case_count, 1);
+        }
+
+        state
+            .activate_memory(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "workflow".to_owned(),
+                state: None,
+            })
+            .await
+            .unwrap();
+        let cleared = state
+            .clear_retrieval_runs(ClearRetrievalRunsRequest {
+                project_id: Some("prj_test".to_owned()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(cleared.deleted_run_count, 1);
+        let retained = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: None,
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(retained.items.len(), 1);
+        assert_eq!(retained.items[0].run_id, run.run_id);
+        assert_eq!(
+            retained.items[0].evaluation_case_id.as_deref(),
+            Some(judged.evaluation_case.case_id.as_str())
+        );
+        let storage = state
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .await
+            .unwrap();
+        state
+            .clear_project_cache(DaemonProjectCacheClearRequest {
+                project_id: "prj_test".to_owned(),
+                expected_location_revision: storage.location_revision,
+            })
+            .await
+            .unwrap();
+        let after_cache_clear = state
+            .get_retrieval_run(RetrievalRunRequest {
+                run_id: run.run_id.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_cache_clear.corpus_resources.len(), 3);
+        assert!(after_cache_clear.report.is_some());
+        let exported_after_cache_clear = state
+            .export_evaluation_set(ExportEvaluationSetRequest {
+                project_id: Some("prj_test".to_owned()),
+                case_ids: vec![judged.evaluation_case.case_id.clone()],
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&exported_after_cache_clear.fixture_json)
+                .unwrap()["cases"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let config = state.inner.config.clone();
+        drop(state);
+        let restarted = DaemonState::initialize_with_credential_store_and_search_models(
+            config,
+            Arc::new(NoCredentials),
+            Arc::new(DeterministicModels),
+        )
+        .await
+        .unwrap();
+        let after_restart = restarted
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: None,
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_restart.items, retained.items);
+    }
+
+    #[tokio::test]
+    async fn retrieval_run_cursor_pagination_is_stable() {
+        let (_temp, state) = test_state().await;
+        for query in ["hybrid", "workflow", "testing"] {
+            state
+                .activate_memory(ActivateMemoryRequest {
+                    project_id: "prj_test".to_owned(),
+                    query: query.to_owned(),
+                    state: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let first = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: None,
+                cursor: None,
+                limit: Some(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.items.len(), 2);
+        let second = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: None,
+                cursor: first.next_cursor,
+                limit: Some(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.items.len(), 1);
+        assert!(second.next_cursor.is_none());
+        assert!(
+            first
+                .items
+                .iter()
+                .all(|run| second.items.iter().all(|next| next.run_id != run.run_id))
+        );
     }
 
     #[tokio::test]
@@ -2880,6 +3760,57 @@ mod tests {
                 .as_deref()
                 .is_some_and(|message| message.contains("deterministic index failure"))
         );
+        let runs = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: Some(RetrievalRunStatus::Failed),
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(runs.items.len(), 1);
+        assert_eq!(runs.items[0].error_stage.as_deref(), Some("index_ensure"));
+        assert_eq!(
+            runs.items[0].error_code.as_deref(),
+            Some("search_model_unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieval_history_failure_does_not_change_activation_result() {
+        let (_temp, state) = test_state().await;
+        fs::write(
+            state.inner.config.root_dir.join("evaluation-corpora"),
+            "blocks corpus directory creation",
+        )
+        .unwrap();
+
+        let response = state
+            .activate_memory(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "hybrid".to_owned(),
+                state: None,
+            })
+            .await
+            .unwrap();
+        assert!(!response.fragments.is_empty());
+
+        let runs = state
+            .list_retrieval_runs(RetrievalRunListRequest {
+                project_id: Some("prj_test".to_owned()),
+                status: Some(RetrievalRunStatus::Failed),
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(runs.items.len(), 1);
+        assert_eq!(runs.items[0].error_stage.as_deref(), Some("persistence"));
+        assert_eq!(
+            runs.items[0].error_code.as_deref(),
+            Some("retrieval_history_persistence_failed")
+        );
     }
 
     #[tokio::test]
@@ -2938,19 +3869,32 @@ mod tests {
 
     #[test]
     fn fragment_selection_suppresses_overlap_and_irrelevant_tail() {
-        let selected = apply_fragment_budget(vec![
+        let mut candidates = vec![
             ranked_test_row("best", "same", 0, 200, 300, 2.0),
             ranked_test_row("overlap", "same", 150, 350, 300, 1.0),
             ranked_test_row("distinct", "same", 400, 600, 300, 0.0),
             ranked_test_row("irrelevant", "other", 0, 100, 100, -10.0),
-        ]);
+        ];
+        for (index, candidate) in candidates.iter_mut().enumerate() {
+            candidate.reranker_rank = Some(index + 1);
+        }
+        apply_fragment_budget(&mut candidates);
 
         assert_eq!(
-            selected
+            candidates
                 .iter()
+                .filter(|candidate| candidate.final_rank.is_some())
                 .map(|candidate| candidate.row.unit_key.as_str())
                 .collect::<Vec<_>>(),
             vec!["best", "distinct"]
+        );
+        assert_eq!(
+            candidates[1].exclusion_reason,
+            RetrievalExclusionReason::Overlap
+        );
+        assert_eq!(
+            candidates[3].exclusion_reason,
+            RetrievalExclusionReason::BelowRelevance
         );
         assert!((rerank_relevance(0.0) - 0.5).abs() < f32::EPSILON);
         assert!(rerank_relevance(-10.0) < MIN_RERANK_RELEVANCE);
@@ -2958,14 +3902,68 @@ mod tests {
 
     #[test]
     fn fragment_selection_does_not_fill_budget_with_lower_ranked_noise() {
-        let selected = apply_fragment_budget(vec![
+        let mut candidates = vec![
             ranked_test_row("large", "one", 0, 100, 2_200, 2.0),
             ranked_test_row("overflow", "two", 0, 100, 300, 1.0),
             ranked_test_row("filler", "three", 0, 100, 100, 0.0),
-        ]);
+        ];
+        for (index, candidate) in candidates.iter_mut().enumerate() {
+            candidate.reranker_rank = Some(index + 1);
+        }
+        apply_fragment_budget(&mut candidates);
+        let selected = candidates
+            .iter()
+            .filter(|candidate| candidate.final_rank.is_some())
+            .collect::<Vec<_>>();
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].row.unit_key, "large");
+        assert_eq!(
+            candidates[1].exclusion_reason,
+            RetrievalExclusionReason::TokenBudget
+        );
+        assert_eq!(
+            candidates[2].exclusion_reason,
+            RetrievalExclusionReason::TokenBudget
+        );
+    }
+
+    #[test]
+    fn fragment_selection_records_resource_and_fragment_limits() {
+        let mut per_resource = vec![
+            ranked_test_row("one", "same", 0, 10, 10, 2.0),
+            ranked_test_row("two", "same", 20, 30, 10, 2.0),
+            ranked_test_row("three", "same", 40, 50, 10, 2.0),
+        ];
+        for (index, candidate) in per_resource.iter_mut().enumerate() {
+            candidate.reranker_rank = Some(index + 1);
+        }
+        apply_fragment_budget(&mut per_resource);
+        assert_eq!(
+            per_resource[2].exclusion_reason,
+            RetrievalExclusionReason::PerResourceLimit
+        );
+
+        let mut fragment_limit = (0..=FINAL_FRAGMENTS)
+            .map(|index| {
+                ranked_test_row(
+                    &format!("unit-{index}"),
+                    &format!("resource-{index}"),
+                    0,
+                    10,
+                    10,
+                    2.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (index, candidate) in fragment_limit.iter_mut().enumerate() {
+            candidate.reranker_rank = Some(index + 1);
+        }
+        apply_fragment_budget(&mut fragment_limit);
+        assert_eq!(
+            fragment_limit[FINAL_FRAGMENTS].exclusion_reason,
+            RetrievalExclusionReason::FragmentLimit
+        );
     }
 
     #[test]

@@ -73,6 +73,19 @@ A legacy `ws_id` is not a Project binding. It may supply a path and display name
 during one-time migration, but its identifier is never accepted as a
 `project_id`.
 
+## Project Local Storage
+
+Project Local Storage is the current installation's daemon-owned location for
+one Project's rebuildable Commit generations and derived search index. The
+setting is keyed by Server authority and `project_id`; it is not Server Project
+metadata, does not synchronize across installations, and is not an editable
+working directory.
+
+The selected directory is only a parent for a marker-owned `.clumsies/cache-v1`
+subtree. Drafts, operation queues, cached authority objects, credentials, and
+shared retrieval models remain in their central stores. If the selected volume
+is unavailable, daemon does not silently use a second default cache.
+
 ## Manifest
 
 Manifest is a retired runtime term. Authority versions use Blob, Tree, Commit,
@@ -101,6 +114,19 @@ Draft persistence to the Rust daemon over XPC.
 
 The current implementation exposes concise tools: `activate`, `load`, and
 `store`. That is the runtime contract the docs should describe.
+
+## Retrieval Run and Evaluation Case
+
+A Retrieval Run is the daemon-local durable record of one valid memory
+activation. It captures the query, Effective Memory and Index Revision
+identities, all ranking-stage values, final candidate disposition, latency, and
+failure details. It is not an agent-facing tool and is never Server telemetry.
+
+An Evaluation Case pins one successful Run together with its immutable
+Evaluation Corpus and versioned human judgments. The corpus is the complete
+Effective Memory resource set used by that Run, not only the returned
+fragments. Evaluation Cases survive unpinned history clearing and can be
+exported for B1–B4 comparison.
 
 ## Draft and Review
 

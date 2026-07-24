@@ -17,11 +17,14 @@ use daemon::{
     DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
     DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonMemoryCacheState,
     DaemonMemoryCacheStatus, DaemonProjectBindingReplaceRequest,
-    DaemonProjectBindingResolveRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
-    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonServerRequest,
-    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
-    ServerCredentials, SyncRetryChannel, SyncState,
+    DaemonProjectBindingResolveRequest, DaemonProjectCacheClearRequest, DaemonProjectCheckout,
+    DaemonProjectCheckoutRequest, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
+    DaemonProjectStorage, DaemonProjectStorageMode, DaemonProjectStorageMoveState,
+    DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
+    DaemonProjectStorageResetRequest, DaemonServerRequest, DaemonState, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, IDENTIFIER_NAMESPACE, LaunchAgentConfig,
+    LaunchAgentController, LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel,
+    SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -30,6 +33,87 @@ use tokio::sync::Notify;
 
 const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[cfg(target_os = "macos")]
+fn directory_handoff_bookmark(path: &Path) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{
+        NSData, NSString, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
+    };
+
+    let path = NSString::from_str(&path.display().to_string());
+    let url = NSURL::fileURLWithPath_isDirectory(&path, true);
+    let security_bookmark = url
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::WithSecurityScope,
+            None,
+            None,
+        )
+        .unwrap();
+    let data = NSData::with_bytes(&security_bookmark.to_vec());
+    let mut stale = Bool::NO;
+    let granted = unsafe {
+        NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(
+            &data,
+            NSURLBookmarkResolutionOptions::WithSecurityScope,
+            None,
+            &mut stale,
+        )
+    }
+    .unwrap();
+    assert!(unsafe { granted.startAccessingSecurityScopedResource() });
+    let handoff = granted
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::empty(),
+            None,
+            None,
+        )
+        .unwrap();
+    unsafe { granted.stopAccessingSecurityScopedResource() };
+    STANDARD.encode(handoff.to_vec())
+}
+
+#[cfg(target_os = "macos")]
+fn directory_security_bookmark(path: &Path) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use objc2_foundation::{NSString, NSURL, NSURLBookmarkCreationOptions};
+
+    let path = NSString::from_str(&path.display().to_string());
+    let url = NSURL::fileURLWithPath_isDirectory(&path, true);
+    let bookmark = url
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::WithSecurityScope,
+            None,
+            None,
+        )
+        .unwrap();
+    STANDARD.encode(bookmark.to_vec())
+}
+
+async fn wait_for_storage_move(
+    state: &DaemonState,
+    move_id: &str,
+) -> daemon::DaemonProjectStorageMove {
+    for _ in 0..100 {
+        let current = state
+            .project_storage_move(daemon::DaemonProjectStorageMoveRequest {
+                move_id: move_id.to_owned(),
+            })
+            .await
+            .unwrap();
+        if matches!(
+            current.state,
+            DaemonProjectStorageMoveState::Completed | DaemonProjectStorageMoveState::Failed
+        ) {
+            return current;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("Project storage move {move_id} did not finish");
+}
 
 fn fake_daemon_program(root: &Path) -> PathBuf {
     let path = root.join("bin/clumsiesd");
@@ -70,6 +154,555 @@ async fn health_initializes_local_database_and_stable_installation_id() {
     )
     .await;
     assert_eq!(restarted.daemon_installation_id(), first_id);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn project_storage_is_local_per_project_and_moves_managed_cache_safely() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let custom_a = tempfile::tempdir().unwrap();
+    let custom_b = tempfile::tempdir().unwrap();
+    std::fs::write(custom_a.path().join("keep.txt"), "user data").unwrap();
+    let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+    config.project.server_url = "https://storage.example.test".to_owned();
+    config.project.project_id = Some("prj_a".to_owned());
+    let legacy_file = config
+        .cache_dir
+        .join("projects/prj_a/generations/legacy/cache/context/legacy.md");
+    std::fs::create_dir_all(legacy_file.parent().unwrap()).unwrap();
+    std::fs::write(&legacy_file, "legacy cache").unwrap();
+    std::fs::set_permissions(
+        legacy_file.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::set_permissions(&legacy_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+
+    let default_a = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(default_a.mode, DaemonProjectStorageMode::Default);
+    assert_eq!(default_a.location_revision, 1);
+    assert_eq!(
+        std::fs::metadata(&default_a.managed_root_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let migrated_legacy_file =
+        Path::new(&default_a.managed_root_path).join("generations/legacy/cache/context/legacy.md");
+    assert!(!legacy_file.exists());
+    assert_eq!(
+        std::fs::metadata(&migrated_legacy_file)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let move_a = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_a".to_owned(),
+            selected_root_path: custom_a.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom_a.path()),
+            expected_location_revision: default_a.location_revision,
+        })
+        .await
+        .unwrap();
+    let move_a = wait_for_storage_move(&state, &move_a.move_id).await;
+    assert_eq!(
+        move_a.state,
+        DaemonProjectStorageMoveState::Completed,
+        "storage move failed: {:?} {:?}",
+        move_a.error_code,
+        move_a.error_message
+    );
+
+    let custom_status_a = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(custom_status_a.mode, DaemonProjectStorageMode::Custom);
+    assert_eq!(custom_status_a.location_revision, 2);
+    assert!(
+        Path::new(&custom_status_a.managed_root_path)
+            .starts_with(std::fs::canonicalize(custom_a.path()).unwrap())
+    );
+    assert!(Path::new(&custom_status_a.search_index_path).is_file());
+
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE project_storage_locations SET bookmark_data = 'aW52YWxpZA=='
+         WHERE project_id = 'prj_a'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let invalid_authorization = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        invalid_authorization.availability,
+        daemon::DaemonProjectStorageAvailability::Unavailable
+    );
+
+    let refreshed_authorization = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_a".to_owned(),
+            selected_root_path: custom_a.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom_a.path()),
+            expected_location_revision: custom_status_a.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed_authorization.state,
+        DaemonProjectStorageMoveState::Completed
+    );
+    let refreshed_status_a = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed_status_a.availability,
+        daemon::DaemonProjectStorageAvailability::Ready
+    );
+    assert_eq!(refreshed_status_a.location_revision, 3);
+
+    std::fs::set_permissions(custom_a.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let unavailable = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        unavailable.availability,
+        daemon::DaemonProjectStorageAvailability::Unavailable
+    );
+    assert_eq!(
+        unavailable.issue_code.as_deref(),
+        Some("permission_required")
+    );
+    let service = DaemonIpcService::new(state.clone());
+    let offline_draft = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_a".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "context/offline.md".to_owned(),
+                    content: context_content("Draft remains available while storage is offline"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+    assert!(offline_draft.queued);
+    std::fs::set_permissions(custom_a.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        state
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: "prj_a".to_owned(),
+            })
+            .await
+            .unwrap()
+            .availability,
+        daemon::DaemonProjectStorageAvailability::Ready
+    );
+
+    let default_b = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    let move_b = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_b".to_owned(),
+            selected_root_path: custom_a.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom_a.path()),
+            expected_location_revision: default_b.location_revision,
+        })
+        .await
+        .unwrap();
+    let move_b = wait_for_storage_move(&state, &move_b.move_id).await;
+    assert_eq!(
+        move_b.state,
+        DaemonProjectStorageMoveState::Completed,
+        "storage move failed: {:?} {:?}",
+        move_b.error_code,
+        move_b.error_message
+    );
+    let still_custom_a = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        still_custom_a.managed_root_path,
+        custom_status_a.managed_root_path
+    );
+    let custom_status_b = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_ne!(
+        custom_status_b.managed_root_path,
+        custom_status_a.managed_root_path
+    );
+
+    let stale = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_a".to_owned(),
+            selected_root_path: custom_b.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom_b.path()),
+            expected_location_revision: 1,
+        })
+        .await
+        .unwrap_err();
+    assert!(stale.to_string().contains("storage_move_conflict"));
+
+    state
+        .clear_project_cache(DaemonProjectCacheClearRequest {
+            project_id: "prj_a".to_owned(),
+            expected_location_revision: refreshed_status_a.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(custom_a.path().join("keep.txt")).unwrap(),
+        "user data"
+    );
+
+    let reset = state
+        .reset_project_storage(DaemonProjectStorageResetRequest {
+            project_id: "prj_a".to_owned(),
+            expected_location_revision: refreshed_status_a.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_storage_move(&state, &reset.move_id).await.state,
+        DaemonProjectStorageMoveState::Completed
+    );
+    let reset_status = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(reset_status.mode, DaemonProjectStorageMode::Default);
+    assert_eq!(reset_status.location_revision, 4);
+    assert!(!Path::new(&custom_status_a.managed_root_path).exists());
+    assert!(Path::new(&custom_status_b.managed_root_path).exists());
+
+    let central_search_tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name IN ('search_resources', 'search_units', 'search_revisions')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(central_search_tables, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn project_storage_moves_resume_from_every_nonterminal_state() {
+    for interrupted_state in [
+        "preparing",
+        "materializing",
+        "verifying",
+        "switching",
+        "cleaning",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+        config.project.server_url = "https://storage-recovery.example.test".to_owned();
+        config.project.project_id = Some("prj_recovery".to_owned());
+        let state =
+            common::initialize_daemon(config.clone(), common::TestCredentialStore::default()).await;
+        let source = state
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: "prj_recovery".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let (move_id, expected_destination) = if interrupted_state == "cleaning" {
+            let created = state
+                .replace_project_storage(DaemonProjectStorageReplaceRequest {
+                    project_id: "prj_recovery".to_owned(),
+                    selected_root_path: custom.path().display().to_string(),
+                    handoff_bookmark_data: directory_handoff_bookmark(custom.path()),
+                    expected_location_revision: source.location_revision,
+                })
+                .await
+                .unwrap();
+            let completed = wait_for_storage_move(&state, &created.move_id).await;
+            assert_eq!(completed.state, DaemonProjectStorageMoveState::Completed);
+            let destination = state
+                .project_storage(DaemonProjectStorageRequest {
+                    project_id: "prj_recovery".to_owned(),
+                })
+                .await
+                .unwrap();
+            let source_root = Path::new(&completed.source_managed_root_path);
+            std::fs::create_dir_all(source_root.join("generations")).unwrap();
+            std::fs::create_dir_all(source_root.join("search")).unwrap();
+            std::fs::create_dir_all(source_root.join("staging")).unwrap();
+            std::fs::copy(
+                Path::new(&destination.managed_root_path).join("ownership.json"),
+                source_root.join("ownership.json"),
+            )
+            .unwrap();
+            std::fs::write(source_root.join("obsolete-cache"), "remove after restart").unwrap();
+            let pool =
+                sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+                    .await
+                    .unwrap();
+            sqlx::query(
+                "UPDATE project_storage_moves
+                 SET state = 'cleaning', completed_at = NULL
+                 WHERE move_id = $1",
+            )
+            .bind(&created.move_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            (created.move_id, destination.managed_root_path)
+        } else {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let selected_root = std::fs::canonicalize(custom.path()).unwrap();
+            let authority_hash = hex::encode(Sha256::digest(source.authority_key.as_bytes()));
+            let destination_root = selected_root
+                .join(".clumsies/cache-v1")
+                .join(authority_hash)
+                .join("prj_recovery");
+            let move_id = format!("move_recovery_{interrupted_state}");
+            let pool =
+                sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+                    .await
+                    .unwrap();
+            sqlx::query(
+                "INSERT INTO project_storage_moves (
+                    move_id, authority_key, project_id,
+                    source_mode, source_selected_root_path, source_bookmark_data,
+                    source_managed_root_path, source_location_revision,
+                    destination_mode, destination_selected_root_path,
+                    destination_bookmark_data, destination_managed_root_path, state
+                 ) VALUES ($1, $2, 'prj_recovery', 'default', $3, NULL, $4, $5,
+                           'custom', $6, $7, $8, $9)",
+            )
+            .bind(&move_id)
+            .bind(&source.authority_key)
+            .bind(&source.selected_root_path)
+            .bind(&source.managed_root_path)
+            .bind(source.location_revision)
+            .bind(selected_root.display().to_string())
+            .bind(directory_security_bookmark(custom.path()))
+            .bind(destination_root.display().to_string())
+            .bind(interrupted_state)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            (move_id, destination_root.display().to_string())
+        };
+
+        let source_root = source.managed_root_path.clone();
+        drop(state);
+        let restarted =
+            common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+        let recovered = wait_for_storage_move(&restarted, &move_id).await;
+        assert_eq!(
+            recovered.state,
+            DaemonProjectStorageMoveState::Completed,
+            "move interrupted in {interrupted_state} failed: {:?} {:?}",
+            recovered.error_code,
+            recovered.error_message
+        );
+        let storage = restarted
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: "prj_recovery".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(storage.mode, DaemonProjectStorageMode::Custom);
+        assert_eq!(storage.managed_root_path, expected_destination);
+        assert!(!Path::new(&source_root).exists());
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn cleanup_failure_keeps_the_switched_location_active_and_reports_a_warning() {
+    let root = tempfile::tempdir().unwrap();
+    let custom = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+    config.project.server_url = "https://storage-cleanup.example.test".to_owned();
+    config.project.project_id = Some("prj_cleanup".to_owned());
+    let state =
+        common::initialize_daemon(config.clone(), common::TestCredentialStore::default()).await;
+    let source = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_cleanup".to_owned(),
+        })
+        .await
+        .unwrap();
+    let created = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_cleanup".to_owned(),
+            selected_root_path: custom.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom.path()),
+            expected_location_revision: source.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_storage_move(&state, &created.move_id).await.state,
+        DaemonProjectStorageMoveState::Completed
+    );
+    let destination = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_cleanup".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let source_root = Path::new(&source.managed_root_path);
+    std::fs::create_dir_all(source_root).unwrap();
+    std::fs::write(
+        source_root.join("ownership.json"),
+        serde_json::to_vec(&json!({
+            "layout_version": 1,
+            "authority_key": source.authority_key,
+            "project_id": "another_project"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE project_storage_moves
+         SET state = 'cleaning', completed_at = NULL
+         WHERE move_id = $1",
+    )
+    .bind(&created.move_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    drop(state);
+
+    let restarted = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+    let recovered = wait_for_storage_move(&restarted, &created.move_id).await;
+    assert_eq!(recovered.state, DaemonProjectStorageMoveState::Completed);
+    assert_eq!(
+        recovered.error_code.as_deref(),
+        Some("storage_cleanup_failed")
+    );
+    let status = restarted
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_cleanup".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(status.managed_root_path, destination.managed_root_path);
+    assert_eq!(
+        status.availability,
+        daemon::DaemonProjectStorageAvailability::Ready
+    );
+    assert_eq!(status.issue_code.as_deref(), Some("storage_cleanup_failed"));
+    assert!(source_root.exists());
+}
+
+#[tokio::test]
+async fn default_project_storage_is_authority_scoped_and_refuses_marker_reassignment() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config_a = DaemonConfig::for_root(root.path().join("daemon"));
+    config_a.project.server_url = "https://authority-a.example.test".to_owned();
+    config_a.project.project_id = Some("prj_same".to_owned());
+    let state_a = common::initialize_daemon(config_a, common::TestCredentialStore::default()).await;
+    let storage_a = state_a
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_same".to_owned(),
+        })
+        .await
+        .unwrap();
+    drop(state_a);
+
+    let mut config_b = DaemonConfig::for_root(root.path().join("daemon"));
+    config_b.project.server_url = "https://authority-b.example.test".to_owned();
+    config_b.project.project_id = Some("prj_same".to_owned());
+    let state_b = common::initialize_daemon(config_b, common::TestCredentialStore::default()).await;
+    let storage_b = state_b
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_same".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_ne!(storage_a.managed_root_path, storage_b.managed_root_path);
+    assert!(Path::new(&storage_a.managed_root_path).exists());
+    assert!(Path::new(&storage_b.managed_root_path).exists());
+
+    std::fs::write(
+        Path::new(&storage_b.managed_root_path).join("ownership.json"),
+        serde_json::to_vec(&json!({
+            "layout_version": 1,
+            "authority_key": storage_a.authority_key,
+            "project_id": "prj_same"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let unavailable = state_b
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_same".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        unavailable.availability,
+        daemon::DaemonProjectStorageAvailability::Unavailable
+    );
+    assert_eq!(unavailable.issue_code.as_deref(), Some("marker_mismatch"));
+    assert_eq!(unavailable.managed_root_path, storage_b.managed_root_path);
 }
 
 #[tokio::test]
@@ -284,7 +917,7 @@ async fn schema_13_migration_removes_metaprompt_and_resets_rebuildable_memory_st
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(search_schema_version, "2");
+    assert_eq!(search_schema_version, "3");
     assert!(!root.path().join("cache/projects").exists());
 
     let rejected = sqlx::query(
@@ -410,6 +1043,148 @@ async fn schema_14_migration_separates_conflicted_lifecycle_from_coordination() 
     .await
     .unwrap();
     assert_eq!(project_bindings_table, 1);
+}
+
+#[tokio::test]
+async fn schema_16_migration_creates_project_storage_registry_and_removes_central_search_data() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES
+            ('schema_version', '16'),
+            ('search_schema_version', '2')",
+        "CREATE TABLE search_revisions (revision_id TEXT PRIMARY KEY)",
+        "CREATE TABLE search_resources (resource_id TEXT PRIMARY KEY)",
+        "CREATE TABLE search_units (unit_rowid INTEGER PRIMARY KEY)",
+        "CREATE TABLE search_heads (project_id TEXT PRIMARY KEY)",
+        "INSERT INTO search_revisions (revision_id) VALUES ('legacy_revision')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    for table in ["project_storage_locations", "project_storage_moves"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "{table} was not created");
+    }
+    for table in ["search_revisions", "search_resources", "search_units"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0, "legacy {table} was not removed");
+    }
+    let central_head_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('search_heads') ORDER BY cid")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(central_head_columns.contains(&"location_revision".to_owned()));
+}
+
+#[tokio::test]
+async fn schema_17_migration_adds_retrieval_history_and_restart_recovers_running_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '17')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    for table in [
+        "retrieval_runs",
+        "retrieval_run_candidates",
+        "retrieval_corpus_blobs",
+        "retrieval_run_resources",
+        "evaluation_corpora",
+        "evaluation_corpus_resources",
+        "evaluation_cases",
+        "evaluation_judgments",
+    ] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "{table} was not created");
+    }
+    sqlx::query(
+        "INSERT INTO retrieval_runs (
+            run_id, project_id, query, activation_state_fingerprint, status
+         ) VALUES (
+            'run_interrupted', 'project_test', 'unfinished query',
+            'sha256:test', 'running'
+         )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    drop(state);
+
+    let _restarted = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let recovered: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT status, error_stage, error_code, completed_at
+         FROM retrieval_runs WHERE run_id = 'run_interrupted'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(recovered.0, "failed");
+    assert_eq!(recovered.1.as_deref(), Some("interrupted"));
+    assert_eq!(recovered.2.as_deref(), Some("retrieval_interrupted"));
+    assert!(recovered.3.is_some());
 }
 
 #[test]
@@ -638,6 +1413,125 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
 }
 
 #[tokio::test]
+async fn deleting_a_draft_created_resource_discards_the_draft() {
+    let (_root, _state, service) = common::test_daemon().await;
+    let created = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Rule,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "rules/new-rule.md".to_owned(),
+                    content: rule_content("# New rule"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
+        .await
+        .unwrap();
+
+    let deleted = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Rule,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: created.draft_id.clone(),
+                    description: Some("remove the unpublished rule".to_owned()),
+                }),
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::McpStore),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(deleted.draft_id, created.draft_id);
+    let draft = service.get_draft(&created.draft_id).await.unwrap();
+    assert_eq!(draft.draft.status, DaemonLocalDraftStatus::Discarded);
+    assert_eq!(draft.operations.len(), 2);
+    assert!(draft.operations[1].operation.delete.is_none());
+    assert_eq!(
+        draft.operations[1]
+            .operation
+            .discard
+            .as_ref()
+            .map(|operation| operation.id.as_str()),
+        Some(created.draft_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_authoritative_resource_keeps_an_open_deletion_draft() {
+    let (_root, _state, service) = common::test_daemon().await;
+    let updated = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: "ctx_existing".to_owned(),
+                        content: context_content("Updated authority"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Context,
+            op: DaemonDraftOperation {
+                create: None,
+                update: None,
+                rename: None,
+                delete: Some(DaemonDeleteDraftOperation {
+                    id: "ctx_existing".to_owned(),
+                    description: None,
+                }),
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    let draft = service.get_draft(&updated.draft_id).await.unwrap();
+    assert_eq!(draft.draft.status, DaemonLocalDraftStatus::Open);
+    assert!(draft.operations[1].operation.delete.is_some());
+    assert!(draft.operations[1].operation.discard.is_none());
+}
+
+#[tokio::test]
 async fn ipc_dispatch_routes_the_complete_daemon_api() {
     let (_root, _state, service) = common::test_daemon().await;
 
@@ -776,6 +1670,33 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
         ))
         .await;
     assert!(replaced.ok);
+
+    let storage: DaemonProjectStorage = service
+        .dispatch(DaemonIpcRequest::new(
+            "project_storage",
+            serde_json::to_value(DaemonProjectStorageRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .unwrap(),
+        ))
+        .await
+        .into_payload()
+        .unwrap();
+    assert_eq!(storage.mode, DaemonProjectStorageMode::Default);
+
+    let cleared: DaemonProjectStorage = service
+        .dispatch(DaemonIpcRequest::new(
+            "clear_project_cache",
+            serde_json::to_value(DaemonProjectCacheClearRequest {
+                project_id: "prj_test".to_owned(),
+                expected_location_revision: storage.location_revision,
+            })
+            .unwrap(),
+        ))
+        .await
+        .into_payload()
+        .unwrap();
+    assert_eq!(cleared.location_revision, storage.location_revision);
 
     let status = service.sync_status().await.unwrap();
     assert_eq!(status.pending_operation_count, 1);
@@ -2453,7 +3374,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         .unwrap();
     assert_eq!(installed.state, DaemonMemoryCacheState::Ready);
     assert_eq!(installed.commit_id.as_deref(), Some("commit-valid"));
-    let installed_root = installed.root_path.unwrap();
+    let installed_root = installed.active_generation_path.unwrap();
     assert_eq!(
         std::fs::read_to_string(
             std::path::Path::new(&installed_root).join("cache/context/context/valid.md")
@@ -2480,7 +3401,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
     assert_eq!(after_failure.state, DaemonMemoryCacheState::Ready);
     assert_eq!(after_failure.commit_id.as_deref(), Some("commit-valid"));
     assert_eq!(
-        after_failure.root_path.as_deref(),
+        after_failure.active_generation_path.as_deref(),
         Some(installed_root.as_str())
     );
     assert_eq!(
@@ -2491,9 +3412,10 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         "Valid authority"
     );
     assert!(
-        !root
-            .path()
-            .join("cache/projects/prj_atomic/generations/commit-invalid")
+        !std::path::Path::new(&installed_root)
+            .parent()
+            .unwrap()
+            .join("commit-invalid")
             .exists()
     );
 
@@ -2514,7 +3436,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         .unwrap();
     assert_eq!(corrupted.state, DaemonMemoryCacheState::GenerationCorrupt);
     assert_eq!(corrupted.commit_id.as_deref(), Some("commit-valid"));
-    assert_eq!(corrupted.root_path, None);
+    assert_eq!(corrupted.active_generation_path, None);
     let corrupt_activation = service
         .activate_memory(ActivateMemoryRequest {
             project_id: "prj_atomic".to_owned(),

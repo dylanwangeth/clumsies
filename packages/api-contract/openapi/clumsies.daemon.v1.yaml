@@ -30,7 +30,7 @@ components:
       required: [method, payload]
       properties:
         method:
-          type: string
+          $ref: "#/components/schemas/DaemonIpcMethod"
         payload:
           type: object
           additionalProperties: true
@@ -47,6 +47,39 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ApiError"
             - type: "null"
+    DaemonIpcMethod:
+      type: string
+      enum:
+        - health
+        - project_config
+        - replace_project_config
+        - select_project
+        - resolve_project_binding
+        - replace_project_binding
+        - sync_status
+        - project_storage
+        - replace_project_storage
+        - project_storage_move
+        - reset_project_storage
+        - clear_project_cache
+        - memory_cache
+        - project_checkout
+        - activate_memory
+        - load_memory
+        - search_index_status
+        - rebuild_search_index
+        - list_retrieval_runs
+        - get_retrieval_run
+        - create_evaluation_case
+        - replace_evaluation_judgments
+        - clear_retrieval_runs
+        - export_evaluation_set
+        - retry_sync
+        - mcp_status
+        - list_drafts
+        - get_draft
+        - store_draft_operation
+        - server_request
     DaemonBootstrapStatus:
       type: object
       required:
@@ -189,6 +222,145 @@ components:
         updated_at:
           type: string
           format: date-time
+    DaemonProjectStorageRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+    DaemonProjectStorageMoveRequest:
+      type: object
+      required: [move_id]
+      properties:
+        move_id:
+          type: string
+    DaemonProjectStorageReplaceRequest:
+      type: object
+      required: [project_id, selected_root_path, handoff_bookmark_data, expected_location_revision]
+      properties:
+        project_id:
+          type: string
+        selected_root_path:
+          type: string
+          description: Canonical display path selected by the user; daemon validates it against the handoff bookmark.
+        handoff_bookmark_data:
+          type: string
+          format: byte
+          description: Base64-encoded one-time macOS bookmark used by Desktop to hand the selected directory to daemon. Daemon replaces it with its own security-scoped bookmark and never persists this value.
+        expected_location_revision:
+          type: integer
+          minimum: 1
+    DaemonProjectStorageResetRequest:
+      type: object
+      required: [project_id, expected_location_revision]
+      properties:
+        project_id:
+          type: string
+        expected_location_revision:
+          type: integer
+          minimum: 1
+    DaemonProjectCacheClearRequest:
+      type: object
+      required: [project_id, expected_location_revision]
+      properties:
+        project_id:
+          type: string
+        expected_location_revision:
+          type: integer
+          minimum: 1
+    DaemonProjectStorage:
+      type: object
+      required:
+        - authority_key
+        - project_id
+        - mode
+        - selected_root_path
+        - managed_root_path
+        - active_generation_path
+        - search_index_path
+        - availability
+        - location_revision
+        - size_bytes
+        - active_move_id
+        - issue_code
+        - diagnostic
+      properties:
+        authority_key:
+          type: string
+          format: uri
+        project_id:
+          type: string
+        mode:
+          $ref: "#/components/schemas/DaemonProjectStorageMode"
+        selected_root_path:
+          type: string
+        managed_root_path:
+          type: string
+        active_generation_path:
+          type: [string, "null"]
+        search_index_path:
+          type: string
+        availability:
+          $ref: "#/components/schemas/DaemonProjectStorageAvailability"
+        location_revision:
+          type: integer
+          minimum: 1
+        size_bytes:
+          type: integer
+          minimum: 0
+        active_move_id:
+          type: [string, "null"]
+        issue_code:
+          type: [string, "null"]
+        diagnostic:
+          type: [string, "null"]
+    DaemonProjectStorageMove:
+      type: object
+      required:
+        - move_id
+        - project_id
+        - source_mode
+        - destination_mode
+        - source_managed_root_path
+        - destination_managed_root_path
+        - source_location_revision
+        - state
+        - error_code
+        - error_message
+        - created_at
+        - updated_at
+        - completed_at
+      properties:
+        move_id:
+          type: string
+        project_id:
+          type: string
+        source_mode:
+          $ref: "#/components/schemas/DaemonProjectStorageMode"
+        destination_mode:
+          $ref: "#/components/schemas/DaemonProjectStorageMode"
+        source_managed_root_path:
+          type: string
+        destination_managed_root_path:
+          type: string
+        source_location_revision:
+          type: integer
+          minimum: 1
+        state:
+          $ref: "#/components/schemas/DaemonProjectStorageMoveState"
+        error_code:
+          type: [string, "null"]
+        error_message:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
     DaemonMemoryCacheRequest:
       type: object
       required: [project_id]
@@ -197,13 +369,13 @@ components:
           type: string
     DaemonMemoryCacheStatus:
       type: object
-      required: [project_id, commit_id, root_path, state, diagnostic]
+      required: [project_id, commit_id, active_generation_path, state, diagnostic]
       properties:
         project_id:
           type: string
         commit_id:
           type: [string, "null"]
-        root_path:
+        active_generation_path:
           type: [string, "null"]
         state:
           $ref: "#/components/schemas/DaemonMemoryCacheState"
@@ -273,6 +445,519 @@ components:
           type: string
         content:
           $ref: "#/components/schemas/DaemonDraftContent"
+    RetrievalRunListRequest:
+      type: object
+      properties:
+        project_id:
+          type: [string, "null"]
+        status:
+          oneOf:
+            - $ref: "#/components/schemas/RetrievalRunStatus"
+            - type: "null"
+        cursor:
+          type: [string, "null"]
+        limit:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 100
+    RetrievalRunRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id:
+          type: string
+    RetrievalRunListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetrievalRun"
+        next_cursor:
+          type: [string, "null"]
+    RetrievalRun:
+      type: object
+      required:
+        - run_id
+        - project_id
+        - query
+        - activation_state_fingerprint
+        - status
+        - effective_hash
+        - index_revision
+        - resource_count
+        - unit_count
+        - parser_version
+        - chunker_version
+        - model_revision
+        - ranking_profile
+        - latencies
+        - returned_fragment_count
+        - returned_token_count
+        - error_stage
+        - error_code
+        - error_summary
+        - created_at
+        - completed_at
+        - evaluation_case_id
+      properties:
+        run_id:
+          type: string
+        project_id:
+          type: string
+        query:
+          type: string
+        activation_state_fingerprint:
+          type: string
+        status:
+          $ref: "#/components/schemas/RetrievalRunStatus"
+        effective_hash:
+          type: [string, "null"]
+        index_revision:
+          type: [string, "null"]
+        resource_count:
+          type: integer
+          minimum: 0
+        unit_count:
+          type: integer
+          minimum: 0
+        parser_version:
+          type: [string, "null"]
+        chunker_version:
+          type: [string, "null"]
+        model_revision:
+          type: [string, "null"]
+        ranking_profile:
+          type: [string, "null"]
+        latencies:
+          $ref: "#/components/schemas/RetrievalStageLatencies"
+        returned_fragment_count:
+          type: integer
+          minimum: 0
+        returned_token_count:
+          type: integer
+          minimum: 0
+        error_stage:
+          type: [string, "null"]
+        error_code:
+          type: [string, "null"]
+        error_summary:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+        evaluation_case_id:
+          type: [string, "null"]
+    RetrievalStageLatencies:
+      type: object
+      required:
+        - effective_memory_us
+        - index_ensure_us
+        - bm25_us
+        - embedding_us
+        - vector_us
+        - rrf_us
+        - rerank_us
+        - assembly_us
+        - persistence_us
+        - total_us
+      properties:
+        effective_memory_us:
+          type: integer
+          minimum: 0
+        index_ensure_us:
+          type: integer
+          minimum: 0
+        bm25_us:
+          type: integer
+          minimum: 0
+        embedding_us:
+          type: integer
+          minimum: 0
+        vector_us:
+          type: integer
+          minimum: 0
+        rrf_us:
+          type: integer
+          minimum: 0
+        rerank_us:
+          type: integer
+          minimum: 0
+        assembly_us:
+          type: integer
+          minimum: 0
+        persistence_us:
+          type: integer
+          minimum: 0
+        total_us:
+          type: integer
+          minimum: 0
+    RetrievalCandidate:
+      type: object
+      required:
+        - unit_key
+        - resource_id
+        - scope
+        - kind
+        - path
+        - heading_path
+        - locator
+        - content_hash
+        - resource_content_hash
+        - token_count
+        - evidence_excerpt
+        - exact_rank
+        - bm25_rank
+        - bm25_score
+        - vector_rank
+        - vector_score
+        - rrf_rank
+        - rrf_score
+        - reranker_rank
+        - reranker_logit
+        - reranker_relevance
+        - final_rank
+        - selected
+        - exclusion_reason
+        - delta_action
+      properties:
+        unit_key:
+          type: string
+        resource_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/DaemonDraftScope"
+        kind:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        path:
+          type: string
+        heading_path:
+          type: array
+          items:
+            type: string
+        locator:
+          $ref: "#/components/schemas/RetrievalSourceLocator"
+        content_hash:
+          type: string
+        resource_content_hash:
+          type: string
+        token_count:
+          type: integer
+          minimum: 0
+        evidence_excerpt:
+          type: string
+        exact_rank:
+          type: [integer, "null"]
+          minimum: 1
+        bm25_rank:
+          type: [integer, "null"]
+          minimum: 1
+        bm25_score:
+          type: [number, "null"]
+        vector_rank:
+          type: [integer, "null"]
+          minimum: 1
+        vector_score:
+          type: [number, "null"]
+        rrf_rank:
+          type: [integer, "null"]
+          minimum: 1
+        rrf_score:
+          type: [number, "null"]
+        reranker_rank:
+          type: [integer, "null"]
+          minimum: 1
+        reranker_logit:
+          type: [number, "null"]
+        reranker_relevance:
+          type: [number, "null"]
+        final_rank:
+          type: [integer, "null"]
+          minimum: 1
+        selected:
+          type: boolean
+        exclusion_reason:
+          $ref: "#/components/schemas/RetrievalExclusionReason"
+        delta_action:
+          oneOf:
+            - $ref: "#/components/schemas/RetrievalDeltaAction"
+            - type: "null"
+    RetrievalSourceLocator:
+      type: object
+      required: [type, start_byte, end_byte, heading_path]
+      properties:
+        type:
+          type: string
+          enum: [markdown_span]
+        start_byte:
+          type: integer
+          minimum: 0
+        end_byte:
+          type: integer
+          minimum: 0
+        heading_path:
+          type: array
+          items:
+            type: string
+    RetrievalRunDetail:
+      type: object
+      required: [run, candidates, evaluation_case, judgments, corpus_resources, report]
+      properties:
+        run:
+          $ref: "#/components/schemas/RetrievalRun"
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetrievalCandidate"
+        evaluation_case:
+          oneOf:
+            - $ref: "#/components/schemas/EvaluationCase"
+            - type: "null"
+        judgments:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationJudgment"
+        corpus_resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationCorpusResource"
+        report:
+          oneOf:
+            - $ref: "#/components/schemas/RetrievalBenchmarkReport"
+            - type: "null"
+    CreateEvaluationCaseRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id:
+          type: string
+        query_category:
+          type: [string, "null"]
+        notes:
+          type: [string, "null"]
+    ReplaceEvaluationJudgmentsRequest:
+      type: object
+      required: [case_id, expected_judgment_version, judgments]
+      properties:
+        case_id:
+          type: string
+        expected_judgment_version:
+          type: integer
+          minimum: 1
+        judgments:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationJudgmentInput"
+    EvaluationJudgmentInput:
+      type: object
+      required: [resource_id, relevance]
+      properties:
+        resource_id:
+          type: string
+        unit_key:
+          type: [string, "null"]
+        relevance:
+          type: integer
+          minimum: 0
+          maximum: 3
+        missed:
+          type: boolean
+          default: false
+        notes:
+          type: [string, "null"]
+    EvaluationCase:
+      type: object
+      required:
+        - case_id
+        - source_run_id
+        - corpus_id
+        - project_id
+        - query
+        - query_category
+        - notes
+        - judgment_version
+        - created_at
+        - updated_at
+      properties:
+        case_id:
+          type: string
+        source_run_id:
+          type: string
+        corpus_id:
+          type: string
+        project_id:
+          type: string
+        query:
+          type: string
+        query_category:
+          type: [string, "null"]
+        notes:
+          type: [string, "null"]
+        judgment_version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    EvaluationJudgment:
+      type: object
+      required:
+        - judgment_id
+        - case_id
+        - resource_id
+        - unit_key
+        - relevance
+        - missed
+        - evidence_excerpt
+        - notes
+      properties:
+        judgment_id:
+          type: string
+        case_id:
+          type: string
+        resource_id:
+          type: string
+        unit_key:
+          type: [string, "null"]
+        relevance:
+          type: integer
+          minimum: 0
+          maximum: 3
+        missed:
+          type: boolean
+        evidence_excerpt:
+          type: string
+        notes:
+          type: [string, "null"]
+    EvaluationCorpusResource:
+      type: object
+      required:
+        - resource_id
+        - scope
+        - kind
+        - path
+        - title
+        - content_hash
+        - source_commit_id
+        - draft_id
+        - draft_revision
+        - preview
+      properties:
+        resource_id:
+          type: string
+        scope:
+          $ref: "#/components/schemas/DaemonDraftScope"
+        kind:
+          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        path:
+          type: string
+        title:
+          type: string
+        content_hash:
+          type: string
+        source_commit_id:
+          type: [string, "null"]
+        draft_id:
+          type: [string, "null"]
+        draft_revision:
+          type: [string, "null"]
+        preview:
+          type: string
+    EvaluationCaseDetail:
+      type: object
+      required: [evaluation_case, judgments, corpus_resources, report]
+      properties:
+        evaluation_case:
+          $ref: "#/components/schemas/EvaluationCase"
+        judgments:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationJudgment"
+        corpus_resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvaluationCorpusResource"
+        report:
+          $ref: "#/components/schemas/RetrievalBenchmarkReport"
+    ClearRetrievalRunsRequest:
+      type: object
+      properties:
+        project_id:
+          type: [string, "null"]
+    ClearRetrievalRunsResponse:
+      type: object
+      required: [deleted_run_count]
+      properties:
+        deleted_run_count:
+          type: integer
+          minimum: 0
+    ExportEvaluationSetRequest:
+      type: object
+      properties:
+        project_id:
+          type: [string, "null"]
+        case_ids:
+          type: array
+          items:
+            type: string
+          default: []
+    ExportEvaluationSetResponse:
+      type: object
+      required: [fixture_json, report]
+      properties:
+        fixture_json:
+          type: string
+        report:
+          $ref: "#/components/schemas/RetrievalBenchmarkReport"
+    RetrievalBenchmarkReport:
+      type: object
+      required: [variants]
+      properties:
+        variants:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RetrievalBenchmarkMetrics"
+    RetrievalBenchmarkMetrics:
+      type: object
+      required:
+        - case_count
+        - recall_at_20
+        - ndcg_at_10
+        - mrr
+        - resource_diversity
+        - scope_violation
+        - stale_result
+        - warm_p50_us
+        - warm_p95_us
+      properties:
+        case_count:
+          type: integer
+          minimum: 0
+        recall_at_20:
+          type: number
+        ndcg_at_10:
+          type: number
+        mrr:
+          type: number
+        resource_diversity:
+          type: number
+        scope_violation:
+          type: number
+        stale_result:
+          type: number
+        warm_p50_us:
+          type: integer
+          minimum: 0
+        warm_p95_us:
+          type: integer
+          minimum: 0
     DaemonServerRequest:
       type: object
       required: [method, path, headers, body]
@@ -729,7 +1414,32 @@ components:
       enum: [unknown, clean, conflicts]
     DaemonMemoryCacheState:
       type: string
-      enum: [project_ref_not_synced, generation_missing, generation_corrupt, ready]
+      enum: [project_ref_not_synced, storage_unavailable, generation_missing, generation_corrupt, ready]
+    DaemonProjectStorageMode:
+      type: string
+      enum: [default, custom]
+    DaemonProjectStorageAvailability:
+      type: string
+      enum: [ready, moving, unavailable]
+    DaemonProjectStorageMoveState:
+      type: string
+      enum: [preparing, materializing, verifying, switching, cleaning, completed, failed]
+    RetrievalRunStatus:
+      type: string
+      enum: [running, succeeded, failed]
+    RetrievalExclusionReason:
+      type: string
+      enum:
+        - selected
+        - below_relevance
+        - overlap
+        - per_resource_limit
+        - token_budget
+        - fragment_limit
+        - not_reranked
+    RetrievalDeltaAction:
+      type: string
+      enum: [add, replace, reuse]
     DaemonDraftOperationSource:
       type: string
       enum: [desktop, cli, mcp_store]

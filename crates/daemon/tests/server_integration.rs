@@ -6,9 +6,10 @@ use daemon::{
     DaemonDraftOperationRecordSource, DaemonDraftOperationRequest, DaemonDraftOperationSource,
     DaemonDraftResourceKind, DaemonDraftScope, DaemonIpcService, DaemonLocalDraftStatus,
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonProjectCheckoutRequest,
-    DaemonProjectSelectionRequest, DaemonRenameDraftOperation, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DraftOperationSyncStatus, LoadMemoryRequest, SyncRetryChannel,
-    SyncState,
+    DaemonProjectSelectionRequest, DaemonProjectStorageMoveState,
+    DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest, DaemonRenameDraftOperation,
+    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    LoadMemoryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
     CreateDraftRebaseRequest, CreateDraftRequest, CreateReviewDecisionRequest,
@@ -19,6 +20,67 @@ use server::api::{
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
+
+#[cfg(target_os = "macos")]
+fn directory_handoff_bookmark(path: &std::path::Path) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use objc2::runtime::Bool;
+    use objc2_foundation::{
+        NSData, NSString, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
+    };
+
+    let path = NSString::from_str(&path.display().to_string());
+    let url = NSURL::fileURLWithPath_isDirectory(&path, true);
+    let security_bookmark = url
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::WithSecurityScope,
+            None,
+            None,
+        )
+        .unwrap();
+    let data = NSData::with_bytes(&security_bookmark.to_vec());
+    let mut stale = Bool::NO;
+    let granted = unsafe {
+        NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(
+            &data,
+            NSURLBookmarkResolutionOptions::WithSecurityScope,
+            None,
+            &mut stale,
+        )
+    }
+    .unwrap();
+    assert!(unsafe { granted.startAccessingSecurityScopedResource() });
+    let handoff = granted
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::empty(),
+            None,
+            None,
+        )
+        .unwrap();
+    unsafe { granted.stopAccessingSecurityScopedResource() };
+    STANDARD.encode(handoff.to_vec())
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_storage_move(
+    state: &daemon::DaemonState,
+    move_id: &str,
+) -> daemon::DaemonProjectStorageMove {
+    for _ in 0..100 {
+        let current = state
+            .project_storage_move(daemon::DaemonProjectStorageMoveRequest {
+                move_id: move_id.to_owned(),
+            })
+            .await
+            .unwrap();
+        if current.state.is_terminal() {
+            return current;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("Project storage move {move_id} did not finish");
+}
 
 fn context_content(content: &str) -> DaemonDraftContent {
     DaemonDraftContent::Context {
@@ -259,7 +321,7 @@ async fn cache_root_for_commit(
         .await
         .unwrap();
     assert_eq!(cache.commit_id.as_deref(), Some(commit_id));
-    std::path::PathBuf::from(cache.root_path.unwrap())
+    std::path::PathBuf::from(cache.active_generation_path.unwrap())
 }
 
 #[tokio::test]
@@ -595,6 +657,33 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
     config.project.server_url = format!("http://{server_address}");
     config.project.project_id = Some(bootstrap.project_id.clone());
     let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    #[cfg(target_os = "macos")]
+    let custom_storage = {
+        let custom_storage = tempfile::tempdir().unwrap();
+        let initial = state
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: bootstrap.project_id.clone(),
+            })
+            .await
+            .unwrap();
+        let storage_move = state
+            .replace_project_storage(DaemonProjectStorageReplaceRequest {
+                project_id: bootstrap.project_id.clone(),
+                selected_root_path: custom_storage.path().display().to_string(),
+                handoff_bookmark_data: directory_handoff_bookmark(custom_storage.path()),
+                expected_location_revision: initial.location_revision,
+            })
+            .await
+            .unwrap();
+        let completed = wait_for_storage_move(&state, &storage_move.move_id).await;
+        assert_eq!(
+            completed.state,
+            DaemonProjectStorageMoveState::Completed,
+            "storage move failed: {:?}",
+            completed.error_message
+        );
+        custom_storage
+    };
     let service = DaemonIpcService::new(state);
     service
         .retry_sync(DaemonSyncRetryRequest {
@@ -678,7 +767,9 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         })
         .await
         .unwrap();
-    let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+    let cache_root = std::path::PathBuf::from(cache.active_generation_path.unwrap());
+    #[cfg(target_os = "macos")]
+    assert!(cache_root.starts_with(std::fs::canonicalize(custom_storage.path()).unwrap()));
     assert!(
         !cache_root
             .join("cache/context/context/original.md")
@@ -687,6 +778,18 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
     assert_eq!(
         std::fs::read_to_string(cache_root.join("cache/context/context/renamed.md")).unwrap(),
         "# Renamed\n\nUpdated through the daemon."
+    );
+    let loaded = service
+        .load_memory(LoadMemoryRequest {
+            project_id: bootstrap.project_id.clone(),
+            ids: vec!["context/renamed.md".to_owned()],
+            known_hashes: Default::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        loaded.resources[0].content.as_deref(),
+        Some("# Renamed\n\nUpdated through the daemon.")
     );
 
     let delete_draft = service
@@ -744,7 +847,8 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         deleted_cache.commit_id.as_deref(),
         Some(delete_commit_id.as_str())
     );
-    let deleted_cache_root = std::path::PathBuf::from(deleted_cache.root_path.unwrap());
+    let deleted_cache_root =
+        std::path::PathBuf::from(deleted_cache.active_generation_path.unwrap());
     assert_ne!(deleted_cache_root, cache_root);
     assert!(cache_root.join("cache/context/context/renamed.md").exists());
     assert!(
@@ -1310,7 +1414,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
         .await
         .unwrap();
     assert_eq!(cache.commit_id.as_deref(), Some(final_commit_id.as_str()));
-    let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+    let cache_root = std::path::PathBuf::from(cache.active_generation_path.unwrap());
     assert_eq!(
         std::fs::read_to_string(cache_root.join("cache/context/context/offline-conflict.md"))
             .unwrap(),
@@ -2436,7 +2540,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             .unwrap();
         assert_eq!(cache.state, DaemonMemoryCacheState::Ready);
         assert_eq!(cache.commit_id.as_deref(), Some(commit_id.as_str()));
-        let cache_root = std::path::PathBuf::from(cache.root_path.unwrap());
+        let cache_root = std::path::PathBuf::from(cache.active_generation_path.unwrap());
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(cache_root.join("manifest.json")).unwrap())
                 .unwrap();
@@ -2505,7 +2609,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         Some(commit_id.as_str())
     );
     assert_eq!(
-        cache_after_restart.root_path.as_deref(),
+        cache_after_restart.active_generation_path.as_deref(),
         Some(roots[0].to_str().unwrap())
     );
 
@@ -2565,7 +2669,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     );
     assert_eq!(
         std::fs::read_to_string(
-            std::path::PathBuf::from(secondary_cache.root_path.unwrap())
+            std::path::PathBuf::from(secondary_cache.active_generation_path.unwrap())
                 .join("cache/context/context/secondary.md")
         )
         .unwrap(),

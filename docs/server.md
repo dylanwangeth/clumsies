@@ -17,8 +17,10 @@ Server owns:
 
 Desktop and MCP write local drafts through the daemon. The daemon synchronizes
 them to Server. Local directory-to-Project bindings belong to daemon SQLite;
-Server only supplies and authorizes the canonical `project_id`. No client is
-allowed to update authoritative memory directly.
+Server only supplies and authorizes the canonical `project_id`. Project Local
+Storage paths, macOS bookmarks, per-Project search databases, and storage move
+jobs also belong exclusively to daemon and never enter a Public or Admin Server
+endpoint. No client is allowed to update authoritative memory directly.
 
 ## Version model
 

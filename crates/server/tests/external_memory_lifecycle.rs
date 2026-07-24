@@ -23,6 +23,93 @@ use server::repository::ServerRepository;
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Draft normalization",
+    )
+    .await;
+    let resource = DraftResourceRef {
+        scope: ResourceScope::Project,
+        kind: DraftResourceKind::Rule,
+        id: None,
+        path: Some("rules/new-rule.md".to_owned()),
+    };
+    let create = DraftOperationInput {
+        action: DraftOperationAction::Create,
+        resource: resource.clone(),
+        content: Some(DraftResourceContent::Rule {
+            content: "# New rule".to_owned(),
+        }),
+        new_path: None,
+    };
+    let delete = DraftOperationInput {
+        action: DraftOperationAction::Delete,
+        resource: resource.clone(),
+        content: None,
+        new_path: None,
+    };
+
+    let invalid_create = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_normalization".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Invalid create and delete".to_owned(),
+                description: None,
+                resource: resource.clone(),
+                operations: vec![create.clone(), delete.clone()],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        invalid_create
+            .to_string()
+            .contains("must be discarded instead of deleted")
+    );
+
+    let draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_normalization".to_owned(),
+                project_id: bootstrap.project_id,
+                base_commit_id: None,
+                title: "Create a new rule".to_owned(),
+                description: None,
+                resource,
+                operations: vec![create],
+            },
+        )
+        .await
+        .unwrap();
+    let invalid_append = repo
+        .append_draft_operation(&draft.draft.draft_id, draft.draft.version, delete)
+        .await
+        .unwrap_err();
+    assert!(
+        invalid_append
+            .to_string()
+            .contains("must be discarded instead of deleted")
+    );
+
+    repo.discard_draft(&draft.draft.draft_id, draft.draft.version)
+        .await
+        .unwrap();
+    let discarded = repo.get_draft(&draft.draft.draft_id).await.unwrap();
+    assert_eq!(discarded.draft.status, DraftStatus::Discarded);
+}
+
+#[tokio::test]
 async fn draft_review_merge_produces_project_commit() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());

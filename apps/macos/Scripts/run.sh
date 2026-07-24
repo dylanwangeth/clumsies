@@ -26,6 +26,7 @@ xcodebuild \
   build
 
 test -d "$built_app"
+codesign --verify --deep --strict "$built_app"
 mkdir -p "$install_dir"
 ditto "$built_app" "$staging_app"
 

@@ -126,6 +126,11 @@ Operations:
 | `delete` | `id` | `description` |
 | `discard` | `id` | none |
 
+`delete` removes the addressed item from Local Effective Memory. When the item
+is an unpublished Create Draft, daemon normalizes the operation to `discard`;
+only deletion of an authoritative resource remains an open deletion Draft that
+can be submitted for Review.
+
 Example:
 
 ```json
@@ -189,6 +194,13 @@ authority Ref moved.
 | `store_draft_operation` | MCP `store`, Desktop, and other clients |
 | `search_index_status` | Desktop diagnostics and tests |
 | `rebuild_search_index` | Recovery, tests, and development tooling |
+
+Every valid `activate_memory` call also writes one local Retrieval Run from the
+same ranked candidate trace used for the response. This does not add fields to
+the MCP `activate` schema. Retrieval history, Evaluation Cases, and B1–B4
+exports are daemon/Desktop diagnostic APIs described in
+`docs/retrieval-evaluation.md`; they are not additional MCP tools and are never
+sent to Server.
 
 The default retrieval profile has no silent BM25-only, old substring-search,
 or stale-index fallback. Model, vector, generation, and state failures remain

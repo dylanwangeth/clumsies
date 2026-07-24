@@ -192,8 +192,7 @@ struct ReviewDiffView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(lines) { line in
                     HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        lineNumber(line.oldLineNumber)
-                        lineNumber(line.newLineNumber)
+                        lineNumber(line.newLineNumber ?? line.oldLineNumber)
                         Text(prefix(for: line.kind))
                             .foregroundStyle(foreground(for: line.kind))
                             .frame(width: 24, alignment: .center)

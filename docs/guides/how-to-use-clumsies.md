@@ -80,6 +80,26 @@ Bundles are personal, Server-stored selections of shared memory. They help one
 user reuse a curated set without making that selection an organization-wide
 authority object.
 
+## Manage Project local storage
+
+Open Settings and use **Project Local Storage** to inspect the selected Project's
+cache location, availability, and size. **Choose...** opens the native macOS
+directory picker. Clumsies creates its own hidden managed subtree below that
+directory; the directory itself remains yours and is never treated as a memory
+editing folder.
+
+Moving storage continues in the background daemon if Desktop closes. Do not edit
+files inside the managed subtree. **Reset** moves the cache back to the standard
+macOS location through the same verified migration. **Clear Cache...** removes
+only rebuildable Commit generations and the Project search index; Drafts,
+pending operations, settings, and unrelated files in the selected directory are
+preserved.
+
+If an external volume is disconnected or permission is revoked, the Project
+location shows **Unavailable**. Clumsies does not create a replacement cache in
+the default location. Draft editing and synchronization continue, while checkout
+and MCP retrieval resume after the configured location is accessible again.
+
 ## Administration
 
 Web Admin is reserved for organization settings, member admission, projects,

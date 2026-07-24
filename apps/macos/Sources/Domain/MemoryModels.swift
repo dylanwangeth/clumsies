@@ -150,7 +150,7 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
     var contentLoaded: Bool { draft != nil || resource?.contentLoaded == true }
 
     var supportsMarkdownPreview: Bool {
-        kind.supportsMarkdownPreview(path: document.path)
+        draft?.isDeletion != true && kind.supportsMarkdownPreview(path: document.path)
     }
 }
 

@@ -26,7 +26,7 @@ pub struct DaemonMemoryCacheRequest {
 pub struct DaemonMemoryCacheStatus {
     pub project_id: String,
     pub commit_id: Option<String>,
-    pub root_path: Option<String>,
+    pub active_generation_path: Option<String>,
     pub state: DaemonMemoryCacheState,
     pub diagnostic: Option<String>,
 }
@@ -35,6 +35,7 @@ pub struct DaemonMemoryCacheStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DaemonMemoryCacheState {
     ProjectRefNotSynced,
+    StorageUnavailable,
     GenerationMissing,
     GenerationCorrupt,
     Ready,
@@ -280,6 +281,14 @@ pub(super) async fn memory_cache(
     state: &DaemonState,
     request: DaemonMemoryCacheRequest,
 ) -> Result<DaemonMemoryCacheStatus, DaemonError> {
+    let _storage_guard = state.inner.storage_access.read().await;
+    memory_cache_under_storage_guard(state, request).await
+}
+
+pub(super) async fn memory_cache_under_storage_guard(
+    state: &DaemonState,
+    request: DaemonMemoryCacheRequest,
+) -> Result<DaemonMemoryCacheStatus, DaemonError> {
     validate_cache_component("project_id", &request.project_id)?;
     let row = sqlx::query(
         "SELECT commit_id
@@ -293,22 +302,30 @@ pub(super) async fn memory_cache(
         return Ok(DaemonMemoryCacheStatus {
             project_id: request.project_id,
             commit_id: None,
-            root_path: None,
+            active_generation_path: None,
             state: DaemonMemoryCacheState::ProjectRefNotSynced,
             diagnostic: Some("the Project Ref has not been synchronized".to_owned()),
         });
     };
     let commit_id: Option<String> = row.try_get("commit_id")?;
-    let generation = generation_root(
-        &state.inner.config.cache_dir,
-        &request.project_id,
-        commit_id.as_deref().unwrap_or(EMPTY_GENERATION),
-    );
+    let storage = match super::project_storage::resolve_active(state, &request.project_id).await {
+        Ok(storage) => storage,
+        Err(error) => {
+            return Ok(DaemonMemoryCacheStatus {
+                project_id: request.project_id,
+                commit_id,
+                active_generation_path: None,
+                state: DaemonMemoryCacheState::StorageUnavailable,
+                diagnostic: Some(error.to_string()),
+            });
+        }
+    };
+    let generation = storage.generation_path(commit_id.as_deref().unwrap_or(EMPTY_GENERATION));
     if !generation.exists() {
         return Ok(DaemonMemoryCacheStatus {
             project_id: request.project_id,
             commit_id,
-            root_path: None,
+            active_generation_path: None,
             state: DaemonMemoryCacheState::GenerationMissing,
             diagnostic: Some(format!(
                 "the installed Commit generation {} is missing",
@@ -322,7 +339,7 @@ pub(super) async fn memory_cache(
         return Ok(DaemonMemoryCacheStatus {
             project_id: request.project_id,
             commit_id,
-            root_path: None,
+            active_generation_path: None,
             state: DaemonMemoryCacheState::GenerationCorrupt,
             diagnostic: Some(error.to_string()),
         });
@@ -330,7 +347,7 @@ pub(super) async fn memory_cache(
     Ok(DaemonMemoryCacheStatus {
         project_id: request.project_id,
         commit_id,
-        root_path: Some(generation.display().to_string()),
+        active_generation_path: Some(generation.display().to_string()),
         state: DaemonMemoryCacheState::Ready,
         diagnostic: None,
     })
@@ -341,6 +358,7 @@ pub(super) async fn project_checkout(
     request: DaemonProjectCheckoutRequest,
 ) -> Result<DaemonProjectCheckout, DaemonError> {
     validate_cache_component("project_id", &request.project_id)?;
+    let _storage_guard = state.inner.storage_access.read().await;
     let row = sqlx::query(
         "SELECT commit_id, etag
          FROM cached_refs
@@ -362,13 +380,11 @@ pub(super) async fn project_checkout(
         });
     };
 
+    let storage = super::project_storage::resolve_active(state, &request.project_id).await?;
+
     let commit_id: Option<String> = row.try_get("commit_id")?;
     let ref_etag: String = row.try_get("etag")?;
-    let generation = generation_root(
-        &state.inner.config.cache_dir,
-        &request.project_id,
-        commit_id.as_deref().unwrap_or(EMPTY_GENERATION),
-    );
+    let generation = storage.generation_path(commit_id.as_deref().unwrap_or(EMPTY_GENERATION));
     if verify_generation_ref(&generation, &request.project_id, commit_id.as_deref()).is_err() {
         return Ok(DaemonProjectCheckout {
             project_id: request.project_id,
@@ -590,7 +606,8 @@ async fn install_ref(
         let commit_cached = cached_commit_exists(&state.inner.pool, commit_id).await?;
         let generation_ready = match materialized_project_id {
             Some(project_id) => {
-                let root = generation_root(&state.inner.config.cache_dir, project_id, commit_id);
+                let storage = super::project_storage::resolve_active(state, project_id).await?;
+                let root = storage.generation_path(commit_id);
                 if root.exists() {
                     verify_generation_ref(&root, project_id, Some(commit_id))?;
                     true
@@ -610,12 +627,15 @@ async fn install_ref(
         let payload: ServerCommitPayload =
             get_server_json(state, &format!("/api/v1/commits/{commit_id}")).await?;
         validate_commit_payload(&payload, commit_state)?;
+        let mut installed_location_revision = None;
         if let Some(project_id) = materialized_project_id {
-            let cache_dir = state.inner.config.cache_dir.clone();
+            let storage = super::project_storage::resolve_active(state, project_id).await?;
+            installed_location_revision = Some(storage.location_revision);
+            let managed_root = storage.managed_root;
             let project_id = project_id.to_owned();
             let materialized_payload = payload.clone();
             tokio::task::spawn_blocking(move || {
-                ensure_project_generation(&cache_dir, &project_id, &materialized_payload)
+                ensure_project_generation(&managed_root, &project_id, &materialized_payload)
             })
             .await
             .map_err(|error| {
@@ -624,24 +644,60 @@ async fn install_ref(
         }
 
         let mut tx = state.inner.pool.begin().await?;
+        if let (Some(project_id), Some(expected_revision)) =
+            (materialized_project_id, installed_location_revision)
+        {
+            let storage = super::project_storage::resolve_active(state, project_id).await?;
+            if storage.location_revision != expected_revision {
+                return Err(DaemonError::State {
+                    code: "storage_move_conflict",
+                    message:
+                        "Project storage changed while a Commit generation was being installed"
+                            .to_owned(),
+                });
+            }
+        }
         cache_commit_payload(&mut tx, &payload).await?;
         upsert_ref(&mut tx, &commit_state.reference, etag).await?;
         tx.commit().await?;
     } else {
         if let Some(project_id) = materialized_project_id {
-            let cache_dir = state.inner.config.cache_dir.clone();
+            let storage = super::project_storage::resolve_active(state, project_id).await?;
+            let managed_root = storage.managed_root;
             let project_id = project_id.to_owned();
-            tokio::task::spawn_blocking(move || ensure_empty_generation(&cache_dir, &project_id))
-                .await
-                .map_err(|error| {
-                    DaemonError::Server(format!("Commit materialization task failed: {error}"))
-                })??;
+            tokio::task::spawn_blocking(move || {
+                ensure_empty_generation(&managed_root, &project_id)
+            })
+            .await
+            .map_err(|error| {
+                DaemonError::Server(format!("Commit materialization task failed: {error}"))
+            })??;
         }
         let mut tx = state.inner.pool.begin().await?;
         upsert_ref(&mut tx, &commit_state.reference, etag).await?;
         tx.commit().await?;
     }
     Ok(())
+}
+
+pub(super) async fn verify_current_project_generation_at(
+    state: &DaemonState,
+    project_id: &str,
+    generations_root: &Path,
+) -> Result<(), DaemonError> {
+    let row = sqlx::query(
+        "SELECT commit_id FROM cached_refs
+         WHERE scope = 'project' AND project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.inner.pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let commit_id: Option<String> = row.try_get("commit_id")?;
+    let generation = generations_root.join(commit_id.as_deref().unwrap_or(EMPTY_GENERATION));
+    verify_generation_ref(&generation, project_id, commit_id.as_deref())
 }
 
 fn validate_commit_payload(
@@ -1084,13 +1140,13 @@ async fn cached_commit_exists(pool: &SqlitePool, commit_id: &str) -> Result<bool
 }
 
 fn ensure_project_generation(
-    cache_dir: &Path,
+    managed_root: &Path,
     project_id: &str,
     payload: &ServerCommitPayload,
 ) -> Result<PathBuf, DaemonError> {
     let marker = serde_json::to_vec(payload)?;
     ensure_generation(
-        cache_dir,
+        managed_root,
         project_id,
         &payload.commit.commit_id,
         &marker,
@@ -1098,32 +1154,38 @@ fn ensure_project_generation(
     )
 }
 
-fn ensure_empty_generation(cache_dir: &Path, project_id: &str) -> Result<PathBuf, DaemonError> {
+fn ensure_empty_generation(managed_root: &Path, project_id: &str) -> Result<PathBuf, DaemonError> {
     let marker = serde_json::to_vec(&json!({
         "project_id": project_id,
         "commit_id": null
     }))?;
-    ensure_generation(cache_dir, project_id, EMPTY_GENERATION, &marker, |root| {
-        std::fs::create_dir_all(root.join("cache/rule"))?;
-        std::fs::create_dir_all(root.join("cache/context"))?;
-        let manifest = MaterializedManifest {
-            project_id,
-            commit_id: None,
-            tree_id: None,
-            ref_name: MAIN_REF,
-            rules: BTreeMap::new(),
-            context: BTreeMap::new(),
-        };
-        std::fs::write(
-            root.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        Ok(())
-    })
+    ensure_generation(
+        managed_root,
+        project_id,
+        EMPTY_GENERATION,
+        &marker,
+        |root| {
+            std::fs::create_dir_all(root.join("cache/rule"))?;
+            std::fs::create_dir_all(root.join("cache/context"))?;
+            let manifest = MaterializedManifest {
+                project_id,
+                commit_id: None,
+                tree_id: None,
+                ref_name: MAIN_REF,
+                rules: BTreeMap::new(),
+                context: BTreeMap::new(),
+            };
+            std::fs::write(
+                root.join("manifest.json"),
+                serde_json::to_vec_pretty(&manifest)?,
+            )?;
+            Ok(())
+        },
+    )
 }
 
 fn ensure_generation(
-    cache_dir: &Path,
+    managed_root: &Path,
     project_id: &str,
     generation: &str,
     marker: &[u8],
@@ -1131,11 +1193,8 @@ fn ensure_generation(
 ) -> Result<PathBuf, DaemonError> {
     validate_cache_component("project_id", project_id)?;
     validate_cache_component("generation", generation)?;
-    let generations = cache_dir
-        .join("projects")
-        .join(project_id)
-        .join("generations");
-    std::fs::create_dir_all(&generations)?;
+    let generations = managed_root.join("generations");
+    super::project_storage::ensure_private_directory(&generations)?;
     let final_root = generations.join(generation);
     if final_root.exists() {
         verify_generation_marker(&final_root, marker)?;
@@ -1146,7 +1205,11 @@ fn ensure_generation(
     std::fs::create_dir(&temporary_root)?;
     let build_result = (|| {
         materialize(&temporary_root)?;
-        std::fs::write(temporary_root.join("commit-payload.json"), marker)?;
+        super::project_storage::write_private_file(
+            &temporary_root.join("commit-payload.json"),
+            marker,
+        )?;
+        super::project_storage::secure_managed_tree(&temporary_root)?;
         Ok::<(), DaemonError>(())
     })();
     if let Err(error) = build_result {
@@ -1439,14 +1502,6 @@ fn materialized_resource_content(
             "Project organization selection cannot be materialized as memory".to_owned(),
         )),
     }
-}
-
-fn generation_root(cache_dir: &Path, project_id: &str, generation: &str) -> PathBuf {
-    cache_dir
-        .join("projects")
-        .join(project_id)
-        .join("generations")
-        .join(generation)
 }
 
 pub(super) fn validate_cache_component(label: &str, value: &str) -> Result<(), DaemonError> {

@@ -80,6 +80,151 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(config.projectId, "project-1")
     }
 
+    func testProjectStorageDecodesDaemonResponse() throws {
+        let json = """
+        {
+          "authority_key": "https://app.clumsies.ai",
+          "project_id": "project-1",
+          "mode": "custom",
+          "selected_root_path": "/Volumes/Memory",
+          "managed_root_path": "/Volumes/Memory/.clumsies/cache-v1/hash/project-1",
+          "active_generation_path": null,
+          "search_index_path": "/Volumes/Memory/.clumsies/cache-v1/hash/project-1/search/index.sqlite",
+          "availability": "moving",
+          "location_revision": 4,
+          "size_bytes": 4096,
+          "active_move_id": "move-1",
+          "issue_code": null,
+          "diagnostic": null
+        }
+        """
+
+        let storage = try JSONCoding.decoder().decode(
+            DaemonProjectStorage.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(storage.mode, .custom)
+        XCTAssertEqual(storage.availability, .moving)
+        XCTAssertEqual(storage.locationRevision, 4)
+        XCTAssertEqual(storage.activeMoveId, "move-1")
+    }
+
+    func testRetrievalRunDetailDecodesDaemonTrace() throws {
+        let json = """
+        {
+          "run": {
+            "run_id": "run-1",
+            "project_id": "project-1",
+            "query": "draft reconciliation",
+            "activation_state_fingerprint": "sha256:state",
+            "status": "succeeded",
+            "effective_hash": "sha256:effective",
+            "index_revision": "revision-1",
+            "resource_count": 3,
+            "unit_count": 8,
+            "parser_version": "markdown-v1",
+            "chunker_version": "section-v1",
+            "model_revision": "models-v1",
+            "ranking_profile": "hybrid-v1",
+            "latencies": {
+              "effective_memory_us": 10,
+              "index_ensure_us": 20,
+              "bm25_us": 30,
+              "embedding_us": 40,
+              "vector_us": 50,
+              "rrf_us": 60,
+              "rerank_us": 70,
+              "assembly_us": 80,
+              "persistence_us": 90,
+              "total_us": 360
+            },
+            "returned_fragment_count": 1,
+            "returned_token_count": 120,
+            "error_stage": null,
+            "error_code": null,
+            "error_summary": null,
+            "created_at": "2026-07-23T00:00:00Z",
+            "completed_at": "2026-07-23T00:00:01Z",
+            "evaluation_case_id": null
+          },
+          "candidates": [{
+            "unit_key": "unit-1",
+            "resource_id": "context-1",
+            "scope": "project",
+            "kind": "context",
+            "path": "architecture/reconciliation.md",
+            "heading_path": ["Draft reconciliation"],
+            "locator": {
+              "type": "markdown_span",
+              "start_byte": 0,
+              "end_byte": 120,
+              "heading_path": ["Draft reconciliation"]
+            },
+            "content_hash": "sha256:content",
+            "resource_content_hash": "sha256:resource",
+            "token_count": 120,
+            "evidence_excerpt": "Drafts retain their base commit.",
+            "exact_rank": 1,
+            "bm25_rank": 1,
+            "bm25_score": 7.5,
+            "vector_rank": 2,
+            "vector_score": 0.88,
+            "rrf_rank": 1,
+            "rrf_score": 0.03,
+            "reranker_rank": 1,
+            "reranker_logit": 2.1,
+            "reranker_relevance": 0.89,
+            "final_rank": 1,
+            "selected": true,
+            "exclusion_reason": "selected",
+            "delta_action": "add"
+          }],
+          "evaluation_case": null,
+          "judgments": [],
+          "corpus_resources": [],
+          "report": null
+        }
+        """
+
+        let detail = try JSONCoding.decoder().decode(
+            RetrievalRunDetail.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(detail.run.status, .succeeded)
+        XCTAssertEqual(detail.run.latencies.rerankUs, 70)
+        XCTAssertEqual(detail.candidates.first?.kind, .context)
+        XCTAssertEqual(detail.candidates.first?.exclusionReason, .selected)
+        XCTAssertEqual(detail.candidates.first?.deltaAction, .add)
+    }
+
+    func testProjectStorageHandoffBookmarkRoundTripUsesTheSelectedDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clumsies-bookmark-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bookmark = try directory.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        var stale = false
+        let resolved = try URL(
+            resolvingBookmarkData: bookmark,
+            options: [.withoutUI, .withoutMounting],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        )
+
+        XCTAssertFalse(stale)
+        XCTAssertEqual(
+            resolved.resolvingSymlinksInPath().path,
+            directory.resolvingSymlinksInPath().path
+        )
+    }
+
     func testDaemonStartupReadinessRetriesRequestTimeouts() async throws {
         let expected = DaemonHealth(
             daemonVersion: "0.1.0",
@@ -136,6 +281,49 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(draft.document.path, "notes/new.md")
         XCTAssertEqual(draft.document.body, "second")
         XCTAssertEqual(draft.syncStatus, .queued)
+    }
+
+    func testDeletionDraftDoesNotOfferMarkdownPreview() {
+        let summary = inventorySummary(id: "draft-delete", updatedAt: timestamp)
+        var draft = inventoryDraft(from: summary)
+        draft.isDeletion = true
+        let item = MemoryListItem(
+            id: draft.id,
+            resource: nil,
+            draft: draft,
+            inherited: false
+        )
+
+        XCTAssertFalse(item.supportsMarkdownPreview)
+    }
+
+    func testDraftInventoryPlanDiscoversExternalDraftChanges() {
+        let unchanged = inventorySummary(id: "draft-unchanged", updatedAt: "2026-07-23T01:00:00Z")
+        let external = inventorySummary(id: "draft-external", updatedAt: "2026-07-23T02:00:00Z")
+        let updated = inventorySummary(id: "draft-updated", updatedAt: "2026-07-23T03:00:00Z")
+        let queued = inventorySummary(id: "draft-queued", updatedAt: "2026-07-23T04:00:00Z")
+        let terminal = inventorySummary(
+            id: "draft-terminal",
+            status: .merged,
+            updatedAt: "2026-07-23T05:00:00Z"
+        )
+        let currentDrafts = [
+            inventoryDraft(from: unchanged),
+            inventoryDraft(
+                from: inventorySummary(id: updated.draftId, updatedAt: "2026-07-23T02:30:00Z")
+            ),
+            inventoryDraft(from: queued, syncStatus: .queued),
+            inventoryDraft(from: terminal, status: .open),
+        ]
+
+        let plan = WorkspaceStore.draftInventoryPlan(
+            summaries: [unchanged, external, updated, queued, terminal],
+            currentDrafts: currentDrafts,
+            includeFailed: false
+        )
+
+        XCTAssertEqual(plan.refreshIds, ["draft-external", "draft-updated", "draft-queued"])
+        XCTAssertEqual(plan.terminalIds, ["draft-terminal"])
     }
 
     func testBehindDraftProjectionPreservesCoordinationWithoutChangingTheBase() {
@@ -678,6 +866,64 @@ final class DaemonContractTests: XCTestCase {
             lastAttemptAt: nil,
             lastSuccessAt: nil,
             lastError: error.map { .init(code: "sync_failed", message: $0, requestId: nil) }
+        )
+    }
+
+    private func inventorySummary(
+        id: String,
+        status: DaemonLocalDraftStatus = .open,
+        updatedAt: String
+    ) -> DaemonDraftSummary {
+        .init(
+            draftId: id,
+            projectId: "project-1",
+            serverDraftId: "server-\(id)",
+            serverVersion: 1,
+            baseCommitId: "commit-1",
+            currentCommitId: "commit-1",
+            freshness: .current,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
+            scope: .project,
+            resourceKind: .rule,
+            targetId: nil,
+            path: "rules/\(id).md",
+            status: status,
+            createdAt: "2026-07-23T00:00:00Z",
+            updatedAt: updatedAt,
+            pendingOperationCount: 0,
+            failedOperationCount: 0
+        )
+    }
+
+    private func inventoryDraft(
+        from summary: DaemonDraftSummary,
+        status: DaemonLocalDraftStatus? = nil,
+        syncStatus: DaemonDraftSyncState = .synced
+    ) -> LocalDraft {
+        .init(
+            id: summary.draftId,
+            projectId: summary.projectId,
+            serverId: summary.serverDraftId,
+            serverVersion: summary.serverVersion,
+            baseCommitId: summary.baseCommitId,
+            currentCommitId: summary.currentCommitId,
+            freshness: summary.freshness,
+            reconciliation: summary.reconciliation,
+            reconciliationCandidateId: summary.reconciliationCandidateId,
+            scope: .project,
+            kind: .rules,
+            targetId: summary.targetId,
+            status: status ?? summary.status,
+            origin: .mcpStore,
+            syncStatus: syncStatus,
+            updatedAt: summary.updatedAt,
+            document: .init(
+                title: summary.draftId,
+                path: summary.path ?? "",
+                body: "Draft body"
+            ),
+            isDeletion: false
         )
     }
 
