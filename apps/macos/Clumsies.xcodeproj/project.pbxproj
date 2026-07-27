@@ -37,6 +37,7 @@
 		B37FC0B5FCAF31C079DEB664 /* WorkbenchChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84E05D3A21FA9C481DDEC44 /* WorkbenchChrome.swift */; };
 		BC981F6141344D57C1D721D6 /* FileSymbols in Resources */ = {isa = PBXBuildFile; fileRef = 9A94470634048BE21398273F /* FileSymbols */; };
 		C5174E339BE7AD75750F1DAD /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB646EA39F4397C0A4769A2 /* ServerModels.swift */; };
+		C55FB56281677FBD40E85BBF /* DiagnosticsWindowLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B411B1201E1392975997677B /* DiagnosticsWindowLayoutTests.swift */; };
 		C7687CDE4DE94017775B7F06 /* NativeTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 940BD7C82DC144B067648080 /* NativeTextEditor.swift */; };
 		D673EA34613D807AEEAE78AD /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B8106838C68EADB97064D6 /* main.swift */; };
 		DC1B191092F8585B353496E6 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A465E4AAC0AE529CEBADAEBD /* WorkspaceView.swift */; };
@@ -73,6 +74,7 @@
 		A071EB67D684BAD0157C5700 /* NativeAccountMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAccountMenu.swift; sourceTree = "<group>"; };
 		A108C769F026D02B9C4326B3 /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
 		A465E4AAC0AE529CEBADAEBD /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
+		B411B1201E1392975997677B /* DiagnosticsWindowLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsWindowLayoutTests.swift; sourceTree = "<group>"; };
 		BAED8D0E479221D8C3ECDE0D /* DaemonContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonContractTests.swift; sourceTree = "<group>"; };
 		C0A6A05AA73B94A0DE921C31 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
 		C2065CEBF21A0AD6D7D70259 /* MarkdownPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreview.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 			isa = PBXGroup;
 			children = (
 				BAED8D0E479221D8C3ECDE0D /* DaemonContractTests.swift */,
+				B411B1201E1392975997677B /* DiagnosticsWindowLayoutTests.swift */,
 				0D653D21BD58E9D24450141A /* DocumentTabStripTests.swift */,
 				38F3E7B661CE27FE5A6A3C43 /* FileSymbolCatalogTests.swift */,
 				7BBD2C1166EBD7A0E694003C /* LiveWorkspaceIntegrationTests.swift */,
@@ -380,6 +383,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FE2F1772AA0D93C77DE18404 /* DaemonContractTests.swift in Sources */,
+				C55FB56281677FBD40E85BBF /* DiagnosticsWindowLayoutTests.swift in Sources */,
 				6242A4726CA51495F419DEDA /* DocumentTabStripTests.swift in Sources */,
 				3FF35919DB8D5792C67B00A1 /* FileSymbolCatalogTests.swift in Sources */,
 				078AEB38365BE79435BCC348 /* LiveWorkspaceIntegrationTests.swift in Sources */,

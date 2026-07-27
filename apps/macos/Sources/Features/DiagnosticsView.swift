@@ -2,6 +2,23 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum RetrievalDiagnosticsLayout {
+    static let runListMinimumWidth: CGFloat = 360
+    static let runListIdealWidth: CGFloat = 360
+    static let runListMaximumWidth: CGFloat = 480
+    static let mainPaneMinimumWidth: CGFloat = 650
+    static let dividerAllowance: CGFloat = 2
+    static let minimumWindowContentWidth =
+        runListMinimumWidth
+        + mainPaneMinimumWidth
+        + dividerAllowance
+}
+
+enum RetrievalRunDetailsWindowLayout {
+    static let defaultContentSize = NSSize(width: 560, height: 720)
+    static let minimumContentSize = NSSize(width: 460, height: 560)
+}
+
 enum DiagnosticsDestination: String, Identifiable {
     case runtime
     case retrieval
@@ -18,14 +35,18 @@ enum DiagnosticsDestination: String, Identifiable {
     var defaultContentSize: NSSize {
         switch self {
         case .runtime: NSSize(width: 640, height: 560)
-        case .retrieval: NSSize(width: 1_200, height: 760)
+        case .retrieval: NSSize(width: 1_600, height: 850)
         }
     }
 
     var minimumContentSize: NSSize {
         switch self {
         case .runtime: NSSize(width: 520, height: 440)
-        case .retrieval: NSSize(width: 940, height: 560)
+        case .retrieval:
+            NSSize(
+                width: RetrievalDiagnosticsLayout.minimumWindowContentWidth,
+                height: 560
+            )
         }
     }
 }
@@ -117,61 +138,61 @@ private struct RetrievalDiagnosticsView: View {
 
     @State private var confirmsClear = false
     @State private var exportError: String?
-    @State private var showsDetailsInspector = false
+    @StateObject private var detailsWindow = RetrievalRunDetailsWindowPresenter()
 
     var body: some View {
         NavigationSplitView {
-            RetrievalRunList(model: model)
-                .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 340)
-        } detail: {
-            RetrievalRunInspector(
+            RetrievalRunList(
                 model: model,
-                showsEvaluationControls: showsDetailsInspector
-            )
-            .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Text(projectName ?? projectId ?? "All Projects")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(projectId ?? "Retrieval Runs from all Projects")
-            }
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
+                scopeTitle: projectName ?? projectId ?? "All Projects",
+                onRefresh: {
                     Task { await model.load(projectId: projectId) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh Retrieval Runs")
-                Button {
-                    Task { await exportEvaluationSet() }
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .help("Export Evaluation Set")
-                .disabled(model.runs.allSatisfy { $0.evaluationCaseId == nil })
-                Button(role: .destructive) {
+                },
+                onClearHistory: {
                     confirmsClear = true
-                } label: {
-                    Image(systemName: "trash")
                 }
-                .help("Clear Unpinned Retrieval History")
-                .disabled(model.runs.isEmpty)
-                Button {
-                    showsDetailsInspector.toggle()
-                } label: {
-                    Image(systemName: "sidebar.trailing")
-                }
-                .help(showsDetailsInspector ? "Hide Run Inspector" : "Show Run Inspector")
-                .accessibilityLabel(
-                    showsDetailsInspector ? "Hide Run Inspector" : "Show Run Inspector"
+            )
+                .frame(
+                    minWidth: RetrievalDiagnosticsLayout.runListMinimumWidth,
+                    idealWidth: RetrievalDiagnosticsLayout.runListIdealWidth,
+                    maxWidth: RetrievalDiagnosticsLayout.runListMaximumWidth,
+                    maxHeight: .infinity
                 )
+                .navigationSplitViewColumnWidth(
+                    min: RetrievalDiagnosticsLayout.runListMinimumWidth,
+                    ideal: RetrievalDiagnosticsLayout.runListIdealWidth,
+                    max: RetrievalDiagnosticsLayout.runListMaximumWidth
+                )
+        } detail: {
+            RetrievalRunContent(model: model)
+            .frame(
+                minWidth: RetrievalDiagnosticsLayout.mainPaneMinimumWidth,
+                maxWidth: .infinity,
+                maxHeight: .infinity
+            )
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        Task { await exportEvaluationSet() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .help("Export Evaluation Set")
+                    .disabled(model.runs.allSatisfy { $0.evaluationCaseId == nil })
+
+                    Button {
+                        detailsWindow.present(model: model)
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .help("Show Run Details")
+                    .accessibilityLabel("Show Run Details")
+                    .disabled(model.detail == nil)
+                }
             }
         }
-        .inspector(isPresented: $showsDetailsInspector) {
-            RetrievalRunDetailsInspector(model: model)
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 380)
+        .onDisappear {
+            detailsWindow.close()
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let message = model.errorMessage ?? exportError {
@@ -219,30 +240,58 @@ private struct RetrievalDiagnosticsView: View {
 
 private struct RetrievalRunList: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
+    let scopeTitle: String
+    let onRefresh: () -> Void
+    let onClearHistory: () -> Void
     @State private var selectedRunId: String?
 
     var body: some View {
-        List(selection: $selectedRunId) {
-            Section("Recent Runs") {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                Text(scopeTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 2)
+
                 ForEach(model.runs) { run in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(run.query)
-                            .lineLimit(2)
-                        HStack(spacing: 6) {
-                            Image(systemName: run.status.symbolName)
-                                .foregroundStyle(run.status.tint)
-                            Text(run.createdAt)
-                                .lineLimit(1)
-                            if run.evaluationCaseId != nil {
-                                Image(systemName: "pin.fill")
-                                    .help("Included in the Evaluation Set")
+                    let isSelected = selectedRunId == run.runId
+                    Button {
+                        selectedRunId = run.runId
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(run.query)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 6) {
+                                Image(systemName: run.status.symbolName)
+                                    .foregroundStyle(isSelected ? Color.white : run.status.tint)
+                                Text(run.createdAt)
+                                    .lineLimit(1)
+                                if run.evaluationCaseId != nil {
+                                    Image(systemName: "pin.fill")
+                                        .help("Included in the Evaluation Set")
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(
+                                isSelected ? Color.white.opacity(0.8) : Color.secondary
+                            )
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.accentColor)
                             }
                         }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 3)
-                    .tag(run.runId)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 8)
                 }
                 if model.nextCursor != nil {
                     Button {
@@ -259,8 +308,8 @@ private struct RetrievalRunList: View {
                     .frame(maxWidth: .infinity)
                 }
             }
+            .padding(.vertical, 8)
         }
-        .listStyle(.sidebar)
         .overlay {
             if model.isLoading && model.runs.isEmpty {
                 ProgressView()
@@ -271,6 +320,20 @@ private struct RetrievalRunList: View {
                     systemImage: "text.magnifyingglass",
                     description: Text("Memory activation results will appear here.")
                 )
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh Retrieval Runs")
+
+                Button(role: .destructive, action: onClearHistory) {
+                    Image(systemName: "trash")
+                }
+                .help("Clear Unpinned Retrieval History")
+                .disabled(model.runs.isEmpty)
             }
         }
         .onChange(of: selectedRunId) { _, runId in
@@ -287,9 +350,8 @@ private struct RetrievalRunList: View {
     }
 }
 
-private struct RetrievalRunInspector: View {
+private struct RetrievalRunContent: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
-    let showsEvaluationControls: Bool
 
     var body: some View {
         if model.isLoading, model.detail == nil {
@@ -315,8 +377,7 @@ private struct RetrievalRunInspector: View {
                 }
                 CandidateTraceTable(
                     model: model,
-                    detail: detail,
-                    showsEvaluationControls: showsEvaluationControls
+                    detail: detail
                 )
             }
         } else {
@@ -371,7 +432,6 @@ private struct RetrievalRunSummary: View {
 private struct CandidateTraceTable: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
     let detail: RetrievalRunDetail
-    let showsEvaluationControls: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -428,7 +488,7 @@ private struct CandidateTraceTable: View {
                 }
                 .width(min: 80, ideal: 100)
                 TableColumn("Grade") { candidate in
-                    if showsEvaluationControls, detail.evaluationCase != nil {
+                    if detail.evaluationCase != nil {
                         Picker(
                             "Relevance",
                             selection: Binding<UInt8?>(
@@ -485,7 +545,7 @@ private struct CandidateTraceTable: View {
     }
 }
 
-private struct RetrievalRunDetailsInspector: View {
+private struct RetrievalRunDetailsView: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
 
     private var missedDrafts: [EvaluationJudgmentDraft] {
@@ -494,7 +554,7 @@ private struct RetrievalRunDetailsInspector: View {
 
     var body: some View {
         if let detail = model.detail {
-            ScrollView {
+            ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Run Details")
                         .font(.headline)
@@ -587,6 +647,7 @@ private struct RetrievalRunDetailsInspector: View {
                     }
                 }
                 .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
             ContentUnavailableView(
@@ -604,9 +665,60 @@ private struct RetrievalRunDetailsInspector: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.caption.monospaced())
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
+                .help(value)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+@MainActor
+private final class RetrievalRunDetailsWindowPresenter: NSObject, ObservableObject,
+    NSWindowDelegate
+{
+    private var window: NSPanel?
+
+    func present(model: RetrievalDiagnosticsModel) {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let controller = NSHostingController(
+            rootView: RetrievalRunDetailsView(model: model)
+        )
+        controller.sizingOptions = []
+        let panel = NSPanel(
+            contentRect: NSRect(
+                origin: .zero,
+                size: RetrievalRunDetailsWindowLayout.defaultContentSize
+            ),
+            styleMask: [.titled, .closable, .resizable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Run Details"
+        panel.contentViewController = controller
+        panel.contentMinSize = RetrievalRunDetailsWindowLayout.minimumContentSize
+        panel.setContentSize(RetrievalRunDetailsWindowLayout.defaultContentSize)
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.delegate = self
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        window = panel
+    }
+
+    func close() {
+        window?.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
     }
 }
 

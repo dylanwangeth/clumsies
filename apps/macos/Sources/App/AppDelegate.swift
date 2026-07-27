@@ -26,6 +26,29 @@ enum SettingsWindowLayout {
 }
 
 @MainActor
+enum DiagnosticsWindowLayout {
+    static func configure(_ window: NSWindow, destination: DiagnosticsDestination) {
+        window.title = destination.title
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+        window.contentMinSize = destination.minimumContentSize
+    }
+
+    static func normalize(_ window: NSWindow, destination: DiagnosticsDestination) {
+        configure(window, destination: destination)
+        let contentSize = window.contentLayoutRect.size
+        guard contentSize.width < destination.minimumContentSize.width
+            || contentSize.height < destination.minimumContentSize.height
+        else {
+            return
+        }
+        window.setContentSize(destination.defaultContentSize)
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store = WorkspaceStore()
     private let softwareUpdateController = SoftwareUpdateController()
@@ -261,26 +284,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         )
         controller.sizingOptions = []
         if let diagnosticsWindow {
-            diagnosticsWindow.title = destination.title
             diagnosticsWindow.contentViewController = controller
-            diagnosticsWindow.contentMinSize = destination.minimumContentSize
-            let currentSize = diagnosticsWindow.contentLayoutRect.size
-            if currentSize.width < destination.minimumContentSize.width
-                || currentSize.height < destination.minimumContentSize.height {
-                diagnosticsWindow.setContentSize(destination.defaultContentSize)
-            }
+            DiagnosticsWindowLayout.normalize(diagnosticsWindow, destination: destination)
             diagnosticsWindow.makeKeyAndOrderFront(nil)
             return
         }
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: destination.defaultContentSize),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = destination.title
         window.contentViewController = controller
-        window.contentMinSize = destination.minimumContentSize
+        DiagnosticsWindowLayout.normalize(window, destination: destination)
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
