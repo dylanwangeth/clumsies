@@ -146,7 +146,8 @@ final class DaemonContractTests: XCTestCase {
             "error_summary": null,
             "created_at": "2026-07-23T00:00:00Z",
             "completed_at": "2026-07-23T00:00:01Z",
-            "evaluation_case_id": null
+            "evaluation_case_id": null,
+            "evaluation_case_status": null
           },
           "candidates": [{
             "unit_key": "unit-1",
@@ -181,8 +182,8 @@ final class DaemonContractTests: XCTestCase {
             "delta_action": "add"
           }],
           "evaluation_case": null,
-          "judgments": [],
-          "corpus_resources": [],
+          "evidence": [],
+          "evidence_suggestions": [],
           "report": null
         }
         """
@@ -197,6 +198,70 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(detail.candidates.first?.kind, .context)
         XCTAssertEqual(detail.candidates.first?.exclusionReason, .selected)
         XCTAssertEqual(detail.candidates.first?.deltaAction, .add)
+    }
+
+    func testEvaluationCaseDetailDecodesAssistedEvidenceReview() throws {
+        let json = """
+        {
+          "evaluation_case": {
+            "case_id": "case-1",
+            "source_run_id": "run-1",
+            "corpus_id": "corpus-1",
+            "project_id": "project-1",
+            "query": "draft reconciliation",
+            "status": "draft",
+            "version": 1,
+            "created_at": "2026-07-30T00:00:00Z",
+            "updated_at": "2026-07-30T00:00:00Z"
+          },
+          "evidence": [],
+          "evidence_suggestions": [{
+            "resource_id": "context-1",
+            "unit_key": "unit-1",
+            "path": "architecture/reconciliation.md",
+            "heading_path": ["Draft reconciliation"],
+            "evidence_excerpt": "Drafts retain their base commit.",
+            "model_relevance": 0.89,
+            "likely_failure_stage": "assembly",
+            "exclusion_reason": "per_resource_limit"
+          }],
+          "report": null
+        }
+        """
+
+        let detail = try JSONCoding.decoder().decode(
+            EvaluationCaseDetail.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(detail.evaluationCase.status, .draft)
+        XCTAssertEqual(detail.evaluationCase.version, 1)
+        XCTAssertEqual(detail.evidenceSuggestions.first?.likelyFailureStage, .assembly)
+        XCTAssertEqual(detail.evidenceSuggestions.first?.exclusionReason, .perResourceLimit)
+        XCTAssertNil(detail.report)
+    }
+
+    func testResolveEvaluationCaseUsesBinaryEvidenceAndOptimisticVersion() throws {
+        let request = ResolveEvaluationCaseRequest(
+            caseId: "case-1",
+            expectedVersion: 4,
+            evidence: [
+                EvaluationEvidenceInput(resourceId: "context-1", unitKey: "unit-1"),
+            ],
+            noneMatched: false
+        )
+
+        let data = try JSONCoding.encoder().encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["case_id"] as? String, "case-1")
+        XCTAssertEqual(object["expected_version"] as? Int, 4)
+        XCTAssertEqual(object["none_matched"] as? Bool, false)
+        let evidence = try XCTUnwrap(object["evidence"] as? [[String: Any]])
+        XCTAssertEqual(evidence.count, 1)
+        XCTAssertEqual(evidence[0]["resource_id"] as? String, "context-1")
+        XCTAssertEqual(evidence[0]["unit_key"] as? String, "unit-1")
+        XCTAssertNil(evidence[0]["relevance"])
+        XCTAssertNil(evidence[0]["missed"])
     }
 
     func testProjectStorageHandoffBookmarkRoundTripUsesTheSelectedDirectory() throws {

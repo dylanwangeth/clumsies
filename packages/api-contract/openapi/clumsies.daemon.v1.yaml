@@ -71,7 +71,7 @@ components:
         - list_retrieval_runs
         - get_retrieval_run
         - create_evaluation_case
-        - replace_evaluation_judgments
+        - resolve_evaluation_case
         - clear_retrieval_runs
         - export_evaluation_set
         - retry_sync
@@ -501,6 +501,7 @@ components:
         - created_at
         - completed_at
         - evaluation_case_id
+        - evaluation_case_status
       properties:
         run_id:
           type: string
@@ -552,6 +553,10 @@ components:
           format: date-time
         evaluation_case_id:
           type: [string, "null"]
+        evaluation_case_status:
+          oneOf:
+            - $ref: "#/components/schemas/EvaluationCaseStatus"
+            - type: "null"
     RetrievalStageLatencies:
       type: object
       required:
@@ -705,7 +710,8 @@ components:
             type: string
     RetrievalRunDetail:
       type: object
-      required: [run, candidates, evaluation_case, judgments, corpus_resources, report]
+      required:
+        [run, candidates, evaluation_case, evidence, evidence_suggestions, report]
       properties:
         run:
           $ref: "#/components/schemas/RetrievalRun"
@@ -717,14 +723,14 @@ components:
           oneOf:
             - $ref: "#/components/schemas/EvaluationCase"
             - type: "null"
-        judgments:
+        evidence:
           type: array
           items:
-            $ref: "#/components/schemas/EvaluationJudgment"
-        corpus_resources:
+            $ref: "#/components/schemas/EvaluationEvidence"
+        evidence_suggestions:
           type: array
           items:
-            $ref: "#/components/schemas/EvaluationCorpusResource"
+            $ref: "#/components/schemas/EvaluationEvidenceSuggestion"
         report:
           oneOf:
             - $ref: "#/components/schemas/RetrievalBenchmarkReport"
@@ -735,40 +741,33 @@ components:
       properties:
         run_id:
           type: string
-        query_category:
-          type: [string, "null"]
-        notes:
-          type: [string, "null"]
-    ReplaceEvaluationJudgmentsRequest:
+    ResolveEvaluationCaseRequest:
       type: object
-      required: [case_id, expected_judgment_version, judgments]
+      required: [case_id, expected_version, evidence]
       properties:
         case_id:
           type: string
-        expected_judgment_version:
+        expected_version:
           type: integer
           minimum: 1
-        judgments:
+        evidence:
           type: array
           items:
-            $ref: "#/components/schemas/EvaluationJudgmentInput"
-    EvaluationJudgmentInput:
+            $ref: "#/components/schemas/EvaluationEvidenceInput"
+        none_matched:
+          type: boolean
+          default: false
+    EvaluationEvidenceInput:
       type: object
-      required: [resource_id, relevance]
+      required: [resource_id]
       properties:
         resource_id:
           type: string
         unit_key:
           type: [string, "null"]
-        relevance:
-          type: integer
-          minimum: 0
-          maximum: 3
-        missed:
-          type: boolean
-          default: false
-        notes:
-          type: [string, "null"]
+    EvaluationCaseStatus:
+      type: string
+      enum: [draft, needs_evidence, ready]
     EvaluationCase:
       type: object
       required:
@@ -777,9 +776,8 @@ components:
         - corpus_id
         - project_id
         - query
-        - query_category
-        - notes
-        - judgment_version
+        - status
+        - version
         - created_at
         - updated_at
       properties:
@@ -793,11 +791,9 @@ components:
           type: string
         query:
           type: string
-        query_category:
-          type: [string, "null"]
-        notes:
-          type: [string, "null"]
-        judgment_version:
+        status:
+          $ref: "#/components/schemas/EvaluationCaseStatus"
+        version:
           type: integer
           minimum: 1
         created_at:
@@ -806,19 +802,16 @@ components:
         updated_at:
           type: string
           format: date-time
-    EvaluationJudgment:
+    EvaluationEvidence:
       type: object
       required:
-        - judgment_id
+        - evidence_id
         - case_id
         - resource_id
         - unit_key
-        - relevance
-        - missed
         - evidence_excerpt
-        - notes
       properties:
-        judgment_id:
+        evidence_id:
           type: string
         case_id:
           type: string
@@ -826,66 +819,59 @@ components:
           type: string
         unit_key:
           type: [string, "null"]
-        relevance:
-          type: integer
-          minimum: 0
-          maximum: 3
-        missed:
-          type: boolean
         evidence_excerpt:
           type: string
-        notes:
-          type: [string, "null"]
-    EvaluationCorpusResource:
+    RetrievalFailureStage:
+      type: string
+      enum: [fusion, reranking, assembly]
+    EvaluationEvidenceSuggestion:
       type: object
       required:
         - resource_id
-        - scope
-        - kind
+        - unit_key
         - path
-        - title
-        - content_hash
-        - source_commit_id
-        - draft_id
-        - draft_revision
-        - preview
+        - heading_path
+        - evidence_excerpt
+        - model_relevance
+        - likely_failure_stage
+        - exclusion_reason
       properties:
         resource_id:
           type: string
-        scope:
-          $ref: "#/components/schemas/DaemonDraftScope"
-        kind:
-          $ref: "#/components/schemas/DaemonDraftResourceKind"
+        unit_key:
+          type: string
         path:
           type: string
-        title:
+        heading_path:
+          type: array
+          items:
+            type: string
+        evidence_excerpt:
           type: string
-        content_hash:
-          type: string
-        source_commit_id:
-          type: [string, "null"]
-        draft_id:
-          type: [string, "null"]
-        draft_revision:
-          type: [string, "null"]
-        preview:
-          type: string
+        model_relevance:
+          type: [number, "null"]
+        likely_failure_stage:
+          $ref: "#/components/schemas/RetrievalFailureStage"
+        exclusion_reason:
+          $ref: "#/components/schemas/RetrievalExclusionReason"
     EvaluationCaseDetail:
       type: object
-      required: [evaluation_case, judgments, corpus_resources, report]
+      required: [evaluation_case, evidence, evidence_suggestions, report]
       properties:
         evaluation_case:
           $ref: "#/components/schemas/EvaluationCase"
-        judgments:
+        evidence:
           type: array
           items:
-            $ref: "#/components/schemas/EvaluationJudgment"
-        corpus_resources:
+            $ref: "#/components/schemas/EvaluationEvidence"
+        evidence_suggestions:
           type: array
           items:
-            $ref: "#/components/schemas/EvaluationCorpusResource"
+            $ref: "#/components/schemas/EvaluationEvidenceSuggestion"
         report:
-          $ref: "#/components/schemas/RetrievalBenchmarkReport"
+          oneOf:
+            - $ref: "#/components/schemas/RetrievalBenchmarkReport"
+            - type: "null"
     ClearRetrievalRunsRequest:
       type: object
       properties:

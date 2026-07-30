@@ -27,7 +27,7 @@ export interface components {
             error: components["schemas"]["ApiError"] | null;
         };
         /** @enum {string} */
-        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "replace_project_binding" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "replace_evaluation_judgments" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
+        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "replace_project_binding" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
         DaemonBootstrapStatus: {
             label: string;
             mach_service_name: string;
@@ -221,6 +221,7 @@ export interface components {
             /** Format: date-time */
             completed_at: string | null;
             evaluation_case_id: string | null;
+            evaluation_case_status: components["schemas"]["EvaluationCaseStatus"] | null;
         };
         RetrievalStageLatencies: {
             effective_memory_us: number;
@@ -272,69 +273,63 @@ export interface components {
             run: components["schemas"]["RetrievalRun"];
             candidates: components["schemas"]["RetrievalCandidate"][];
             evaluation_case: components["schemas"]["EvaluationCase"] | null;
-            judgments: components["schemas"]["EvaluationJudgment"][];
-            corpus_resources: components["schemas"]["EvaluationCorpusResource"][];
+            evidence: components["schemas"]["EvaluationEvidence"][];
+            evidence_suggestions: components["schemas"]["EvaluationEvidenceSuggestion"][];
             report: components["schemas"]["RetrievalBenchmarkReport"] | null;
         };
         CreateEvaluationCaseRequest: {
             run_id: string;
-            query_category?: string | null;
-            notes?: string | null;
         };
-        ReplaceEvaluationJudgmentsRequest: {
+        ResolveEvaluationCaseRequest: {
             case_id: string;
-            expected_judgment_version: number;
-            judgments: components["schemas"]["EvaluationJudgmentInput"][];
+            expected_version: number;
+            evidence: components["schemas"]["EvaluationEvidenceInput"][];
+            /** @default false */
+            none_matched: boolean;
         };
-        EvaluationJudgmentInput: {
+        EvaluationEvidenceInput: {
             resource_id: string;
             unit_key?: string | null;
-            relevance: number;
-            /** @default false */
-            missed: boolean;
-            notes?: string | null;
         };
+        /** @enum {string} */
+        EvaluationCaseStatus: "draft" | "needs_evidence" | "ready";
         EvaluationCase: {
             case_id: string;
             source_run_id: string;
             corpus_id: string;
             project_id: string;
             query: string;
-            query_category: string | null;
-            notes: string | null;
-            judgment_version: number;
+            status: components["schemas"]["EvaluationCaseStatus"];
+            version: number;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
         };
-        EvaluationJudgment: {
-            judgment_id: string;
+        EvaluationEvidence: {
+            evidence_id: string;
             case_id: string;
             resource_id: string;
             unit_key: string | null;
-            relevance: number;
-            missed: boolean;
             evidence_excerpt: string;
-            notes: string | null;
         };
-        EvaluationCorpusResource: {
+        /** @enum {string} */
+        RetrievalFailureStage: "fusion" | "reranking" | "assembly";
+        EvaluationEvidenceSuggestion: {
             resource_id: string;
-            scope: components["schemas"]["DaemonDraftScope"];
-            kind: components["schemas"]["DaemonDraftResourceKind"];
+            unit_key: string;
             path: string;
-            title: string;
-            content_hash: string;
-            source_commit_id: string | null;
-            draft_id: string | null;
-            draft_revision: string | null;
-            preview: string;
+            heading_path: string[];
+            evidence_excerpt: string;
+            model_relevance: number | null;
+            likely_failure_stage: components["schemas"]["RetrievalFailureStage"];
+            exclusion_reason: components["schemas"]["RetrievalExclusionReason"];
         };
         EvaluationCaseDetail: {
             evaluation_case: components["schemas"]["EvaluationCase"];
-            judgments: components["schemas"]["EvaluationJudgment"][];
-            corpus_resources: components["schemas"]["EvaluationCorpusResource"][];
-            report: components["schemas"]["RetrievalBenchmarkReport"];
+            evidence: components["schemas"]["EvaluationEvidence"][];
+            evidence_suggestions: components["schemas"]["EvaluationEvidenceSuggestion"][];
+            report: components["schemas"]["RetrievalBenchmarkReport"] | null;
         };
         ClearRetrievalRunsRequest: {
             project_id?: string | null;

@@ -131,9 +131,9 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "create_evaluation_case", payload: request)
     }
 
-    func replaceEvaluationJudgments(_ request: ReplaceEvaluationJudgmentsRequest) async throws
+    func resolveEvaluationCase(_ request: ResolveEvaluationCaseRequest) async throws
         -> EvaluationCaseDetail {
-        try await call(method: "replace_evaluation_judgments", payload: request)
+        try await call(method: "resolve_evaluation_case", payload: request)
     }
 
     func clearRetrievalRuns(projectId: String?) async throws -> ClearRetrievalRunsResponse {

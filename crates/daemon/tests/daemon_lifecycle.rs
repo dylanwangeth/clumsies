@@ -1143,7 +1143,7 @@ async fn schema_17_migration_adds_retrieval_history_and_restart_recovers_running
         "evaluation_corpora",
         "evaluation_corpus_resources",
         "evaluation_cases",
-        "evaluation_judgments",
+        "evaluation_evidence",
     ] {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
@@ -1185,6 +1185,101 @@ async fn schema_17_migration_adds_retrieval_history_and_restart_recovers_running
     assert_eq!(recovered.1.as_deref(), Some("interrupted"));
     assert_eq!(recovered.2.as_deref(), Some("retrieval_interrupted"));
     assert!(recovered.3.is_some());
+}
+
+#[tokio::test]
+async fn schema_18_migration_replaces_graded_judgments_with_confirmed_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '18')",
+        "CREATE TABLE evaluation_cases (
+            case_id TEXT PRIMARY KEY,
+            source_run_id TEXT NOT NULL UNIQUE,
+            corpus_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            query TEXT NOT NULL,
+            query_category TEXT,
+            notes TEXT,
+            judgment_version BIGINT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "CREATE TABLE evaluation_judgments (
+            judgment_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            unit_key TEXT,
+            relevance BIGINT NOT NULL,
+            missed INTEGER NOT NULL,
+            evidence_excerpt TEXT NOT NULL,
+            notes TEXT,
+            created_at TEXT NOT NULL
+        )",
+        "INSERT INTO evaluation_cases VALUES (
+            'case_ready', 'run_ready', 'corpus_ready', 'project_test', 'ready query',
+            NULL, NULL, 4, '2026-07-01T00:00:00Z', '2026-07-02T00:00:00Z'
+        )",
+        "INSERT INTO evaluation_cases VALUES (
+            'case_draft', 'run_draft', 'corpus_draft', 'project_test', 'draft query',
+            NULL, NULL, 1, '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z'
+        )",
+        "INSERT INTO evaluation_judgments VALUES (
+            'judgment_relevant', 'case_ready', 'resource_expected', NULL, 3, 1,
+            'Expected evidence', NULL, '2026-07-02T00:00:00Z'
+        )",
+        "INSERT INTO evaluation_judgments VALUES (
+            'judgment_irrelevant', 'case_ready', 'resource_wrong', 'unit_wrong', 0, 0,
+            'Wrong evidence', NULL, '2026-07-02T00:00:00Z'
+        )",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let cases: Vec<(String, String, i64)> =
+        sqlx::query_as("SELECT case_id, status, version FROM evaluation_cases ORDER BY case_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        cases,
+        vec![
+            ("case_draft".to_owned(), "draft".to_owned(), 1),
+            ("case_ready".to_owned(), "ready".to_owned(), 4),
+        ]
+    );
+    let evidence: Vec<(String, String, Option<String>)> =
+        sqlx::query_as("SELECT case_id, resource_id, unit_key FROM evaluation_evidence")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        evidence,
+        vec![(
+            "case_ready".to_owned(),
+            "resource_expected".to_owned(),
+            None
+        )]
+    );
+    let legacy_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name = 'evaluation_judgments'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(legacy_count, 0);
 }
 
 #[test]

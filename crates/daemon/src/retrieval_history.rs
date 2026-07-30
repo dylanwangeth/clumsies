@@ -13,7 +13,8 @@ use super::{DaemonError, DaemonState, MemoryKind, SourceLocator, SourceScope};
 
 const RETRIEVAL_RUN_RETENTION_PER_PROJECT: i64 = 500;
 const RETRIEVAL_EXCERPT_CHARS: usize = 1_200;
-const EVALUATION_FIXTURE_VERSION: u32 = 1;
+const EVALUATION_FIXTURE_VERSION: u32 = 2;
+const EVALUATION_SUGGESTION_LIMIT: usize = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -175,6 +176,7 @@ pub struct RetrievalRun {
     pub created_at: String,
     pub completed_at: Option<String>,
     pub evaluation_case_id: Option<String>,
+    pub evaluation_case_status: Option<EvaluationCaseStatus>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -211,37 +213,59 @@ pub struct RetrievalRunDetail {
     pub run: RetrievalRun,
     pub candidates: Vec<RetrievalCandidate>,
     pub evaluation_case: Option<EvaluationCase>,
-    pub judgments: Vec<EvaluationJudgment>,
-    pub corpus_resources: Vec<EvaluationCorpusResource>,
+    pub evidence: Vec<EvaluationEvidence>,
+    pub evidence_suggestions: Vec<EvaluationEvidenceSuggestion>,
     pub report: Option<RetrievalBenchmarkReport>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CreateEvaluationCaseRequest {
     pub run_id: String,
-    #[serde(default)]
-    pub query_category: Option<String>,
-    #[serde(default)]
-    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct ReplaceEvaluationJudgmentsRequest {
+pub struct ResolveEvaluationCaseRequest {
     pub case_id: String,
-    pub expected_judgment_version: u64,
-    pub judgments: Vec<EvaluationJudgmentInput>,
+    pub expected_version: u64,
+    pub evidence: Vec<EvaluationEvidenceInput>,
+    #[serde(default)]
+    pub none_matched: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct EvaluationJudgmentInput {
+pub struct EvaluationEvidenceInput {
     pub resource_id: String,
     #[serde(default)]
     pub unit_key: Option<String>,
-    pub relevance: u8,
-    #[serde(default)]
-    pub missed: bool,
-    #[serde(default)]
-    pub notes: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationCaseStatus {
+    Draft,
+    NeedsEvidence,
+    Ready,
+}
+
+impl EvaluationCaseStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::NeedsEvidence => "needs_evidence",
+            Self::Ready => "ready",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, DaemonError> {
+        match value {
+            "draft" => Ok(Self::Draft),
+            "needs_evidence" => Ok(Self::NeedsEvidence),
+            "ready" => Ok(Self::Ready),
+            _ => Err(history_corrupt(format!(
+                "Unknown Evaluation Case status: {value}"
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -251,27 +275,23 @@ pub struct EvaluationCase {
     pub corpus_id: String,
     pub project_id: String,
     pub query: String,
-    pub query_category: Option<String>,
-    pub notes: Option<String>,
-    pub judgment_version: u64,
+    pub status: EvaluationCaseStatus,
+    pub version: u64,
     pub created_at: String,
     pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct EvaluationJudgment {
-    pub judgment_id: String,
+pub struct EvaluationEvidence {
+    pub evidence_id: String,
     pub case_id: String,
     pub resource_id: String,
     pub unit_key: Option<String>,
-    pub relevance: u8,
-    pub missed: bool,
     pub evidence_excerpt: String,
-    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct EvaluationCorpusResource {
+pub(crate) struct EvaluationCorpusResource {
     pub resource_id: String,
     pub scope: SourceScope,
     pub kind: MemoryKind,
@@ -284,12 +304,32 @@ pub struct EvaluationCorpusResource {
     pub preview: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalFailureStage {
+    Fusion,
+    Reranking,
+    Assembly,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct EvaluationEvidenceSuggestion {
+    pub resource_id: String,
+    pub unit_key: String,
+    pub path: String,
+    pub heading_path: Vec<String>,
+    pub evidence_excerpt: String,
+    pub model_relevance: Option<f64>,
+    pub likely_failure_stage: RetrievalFailureStage,
+    pub exclusion_reason: RetrievalExclusionReason,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct EvaluationCaseDetail {
     pub evaluation_case: EvaluationCase,
-    pub judgments: Vec<EvaluationJudgment>,
-    pub corpus_resources: Vec<EvaluationCorpusResource>,
-    pub report: RetrievalBenchmarkReport,
+    pub evidence: Vec<EvaluationEvidence>,
+    pub evidence_suggestions: Vec<EvaluationEvidenceSuggestion>,
+    pub report: Option<RetrievalBenchmarkReport>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -433,7 +473,7 @@ struct EvaluationFixture {
 struct EvaluationFixtureCase {
     evaluation_case: EvaluationCase,
     resources: Vec<EvaluationFixtureResource>,
-    judgments: Vec<EvaluationJudgment>,
+    evidence: Vec<EvaluationEvidence>,
     source_run: RetrievalRun,
     candidates: Vec<RetrievalCandidate>,
 }
@@ -563,15 +603,52 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             corpus_id TEXT NOT NULL,
             project_id TEXT NOT NULL,
             query TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft' CHECK (
+                status IN ('draft', 'needs_evidence', 'ready')
+            ),
+            version BIGINT NOT NULL DEFAULT 1 CHECK (version > 0),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_evaluation_cases_project_created
+         ON evaluation_cases (project_id, created_at DESC, case_id DESC)",
+        "CREATE TABLE IF NOT EXISTS evaluation_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            unit_key TEXT,
+            evidence_excerpt TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            UNIQUE (case_id, resource_id, unit_key)
+        )",
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn migrate_schema_17_to_18(pool: &SqlitePool) -> Result<(), DaemonError> {
+    migrate(pool).await?;
+    let mut tx = pool.begin().await?;
+    for statement in [
+        "DROP INDEX IF EXISTS idx_evaluation_cases_project_created",
+        "DROP TABLE evaluation_evidence",
+        "DROP TABLE evaluation_cases",
+        "CREATE TABLE evaluation_cases (
+            case_id TEXT PRIMARY KEY,
+            source_run_id TEXT NOT NULL UNIQUE,
+            corpus_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            query TEXT NOT NULL,
             query_category TEXT,
             notes TEXT,
             judgment_version BIGINT NOT NULL DEFAULT 1 CHECK (judgment_version > 0),
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )",
-        "CREATE INDEX IF NOT EXISTS idx_evaluation_cases_project_created
+        "CREATE INDEX idx_evaluation_cases_project_created
          ON evaluation_cases (project_id, created_at DESC, case_id DESC)",
-        "CREATE TABLE IF NOT EXISTS evaluation_judgments (
+        "CREATE TABLE evaluation_judgments (
             judgment_id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             resource_id TEXT NOT NULL,
@@ -583,9 +660,87 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             UNIQUE (case_id, resource_id, unit_key, missed)
         )",
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('schema_version', '18')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     ] {
-        sqlx::query(statement).execute(pool).await?;
+        sqlx::query(statement).execute(&mut *tx).await?;
     }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn migrate_schema_18_to_19(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    for statement in [
+        "DROP INDEX IF EXISTS idx_evaluation_cases_project_created",
+        "ALTER TABLE evaluation_cases RENAME TO evaluation_cases_v18",
+        "ALTER TABLE evaluation_judgments RENAME TO evaluation_judgments_v18",
+        "CREATE TABLE evaluation_cases (
+            case_id TEXT PRIMARY KEY,
+            source_run_id TEXT NOT NULL UNIQUE,
+            corpus_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            query TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('draft', 'needs_evidence', 'ready')
+            ),
+            version BIGINT NOT NULL CHECK (version > 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        "INSERT INTO evaluation_cases (
+            case_id, source_run_id, corpus_id, project_id, query, status,
+            version, created_at, updated_at
+         )
+         SELECT
+            old.case_id,
+            old.source_run_id,
+            old.corpus_id,
+            old.project_id,
+            old.query,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM evaluation_judgments_v18 judgment
+                WHERE judgment.case_id = old.case_id
+                  AND judgment.relevance > 0
+            ) THEN 'ready' ELSE 'draft' END,
+            old.judgment_version,
+            old.created_at,
+            old.updated_at
+         FROM evaluation_cases_v18 old",
+        "CREATE INDEX idx_evaluation_cases_project_created
+         ON evaluation_cases (project_id, created_at DESC, case_id DESC)",
+        "CREATE TABLE evaluation_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            unit_key TEXT,
+            evidence_excerpt TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (case_id, resource_id, unit_key)
+        )",
+        "INSERT INTO evaluation_evidence (
+            evidence_id, case_id, resource_id, unit_key, evidence_excerpt, created_at
+         )
+         SELECT
+            judgment_id,
+            case_id,
+            resource_id,
+            unit_key,
+            evidence_excerpt,
+            created_at
+         FROM evaluation_judgments_v18
+         WHERE relevance > 0",
+        "DROP TABLE evaluation_judgments_v18",
+        "DROP TABLE evaluation_cases_v18",
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('schema_version', '19')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -902,7 +1057,8 @@ pub(super) async fn list_retrieval_runs(
     let status = request.status.map(RetrievalRunStatus::as_str);
     let cursor = request.cursor.as_deref().map(decode_cursor).transpose()?;
     let rows = sqlx::query(
-        "SELECT r.*, e.case_id AS evaluation_case_id
+        "SELECT r.*, e.case_id AS evaluation_case_id,
+                e.status AS evaluation_case_status
          FROM retrieval_runs r
          LEFT JOIN evaluation_cases e ON e.source_run_id = r.run_id
          WHERE ($1 IS NULL OR r.project_id = $1)
@@ -959,7 +1115,8 @@ async fn load_run_detail(
     run_id: &str,
 ) -> Result<RetrievalRunDetail, DaemonError> {
     let row = sqlx::query(
-        "SELECT r.*, e.case_id AS evaluation_case_id
+        "SELECT r.*, e.case_id AS evaluation_case_id,
+                e.status AS evaluation_case_status
          FROM retrieval_runs r
          LEFT JOIN evaluation_cases e ON e.source_run_id = r.run_id
          WHERE r.run_id = $1",
@@ -974,20 +1131,27 @@ async fn load_run_detail(
         Some(case_id) => Some(load_evaluation_case(pool, case_id).await?),
         None => None,
     };
-    let (judgments, corpus_resources, report) = match evaluation_case.as_ref() {
-        Some(case) => (
-            load_judgments(pool, &case.case_id).await?,
-            load_corpus_resources(pool, &case.corpus_id).await?,
-            Some(benchmark_report(pool, std::slice::from_ref(case)).await?),
-        ),
+    let (evidence, evidence_suggestions, report) = match evaluation_case.as_ref() {
+        Some(case) => {
+            let report = if case.status == EvaluationCaseStatus::Ready {
+                Some(benchmark_report(pool, std::slice::from_ref(case)).await?)
+            } else {
+                None
+            };
+            (
+                load_evidence(pool, &case.case_id).await?,
+                suggest_evidence(&candidates),
+                report,
+            )
+        }
         None => (Vec::new(), Vec::new(), None),
     };
     Ok(RetrievalRunDetail {
         run,
         candidates,
         evaluation_case,
-        judgments,
-        corpus_resources,
+        evidence,
+        evidence_suggestions,
         report,
     })
 }
@@ -1052,6 +1216,11 @@ fn run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<RetrievalRun, DaemonErro
         created_at: row.try_get("created_at")?,
         completed_at: row.try_get("completed_at")?,
         evaluation_case_id: row.try_get("evaluation_case_id")?,
+        evaluation_case_status: row
+            .try_get::<Option<String>, _>("evaluation_case_status")?
+            .as_deref()
+            .map(EvaluationCaseStatus::parse)
+            .transpose()?,
     })
 }
 
@@ -1150,8 +1319,8 @@ pub(super) async fn create_evaluation_case(
     }
     sqlx::query(
         "INSERT INTO evaluation_cases (
-            case_id, source_run_id, corpus_id, project_id, query, query_category, notes
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+            case_id, source_run_id, corpus_id, project_id, query
+         ) VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT(source_run_id) DO NOTHING",
     )
     .bind(&case_id)
@@ -1159,8 +1328,6 @@ pub(super) async fn create_evaluation_case(
     .bind(&corpus_id)
     .bind(&run.project_id)
     .bind(&run.query)
-    .bind(normalize_optional(request.query_category))
-    .bind(normalize_optional(request.notes))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1172,12 +1339,12 @@ pub(super) async fn create_evaluation_case(
     load_evaluation_case_detail(&state.inner.pool, &actual_case_id).await
 }
 
-pub(super) async fn replace_evaluation_judgments(
+pub(super) async fn resolve_evaluation_case(
     state: &DaemonState,
-    request: ReplaceEvaluationJudgmentsRequest,
+    request: ResolveEvaluationCaseRequest,
 ) -> Result<EvaluationCaseDetail, DaemonError> {
     let _history = state.inner.retrieval_history_lock.lock().await;
-    validate_judgment_inputs(&request.judgments)?;
+    validate_evidence_inputs(&request.evidence, request.none_matched)?;
     let evaluation_case = load_evaluation_case(&state.inner.pool, &request.case_id).await?;
     let candidates = load_candidates(&state.inner.pool, &evaluation_case.source_run_id).await?;
     let candidates_by_unit = candidates
@@ -1191,8 +1358,8 @@ pub(super) async fn replace_evaluation_judgments(
         .map(|resource| (resource.resource_id.as_str(), resource))
         .collect::<HashMap<_, _>>();
 
-    let mut prepared = Vec::with_capacity(request.judgments.len());
-    for input in &request.judgments {
+    let mut prepared = Vec::with_capacity(request.evidence.len());
+    for input in &request.evidence {
         let resource = resources_by_id
             .get(input.resource_id.as_str())
             .ok_or_else(|| {
@@ -1215,64 +1382,58 @@ pub(super) async fn replace_evaluation_judgments(
                 }
                 candidate.evidence_excerpt.clone()
             }
-            None if input.missed => resource.preview.clone(),
-            None => {
-                return Err(DaemonError::InvalidRequest(
-                    "A non-missed judgment must identify a Retrieval Run candidate".to_owned(),
-                ));
-            }
+            None => resource.preview.clone(),
         };
         prepared.push((
-            judgment_id(
+            evidence_id(
                 &request.case_id,
                 &input.resource_id,
                 input.unit_key.as_deref(),
-                input.missed,
             ),
             input.clone(),
             excerpt,
         ));
     }
 
+    let status = if request.none_matched {
+        EvaluationCaseStatus::NeedsEvidence
+    } else {
+        EvaluationCaseStatus::Ready
+    };
     let mut tx = state.inner.pool.begin().await?;
     let updated = sqlx::query(
         "UPDATE evaluation_cases
-         SET judgment_version = judgment_version + 1,
+         SET status = $3,
+             version = version + 1,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE case_id = $1 AND judgment_version = $2",
+         WHERE case_id = $1 AND version = $2",
     )
     .bind(&request.case_id)
-    .bind(u64_to_i64(
-        request.expected_judgment_version,
-        "expected_judgment_version",
-    )?)
+    .bind(u64_to_i64(request.expected_version, "expected_version")?)
+    .bind(status.as_str())
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() != 1 {
         return Err(DaemonError::State {
-            code: "evaluation_judgment_conflict",
-            message: "Evaluation judgments changed before this update was applied".to_owned(),
+            code: "evaluation_case_conflict",
+            message: "The Evaluation Case changed before this update was applied".to_owned(),
         });
     }
-    sqlx::query("DELETE FROM evaluation_judgments WHERE case_id = $1")
+    sqlx::query("DELETE FROM evaluation_evidence WHERE case_id = $1")
         .bind(&request.case_id)
         .execute(&mut *tx)
         .await?;
-    for (judgment_id, input, excerpt) in prepared {
+    for (evidence_id, input, excerpt) in prepared {
         sqlx::query(
-            "INSERT INTO evaluation_judgments (
-                judgment_id, case_id, resource_id, unit_key, relevance,
-                missed, evidence_excerpt, notes
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO evaluation_evidence (
+                evidence_id, case_id, resource_id, unit_key, evidence_excerpt
+             ) VALUES ($1, $2, $3, $4, $5)",
         )
-        .bind(judgment_id)
+        .bind(evidence_id)
         .bind(&request.case_id)
         .bind(input.resource_id)
         .bind(input.unit_key)
-        .bind(i64::from(input.relevance))
-        .bind(i64::from(input.missed))
         .bind(excerpt)
-        .bind(normalize_optional(input.notes))
         .execute(&mut *tx)
         .await?;
     }
@@ -1323,13 +1484,13 @@ pub(super) async fn export_evaluation_set(
                 content,
             });
         }
-        let judgments = load_judgments(&state.inner.pool, &evaluation_case.case_id).await?;
+        let evidence = load_evidence(&state.inner.pool, &evaluation_case.case_id).await?;
         let source_run = load_run(&state.inner.pool, &evaluation_case.source_run_id).await?;
         let candidates = load_candidates(&state.inner.pool, &evaluation_case.source_run_id).await?;
         fixture_cases.push(EvaluationFixtureCase {
             evaluation_case,
             resources: fixture_resources,
-            judgments,
+            evidence,
             source_run,
             candidates,
         });
@@ -1398,7 +1559,8 @@ async fn load_run_resource_rows(
 
 async fn load_run(pool: &SqlitePool, run_id: &str) -> Result<RetrievalRun, DaemonError> {
     let row = sqlx::query(
-        "SELECT r.*, e.case_id AS evaluation_case_id
+        "SELECT r.*, e.case_id AS evaluation_case_id,
+                e.status AS evaluation_case_status
          FROM retrieval_runs r
          LEFT JOIN evaluation_cases e ON e.source_run_id = r.run_id
          WHERE r.run_id = $1",
@@ -1416,7 +1578,7 @@ async fn load_evaluation_case(
 ) -> Result<EvaluationCase, DaemonError> {
     let row = sqlx::query(
         "SELECT case_id, source_run_id, corpus_id, project_id, query,
-                query_category, notes, judgment_version, created_at, updated_at
+                status, version, created_at, updated_at
          FROM evaluation_cases
          WHERE case_id = $1",
     )
@@ -1430,45 +1592,34 @@ async fn load_evaluation_case(
         corpus_id: row.try_get("corpus_id")?,
         project_id: row.try_get("project_id")?,
         query: row.try_get("query")?,
-        query_category: row.try_get("query_category")?,
-        notes: row.try_get("notes")?,
-        judgment_version: non_negative_u64(row.try_get("judgment_version")?, "judgment_version")?,
+        status: EvaluationCaseStatus::parse(row.try_get::<String, _>("status")?.as_str())?,
+        version: non_negative_u64(row.try_get("version")?, "version")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
 }
 
-async fn load_judgments(
+async fn load_evidence(
     pool: &SqlitePool,
     case_id: &str,
-) -> Result<Vec<EvaluationJudgment>, DaemonError> {
+) -> Result<Vec<EvaluationEvidence>, DaemonError> {
     let rows = sqlx::query(
-        "SELECT judgment_id, case_id, resource_id, unit_key, relevance,
-                missed, evidence_excerpt, notes
-         FROM evaluation_judgments
+        "SELECT evidence_id, case_id, resource_id, unit_key, evidence_excerpt
+         FROM evaluation_evidence
          WHERE case_id = $1
-         ORDER BY missed, resource_id, unit_key",
+         ORDER BY resource_id, unit_key",
     )
     .bind(case_id)
     .fetch_all(pool)
     .await?;
     rows.into_iter()
         .map(|row| {
-            let relevance = non_negative_u64(row.try_get("relevance")?, "relevance")?;
-            if relevance > 3 {
-                return Err(history_corrupt(format!(
-                    "Evaluation judgment relevance is out of range: {relevance}"
-                )));
-            }
-            Ok(EvaluationJudgment {
-                judgment_id: row.try_get("judgment_id")?,
+            Ok(EvaluationEvidence {
+                evidence_id: row.try_get("evidence_id")?,
                 case_id: row.try_get("case_id")?,
                 resource_id: row.try_get("resource_id")?,
                 unit_key: row.try_get("unit_key")?,
-                relevance: relevance as u8,
-                missed: row.try_get::<i64, _>("missed")? != 0,
                 evidence_excerpt: row.try_get("evidence_excerpt")?,
-                notes: row.try_get("notes")?,
             })
         })
         .collect()
@@ -1511,13 +1662,17 @@ async fn load_evaluation_case_detail(
     case_id: &str,
 ) -> Result<EvaluationCaseDetail, DaemonError> {
     let evaluation_case = load_evaluation_case(pool, case_id).await?;
-    let judgments = load_judgments(pool, case_id).await?;
-    let corpus_resources = load_corpus_resources(pool, &evaluation_case.corpus_id).await?;
-    let report = benchmark_report(pool, std::slice::from_ref(&evaluation_case)).await?;
+    let evidence = load_evidence(pool, case_id).await?;
+    let candidates = load_candidates(pool, &evaluation_case.source_run_id).await?;
+    let report = if evaluation_case.status == EvaluationCaseStatus::Ready {
+        Some(benchmark_report(pool, std::slice::from_ref(&evaluation_case)).await?)
+    } else {
+        None
+    };
     Ok(EvaluationCaseDetail {
         evaluation_case,
-        judgments,
-        corpus_resources,
+        evidence,
+        evidence_suggestions: suggest_evidence(&candidates),
         report,
     })
 }
@@ -1529,7 +1684,8 @@ async fn select_evaluation_cases(
     let rows = sqlx::query(
         "SELECT case_id
          FROM evaluation_cases
-         WHERE ($1 IS NULL OR project_id = $1)
+         WHERE status = 'ready'
+           AND ($1 IS NULL OR project_id = $1)
          ORDER BY created_at, case_id",
     )
     .bind(request.project_id.as_deref())
@@ -1566,14 +1722,14 @@ async fn benchmark_report(
         let mut accumulators = Vec::new();
         let mut latencies = Vec::new();
         for evaluation_case in cases {
-            let judgments = load_judgments(pool, &evaluation_case.case_id).await?;
+            let evidence = load_evidence(pool, &evaluation_case.case_id).await?;
             let candidates = load_candidates(pool, &evaluation_case.source_run_id).await?;
             let corpus_resources = load_corpus_resources(pool, &evaluation_case.corpus_id).await?;
             let run = load_run(pool, &evaluation_case.source_run_id).await?;
             accumulators.push(case_metrics(
                 variant,
                 &candidates,
-                &judgments,
+                &evidence,
                 &corpus_resources,
             ));
             latencies.push(variant_latency(variant, &run.latencies));
@@ -1599,7 +1755,7 @@ struct CaseMetrics {
 fn case_metrics(
     variant: RetrievalBenchmarkVariant,
     candidates: &[RetrievalCandidate],
-    judgments: &[EvaluationJudgment],
+    evidence: &[EvaluationEvidence],
     corpus_resources: &[EvaluationCorpusResource],
 ) -> CaseMetrics {
     let mut ranked = candidates
@@ -1611,15 +1767,12 @@ fn case_metrics(
             .cmp(&right.0)
             .then_with(|| left.1.unit_key.cmp(&right.1.unit_key))
     });
-    let relevant = judgments
-        .iter()
-        .filter(|judgment| judgment.relevance > 0)
-        .collect::<Vec<_>>();
+    let relevant = evidence.iter().collect::<Vec<_>>();
     let relevant_count = relevant.len();
     let mut matched = BTreeSet::<String>::new();
     for (_, candidate) in ranked.iter().take(20) {
-        if let Some(judgment) = best_matching_judgment(candidate, &relevant, &matched) {
-            matched.insert(judgment.judgment_id.clone());
+        if let Some(evidence) = best_matching_evidence(candidate, &relevant, &matched) {
+            matched.insert(evidence.evidence_id.clone());
         }
     }
     let recall_at_20 = if relevant_count == 0 {
@@ -1632,26 +1785,17 @@ fn case_metrics(
     let mut dcg = 0.0;
     let mut first_relevant_rank = None;
     for (index, (_, candidate)) in ranked.iter().take(10).enumerate() {
-        if let Some(judgment) = best_matching_judgment(candidate, &relevant, &seen) {
-            seen.insert(judgment.judgment_id.clone());
-            let gain = 2f64.powi(i32::from(judgment.relevance)) - 1.0;
-            dcg += gain / ((index + 2) as f64).log2();
+        if let Some(evidence) = best_matching_evidence(candidate, &relevant, &seen) {
+            seen.insert(evidence.evidence_id.clone());
+            dcg += 1.0 / ((index + 2) as f64).log2();
             first_relevant_rank.get_or_insert(index + 1);
         }
     }
-    let mut ideal = relevant
+    let idcg = relevant
         .iter()
-        .map(|judgment| judgment.relevance)
-        .collect::<Vec<_>>();
-    ideal.sort_by(|left, right| right.cmp(left));
-    let idcg = ideal
-        .into_iter()
         .take(10)
         .enumerate()
-        .map(|(index, relevance)| {
-            let gain = 2f64.powi(i32::from(relevance)) - 1.0;
-            gain / ((index + 2) as f64).log2()
-        })
+        .map(|(index, _)| 1.0 / ((index + 2) as f64).log2())
         .sum::<f64>();
     let ndcg_at_10 = if idcg == 0.0 { 0.0 } else { dcg / idcg };
     let mrr = first_relevant_rank
@@ -1709,23 +1853,19 @@ fn case_metrics(
     }
 }
 
-fn best_matching_judgment<'a>(
+fn best_matching_evidence<'a>(
     candidate: &RetrievalCandidate,
-    judgments: &[&'a EvaluationJudgment],
+    evidence: &[&'a EvaluationEvidence],
     seen: &BTreeSet<String>,
-) -> Option<&'a EvaluationJudgment> {
-    judgments
-        .iter()
-        .copied()
-        .filter(|judgment| {
-            !seen.contains(&judgment.judgment_id)
-                && judgment.resource_id == candidate.resource_id
-                && judgment
-                    .unit_key
-                    .as_deref()
-                    .is_none_or(|unit_key| unit_key == candidate.unit_key)
-        })
-        .max_by_key(|judgment| judgment.relevance)
+) -> Option<&'a EvaluationEvidence> {
+    evidence.iter().copied().find(|evidence| {
+        !seen.contains(&evidence.evidence_id)
+            && evidence.resource_id == candidate.resource_id
+            && evidence
+                .unit_key
+                .as_deref()
+                .is_none_or(|unit_key| unit_key == candidate.unit_key)
+    })
 }
 
 fn candidate_rank(
@@ -1737,6 +1877,64 @@ fn candidate_rank(
         RetrievalBenchmarkVariant::DenseVector => candidate.vector_rank,
         RetrievalBenchmarkVariant::HybridRrf => candidate.rrf_rank,
         RetrievalBenchmarkVariant::Reranked => candidate.reranker_rank,
+    }
+}
+
+fn suggest_evidence(candidates: &[RetrievalCandidate]) -> Vec<EvaluationEvidenceSuggestion> {
+    let mut ranked = candidates
+        .iter()
+        .filter(|candidate| !candidate.selected)
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        suggestion_rank(left)
+            .cmp(&suggestion_rank(right))
+            .then_with(|| left.unit_key.cmp(&right.unit_key))
+    });
+
+    let mut resources = BTreeSet::new();
+    ranked
+        .into_iter()
+        .filter(|candidate| resources.insert(candidate.resource_id.as_str()))
+        .take(EVALUATION_SUGGESTION_LIMIT)
+        .map(|candidate| EvaluationEvidenceSuggestion {
+            resource_id: candidate.resource_id.clone(),
+            unit_key: candidate.unit_key.clone(),
+            path: candidate.path.clone(),
+            heading_path: candidate.heading_path.clone(),
+            evidence_excerpt: candidate.evidence_excerpt.clone(),
+            model_relevance: candidate.reranker_relevance,
+            likely_failure_stage: likely_failure_stage(candidate),
+            exclusion_reason: candidate.exclusion_reason,
+        })
+        .collect()
+}
+
+fn suggestion_rank(candidate: &RetrievalCandidate) -> (u8, u64, u64, u64, u64) {
+    (
+        u8::from(candidate.reranker_rank.is_none()),
+        candidate.reranker_rank.unwrap_or(u64::MAX),
+        candidate.rrf_rank.unwrap_or(u64::MAX),
+        candidate
+            .bm25_rank
+            .or(candidate.exact_rank)
+            .unwrap_or(u64::MAX),
+        candidate.vector_rank.unwrap_or(u64::MAX),
+    )
+}
+
+fn likely_failure_stage(candidate: &RetrievalCandidate) -> RetrievalFailureStage {
+    if candidate.rrf_rank.is_none() {
+        return RetrievalFailureStage::Fusion;
+    }
+    match candidate.exclusion_reason {
+        RetrievalExclusionReason::BelowRelevance | RetrievalExclusionReason::NotReranked => {
+            RetrievalFailureStage::Reranking
+        }
+        RetrievalExclusionReason::Overlap
+        | RetrievalExclusionReason::PerResourceLimit
+        | RetrievalExclusionReason::TokenBudget
+        | RetrievalExclusionReason::FragmentLimit
+        | RetrievalExclusionReason::Selected => RetrievalFailureStage::Assembly,
     }
 }
 
@@ -1790,27 +1988,36 @@ fn percentile(sorted: &[u64], quantile: f64) -> u64 {
     sorted[index.min(sorted.len() - 1)]
 }
 
-fn validate_judgment_inputs(inputs: &[EvaluationJudgmentInput]) -> Result<(), DaemonError> {
+fn validate_evidence_inputs(
+    inputs: &[EvaluationEvidenceInput],
+    none_matched: bool,
+) -> Result<(), DaemonError> {
+    if none_matched != inputs.is_empty() {
+        return Err(DaemonError::InvalidRequest(
+            "Resolve an Evaluation Case with exactly one of confirmed evidence or none_matched"
+                .to_owned(),
+        ));
+    }
     let mut identities = BTreeSet::new();
     for input in inputs {
         if input.resource_id.trim().is_empty() {
             return Err(DaemonError::InvalidRequest(
-                "Evaluation judgment resource_id must not be empty".to_owned(),
+                "Evaluation evidence resource_id must not be empty".to_owned(),
             ));
         }
-        if input.relevance > 3 {
+        if input
+            .unit_key
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
             return Err(DaemonError::InvalidRequest(
-                "Evaluation relevance must be between 0 and 3".to_owned(),
+                "Evaluation evidence unit_key must not be empty".to_owned(),
             ));
         }
-        let identity = (
-            input.resource_id.as_str(),
-            input.unit_key.as_deref(),
-            input.missed,
-        );
+        let identity = (input.resource_id.as_str(), input.unit_key.as_deref());
         if !identities.insert(identity) {
             return Err(DaemonError::InvalidRequest(
-                "Evaluation judgments contain a duplicate evidence identity".to_owned(),
+                "Evaluation evidence contains a duplicate identity".to_owned(),
             ));
         }
     }
@@ -1822,14 +2029,13 @@ fn corpus_id(effective_hash: &str, resources: &[RunResourceRow]) -> Result<Strin
     Ok(format!("corpus_{}", hex::encode(Sha256::digest(&manifest))))
 }
 
-fn judgment_id(case_id: &str, resource_id: &str, unit_key: Option<&str>, missed: bool) -> String {
+fn evidence_id(case_id: &str, resource_id: &str, unit_key: Option<&str>) -> String {
     let mut hasher = Sha256::new();
     for value in [case_id, resource_id, unit_key.unwrap_or_default()] {
         hasher.update(value.as_bytes());
         hasher.update([0]);
     }
-    hasher.update([u8::from(missed)]);
-    format!("judgment_{}", hex::encode(hasher.finalize()))
+    format!("evidence_{}", hex::encode(hasher.finalize()))
 }
 
 async fn prune_runs(state: &DaemonState, project_id: &str) -> Result<(), DaemonError> {
@@ -1973,13 +2179,6 @@ fn parse_kind(value: &str) -> Result<MemoryKind, DaemonError> {
             "Unknown Retrieval Run memory kind: {value}"
         ))),
     }
-}
-
-fn normalize_optional(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim().to_owned();
-        (!value.is_empty()).then_some(value)
-    })
 }
 
 fn elapsed_us(started: std::time::Instant) -> u64 {

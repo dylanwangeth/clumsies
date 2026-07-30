@@ -1,47 +1,29 @@
 import Foundation
 
-struct EvaluationJudgmentDraft: Identifiable, Equatable, Sendable {
+struct EvaluationEvidenceDraft: Identifiable, Equatable, Sendable {
     var id: String {
-        "\(resourceId)\u{0}\(unitKey ?? "")\u{0}\(missed)"
+        "\(resourceId)\u{0}\(unitKey ?? "")"
     }
 
     let resourceId: String
     let unitKey: String?
-    var relevance: UInt8
-    let missed: Bool
-    var notes: String?
 
-    init(
-        resourceId: String,
-        unitKey: String?,
-        relevance: UInt8,
-        missed: Bool,
-        notes: String?
-    ) {
+    init(resourceId: String, unitKey: String?) {
         self.resourceId = resourceId
         self.unitKey = unitKey
-        self.relevance = relevance
-        self.missed = missed
-        self.notes = notes
     }
 
-    init(_ judgment: EvaluationJudgment) {
+    init(_ evidence: EvaluationEvidence) {
         self.init(
-            resourceId: judgment.resourceId,
-            unitKey: judgment.unitKey,
-            relevance: judgment.relevance,
-            missed: judgment.missed,
-            notes: judgment.notes
+            resourceId: evidence.resourceId,
+            unitKey: evidence.unitKey
         )
     }
 
-    var input: EvaluationJudgmentInput {
-        EvaluationJudgmentInput(
+    var input: EvaluationEvidenceInput {
+        EvaluationEvidenceInput(
             resourceId: resourceId,
-            unitKey: unitKey,
-            relevance: relevance,
-            missed: missed,
-            notes: notes
+            unitKey: unitKey
         )
     }
 }
@@ -51,7 +33,7 @@ final class RetrievalDiagnosticsModel: ObservableObject {
     @Published private(set) var runs: [RetrievalRun] = []
     @Published var selectedRunId: String?
     @Published private(set) var detail: RetrievalRunDetail?
-    @Published private(set) var judgmentDrafts: [EvaluationJudgmentDraft] = []
+    @Published private(set) var evidenceDrafts: [EvaluationEvidenceDraft] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published private(set) var isMutating = false
@@ -97,14 +79,14 @@ final class RetrievalDiagnosticsModel: ObservableObject {
                 try await loadDetail(runId: selected, generation: generation)
             } else {
                 detail = nil
-                judgmentDrafts = []
+                evidenceDrafts = []
             }
         } catch {
             guard selectionGeneration == generation else { return }
             runs = []
             nextCursor = nil
             detail = nil
-            judgmentDrafts = []
+            evidenceDrafts = []
             errorMessage = error.localizedDescription
         }
     }
@@ -138,11 +120,11 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         selectionGeneration = generation
         guard let runId else {
             detail = nil
-            judgmentDrafts = []
+            evidenceDrafts = []
             return
         }
         detail = nil
-        judgmentDrafts = []
+        evidenceDrafts = []
         isLoading = true
         errorMessage = nil
         defer {
@@ -155,97 +137,77 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         } catch {
             guard selectionGeneration == generation else { return }
             detail = nil
-            judgmentDrafts = []
+            evidenceDrafts = []
             errorMessage = error.localizedDescription
         }
     }
 
-    func createEvaluationCase() async {
+    func markInaccurate() async {
         guard let runId = detail?.run.runId else { return }
         await mutate {
             _ = try await daemon.createEvaluationCase(
-                CreateEvaluationCaseRequest(
-                    runId: runId,
-                    queryCategory: nil,
-                    notes: nil
-                )
+                CreateEvaluationCaseRequest(runId: runId)
             )
             try await refreshDetail(runId: runId)
         }
     }
 
-    func saveJudgments() async {
+    func confirmEvidence() async {
         guard let runId = detail?.run.runId,
               let evaluationCase = detail?.evaluationCase else {
             return
         }
-        let judgments = judgmentDrafts.map(\.input)
+        let evidence = evidenceDrafts.map(\.input)
+        guard !evidence.isEmpty else { return }
         await mutate {
-            _ = try await daemon.replaceEvaluationJudgments(
-                ReplaceEvaluationJudgmentsRequest(
+            _ = try await daemon.resolveEvaluationCase(
+                ResolveEvaluationCaseRequest(
                     caseId: evaluationCase.caseId,
-                    expectedJudgmentVersion: evaluationCase.judgmentVersion,
-                    judgments: judgments
+                    expectedVersion: evaluationCase.version,
+                    evidence: evidence,
+                    noneMatched: false
                 )
             )
             try await refreshDetail(runId: runId)
         }
     }
 
-    func candidateRelevance(_ candidate: RetrievalCandidate) -> UInt8? {
-        judgmentDrafts.first {
-            !$0.missed && $0.resourceId == candidate.resourceId && $0.unitKey == candidate.unitKey
-        }?.relevance
-    }
-
-    func setCandidateRelevance(_ relevance: UInt8?, candidate: RetrievalCandidate) {
-        let index = judgmentDrafts.firstIndex {
-            !$0.missed && $0.resourceId == candidate.resourceId && $0.unitKey == candidate.unitKey
-        }
-        switch (index, relevance) {
-        case (.some(let index), .some(let relevance)):
-            judgmentDrafts[index].relevance = relevance
-        case (.some(let index), .none):
-            judgmentDrafts.remove(at: index)
-        case (.none, .some(let relevance)):
-            judgmentDrafts.append(
-                EvaluationJudgmentDraft(
-                    resourceId: candidate.resourceId,
-                    unitKey: candidate.unitKey,
-                    relevance: relevance,
-                    missed: false,
-                    notes: nil
-                )
-            )
-        case (.none, .none):
-            break
-        }
-    }
-
-    func addMissedEvidence(_ resource: EvaluationCorpusResource) {
-        guard !judgmentDrafts.contains(where: {
-            $0.missed && $0.resourceId == resource.resourceId
-        }) else {
+    func markNoSuggestionMatched() async {
+        guard let runId = detail?.run.runId,
+              let evaluationCase = detail?.evaluationCase else {
             return
         }
-        judgmentDrafts.append(
-            EvaluationJudgmentDraft(
-                resourceId: resource.resourceId,
-                unitKey: nil,
-                relevance: 1,
-                missed: true,
-                notes: nil
+        await mutate {
+            _ = try await daemon.resolveEvaluationCase(
+                ResolveEvaluationCaseRequest(
+                    caseId: evaluationCase.caseId,
+                    expectedVersion: evaluationCase.version,
+                    evidence: [],
+                    noneMatched: true
+                )
             )
-        )
+            try await refreshDetail(runId: runId)
+        }
     }
 
-    func setMissedRelevance(_ relevance: UInt8, draftId: String) {
-        guard let index = judgmentDrafts.firstIndex(where: { $0.id == draftId }) else { return }
-        judgmentDrafts[index].relevance = relevance
+    func isEvidenceSelected(_ suggestion: EvaluationEvidenceSuggestion) -> Bool {
+        evidenceDrafts.contains {
+            $0.resourceId == suggestion.resourceId && $0.unitKey == suggestion.unitKey
+        }
     }
 
-    func removeMissedEvidence(draftId: String) {
-        judgmentDrafts.removeAll { $0.id == draftId && $0.missed }
+    func setEvidenceSelected(_ selected: Bool, suggestion: EvaluationEvidenceSuggestion) {
+        evidenceDrafts.removeAll {
+            $0.resourceId == suggestion.resourceId && $0.unitKey == suggestion.unitKey
+        }
+        if selected {
+            evidenceDrafts.append(
+                EvaluationEvidenceDraft(
+                    resourceId: suggestion.resourceId,
+                    unitKey: suggestion.unitKey
+                )
+            )
+        }
     }
 
     func clearUnpinnedHistory() async {
@@ -285,7 +247,7 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         if selectedRunId != loaded.run.runId {
             selectedRunId = loaded.run.runId
         }
-        judgmentDrafts = loaded.judgments.map(EvaluationJudgmentDraft.init)
+        evidenceDrafts = loaded.evidence.map(EvaluationEvidenceDraft.init)
     }
 
     private func mutate(_ operation: () async throws -> Void) async {

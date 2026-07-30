@@ -2663,10 +2663,10 @@ mod tests {
         DaemonDeleteDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
         DaemonDraftOperationResponse, DaemonDraftOperationSource, DaemonIpcRequest,
         DaemonIpcService, DaemonProjectCacheClearRequest, DaemonProjectStorageRequest,
-        DaemonRenameDraftOperation, DaemonUpdateDraftOperation, EvaluationJudgmentInput,
-        ExportEvaluationSetRequest, ReplaceEvaluationJudgmentsRequest, RetrievalDeltaAction,
-        RetrievalExclusionReason, RetrievalRunListRequest, RetrievalRunRequest, RetrievalRunStatus,
-        ServerCredentials,
+        DaemonRenameDraftOperation, DaemonUpdateDraftOperation, EvaluationCaseStatus,
+        EvaluationEvidenceInput, ExportEvaluationSetRequest, ResolveEvaluationCaseRequest,
+        RetrievalDeltaAction, RetrievalExclusionReason, RetrievalRunListRequest,
+        RetrievalRunRequest, RetrievalRunStatus, ServerCredentials,
     };
 
     struct NoCredentials;
@@ -3235,74 +3235,147 @@ mod tests {
             }
         }
 
+        sqlx::query(
+            "INSERT INTO retrieval_run_candidates (
+                run_id, candidate_order, unit_key, resource_id, scope, kind, path,
+                heading_path_json, locator_json, content_hash, resource_content_hash,
+                token_count, evidence_excerpt, exact_rank, bm25_rank, bm25_score,
+                vector_rank, vector_score, rrf_rank, rrf_score, reranker_rank,
+                reranker_logit, reranker_relevance, final_rank, selected,
+                exclusion_reason, delta_action
+             )
+             SELECT run_id,
+                    (SELECT COALESCE(MAX(candidate_order), -1) + 1
+                     FROM retrieval_run_candidates WHERE run_id = $1),
+                    unit_key || ':suggested', resource_id, scope, kind, path,
+                    heading_path_json, locator_json, content_hash,
+                    resource_content_hash, token_count,
+                    'A relevant unit omitted from the assembled result.',
+                    exact_rank, bm25_rank, bm25_score, vector_rank, vector_score,
+                    rrf_rank + 10, rrf_score, reranker_rank + 10,
+                    reranker_logit, reranker_relevance, NULL, 0,
+                    'per_resource_limit', NULL
+             FROM retrieval_run_candidates
+             WHERE run_id = $1
+             ORDER BY candidate_order
+             LIMIT 1",
+        )
+        .bind(&run.run_id)
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
+
         let evaluation = state
             .create_evaluation_case(CreateEvaluationCaseRequest {
                 run_id: run.run_id.clone(),
-                query_category: Some("retrieval".to_owned()),
-                notes: Some("deterministic fixture".to_owned()),
             })
             .await
             .unwrap();
-        assert_eq!(evaluation.evaluation_case.judgment_version, 1);
-        assert_eq!(evaluation.corpus_resources.len(), 3);
-        let relevant = selected[0];
-        let missed = evaluation
-            .corpus_resources
-            .iter()
-            .find(|resource| resource.resource_id != relevant.resource_id)
-            .unwrap();
-        let judged = state
-            .replace_evaluation_judgments(ReplaceEvaluationJudgmentsRequest {
+        assert_eq!(
+            evaluation.evaluation_case.status,
+            EvaluationCaseStatus::Draft
+        );
+        assert_eq!(evaluation.evaluation_case.version, 1);
+        assert!(evaluation.evidence.is_empty());
+        assert!(!evaluation.evidence_suggestions.is_empty());
+        assert!(evaluation.report.is_none());
+
+        let draft_export = state
+            .export_evaluation_set(ExportEvaluationSetRequest {
+                project_id: Some("prj_test".to_owned()),
+                case_ids: vec![evaluation.evaluation_case.case_id.clone()],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(draft_export, DaemonError::InvalidRequest(_)));
+
+        let suggestion = &evaluation.evidence_suggestions[0];
+        let resolved = state
+            .resolve_evaluation_case(ResolveEvaluationCaseRequest {
                 case_id: evaluation.evaluation_case.case_id.clone(),
-                expected_judgment_version: 1,
-                judgments: vec![
-                    EvaluationJudgmentInput {
-                        resource_id: relevant.resource_id.clone(),
-                        unit_key: Some(relevant.unit_key.clone()),
-                        relevance: 3,
-                        missed: false,
-                        notes: None,
-                    },
-                    EvaluationJudgmentInput {
-                        resource_id: missed.resource_id.clone(),
-                        unit_key: None,
-                        relevance: 2,
-                        missed: true,
-                        notes: Some("Relevant evidence was not retrieved".to_owned()),
-                    },
-                ],
+                expected_version: 1,
+                evidence: vec![EvaluationEvidenceInput {
+                    resource_id: suggestion.resource_id.clone(),
+                    unit_key: Some(suggestion.unit_key.clone()),
+                }],
+                none_matched: false,
             })
             .await
             .unwrap();
-        assert_eq!(judged.evaluation_case.judgment_version, 2);
-        assert_eq!(judged.judgments.len(), 2);
-        assert!(judged.judgments.iter().any(|judgment| judgment.missed));
+        assert_eq!(resolved.evaluation_case.status, EvaluationCaseStatus::Ready);
+        assert_eq!(resolved.evaluation_case.version, 2);
+        assert_eq!(resolved.evidence.len(), 1);
+        assert!(resolved.report.is_some());
 
         let stale = state
-            .replace_evaluation_judgments(ReplaceEvaluationJudgmentsRequest {
-                case_id: judged.evaluation_case.case_id.clone(),
-                expected_judgment_version: 1,
-                judgments: Vec::new(),
+            .resolve_evaluation_case(ResolveEvaluationCaseRequest {
+                case_id: resolved.evaluation_case.case_id.clone(),
+                expected_version: 1,
+                evidence: Vec::new(),
+                none_matched: true,
             })
             .await
             .unwrap_err();
         assert!(matches!(
             stale,
             DaemonError::State {
-                code: "evaluation_judgment_conflict",
+                code: "evaluation_case_conflict",
                 ..
             }
         ));
 
+        let needs_evidence = state
+            .resolve_evaluation_case(ResolveEvaluationCaseRequest {
+                case_id: resolved.evaluation_case.case_id.clone(),
+                expected_version: 2,
+                evidence: Vec::new(),
+                none_matched: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            needs_evidence.evaluation_case.status,
+            EvaluationCaseStatus::NeedsEvidence
+        );
+        assert_eq!(needs_evidence.evaluation_case.version, 3);
+        assert!(needs_evidence.evidence.is_empty());
+        assert!(needs_evidence.report.is_none());
+
+        let needs_evidence_export = state
+            .export_evaluation_set(ExportEvaluationSetRequest {
+                project_id: Some("prj_test".to_owned()),
+                case_ids: vec![needs_evidence.evaluation_case.case_id.clone()],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            needs_evidence_export,
+            DaemonError::InvalidRequest(_)
+        ));
+
+        let resolved = state
+            .resolve_evaluation_case(ResolveEvaluationCaseRequest {
+                case_id: needs_evidence.evaluation_case.case_id.clone(),
+                expected_version: 3,
+                evidence: vec![EvaluationEvidenceInput {
+                    resource_id: suggestion.resource_id.clone(),
+                    unit_key: Some(suggestion.unit_key.clone()),
+                }],
+                none_matched: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resolved.evaluation_case.version, 4);
+
         let exported = state
             .export_evaluation_set(ExportEvaluationSetRequest {
                 project_id: Some("prj_test".to_owned()),
-                case_ids: vec![judged.evaluation_case.case_id.clone()],
+                case_ids: vec![resolved.evaluation_case.case_id.clone()],
             })
             .await
             .unwrap();
         let fixture: serde_json::Value = serde_json::from_str(&exported.fixture_json).unwrap();
-        assert_eq!(fixture["version"], 1);
+        assert_eq!(fixture["version"], 2);
         assert_eq!(fixture["cases"].as_array().unwrap().len(), 1);
         assert_eq!(exported.report.variants.len(), 4);
         for variant in ["b1_bm25", "b2_dense_vector", "b3_hybrid_rrf", "b4_reranked"] {
@@ -3337,7 +3410,11 @@ mod tests {
         assert_eq!(retained.items[0].run_id, run.run_id);
         assert_eq!(
             retained.items[0].evaluation_case_id.as_deref(),
-            Some(judged.evaluation_case.case_id.as_str())
+            Some(resolved.evaluation_case.case_id.as_str())
+        );
+        assert_eq!(
+            retained.items[0].evaluation_case_status,
+            Some(EvaluationCaseStatus::Ready)
         );
         let storage = state
             .project_storage(DaemonProjectStorageRequest {
@@ -3358,12 +3435,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(after_cache_clear.corpus_resources.len(), 3);
+        assert_eq!(after_cache_clear.evidence.len(), 1);
         assert!(after_cache_clear.report.is_some());
         let exported_after_cache_clear = state
             .export_evaluation_set(ExportEvaluationSetRequest {
                 project_id: Some("prj_test".to_owned()),
-                case_ids: vec![judged.evaluation_case.case_id.clone()],
+                case_ids: vec![resolved.evaluation_case.case_id.clone()],
             })
             .await
             .unwrap();

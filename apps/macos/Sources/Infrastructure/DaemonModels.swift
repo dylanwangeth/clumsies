@@ -536,6 +536,7 @@ struct RetrievalRun: Codable, Identifiable, Equatable, Sendable {
     let createdAt: String
     let completedAt: String?
     let evaluationCaseId: String?
+    let evaluationCaseStatus: EvaluationCaseStatus?
 }
 
 struct RetrievalSourceLocator: Codable, Equatable, Sendable {
@@ -579,29 +580,31 @@ struct RetrievalRunDetail: Codable, Sendable {
     let run: RetrievalRun
     let candidates: [RetrievalCandidate]
     let evaluationCase: EvaluationCase?
-    let judgments: [EvaluationJudgment]
-    let corpusResources: [EvaluationCorpusResource]
+    let evidence: [EvaluationEvidence]
+    let evidenceSuggestions: [EvaluationEvidenceSuggestion]
     let report: RetrievalBenchmarkReport?
 }
 
 struct CreateEvaluationCaseRequest: Codable, Sendable {
     let runId: String
-    let queryCategory: String?
-    let notes: String?
 }
 
-struct ReplaceEvaluationJudgmentsRequest: Codable, Sendable {
+struct ResolveEvaluationCaseRequest: Codable, Sendable {
     let caseId: String
-    let expectedJudgmentVersion: UInt64
-    let judgments: [EvaluationJudgmentInput]
+    let expectedVersion: UInt64
+    let evidence: [EvaluationEvidenceInput]
+    let noneMatched: Bool
 }
 
-struct EvaluationJudgmentInput: Codable, Hashable, Sendable {
+struct EvaluationEvidenceInput: Codable, Hashable, Sendable {
     let resourceId: String
     let unitKey: String?
-    let relevance: UInt8
-    let missed: Bool
-    let notes: String?
+}
+
+enum EvaluationCaseStatus: String, Codable, Equatable, Sendable {
+    case draft
+    case needsEvidence = "needs_evidence"
+    case ready
 }
 
 struct EvaluationCase: Codable, Identifiable, Equatable, Sendable {
@@ -612,39 +615,39 @@ struct EvaluationCase: Codable, Identifiable, Equatable, Sendable {
     let corpusId: String
     let projectId: String
     let query: String
-    let queryCategory: String?
-    let notes: String?
-    let judgmentVersion: UInt64
+    let status: EvaluationCaseStatus
+    let version: UInt64
     let createdAt: String
     let updatedAt: String
 }
 
-struct EvaluationJudgment: Codable, Identifiable, Equatable, Sendable {
-    var id: String { judgmentId }
+struct EvaluationEvidence: Codable, Identifiable, Equatable, Sendable {
+    var id: String { evidenceId }
 
-    let judgmentId: String
+    let evidenceId: String
     let caseId: String
     let resourceId: String
     let unitKey: String?
-    let relevance: UInt8
-    let missed: Bool
     let evidenceExcerpt: String
-    let notes: String?
 }
 
-struct EvaluationCorpusResource: Codable, Identifiable, Equatable, Sendable {
-    var id: String { resourceId }
+enum RetrievalFailureStage: String, Codable, Equatable, Sendable {
+    case fusion
+    case reranking
+    case assembly
+}
+
+struct EvaluationEvidenceSuggestion: Codable, Identifiable, Equatable, Sendable {
+    var id: String { unitKey }
 
     let resourceId: String
-    let scope: DaemonDraftScope
-    let kind: DaemonResourceKind
+    let unitKey: String
     let path: String
-    let title: String
-    let contentHash: String
-    let sourceCommitId: String?
-    let draftId: String?
-    let draftRevision: String?
-    let preview: String
+    let headingPath: [String]
+    let evidenceExcerpt: String
+    let modelRelevance: Double?
+    let likelyFailureStage: RetrievalFailureStage
+    let exclusionReason: RetrievalExclusionReason
 }
 
 struct RetrievalBenchmarkMetrics: Codable, Equatable, Sendable {
@@ -665,9 +668,9 @@ struct RetrievalBenchmarkReport: Codable, Equatable, Sendable {
 
 struct EvaluationCaseDetail: Codable, Sendable {
     let evaluationCase: EvaluationCase
-    let judgments: [EvaluationJudgment]
-    let corpusResources: [EvaluationCorpusResource]
-    let report: RetrievalBenchmarkReport
+    let evidence: [EvaluationEvidence]
+    let evidenceSuggestions: [EvaluationEvidenceSuggestion]
+    let report: RetrievalBenchmarkReport?
 }
 
 struct ClearRetrievalRunsRequest: Codable, Sendable {

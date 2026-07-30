@@ -178,7 +178,7 @@ private struct RetrievalDiagnosticsView: View {
                         Image(systemName: "square.and.arrow.up")
                     }
                     .help("Export Evaluation Set")
-                    .disabled(model.runs.allSatisfy { $0.evaluationCaseId == nil })
+                    .disabled(model.runs.allSatisfy { $0.evaluationCaseStatus != .ready })
 
                     Button {
                         detailsWindow.present(model: model)
@@ -269,9 +269,9 @@ private struct RetrievalRunList: View {
                                     .foregroundStyle(isSelected ? Color.white : run.status.tint)
                                 Text(run.createdAt)
                                     .lineLimit(1)
-                                if run.evaluationCaseId != nil {
-                                    Image(systemName: "pin.fill")
-                                        .help("Included in the Evaluation Set")
+                                if let evaluationStatus = run.evaluationCaseStatus {
+                                    Image(systemName: evaluationStatus.symbolName)
+                                        .help(evaluationStatus.helpText)
                                 }
                             }
                             .font(.caption)
@@ -375,10 +375,7 @@ private struct RetrievalRunContent: View {
                         Divider()
                     }
                 }
-                CandidateTraceTable(
-                    model: model,
-                    detail: detail
-                )
+                CandidateTraceTable(detail: detail)
             }
         } else {
             ContentUnavailableView(
@@ -430,7 +427,6 @@ private struct RetrievalRunSummary: View {
 }
 
 private struct CandidateTraceTable: View {
-    @ObservedObject var model: RetrievalDiagnosticsModel
     let detail: RetrievalRunDetail
 
     var body: some View {
@@ -487,27 +483,6 @@ private struct CandidateTraceTable: View {
                         .foregroundStyle(candidate.selected ? .primary : .secondary)
                 }
                 .width(min: 80, ideal: 100)
-                TableColumn("Grade") { candidate in
-                    if detail.evaluationCase != nil {
-                        Picker(
-                            "Relevance",
-                            selection: Binding<UInt8?>(
-                                get: { model.candidateRelevance(candidate) },
-                                set: { model.setCandidateRelevance($0, candidate: candidate) }
-                            )
-                        ) {
-                            Text("—").tag(UInt8?.none)
-                            ForEach(UInt8(0) ... UInt8(3), id: \.self) { value in
-                                Text(String(value)).tag(Optional(value))
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                    } else {
-                        Text("—")
-                    }
-                }
-                .width(54)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay {
@@ -548,10 +523,6 @@ private struct CandidateTraceTable: View {
 private struct RetrievalRunDetailsView: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
 
-    private var missedDrafts: [EvaluationJudgmentDraft] {
-        model.judgmentDrafts.filter(\.missed)
-    }
-
     var body: some View {
         if let detail = model.detail {
             ScrollView(.vertical) {
@@ -566,83 +537,20 @@ private struct RetrievalRunDetailsView: View {
                     runDetail("Ranking profile", detail.run.rankingProfile ?? "Unavailable")
                     runDetail("Model", detail.run.modelRevision ?? "Unavailable")
                     Divider()
-                    Text("Evaluation")
+                    Text("Retrieval Quality")
                         .font(.headline)
                     if let evaluationCase = detail.evaluationCase {
-                        HStack {
-                            Text("Judgment version \(evaluationCase.judgmentVersion)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Save") {
-                                Task { await model.saveJudgments() }
-                            }
-                            .disabled(model.isMutating)
-                        }
-                        Text("Missed Evidence")
-                            .font(.subheadline.weight(.semibold))
-                        Menu {
-                            ForEach(detail.corpusResources) { resource in
-                                Button(resource.path) {
-                                    model.addMissedEvidence(resource)
-                                }
-                            }
-                        } label: {
-                            Label("Add Evidence", systemImage: "plus")
-                        }
-                        if missedDrafts.isEmpty {
-                            Text("No missed evidence has been recorded.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(missedDrafts) { draft in
-                                HStack {
-                                    Text(
-                                        detail.corpusResources.first {
-                                            $0.resourceId == draft.resourceId
-                                        }?.path ?? draft.resourceId
-                                    )
-                                    .lineLimit(2)
-                                    Spacer()
-                                    Picker(
-                                        "Relevance",
-                                        selection: Binding(
-                                            get: { draft.relevance },
-                                            set: { model.setMissedRelevance($0, draftId: draft.id) }
-                                        )
-                                    ) {
-                                        ForEach(UInt8(0) ... UInt8(3), id: \.self) { value in
-                                            Text(String(value)).tag(value)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .pickerStyle(.menu)
-                                    Button {
-                                        model.removeMissedEvidence(draftId: draft.id)
-                                    } label: {
-                                        Image(systemName: "minus.circle")
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .help("Remove Missed Evidence")
-                                }
-                            }
-                        }
-                        if let report = detail.report, !report.variants.isEmpty {
-                            Divider()
-                            Text("Benchmark")
-                                .font(.headline)
-                            RetrievalBenchmarkSummary(report: report)
-                        }
+                        evaluationStatus(evaluationCase.status)
+                        evidenceReview(detail)
                     } else if detail.run.status == .succeeded {
-                        Text("This Run is not in the Evaluation Set.")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Freeze its Effective Memory corpus for relevance judgments.")
-                            .foregroundStyle(.secondary)
-                        Button("Add") {
-                            Task { await model.createEvaluationCase() }
+                        Button {
+                            Task { await model.markInaccurate() }
+                        } label: {
+                            Label("Inaccurate", systemImage: "hand.thumbsdown")
                         }
                         .disabled(model.isMutating)
                     } else {
-                        Text("Only successful Retrieval Runs can become Evaluation Cases.")
+                        Text("Failed runs cannot be evaluated.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -655,6 +563,87 @@ private struct RetrievalRunDetailsView: View {
                 systemImage: "list.bullet.rectangle"
             )
         }
+    }
+
+    @ViewBuilder
+    private func evaluationStatus(_ status: EvaluationCaseStatus) -> some View {
+        Label(status.detailLabel, systemImage: status.symbolName)
+            .foregroundStyle(status.tint)
+    }
+
+    @ViewBuilder
+    private func evidenceReview(_ detail: RetrievalRunDetail) -> some View {
+        if detail.evidenceSuggestions.isEmpty {
+            Text("No evidence suggestions were found.")
+                .foregroundStyle(.secondary)
+            Button("None Match") {
+                Task { await model.markNoSuggestionMatched() }
+            }
+            .disabled(model.isMutating)
+        } else {
+            Text("Suggested Evidence")
+                .font(.subheadline.weight(.semibold))
+            ForEach(detail.evidenceSuggestions) { suggestion in
+                Toggle(
+                    isOn: Binding(
+                        get: { model.isEvidenceSelected(suggestion) },
+                        set: { model.setEvidenceSelected($0, suggestion: suggestion) }
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(suggestion.path)
+                            .lineLimit(1)
+                        if !suggestion.headingPath.isEmpty {
+                            Text(suggestion.headingPath.joined(separator: " › "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Text(suggestion.evidenceExcerpt)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .disabled(model.isMutating)
+            }
+            HStack {
+                Button("Confirm") {
+                    Task { await model.confirmEvidence() }
+                }
+                .disabled(model.evidenceDrafts.isEmpty || model.isMutating)
+
+                Button("None Match") {
+                    Task { await model.markNoSuggestionMatched() }
+                }
+                .disabled(model.isMutating)
+            }
+            if !selectedSuggestions(detail).isEmpty {
+                Text("Analysis")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(selectedSuggestions(detail)) { suggestion in
+                    Label(
+                        suggestion.diagnosis,
+                        systemImage: suggestion.likelyFailureStage.symbolName
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        if let report = detail.report, !report.variants.isEmpty {
+            Divider()
+            Text("Benchmark")
+                .font(.headline)
+            RetrievalBenchmarkSummary(report: report)
+        }
+    }
+
+    private func selectedSuggestions(
+        _ detail: RetrievalRunDetail
+    ) -> [EvaluationEvidenceSuggestion] {
+        detail.evidenceSuggestions.filter(model.isEvidenceSelected)
     }
 
     @ViewBuilder
@@ -737,6 +726,70 @@ private extension RetrievalRunStatus {
         case .succeeded: .green
         case .failed: .red
         }
+    }
+}
+
+private extension EvaluationCaseStatus {
+    var symbolName: String {
+        switch self {
+        case .draft: "sparkles"
+        case .needsEvidence: "questionmark.circle"
+        case .ready: "checkmark.seal.fill"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .draft: "Evidence suggestions are awaiting confirmation"
+        case .needsEvidence: "The suggested evidence did not match"
+        case .ready: "Ready for the Evaluation Set"
+        }
+    }
+
+    var detailLabel: String {
+        switch self {
+        case .draft: "Suggestions ready"
+        case .needsEvidence: "Needs deeper analysis"
+        case .ready: "Evidence confirmed"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .draft, .needsEvidence: .secondary
+        case .ready: .green
+        }
+    }
+}
+
+private extension RetrievalFailureStage {
+    var symbolName: String {
+        switch self {
+        case .fusion: "arrow.triangle.merge"
+        case .reranking: "arrow.up.arrow.down"
+        case .assembly: "line.3.horizontal.decrease"
+        }
+    }
+}
+
+private extension EvaluationEvidenceSuggestion {
+    var diagnosis: String {
+        switch likelyFailureStage {
+        case .fusion:
+            "Likely lost during hybrid fusion"
+        case .reranking:
+            "Likely rejected during reranking"
+        case .assembly:
+            "Likely excluded by \(exclusionReason.label)"
+        }
+    }
+}
+
+private extension RetrievalExclusionReason {
+    var label: String {
+        rawValue
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
     }
 }
 

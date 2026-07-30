@@ -44,12 +44,13 @@ pub use project_storage::{
 };
 pub use retrieval_history::{
     ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
-    EvaluationCase, EvaluationCaseDetail, EvaluationCorpusResource, EvaluationJudgment,
-    EvaluationJudgmentInput, ExportEvaluationSetRequest, ExportEvaluationSetResponse,
-    ReplaceEvaluationJudgmentsRequest, RetrievalBenchmarkMetrics, RetrievalBenchmarkReport,
-    RetrievalBenchmarkVariant, RetrievalCandidate, RetrievalDeltaAction, RetrievalExclusionReason,
-    RetrievalRun, RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse,
-    RetrievalRunRequest, RetrievalRunStatus, RetrievalStageLatencies,
+    EvaluationCase, EvaluationCaseDetail, EvaluationCaseStatus, EvaluationEvidence,
+    EvaluationEvidenceInput, EvaluationEvidenceSuggestion, ExportEvaluationSetRequest,
+    ExportEvaluationSetResponse, ResolveEvaluationCaseRequest, RetrievalBenchmarkMetrics,
+    RetrievalBenchmarkReport, RetrievalBenchmarkVariant, RetrievalCandidate, RetrievalDeltaAction,
+    RetrievalExclusionReason, RetrievalFailureStage, RetrievalRun, RetrievalRunDetail,
+    RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest, RetrievalRunStatus,
+    RetrievalStageLatencies,
 };
 pub use search::{
     ActivateMemoryRequest, ActivateMemoryResponse, ActivationAction, ActivationFragment,
@@ -60,7 +61,7 @@ pub use search::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 19;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
@@ -1240,11 +1241,11 @@ impl DaemonState {
         retrieval_history::create_evaluation_case(self, request).await
     }
 
-    pub async fn replace_evaluation_judgments(
+    pub async fn resolve_evaluation_case(
         &self,
-        request: ReplaceEvaluationJudgmentsRequest,
+        request: ResolveEvaluationCaseRequest,
     ) -> Result<EvaluationCaseDetail, DaemonError> {
-        retrieval_history::replace_evaluation_judgments(self, request).await
+        retrieval_history::resolve_evaluation_case(self, request).await
     }
 
     pub async fn clear_retrieval_runs(
@@ -1726,11 +1727,11 @@ impl DaemonIpcService {
         self.state.create_evaluation_case(request).await
     }
 
-    pub async fn replace_evaluation_judgments(
+    pub async fn resolve_evaluation_case(
         &self,
-        request: ReplaceEvaluationJudgmentsRequest,
+        request: ResolveEvaluationCaseRequest,
     ) -> Result<EvaluationCaseDetail, DaemonError> {
-        self.state.replace_evaluation_judgments(request).await
+        self.state.resolve_evaluation_case(request).await
     }
 
     pub async fn clear_retrieval_runs(
@@ -1989,12 +1990,12 @@ impl DaemonIpcService {
                     Err(error) => Err(error),
                 }
             }
-            "replace_evaluation_judgments" => {
-                let payload = self
-                    .decode_dispatch_payload::<ReplaceEvaluationJudgmentsRequest>(request.payload);
+            "resolve_evaluation_case" => {
+                let payload =
+                    self.decode_dispatch_payload::<ResolveEvaluationCaseRequest>(request.payload);
                 match payload {
                     Ok(payload) => self
-                        .replace_evaluation_judgments(payload)
+                        .resolve_evaluation_case(payload)
                         .await
                         .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
                     Err(error) => Err(error),
@@ -3799,6 +3800,10 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
         migrate_local_schema_17_to_18(pool).await?;
         existing_schema_version = 18;
     }
+    if existing_schema_version == 18 {
+        migrate_local_schema_18_to_19(pool).await?;
+        existing_schema_version = 19;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -4077,7 +4082,11 @@ async fn migrate_local_schema_16_to_17(pool: &SqlitePool) -> Result<(), DaemonEr
 }
 
 async fn migrate_local_schema_17_to_18(pool: &SqlitePool) -> Result<(), DaemonError> {
-    retrieval_history::migrate(pool).await
+    retrieval_history::migrate_schema_17_to_18(pool).await
+}
+
+async fn migrate_local_schema_18_to_19(pool: &SqlitePool) -> Result<(), DaemonError> {
+    retrieval_history::migrate_schema_18_to_19(pool).await
 }
 
 async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {

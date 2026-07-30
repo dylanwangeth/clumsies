@@ -12,7 +12,7 @@ use crate::{
     DaemonProjectStorageResetRequest, DaemonRetryResponse, DaemonServerRequest,
     DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, EvaluationCaseDetail,
     ExportEvaluationSetRequest, ExportEvaluationSetResponse, LoadMemoryRequest, LoadMemoryResponse,
-    ReplaceEvaluationJudgmentsRequest, RetrievalRunDetail, RetrievalRunListRequest,
+    ResolveEvaluationCaseRequest, RetrievalRunDetail, RetrievalRunListRequest,
     RetrievalRunListResponse, RetrievalRunRequest, SearchIndexProjectRequest, SearchIndexStatus,
 };
 
@@ -237,12 +237,12 @@ impl DaemonIpcClient {
         .into_payload()
     }
 
-    pub fn replace_evaluation_judgments(
+    pub fn resolve_evaluation_case(
         &self,
-        request: ReplaceEvaluationJudgmentsRequest,
+        request: ResolveEvaluationCaseRequest,
     ) -> Result<EvaluationCaseDetail, DaemonError> {
         self.call(DaemonIpcRequest::new(
-            "replace_evaluation_judgments",
+            "resolve_evaluation_case",
             serde_json::to_value(request)?,
         ))?
         .into_payload()
