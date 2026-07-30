@@ -14,9 +14,28 @@ enum RetrievalDiagnosticsLayout {
         + dividerAllowance
 }
 
-enum RetrievalRunDetailsWindowLayout {
-    static let defaultContentSize = NSSize(width: 560, height: 720)
-    static let minimumContentSize = NSSize(width: 460, height: 560)
+enum RetrievalEvidenceReviewAction: Equatable {
+    case done
+    case noMatch
+    case confirm
+
+    init(hasSelection: Bool, canRecordNoMatch: Bool) {
+        if hasSelection {
+            self = .confirm
+        } else if canRecordNoMatch {
+            self = .noMatch
+        } else {
+            self = .done
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .done: "Done"
+        case .noMatch: "No Match"
+        case .confirm: "Confirm"
+        }
+    }
 }
 
 enum DiagnosticsDestination: String, Identifiable {
@@ -138,7 +157,7 @@ private struct RetrievalDiagnosticsView: View {
 
     @State private var confirmsClear = false
     @State private var exportError: String?
-    @StateObject private var detailsWindow = RetrievalRunDetailsWindowPresenter()
+    @State private var showsEvidenceReview = false
 
     var body: some View {
         NavigationSplitView {
@@ -171,28 +190,60 @@ private struct RetrievalDiagnosticsView: View {
                 maxHeight: .infinity
             )
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        Task { await exportEvaluationSet() }
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .help("Export Evaluation Set")
-                    .disabled(model.runs.allSatisfy { $0.evaluationCaseStatus != .ready })
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        if model.detail?.run.status == .succeeded {
+                            if model.detail?.evaluationCase == nil {
+                                Button {
+                                    Task { await model.markInaccurate() }
+                                } label: {
+                                    Label("Report Inaccurate", systemImage: "flag")
+                                }
+                                .disabled(model.isMutating)
+                            } else {
+                                Button {
+                                    showsEvidenceReview = true
+                                } label: {
+                                    Label(
+                                        "Review Evidence",
+                                        systemImage: "doc.text.magnifyingglass"
+                                    )
+                                }
+                            }
+                        }
 
-                    Button {
-                        detailsWindow.present(model: model)
+                        if canExportEvaluationSet {
+                            if model.detail?.run.status == .succeeded {
+                                Divider()
+                            }
+
+                            Button {
+                                Task { await exportEvaluationSet() }
+                            } label: {
+                                Label(
+                                    "Export Evaluation Set",
+                                    systemImage: "square.and.arrow.up"
+                                )
+                            }
+                        }
                     } label: {
-                        Image(systemName: "info.circle")
+                        Image(systemName: "ellipsis")
                     }
-                    .help("Show Run Details")
-                    .accessibilityLabel("Show Run Details")
-                    .disabled(model.detail == nil)
+                    .menuIndicator(.hidden)
+                    .help("More")
+                    .accessibilityLabel("More")
+                    .disabled(!hasMoreActions)
                 }
             }
         }
-        .onDisappear {
-            detailsWindow.close()
+        .sheet(isPresented: $showsEvidenceReview) {
+            RetrievalEvidenceReviewSheet(
+                model: model,
+                isPresented: $showsEvidenceReview
+            )
+        }
+        .onChange(of: model.selectedRunId) { _, _ in
+            showsEvidenceReview = false
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let message = model.errorMessage ?? exportError {
@@ -220,6 +271,14 @@ private struct RetrievalDiagnosticsView: View {
         } message: {
             Text("Runs used by Evaluation Cases will be kept.")
         }
+    }
+
+    private var canExportEvaluationSet: Bool {
+        model.runs.contains { $0.evaluationCaseStatus == .ready }
+    }
+
+    private var hasMoreActions: Bool {
+        model.detail?.run.status == .succeeded || canExportEvaluationSet
     }
 
     @MainActor
@@ -520,194 +579,104 @@ private struct CandidateTraceTable: View {
     }
 }
 
-private struct RetrievalRunDetailsView: View {
+private struct RetrievalEvidenceReviewSheet: View {
     @ObservedObject var model: RetrievalDiagnosticsModel
+    @Binding var isPresented: Bool
+
+    private var action: RetrievalEvidenceReviewAction {
+        RetrievalEvidenceReviewAction(
+            hasSelection: !model.evidenceDrafts.isEmpty,
+            canRecordNoMatch: model.detail?.evaluationCase?.status == .draft
+        )
+    }
 
     var body: some View {
         if let detail = model.detail {
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Run Details")
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Review Evidence")
                         .font(.headline)
-                    runDetail("Created", detail.run.createdAt)
-                    runDetail("Run ID", detail.run.runId)
-                    runDetail("Index", detail.run.indexRevision ?? "Unavailable")
-                    runDetail("Parser", detail.run.parserVersion ?? "Unavailable")
-                    runDetail("Chunker", detail.run.chunkerVersion ?? "Unavailable")
-                    runDetail("Ranking profile", detail.run.rankingProfile ?? "Unavailable")
-                    runDetail("Model", detail.run.modelRevision ?? "Unavailable")
-                    Divider()
-                    Text("Retrieval Quality")
-                        .font(.headline)
-                    if let evaluationCase = detail.evaluationCase {
-                        evaluationStatus(evaluationCase.status)
-                        evidenceReview(detail)
-                    } else if detail.run.status == .succeeded {
-                        Button {
-                            Task { await model.markInaccurate() }
-                        } label: {
-                            Label("Inaccurate", systemImage: "hand.thumbsdown")
-                        }
-                        .disabled(model.isMutating)
-                    } else {
-                        Text("Failed runs cannot be evaluated.")
-                            .foregroundStyle(.secondary)
-                    }
+                    Spacer()
                 }
                 .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } else {
-            ContentUnavailableView(
-                "Select a Retrieval Run",
-                systemImage: "list.bullet.rectangle"
-            )
-        }
-    }
 
-    @ViewBuilder
-    private func evaluationStatus(_ status: EvaluationCaseStatus) -> some View {
-        Label(status.detailLabel, systemImage: status.symbolName)
-            .foregroundStyle(status.tint)
-    }
+                Divider()
 
-    @ViewBuilder
-    private func evidenceReview(_ detail: RetrievalRunDetail) -> some View {
-        if detail.evidenceSuggestions.isEmpty {
-            Text("No evidence suggestions were found.")
-                .foregroundStyle(.secondary)
-            Button("None Match") {
-                Task { await model.markNoSuggestionMatched() }
-            }
-            .disabled(model.isMutating)
-        } else {
-            Text("Suggested Evidence")
-                .font(.subheadline.weight(.semibold))
-            ForEach(detail.evidenceSuggestions) { suggestion in
-                Toggle(
-                    isOn: Binding(
-                        get: { model.isEvidenceSelected(suggestion) },
-                        set: { model.setEvidenceSelected($0, suggestion: suggestion) }
+                if detail.evidenceSuggestions.isEmpty {
+                    ContentUnavailableView(
+                        "No Suggested Evidence",
+                        systemImage: "doc.text.magnifyingglass"
                     )
-                ) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(suggestion.path)
-                            .lineLimit(1)
-                        if !suggestion.headingPath.isEmpty {
-                            Text(suggestion.headingPath.joined(separator: " › "))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(detail.evidenceSuggestions) { suggestion in
+                        Toggle(
+                            isOn: Binding(
+                                get: { model.isEvidenceSelected(suggestion) },
+                                set: {
+                                    model.setEvidenceSelected($0, suggestion: suggestion)
+                                }
+                            )
+                        ) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(suggestion.path)
+                                    .lineLimit(1)
+                                if !suggestion.headingPath.isEmpty {
+                                    Text(suggestion.headingPath.joined(separator: " › "))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Text(suggestion.evidenceExcerpt)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                Label(
+                                    suggestion.diagnosis,
+                                    systemImage: suggestion.likelyFailureStage.symbolName
+                                )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            }
+                            .padding(.vertical, 4)
                         }
-                        Text(suggestion.evidenceExcerpt)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
+                        .toggleStyle(.checkbox)
+                        .disabled(model.isMutating)
                     }
                 }
-                .toggleStyle(.checkbox)
-                .disabled(model.isMutating)
-            }
-            HStack {
-                Button("Confirm") {
-                    Task { await model.confirmEvidence() }
+
+                Divider()
+
+                HStack {
+                    Spacer()
+
+                    Button("Cancel") {
+                        model.resetEvidenceSelection()
+                        isPresented = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+
+                    Button(action.title) {
+                        Task {
+                            if action != .done {
+                                guard await model.resolveEvidenceReview() else { return }
+                            }
+                            isPresented = false
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.isMutating)
                 }
-                .disabled(model.evidenceDrafts.isEmpty || model.isMutating)
-
-                Button("None Match") {
-                    Task { await model.markNoSuggestionMatched() }
-                }
-                .disabled(model.isMutating)
+                .padding(16)
             }
-            if !selectedSuggestions(detail).isEmpty {
-                Text("Analysis")
-                    .font(.subheadline.weight(.semibold))
-                ForEach(selectedSuggestions(detail)) { suggestion in
-                    Label(
-                        suggestion.diagnosis,
-                        systemImage: suggestion.likelyFailureStage.symbolName
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
+            .frame(minWidth: 620, minHeight: 560)
+            .onAppear {
+                model.resetEvidenceSelection()
             }
+        } else {
+            ProgressView()
+                .frame(width: 620, height: 560)
         }
-        if let report = detail.report, !report.variants.isEmpty {
-            Divider()
-            Text("Benchmark")
-                .font(.headline)
-            RetrievalBenchmarkSummary(report: report)
-        }
-    }
-
-    private func selectedSuggestions(
-        _ detail: RetrievalRunDetail
-    ) -> [EvaluationEvidenceSuggestion] {
-        detail.evidenceSuggestions.filter(model.isEvidenceSelected)
-    }
-
-    @ViewBuilder
-    private func runDetail(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.monospaced())
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .fixedSize(horizontal: false, vertical: false)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .clipped()
-                .help(value)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-@MainActor
-private final class RetrievalRunDetailsWindowPresenter: NSObject, ObservableObject,
-    NSWindowDelegate
-{
-    private var window: NSPanel?
-
-    func present(model: RetrievalDiagnosticsModel) {
-        if let window {
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let controller = NSHostingController(
-            rootView: RetrievalRunDetailsView(model: model)
-        )
-        controller.sizingOptions = []
-        let panel = NSPanel(
-            contentRect: NSRect(
-                origin: .zero,
-                size: RetrievalRunDetailsWindowLayout.defaultContentSize
-            ),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = "Run Details"
-        panel.contentViewController = controller
-        panel.contentMinSize = RetrievalRunDetailsWindowLayout.minimumContentSize
-        panel.setContentSize(RetrievalRunDetailsWindowLayout.defaultContentSize)
-        panel.isReleasedWhenClosed = false
-        panel.hidesOnDeactivate = false
-        panel.delegate = self
-        panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        window = panel
-    }
-
-    func close() {
-        window?.close()
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        window = nil
     }
 }
 
@@ -743,14 +712,6 @@ private extension EvaluationCaseStatus {
         case .draft: "Evidence suggestions are awaiting confirmation"
         case .needsEvidence: "The suggested evidence did not match"
         case .ready: "Ready for the Evaluation Set"
-        }
-    }
-
-    var detailLabel: String {
-        switch self {
-        case .draft: "Suggestions ready"
-        case .needsEvidence: "Needs deeper analysis"
-        case .ready: "Evidence confirmed"
         }
     }
 
@@ -790,39 +751,6 @@ private extension RetrievalExclusionReason {
         rawValue
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
-    }
-}
-
-private struct RetrievalBenchmarkSummary: View {
-    let report: RetrievalBenchmarkReport?
-
-    var body: some View {
-        if let report, !report.variants.isEmpty {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                GridRow {
-                    Text("Variant")
-                    Text("Recall@20")
-                    Text("nDCG@10")
-                    Text("MRR")
-                }
-                .font(.caption.weight(.semibold))
-                ForEach(report.variants.keys.sorted(), id: \.self) { key in
-                    if let metrics = report.variants[key] {
-                        GridRow {
-                            Text(key)
-                            metric(metrics.recallAt20)
-                            metric(metrics.ndcgAt10)
-                            metric(metrics.mrr)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func metric(_ value: Double) -> some View {
-        Text(value.formatted(.number.precision(.fractionLength(3))))
-            .monospacedDigit()
     }
 }
 

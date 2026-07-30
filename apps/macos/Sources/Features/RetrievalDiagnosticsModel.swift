@@ -142,9 +142,10 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         }
     }
 
-    func markInaccurate() async {
-        guard let runId = detail?.run.runId else { return }
-        await mutate {
+    @discardableResult
+    func markInaccurate() async -> Bool {
+        guard let runId = detail?.run.runId else { return false }
+        return await mutate {
             _ = try await daemon.createEvaluationCase(
                 CreateEvaluationCaseRequest(runId: runId)
             )
@@ -152,42 +153,28 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         }
     }
 
-    func confirmEvidence() async {
+    @discardableResult
+    func resolveEvidenceReview() async -> Bool {
         guard let runId = detail?.run.runId,
               let evaluationCase = detail?.evaluationCase else {
-            return
+            return false
         }
         let evidence = evidenceDrafts.map(\.input)
-        guard !evidence.isEmpty else { return }
-        await mutate {
+        return await mutate {
             _ = try await daemon.resolveEvaluationCase(
                 ResolveEvaluationCaseRequest(
                     caseId: evaluationCase.caseId,
                     expectedVersion: evaluationCase.version,
                     evidence: evidence,
-                    noneMatched: false
+                    noneMatched: evidence.isEmpty
                 )
             )
             try await refreshDetail(runId: runId)
         }
     }
 
-    func markNoSuggestionMatched() async {
-        guard let runId = detail?.run.runId,
-              let evaluationCase = detail?.evaluationCase else {
-            return
-        }
-        await mutate {
-            _ = try await daemon.resolveEvaluationCase(
-                ResolveEvaluationCaseRequest(
-                    caseId: evaluationCase.caseId,
-                    expectedVersion: evaluationCase.version,
-                    evidence: [],
-                    noneMatched: true
-                )
-            )
-            try await refreshDetail(runId: runId)
-        }
+    func resetEvidenceSelection() {
+        evidenceDrafts = detail?.evidence.map(EvaluationEvidenceDraft.init) ?? []
     }
 
     func isEvidenceSelected(_ suggestion: EvaluationEvidenceSuggestion) -> Bool {
@@ -250,15 +237,18 @@ final class RetrievalDiagnosticsModel: ObservableObject {
         evidenceDrafts = loaded.evidence.map(EvaluationEvidenceDraft.init)
     }
 
-    private func mutate(_ operation: () async throws -> Void) async {
-        guard !isMutating else { return }
+    @discardableResult
+    private func mutate(_ operation: () async throws -> Void) async -> Bool {
+        guard !isMutating else { return false }
         isMutating = true
         errorMessage = nil
         defer { isMutating = false }
         do {
             try await operation()
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 }

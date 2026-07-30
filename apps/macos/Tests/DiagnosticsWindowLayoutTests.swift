@@ -62,18 +62,41 @@ final class DiagnosticsWindowLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(RetrievalDiagnosticsLayout.runListMinimumWidth, 360)
     }
 
-    func testRunDetailsWindowHasStableReadableSize() {
-        XCTAssertGreaterThanOrEqual(
-            RetrievalRunDetailsWindowLayout.defaultContentSize.width,
-            RetrievalRunDetailsWindowLayout.minimumContentSize.width
+    func testEvidenceReviewExposesOnlyOneContextualPrimaryAction() {
+        XCTAssertEqual(
+            RetrievalEvidenceReviewAction(
+                hasSelection: false,
+                canRecordNoMatch: true
+            ),
+            .noMatch
         )
-        XCTAssertGreaterThanOrEqual(
-            RetrievalRunDetailsWindowLayout.defaultContentSize.height,
-            RetrievalRunDetailsWindowLayout.minimumContentSize.height
+        XCTAssertEqual(
+            RetrievalEvidenceReviewAction(
+                hasSelection: false,
+                canRecordNoMatch: true
+            ).title,
+            "No Match"
         )
-        XCTAssertGreaterThanOrEqual(
-            RetrievalRunDetailsWindowLayout.minimumContentSize.width,
-            460
+        XCTAssertEqual(
+            RetrievalEvidenceReviewAction(
+                hasSelection: true,
+                canRecordNoMatch: true
+            ),
+            .confirm
+        )
+        XCTAssertEqual(
+            RetrievalEvidenceReviewAction(
+                hasSelection: true,
+                canRecordNoMatch: false
+            ).title,
+            "Confirm"
+        )
+        XCTAssertEqual(
+            RetrievalEvidenceReviewAction(
+                hasSelection: false,
+                canRecordNoMatch: false
+            ),
+            .done
         )
     }
 
