@@ -642,7 +642,7 @@ pub(crate) async fn activate_memory(
         match super::retrieval_history::start_run(state, &project_id, &query, &fingerprint).await {
             Ok(run_id) => Some(run_id),
             Err(error) => {
-                eprintln!("failed to start Retrieval Run recording: {error}");
+                tracing::error!("failed to start Retrieval Run recording: {error}");
                 None
             }
         };
@@ -713,11 +713,11 @@ pub(crate) async fn activate_memory(
     if let Some(run_id) = run_id
         && let Err(error) = super::retrieval_history::finish_run(state, &run_id, completion).await
     {
-        eprintln!("failed to finish Retrieval Run {run_id}: {error}");
+        tracing::error!("failed to finish Retrieval Run {run_id}: {error}");
         if let Err(record_error) =
             super::retrieval_history::record_persistence_failure(state, &run_id, &error).await
         {
-            eprintln!(
+            tracing::error!(
                 "failed to record Retrieval Run persistence failure {run_id}: {record_error}"
             );
         }
@@ -4075,6 +4075,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let units = build_index_units(&resources, &models).unwrap();
+        // Diagnostic timing for index build benchmark
         eprintln!(
             "built {} real embedding units in {:.2?}",
             units.len(),

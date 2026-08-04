@@ -2,10 +2,27 @@ use daemon::{
     DaemonConfig, DaemonIpcServer, DaemonIpcService, DaemonState, LaunchAgentConfig,
     LaunchAgentController,
 };
+use std::sync::Mutex;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::SystemTime;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env()?;
+
+    let log_file = Mutex::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(config.log_dir.join("daemon.log"))?,
+    );
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_timer(SystemTime)
+        .with_writer(std::io::stderr.and(log_file))
+        .with_target(false)
+        .init();
     let launch_agent = LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?)?;
     let launch_agent_controller = LaunchAgentController::for_current_user(launch_agent.clone())?;
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -41,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         [] => {}
         _ => {
-            eprintln!(
+            tracing::error!(
                 "usage: clumsiesd [--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
             );
             std::process::exit(64);
@@ -56,9 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _search_model_worker = state.start_search_model_worker();
     let health = service.health().await;
 
-    eprintln!(
+    tracing::info!(
         "clumsiesd initialized for Mach service {} with installation {}",
-        launch_agent.mach_service_name, health.daemon_installation_id
+        launch_agent.mach_service_name,
+        health.daemon_installation_id
     );
 
     shutdown_signal().await;
