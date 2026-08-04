@@ -1683,6 +1683,37 @@ impl DaemonState {
     }
 }
 
+macro_rules! dispatch_async {
+    ($self:expr, $payload:expr, $method:ident) => {{
+        let payload = $self.decode_dispatch_payload::<_>($payload);
+        match payload {
+            Ok(payload) => $self
+                .$method(payload)
+                .await
+                .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+            Err(error) => Err(error),
+        }
+    }};
+}
+
+macro_rules! dispatch_result_async {
+    ($self:expr, $method:ident) => {
+        $self
+            .$method()
+            .await
+            .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from))
+    };
+}
+
+macro_rules! dispatch_value {
+    ($self:expr, $method:ident) => {
+        serde_json::to_value($self.$method()).map_err(DaemonError::from)
+    };
+    ($self:expr, $method:ident, async) => {
+        serde_json::to_value($self.$method().await).map_err(DaemonError::from)
+    };
+}
+
 #[derive(Clone)]
 pub struct DaemonIpcService {
     state: DaemonState,
@@ -1925,325 +1956,76 @@ impl DaemonIpcService {
 
     pub async fn dispatch(&self, request: DaemonIpcRequest) -> DaemonIpcResponse {
         let result = match request.method.as_str() {
-            "health" => serde_json::to_value(self.health().await).map_err(DaemonError::from),
-            "project_config" => {
-                serde_json::to_value(self.project_config()).map_err(DaemonError::from)
-            }
+            "health" => dispatch_value!(self, health, async),
+            "project_config" => dispatch_value!(self, project_config),
             "replace_project_config" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectConfigUpdateRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .replace_project_config(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, replace_project_config)
             }
-            "select_project" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonProjectSelectionRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .select_project(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "select_project" => dispatch_async!(self, request.payload, select_project),
             "resolve_project_binding" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectBindingResolveRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .resolve_project_binding(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, resolve_project_binding)
             }
             "list_project_bindings" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectBindingListRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .list_project_bindings(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, list_project_bindings)
             }
             "replace_project_binding" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectBindingReplaceRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .replace_project_binding(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, replace_project_binding)
             }
             "remove_project_binding" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectBindingRemoveRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .remove_project_binding(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, remove_project_binding)
             }
             "list_project_agent_adapters" => {
-                let payload = self.decode_dispatch_payload::<DaemonProjectAgentAdapterListRequest>(
-                    request.payload,
-                );
-                match payload {
-                    Ok(payload) => self
-                        .list_project_agent_adapters(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, list_project_agent_adapters)
             }
             "install_project_agent_adapter" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectAgentAdapterInstallRequest>(
-                        request.payload,
-                    );
-                match payload {
-                    Ok(payload) => self
-                        .install_project_agent_adapter(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, install_project_agent_adapter)
             }
             "remove_project_agent_adapter" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectAgentAdapterRemoveRequest>(
-                        request.payload,
-                    );
-                match payload {
-                    Ok(payload) => self
-                        .remove_project_agent_adapter(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, remove_project_agent_adapter)
             }
-            "sync_status" => self
-                .sync_status()
-                .await
-                .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-            "project_storage" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonProjectStorageRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .project_storage(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "sync_status" => dispatch_result_async!(self, sync_status),
+            "project_storage" => dispatch_async!(self, request.payload, project_storage),
             "replace_project_storage" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectStorageReplaceRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .replace_project_storage(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, replace_project_storage)
             }
             "project_storage_move" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectStorageMoveRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .project_storage_move(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, project_storage_move)
             }
             "reset_project_storage" => {
-                let payload = self
-                    .decode_dispatch_payload::<DaemonProjectStorageResetRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .reset_project_storage(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, reset_project_storage)
             }
             "clear_project_cache" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonProjectCacheClearRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .clear_project_cache(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, clear_project_cache)
             }
-            "memory_cache" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonMemoryCacheRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .memory_cache(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
-            "project_checkout" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonProjectCheckoutRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .project_checkout(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
-            "activate_memory" => {
-                let payload =
-                    self.decode_dispatch_payload::<ActivateMemoryRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .activate_memory(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
-            "load_memory" => {
-                let payload = self.decode_dispatch_payload::<LoadMemoryRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .load_memory(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "memory_cache" => dispatch_async!(self, request.payload, memory_cache),
+            "project_checkout" => dispatch_async!(self, request.payload, project_checkout),
+            "activate_memory" => dispatch_async!(self, request.payload, activate_memory),
+            "load_memory" => dispatch_async!(self, request.payload, load_memory),
             "search_index_status" => {
-                let payload =
-                    self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .search_index_status(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, search_index_status)
             }
             "rebuild_search_index" => {
-                let payload =
-                    self.decode_dispatch_payload::<SearchIndexProjectRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .rebuild_search_index(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, rebuild_search_index)
             }
             "list_retrieval_runs" => {
-                let payload =
-                    self.decode_dispatch_payload::<RetrievalRunListRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .list_retrieval_runs(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, list_retrieval_runs)
             }
-            "get_retrieval_run" => {
-                let payload = self.decode_dispatch_payload::<RetrievalRunRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .get_retrieval_run(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "get_retrieval_run" => dispatch_async!(self, request.payload, get_retrieval_run),
             "create_evaluation_case" => {
-                let payload =
-                    self.decode_dispatch_payload::<CreateEvaluationCaseRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .create_evaluation_case(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, create_evaluation_case)
             }
             "resolve_evaluation_case" => {
-                let payload =
-                    self.decode_dispatch_payload::<ResolveEvaluationCaseRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .resolve_evaluation_case(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, resolve_evaluation_case)
             }
             "clear_retrieval_runs" => {
-                let payload =
-                    self.decode_dispatch_payload::<ClearRetrievalRunsRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .clear_retrieval_runs(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, clear_retrieval_runs)
             }
             "export_evaluation_set" => {
-                let payload =
-                    self.decode_dispatch_payload::<ExportEvaluationSetRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .export_evaluation_set(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, export_evaluation_set)
             }
-            "retry_sync" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonSyncRetryRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .retry_sync(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
-            "mcp_status" => serde_json::to_value(self.mcp_status()).map_err(DaemonError::from),
-            "list_drafts" => {
-                let payload = self.decode_dispatch_payload::<DaemonDraftListQuery>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .list_drafts(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "retry_sync" => dispatch_async!(self, request.payload, retry_sync),
+            "mcp_status" => dispatch_value!(self, mcp_status),
+            "list_drafts" => dispatch_async!(self, request.payload, list_drafts),
             "get_draft" => {
                 let payload =
                     self.decode_dispatch_payload::<DaemonDraftDetailRequest>(request.payload);
@@ -2256,26 +2038,9 @@ impl DaemonIpcService {
                 }
             }
             "store_draft_operation" => {
-                let payload =
-                    self.decode_dispatch_payload::<DaemonDraftOperationRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .store_draft_operation(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
+                dispatch_async!(self, request.payload, store_draft_operation)
             }
-            "server_request" => {
-                let payload = self.decode_dispatch_payload::<DaemonServerRequest>(request.payload);
-                match payload {
-                    Ok(payload) => self
-                        .server_request(payload)
-                        .await
-                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
-                    Err(error) => Err(error),
-                }
-            }
+            "server_request" => dispatch_async!(self, request.payload, server_request),
             method => Err(DaemonError::InvalidRequest(format!(
                 "unknown daemon IPC method: {method}"
             ))),
