@@ -680,7 +680,7 @@ fn rollback_changes(backups: &[FileBackup]) {
             None => remove_file_if_present(&backup.path),
         };
         if let Err(error) = result {
-            eprintln!(
+            tracing::error!(
                 "failed to roll back adapter file {}: {error}",
                 backup.path.display()
             );

@@ -1612,10 +1612,10 @@ impl DaemonState {
                 match result {
                     Ok(Ok(())) => break,
                     Ok(Err(error)) => {
-                        eprintln!("search model preparation failed: {}", error.message);
+                        tracing::warn!("search model preparation failed: {}", error.message);
                     }
                     Err(error) => {
-                        eprintln!("search model preparation worker failed: {error}");
+                        tracing::error!("search model preparation worker failed: {error}");
                     }
                 }
                 tokio::time::sleep(retry_delay).await;
