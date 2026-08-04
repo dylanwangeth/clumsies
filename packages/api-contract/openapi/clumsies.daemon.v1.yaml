@@ -55,7 +55,12 @@ components:
         - replace_project_config
         - select_project
         - resolve_project_binding
+        - list_project_bindings
         - replace_project_binding
+        - remove_project_binding
+        - list_project_agent_adapters
+        - install_project_agent_adapter
+        - remove_project_agent_adapter
         - sync_status
         - project_storage
         - replace_project_storage
@@ -182,6 +187,21 @@ components:
         workspace_path:
           type: string
           description: Existing local path whose nearest bound ancestor should be resolved.
+    DaemonProjectBindingListRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+          description: Canonical Server Project whose local repository bindings should be listed.
+    DaemonProjectBindingListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonProjectBinding"
     DaemonProjectBindingReplaceRequest:
       type: object
       required: [workspace_root, project_id, expected_revision]
@@ -196,6 +216,23 @@ components:
           type: [integer, "null"]
           minimum: 1
           description: Current binding revision for replacement; null creates a binding idempotently.
+    DaemonProjectBindingRemoveRequest:
+      type: object
+      required: [workspace_root, expected_revision]
+      properties:
+        workspace_root:
+          type: string
+        expected_revision:
+          type: integer
+          minimum: 1
+    DaemonProjectBindingRemoveResponse:
+      type: object
+      required: [workspace_root, removed]
+      properties:
+        workspace_root:
+          type: string
+        removed:
+          type: boolean
     DaemonProjectBinding:
       type: object
       required:
@@ -222,6 +259,96 @@ components:
         updated_at:
           type: string
           format: date-time
+    DaemonProjectAgentAdapterListRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+    DaemonProjectAgentAdapterInstallRequest:
+      type: object
+      required:
+        - project_id
+        - workspace_root
+        - adapter
+        - helper_binary_path
+        - expected_revision
+      properties:
+        project_id:
+          type: string
+        workspace_root:
+          type: string
+        adapter:
+          $ref: "#/components/schemas/ProjectAgentAdapterKind"
+        helper_binary_path:
+          type: string
+          description: Signed Clumsies CLI/MCP executable embedded by the Desktop app.
+        expected_revision:
+          type: [integer, "null"]
+          minimum: 1
+    DaemonProjectAgentAdapterRemoveRequest:
+      type: object
+      required: [workspace_root, adapter, expected_revision]
+      properties:
+        workspace_root:
+          type: string
+        adapter:
+          $ref: "#/components/schemas/ProjectAgentAdapterKind"
+        expected_revision:
+          type: integer
+          minimum: 1
+    DaemonProjectAgentAdapterRemoveResponse:
+      type: object
+      required: [workspace_root, adapter, removed]
+      properties:
+        workspace_root:
+          type: string
+        adapter:
+          $ref: "#/components/schemas/ProjectAgentAdapterKind"
+        removed:
+          type: boolean
+    DaemonProjectAgentAdapter:
+      type: object
+      required:
+        - server_url
+        - project_id
+        - workspace_root
+        - adapter
+        - revision
+        - managed_files
+        - created_at
+        - updated_at
+      properties:
+        server_url:
+          type: string
+          format: uri
+        project_id:
+          type: string
+        workspace_root:
+          type: string
+        adapter:
+          $ref: "#/components/schemas/ProjectAgentAdapterKind"
+        revision:
+          type: integer
+          minimum: 1
+        managed_files:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    DaemonProjectAgentAdapterListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonProjectAgentAdapter"
     DaemonProjectStorageRequest:
       type: object
       required: [project_id]
@@ -1410,6 +1537,9 @@ components:
     DaemonProjectStorageMoveState:
       type: string
       enum: [preparing, materializing, verifying, switching, cleaning, completed, failed]
+    ProjectAgentAdapterKind:
+      type: string
+      enum: [codex, claude-code]
     RetrievalRunStatus:
       type: string
       enum: [running, succeeded, failed]

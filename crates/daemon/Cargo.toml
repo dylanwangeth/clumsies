@@ -21,6 +21,7 @@ sha2 = "0.10.9"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "uuid"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+toml_edit = "0.25.13"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

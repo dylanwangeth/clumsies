@@ -70,6 +70,11 @@ targets:
         basedOnDependencyAnalysis: false
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/clumsiesd
+      - name: Embed clumsies
+        path: Scripts/embed-client.sh
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/clumsies
   ClumsiesTests:
     type: bundle.unit-test
     platform: macOS

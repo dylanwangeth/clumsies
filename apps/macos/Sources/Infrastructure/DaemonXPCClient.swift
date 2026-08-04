@@ -54,6 +54,42 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "select_project", payload: DaemonProjectSelection(projectId: projectId))
     }
 
+    func projectBindings(_ projectId: String) async throws -> [DaemonProjectBinding] {
+        let response: DaemonProjectBindingListResponse = try await call(
+            method: "list_project_bindings",
+            payload: DaemonProjectBindingListRequest(projectId: projectId)
+        )
+        return response.items
+    }
+
+    func replaceProjectBinding(_ request: DaemonProjectBindingReplaceRequest) async throws
+        -> DaemonProjectBinding {
+        try await call(method: "replace_project_binding", payload: request)
+    }
+
+    func removeProjectBinding(_ request: DaemonProjectBindingRemoveRequest) async throws
+        -> DaemonProjectBindingRemoveResponse {
+        try await call(method: "remove_project_binding", payload: request)
+    }
+
+    func projectAgentAdapters(_ projectId: String) async throws -> [DaemonProjectAgentAdapter] {
+        let response: DaemonProjectAgentAdapterListResponse = try await call(
+            method: "list_project_agent_adapters",
+            payload: DaemonProjectAgentAdapterListRequest(projectId: projectId)
+        )
+        return response.items
+    }
+
+    func installProjectAgentAdapter(_ request: DaemonProjectAgentAdapterInstallRequest) async throws
+        -> DaemonProjectAgentAdapter {
+        try await call(method: "install_project_agent_adapter", payload: request)
+    }
+
+    func removeProjectAgentAdapter(_ request: DaemonProjectAgentAdapterRemoveRequest) async throws
+        -> DaemonProjectAgentAdapterRemoveResponse {
+        try await call(method: "remove_project_agent_adapter", payload: request)
+    }
+
     func projectCheckout(_ projectId: String) async throws -> DaemonProjectCheckout {
         try await call(
             method: "project_checkout",

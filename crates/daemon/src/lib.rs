@@ -21,12 +21,19 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+mod agent_adapter;
 mod commit_sync;
 mod credentials;
 mod ipc;
 mod project_storage;
 mod retrieval_history;
 mod search;
+pub use agent_adapter::{
+    DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
+    DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
+    DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
+    ProjectAgentAdapterKind,
+};
 pub use commit_sync::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,
     DaemonProjectCheckout, DaemonProjectCheckoutRequest, DaemonProjectCheckoutResource,
@@ -61,7 +68,7 @@ pub use search::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
-pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 20;
 const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
 const META_DRAFT_SYNC_LAST_ATTEMPT_AT: &str = "draft_sync_last_attempt_at";
@@ -727,6 +734,7 @@ struct DaemonInner {
     search_lock: Mutex<()>,
     retrieval_history_lock: Mutex<()>,
     draft_mutation_lock: Mutex<()>,
+    local_setup_lock: Mutex<()>,
     storage_access: tokio::sync::RwLock<()>,
 }
 
@@ -780,6 +788,7 @@ impl DaemonState {
                 search_lock: Mutex::new(()),
                 retrieval_history_lock: Mutex::new(()),
                 draft_mutation_lock: Mutex::new(()),
+                local_setup_lock: Mutex::new(()),
                 storage_access: tokio::sync::RwLock::new(()),
             }),
         };
@@ -914,6 +923,32 @@ impl DaemonState {
             })
     }
 
+    pub async fn list_project_bindings(
+        &self,
+        request: DaemonProjectBindingListRequest,
+    ) -> Result<DaemonProjectBindingListResponse, DaemonError> {
+        let project_id = non_empty_string(request.project_id).ok_or_else(|| {
+            DaemonError::InvalidRequest("project_id must not be empty".to_owned())
+        })?;
+        let server_url = canonical_server_url(&self.project_config().server_url)?;
+        let rows = sqlx::query(
+            "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
+             FROM project_bindings
+             WHERE server_url = $1 AND project_id = $2
+             ORDER BY workspace_root",
+        )
+        .bind(server_url)
+        .bind(project_id)
+        .fetch_all(&self.inner.pool)
+        .await?;
+        Ok(DaemonProjectBindingListResponse {
+            items: rows
+                .iter()
+                .map(project_binding_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
     pub async fn replace_project_binding(
         &self,
         request: DaemonProjectBindingReplaceRequest,
@@ -945,6 +980,7 @@ impl DaemonState {
         }
         ensure_server_success(response).await?;
 
+        let _guard = self.inner.local_setup_lock.lock().await;
         let workspace_root = workspace_root.display().to_string();
         let mut tx = self.inner.pool.begin().await?;
         let existing = sqlx::query(
@@ -1013,6 +1049,74 @@ impl DaemonState {
         tx.commit().await?;
         self.request_sync();
         Ok(binding)
+    }
+
+    pub async fn remove_project_binding(
+        &self,
+        request: DaemonProjectBindingRemoveRequest,
+    ) -> Result<DaemonProjectBindingRemoveResponse, DaemonError> {
+        let workspace_root = canonical_workspace_directory(&request.workspace_root)?;
+        let server_url = canonical_server_url(&self.project_config().server_url)?;
+        let _guard = self.inner.local_setup_lock.lock().await;
+        let workspace_root = workspace_root.display().to_string();
+        let adapter_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+             FROM project_agent_adapters
+             WHERE server_url = $1 AND workspace_root = $2",
+        )
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .fetch_one(&self.inner.pool)
+        .await?;
+        if adapter_count > 0 {
+            return Err(DaemonError::State {
+                code: "project_binding_has_adapters",
+                message: "Remove the repository's Coding Agent integrations before unbinding it."
+                    .to_owned(),
+            });
+        }
+        let result = sqlx::query(
+            "DELETE FROM project_bindings
+             WHERE server_url = $1 AND workspace_root = $2 AND revision = $3",
+        )
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .bind(request.expected_revision)
+        .execute(&self.inner.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(DaemonError::State {
+                code: "project_binding_changed",
+                message: format!(
+                    "Project binding for {workspace_root} changed from the expected revision"
+                ),
+            });
+        }
+        Ok(DaemonProjectBindingRemoveResponse {
+            workspace_root,
+            removed: true,
+        })
+    }
+
+    pub async fn list_project_agent_adapters(
+        &self,
+        request: DaemonProjectAgentAdapterListRequest,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        agent_adapter::list(self, request).await
+    }
+
+    pub async fn install_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterInstallRequest,
+    ) -> Result<DaemonProjectAgentAdapter, DaemonError> {
+        agent_adapter::install(self, request).await
+    }
+
+    pub async fn remove_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterRemoveRequest,
+    ) -> Result<DaemonProjectAgentAdapterRemoveResponse, DaemonError> {
+        agent_adapter::remove(self, request).await
     }
 
     pub async fn server_request(
@@ -1618,11 +1722,46 @@ impl DaemonIpcService {
         self.state.resolve_project_binding(request).await
     }
 
+    pub async fn list_project_bindings(
+        &self,
+        request: DaemonProjectBindingListRequest,
+    ) -> Result<DaemonProjectBindingListResponse, DaemonError> {
+        self.state.list_project_bindings(request).await
+    }
+
     pub async fn replace_project_binding(
         &self,
         request: DaemonProjectBindingReplaceRequest,
     ) -> Result<DaemonProjectBinding, DaemonError> {
         self.state.replace_project_binding(request).await
+    }
+
+    pub async fn remove_project_binding(
+        &self,
+        request: DaemonProjectBindingRemoveRequest,
+    ) -> Result<DaemonProjectBindingRemoveResponse, DaemonError> {
+        self.state.remove_project_binding(request).await
+    }
+
+    pub async fn list_project_agent_adapters(
+        &self,
+        request: DaemonProjectAgentAdapterListRequest,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        self.state.list_project_agent_adapters(request).await
+    }
+
+    pub async fn install_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterInstallRequest,
+    ) -> Result<DaemonProjectAgentAdapter, DaemonError> {
+        self.state.install_project_agent_adapter(request).await
+    }
+
+    pub async fn remove_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterRemoveRequest,
+    ) -> Result<DaemonProjectAgentAdapterRemoveResponse, DaemonError> {
+        self.state.remove_project_agent_adapter(request).await
     }
 
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
@@ -1823,12 +1962,72 @@ impl DaemonIpcService {
                     Err(error) => Err(error),
                 }
             }
+            "list_project_bindings" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectBindingListRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .list_project_bindings(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
             "replace_project_binding" => {
                 let payload = self
                     .decode_dispatch_payload::<DaemonProjectBindingReplaceRequest>(request.payload);
                 match payload {
                     Ok(payload) => self
                         .replace_project_binding(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "remove_project_binding" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectBindingRemoveRequest>(request.payload);
+                match payload {
+                    Ok(payload) => self
+                        .remove_project_binding(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "list_project_agent_adapters" => {
+                let payload = self.decode_dispatch_payload::<DaemonProjectAgentAdapterListRequest>(
+                    request.payload,
+                );
+                match payload {
+                    Ok(payload) => self
+                        .list_project_agent_adapters(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "install_project_agent_adapter" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectAgentAdapterInstallRequest>(
+                        request.payload,
+                    );
+                match payload {
+                    Ok(payload) => self
+                        .install_project_agent_adapter(payload)
+                        .await
+                        .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
+                    Err(error) => Err(error),
+                }
+            }
+            "remove_project_agent_adapter" => {
+                let payload = self
+                    .decode_dispatch_payload::<DaemonProjectAgentAdapterRemoveRequest>(
+                        request.payload,
+                    );
+                match payload {
+                    Ok(payload) => self
+                        .remove_project_agent_adapter(payload)
                         .await
                         .and_then(|value| serde_json::to_value(value).map_err(DaemonError::from)),
                     Err(error) => Err(error),
@@ -3804,6 +4003,10 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
         migrate_local_schema_18_to_19(pool).await?;
         existing_schema_version = 19;
     }
+    if existing_schema_version == 19 {
+        migrate_local_schema_19_to_20(pool).await?;
+        existing_schema_version = 20;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -3880,6 +4083,7 @@ async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     create_project_bindings_table(pool).await?;
+    agent_adapter::migrate(pool).await?;
     sqlx::query(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_draft_operations_server_operation_id
          ON local_draft_operations (server_operation_id)
@@ -4087,6 +4291,10 @@ async fn migrate_local_schema_17_to_18(pool: &SqlitePool) -> Result<(), DaemonEr
 
 async fn migrate_local_schema_18_to_19(pool: &SqlitePool) -> Result<(), DaemonError> {
     retrieval_history::migrate_schema_18_to_19(pool).await
+}
+
+async fn migrate_local_schema_19_to_20(pool: &SqlitePool) -> Result<(), DaemonError> {
+    agent_adapter::migrate(pool).await
 }
 
 async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {
@@ -4682,10 +4890,32 @@ pub struct DaemonProjectBindingResolveRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingListRequest {
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingListResponse {
+    pub items: Vec<DaemonProjectBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonProjectBindingReplaceRequest {
     pub workspace_root: String,
     pub project_id: String,
     pub expected_revision: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingRemoveRequest {
+    pub workspace_root: String,
+    pub expected_revision: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectBindingRemoveResponse {
+    pub workspace_root: String,
+    pub removed: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

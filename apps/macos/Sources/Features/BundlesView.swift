@@ -147,7 +147,7 @@ private struct BundleEditor: View {
     }
 
     private var selectableResources: [MemoryResource] {
-        store.resources
+        store.resources.filter { $0.scope == .org }
     }
 
     private var selectedResources: [MemoryResource] {

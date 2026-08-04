@@ -9,10 +9,14 @@ describe("Clumsies API", () => {
     const requests: string[] = [];
     let mergeIfMatch: string | null = null;
     let submissionIfMatch: string | null = null;
+    let projectIdempotencyKey: string | null = null;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       requests.push(`${request.method} ${url.pathname}`);
+      if (request.method === "POST" && url.pathname === "/api/v1/projects") {
+        projectIdempotencyKey = request.headers.get("idempotency-key");
+      }
       if (
         url.pathname.endsWith("/merges") ||
         url.pathname.endsWith("/rebases") ||
@@ -39,7 +43,10 @@ describe("Clumsies API", () => {
     await api.revokeSession();
     await api.me();
     await api.listProjects();
-    await api.createProject({ org_id: "org", name: "Project" });
+    await api.createProject(
+      { org_id: "org", name: "Project" },
+      "project-create-test",
+    );
     await api.project("project");
     await api.updateProject("project", 1, { name: "Updated" });
     await api.deleteProject("project", 2);
@@ -170,5 +177,6 @@ describe("Clumsies API", () => {
     ]);
     expect(mergeIfMatch).toBe('"ref-none"');
     expect(submissionIfMatch).toBe('"commit"');
+    expect(projectIdempotencyKey).toBe("project-create-test");
   });
 });

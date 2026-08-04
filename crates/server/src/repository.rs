@@ -512,6 +512,7 @@ impl ServerRepository {
         let description = normalize_project_description(request.description.as_deref())?;
         let project_id = prefixed_id("prj");
         let mut tx = self.pool.begin().await?;
+        ensure_project_name_available(&mut tx, &principal.org_id, &name, None).await?;
         sqlx::query(
             "INSERT INTO projects (project_id, org_id, name, description)
              VALUES ($1, $2, $3, $4)",
@@ -579,6 +580,7 @@ impl ServerRepository {
             Some(name) => normalize_project_name(&name)?,
             None => row.try_get("name")?,
         };
+        ensure_project_name_available(&mut tx, &principal.org_id, &name, Some(project_id)).await?;
         let description = match request.description {
             Some(description) => normalize_project_description(Some(&description))?,
             None => row.try_get("description")?,
@@ -921,8 +923,11 @@ impl ServerRepository {
         name: &str,
         description: &str,
     ) -> Result<String, ServerError> {
+        let name = normalize_project_name(name)?;
+        let description = normalize_project_description(Some(description))?;
         let project_id = prefixed_id("prj");
         let mut tx = self.pool.begin().await?;
+        ensure_project_name_available(&mut tx, org_id, &name, None).await?;
         sqlx::query(
             "INSERT INTO projects (project_id, org_id, name, description)
              VALUES ($1, $2, $3, $4)",
@@ -946,13 +951,70 @@ impl ServerRepository {
         &self,
         principal: &AuthPrincipal,
         request: CreateProjectRequest,
+        idempotency_key: &str,
     ) -> Result<Project, ServerError> {
-        let project_id = self
-            .create_project(
-                &principal.org_id,
-                &request.name,
-                request.description.as_deref().unwrap_or_default(),
+        let idempotency_key = normalize_idempotency_key(idempotency_key)?;
+        let name = normalize_project_name(&request.name)?;
+        let description = normalize_project_description(request.description.as_deref())?;
+        let project_id = prefixed_id("prj");
+        let mut tx = self.pool.begin().await?;
+        let claimed = sqlx::query(
+            "INSERT INTO project_creation_requests (
+                 org_id, user_id, idempotency_key, project_id,
+                 request_name, request_description
+             )
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (org_id, user_id, idempotency_key) DO NOTHING",
+        )
+        .bind(&principal.org_id)
+        .bind(&principal.user_id)
+        .bind(&idempotency_key)
+        .bind(&project_id)
+        .bind(&name)
+        .bind(&description)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        if !claimed {
+            let existing = sqlx::query(
+                "SELECT project_id, request_name, request_description
+                 FROM project_creation_requests
+                 WHERE org_id = $1 AND user_id = $2 AND idempotency_key = $3",
             )
+            .bind(&principal.org_id)
+            .bind(&principal.user_id)
+            .bind(&idempotency_key)
+            .fetch_one(&mut *tx)
+            .await?;
+            let existing_name: String = existing.try_get("request_name")?;
+            let existing_description: String = existing.try_get("request_description")?;
+            if existing_name != name || existing_description != description {
+                return Err(ServerError::already_exists(
+                    "idempotency_key",
+                    idempotency_key,
+                ));
+            }
+            let existing_project_id: String = existing.try_get("project_id")?;
+            tx.commit().await?;
+            return self.get_project(&existing_project_id).await;
+        }
+
+        ensure_project_name_available(&mut tx, &principal.org_id, &name, None).await?;
+        sqlx::query(
+            "INSERT INTO projects (project_id, org_id, name, description)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&project_id)
+        .bind(&principal.org_id)
+        .bind(&name)
+        .bind(&description)
+        .execute(&mut *tx)
+        .await?;
+        insert_ref(&mut tx, "project", &principal.org_id, Some(&project_id)).await?;
+        sqlx::query("INSERT INTO project_org_selection_states (project_id) VALUES ($1)")
+            .bind(&project_id)
+            .execute(&mut *tx)
             .await?;
         sqlx::query(
             "INSERT INTO project_members (project_id, user_id, role)
@@ -960,8 +1022,18 @@ impl ServerRepository {
         )
         .bind(&project_id)
         .bind(&principal.user_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        insert_repository_audit_event(
+            &mut tx,
+            &principal.org_id,
+            Some(&principal.user_id),
+            "project.created",
+            "project",
+            Some(&project_id),
+        )
+        .await?;
+        tx.commit().await?;
         self.get_project(&project_id).await
     }
 
@@ -1019,7 +1091,7 @@ impl ServerRepository {
             ));
         }
         let existing = sqlx::query(
-            "SELECT name, description
+            "SELECT org_id, name, description
              FROM projects
              WHERE project_id = $1",
         )
@@ -1028,8 +1100,16 @@ impl ServerRepository {
         .await?;
         let existing_name: String = existing.try_get("name")?;
         let existing_description: String = existing.try_get("description")?;
-        let name = request.name.unwrap_or(existing_name);
-        let description = request.description.unwrap_or(existing_description);
+        let org_id: String = existing.try_get("org_id")?;
+        let name = match request.name {
+            Some(name) => normalize_project_name(&name)?,
+            None => existing_name,
+        };
+        ensure_project_name_available(&mut tx, &org_id, &name, Some(project_id)).await?;
+        let description = match request.description {
+            Some(description) => normalize_project_description(Some(&description))?,
+            None => existing_description,
+        };
         sqlx::query(
             "UPDATE projects
              SET name = $2, description = $3, revision = revision + 1, updated_at = now()
@@ -1210,6 +1290,7 @@ impl ServerRepository {
     pub async fn create_personal_bundle(
         &self,
         owner_user_id: &str,
+        org_id: &str,
         request: PersonalBundleRequest,
     ) -> Result<PersonalBundleDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
@@ -1227,9 +1308,16 @@ impl ServerRepository {
         .bind(request.description.as_deref().unwrap_or_default())
         .execute(&mut *tx)
         .await?;
-        insert_bundle_items(&mut tx, &bundle_id, "rule", &request.rule_ids).await?;
-        insert_bundle_items(&mut tx, &bundle_id, "context", &request.context_ids).await?;
-        insert_bundle_items(&mut tx, &bundle_id, "workflow", &request.workflow_ids).await?;
+        insert_bundle_items(&mut tx, &bundle_id, org_id, "rule", &request.rule_ids).await?;
+        insert_bundle_items(&mut tx, &bundle_id, org_id, "context", &request.context_ids).await?;
+        insert_bundle_items(
+            &mut tx,
+            &bundle_id,
+            org_id,
+            "workflow",
+            &request.workflow_ids,
+        )
+        .await?;
         tx.commit().await?;
         self.get_personal_bundle(owner_user_id, &bundle_id).await
     }
@@ -1280,6 +1368,7 @@ impl ServerRepository {
     pub async fn update_personal_bundle(
         &self,
         owner_user_id: &str,
+        org_id: &str,
         bundle_id: &str,
         expected_revision: i64,
         request: PersonalBundleUpdateRequest,
@@ -1319,10 +1408,18 @@ impl ServerRepository {
         .execute(&mut *tx)
         .await?;
 
-        replace_bundle_items_if_present(&mut tx, bundle_id, "rule", request.rule_ids).await?;
-        replace_bundle_items_if_present(&mut tx, bundle_id, "context", request.context_ids).await?;
-        replace_bundle_items_if_present(&mut tx, bundle_id, "workflow", request.workflow_ids)
+        replace_bundle_items_if_present(&mut tx, bundle_id, org_id, "rule", request.rule_ids)
             .await?;
+        replace_bundle_items_if_present(&mut tx, bundle_id, org_id, "context", request.context_ids)
+            .await?;
+        replace_bundle_items_if_present(
+            &mut tx,
+            bundle_id,
+            org_id,
+            "workflow",
+            request.workflow_ids,
+        )
+        .await?;
         let detail = load_personal_bundle_detail(&mut tx, bundle_id).await?;
         tx.commit().await?;
         Ok(detail)
@@ -3100,10 +3197,30 @@ async fn insert_draft_event(
 async fn insert_bundle_items(
     tx: &mut Transaction<'_, Postgres>,
     bundle_id: &str,
+    org_id: &str,
     resource_kind: &str,
     resource_ids: &[String],
 ) -> Result<(), ServerError> {
     for (position, resource_id) in resource_ids.iter().enumerate() {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM resources
+                WHERE resource_id = $1
+                  AND resource_kind = $2
+                  AND org_id = $3
+                  AND scope = 'org'
+                  AND status = 'active'
+            )",
+        )
+        .bind(resource_id)
+        .bind(resource_kind)
+        .bind(org_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !exists {
+            return Err(ServerError::not_found("org_resource", resource_id));
+        }
         sqlx::query(
             "INSERT INTO personal_bundle_items (
                 bundle_id, resource_id, resource_kind, position
@@ -3123,6 +3240,7 @@ async fn insert_bundle_items(
 async fn replace_bundle_items_if_present(
     tx: &mut Transaction<'_, Postgres>,
     bundle_id: &str,
+    org_id: &str,
     resource_kind: &str,
     resource_ids: Option<Vec<String>>,
 ) -> Result<(), ServerError> {
@@ -3135,7 +3253,7 @@ async fn replace_bundle_items_if_present(
         .bind(resource_kind)
         .execute(&mut **tx)
         .await?;
-        insert_bundle_items(tx, bundle_id, resource_kind, &resource_ids).await?;
+        insert_bundle_items(tx, bundle_id, org_id, resource_kind, &resource_ids).await?;
     }
     Ok(())
 }
@@ -5893,6 +6011,45 @@ fn normalize_project_name(name: &str) -> Result<String, ServerError> {
         ));
     }
     Ok(name.to_owned())
+}
+
+fn normalize_idempotency_key(value: &str) -> Result<String, ServerError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err(ServerError::InvalidRequest(
+            "Idempotency-Key must contain between 1 and 200 bytes".to_owned(),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+async fn ensure_project_name_available(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    name: &str,
+    excluded_project_id: Option<&str>,
+) -> Result<(), ServerError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(org_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    let existing = sqlx::query_scalar::<_, String>(
+        "SELECT project_id
+         FROM projects
+         WHERE org_id = $1
+           AND lower(name) = lower($2)
+           AND ($3::TEXT IS NULL OR project_id <> $3)
+         LIMIT 1",
+    )
+    .bind(org_id)
+    .bind(name)
+    .bind(excluded_project_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if existing.is_some() {
+        return Err(ServerError::already_exists("project_name", name));
+    }
+    Ok(())
 }
 
 fn normalize_project_description(description: Option<&str>) -> Result<String, ServerError> {

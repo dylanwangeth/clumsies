@@ -3,7 +3,12 @@ use crate::{
     ClearRetrievalRunsResponse, CreateEvaluationCaseRequest, DaemonDraftDetail,
     DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
     DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
-    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus, DaemonProjectBinding,
+    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus,
+    DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
+    DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
+    DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
+    DaemonProjectBinding, DaemonProjectBindingListRequest, DaemonProjectBindingListResponse,
+    DaemonProjectBindingRemoveRequest, DaemonProjectBindingRemoveResponse,
     DaemonProjectBindingReplaceRequest, DaemonProjectBindingResolveRequest,
     DaemonProjectCacheClearRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfig, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
@@ -78,12 +83,67 @@ impl DaemonIpcClient {
         .into_payload()
     }
 
+    pub fn list_project_bindings(
+        &self,
+        request: DaemonProjectBindingListRequest,
+    ) -> Result<DaemonProjectBindingListResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_project_bindings",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
     pub fn replace_project_binding(
         &self,
         request: DaemonProjectBindingReplaceRequest,
     ) -> Result<DaemonProjectBinding, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "replace_project_binding",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn remove_project_binding(
+        &self,
+        request: DaemonProjectBindingRemoveRequest,
+    ) -> Result<DaemonProjectBindingRemoveResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "remove_project_binding",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_project_agent_adapters(
+        &self,
+        request: DaemonProjectAgentAdapterListRequest,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_project_agent_adapters",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn install_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterInstallRequest,
+    ) -> Result<DaemonProjectAgentAdapter, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "install_project_agent_adapter",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn remove_project_agent_adapter(
+        &self,
+        request: DaemonProjectAgentAdapterRemoveRequest,
+    ) -> Result<DaemonProjectAgentAdapterRemoveResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "remove_project_agent_adapter",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

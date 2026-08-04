@@ -20,6 +20,27 @@ struct ProjectReference: Codable, Identifiable, Hashable, Sendable {
     let name: String
 }
 
+struct ProjectRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { projectId }
+
+    let projectId: String
+    let name: String
+    let description: String
+    let revision: Int
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct CreateProjectRequest: Codable, Sendable {
+    let name: String
+    let description: String?
+}
+
+struct UpdateProjectRequest: Codable, Sendable {
+    let name: String?
+    let description: String?
+}
+
 struct CurrentUserResponse: Codable, Sendable {
     let user: UserReference
     let org: OrganizationReference

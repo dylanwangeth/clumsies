@@ -163,6 +163,8 @@ paths:
     post:
       operationId: createProject
       summary: Create a project.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -170,8 +172,13 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateProjectRequest"
       responses:
-        "200":
+        "201":
           description: Created project.
+          headers:
+            Location:
+              description: Canonical URL of the created project.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1085,6 +1092,14 @@ components:
       required: true
       schema:
         type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
     IfNoneMatch:
       name: If-None-Match
       in: header
@@ -1272,6 +1287,7 @@ components:
           type: string
     PersonalBundleRequest:
       type: object
+      description: A personal selection of active Hub memory from the current organization.
       required: [name]
       properties:
         name:
@@ -1280,18 +1296,22 @@ components:
           type: string
         rule_ids:
           type: array
+          description: Active organization-scoped Rule ids.
           items:
             type: string
         context_ids:
           type: array
+          description: Active organization-scoped Context ids.
           items:
             type: string
         workflow_ids:
           type: array
+          description: Active organization-scoped Workflow ids.
           items:
             type: string
     PersonalBundleUpdateRequest:
       type: object
+      description: Updates a personal selection of active Hub memory from the current organization.
       properties:
         name:
           type: string
@@ -1299,14 +1319,17 @@ components:
           type: string
         rule_ids:
           type: array
+          description: Active organization-scoped Rule ids.
           items:
             type: string
         context_ids:
           type: array
+          description: Active organization-scoped Context ids.
           items:
             type: string
         workflow_ids:
           type: array
+          description: Active organization-scoped Workflow ids.
           items:
             type: string
     PersonalBundleListResponse:

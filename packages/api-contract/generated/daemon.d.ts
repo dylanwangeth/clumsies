@@ -27,7 +27,7 @@ export interface components {
             error: components["schemas"]["ApiError"] | null;
         };
         /** @enum {string} */
-        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "replace_project_binding" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
+        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "list_project_bindings" | "replace_project_binding" | "remove_project_binding" | "list_project_agent_adapters" | "install_project_agent_adapter" | "remove_project_agent_adapter" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
         DaemonBootstrapStatus: {
             label: string;
             mach_service_name: string;
@@ -72,6 +72,13 @@ export interface components {
             /** @description Existing local path whose nearest bound ancestor should be resolved. */
             workspace_path: string;
         };
+        DaemonProjectBindingListRequest: {
+            /** @description Canonical Server Project whose local repository bindings should be listed. */
+            project_id: string;
+        };
+        DaemonProjectBindingListResponse: {
+            items: components["schemas"]["DaemonProjectBinding"][];
+        };
         DaemonProjectBindingReplaceRequest: {
             /** @description Existing local directory to bind after canonical filesystem resolution. */
             workspace_root: string;
@@ -79,6 +86,14 @@ export interface components {
             project_id: string;
             /** @description Current binding revision for replacement; null creates a binding idempotently. */
             expected_revision: number | null;
+        };
+        DaemonProjectBindingRemoveRequest: {
+            workspace_root: string;
+            expected_revision: number;
+        };
+        DaemonProjectBindingRemoveResponse: {
+            workspace_root: string;
+            removed: boolean;
         };
         DaemonProjectBinding: {
             /** Format: uri */
@@ -90,6 +105,43 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        DaemonProjectAgentAdapterListRequest: {
+            project_id: string;
+        };
+        DaemonProjectAgentAdapterInstallRequest: {
+            project_id: string;
+            workspace_root: string;
+            adapter: components["schemas"]["ProjectAgentAdapterKind"];
+            /** @description Signed Clumsies CLI/MCP executable embedded by the Desktop app. */
+            helper_binary_path: string;
+            expected_revision: number | null;
+        };
+        DaemonProjectAgentAdapterRemoveRequest: {
+            workspace_root: string;
+            adapter: components["schemas"]["ProjectAgentAdapterKind"];
+            expected_revision: number;
+        };
+        DaemonProjectAgentAdapterRemoveResponse: {
+            workspace_root: string;
+            adapter: components["schemas"]["ProjectAgentAdapterKind"];
+            removed: boolean;
+        };
+        DaemonProjectAgentAdapter: {
+            /** Format: uri */
+            server_url: string;
+            project_id: string;
+            workspace_root: string;
+            adapter: components["schemas"]["ProjectAgentAdapterKind"];
+            revision: number;
+            managed_files: string[];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        DaemonProjectAgentAdapterListResponse: {
+            items: components["schemas"]["DaemonProjectAgentAdapter"][];
         };
         DaemonProjectStorageRequest: {
             project_id: string;
@@ -575,6 +627,8 @@ export interface components {
         DaemonProjectStorageAvailability: "ready" | "moving" | "unavailable";
         /** @enum {string} */
         DaemonProjectStorageMoveState: "preparing" | "materializing" | "verifying" | "switching" | "cleaning" | "completed" | "failed";
+        /** @enum {string} */
+        ProjectAgentAdapterKind: "codex" | "claude-code";
         /** @enum {string} */
         RetrievalRunStatus: "running" | "succeeded" | "failed";
         /** @enum {string} */

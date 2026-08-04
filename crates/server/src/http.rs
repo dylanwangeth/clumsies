@@ -1096,15 +1096,25 @@ fn dependency_down(name: &str, dependency: &str) -> HealthCheck {
 async fn create_project(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
+    headers: HeaderMap,
     Json(request): Json<CreateProjectRequest>,
-) -> Result<Json<crate::api::Project>, HttpError> {
+) -> Result<
+    (
+        StatusCode,
+        [(HeaderName, HeaderValue); 1],
+        Json<crate::api::Project>,
+    ),
+    HttpError,
+> {
     require_org_admin(&principal)?;
-    Ok(Json(
-        state
-            .repository
-            .create_project_from_request(&principal, request)
-            .await?,
-    ))
+    let idempotency_key = parse_idempotency_key(&headers)?;
+    let project = state
+        .repository
+        .create_project_from_request(&principal, request, idempotency_key)
+        .await?;
+    let location = HeaderValue::from_str(&format!("/api/v1/projects/{}", project.project_id))
+        .map_err(|_| HttpError::bad_request("project URL produced an invalid Location header"))?;
+    Ok((StatusCode::CREATED, [(LOCATION, location)], Json(project)))
 }
 
 async fn list_projects(
@@ -1195,7 +1205,7 @@ async fn create_personal_bundle(
     Ok(Json(
         state
             .repository
-            .create_personal_bundle(&principal.user_id, request)
+            .create_personal_bundle(&principal.user_id, &principal.org_id, request)
             .await?,
     ))
 }
@@ -1236,7 +1246,13 @@ async fn update_personal_bundle(
     Ok(Json(
         state
             .repository
-            .update_personal_bundle(&principal.user_id, &bundle_id, expected_revision, request)
+            .update_personal_bundle(
+                &principal.user_id,
+                &principal.org_id,
+                &bundle_id,
+                expected_revision,
+                request,
+            )
             .await?,
     ))
 }
@@ -1893,6 +1909,21 @@ fn parse_if_match(headers: &HeaderMap) -> Result<i64, HttpError> {
     value
         .parse::<i64>()
         .map_err(|_| HttpError::bad_request("If-Match must be an integer version"))
+}
+
+fn parse_idempotency_key(headers: &HeaderMap) -> Result<&str, HttpError> {
+    let value = headers
+        .get("idempotency-key")
+        .ok_or_else(|| HttpError::bad_request("missing Idempotency-Key header"))?
+        .to_str()
+        .map_err(|_| HttpError::bad_request("Idempotency-Key must contain visible ASCII"))?;
+    let value = value.trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err(HttpError::bad_request(
+            "Idempotency-Key must contain between 1 and 200 bytes",
+        ));
+    }
+    Ok(value)
 }
 
 fn parse_ref_if_match(headers: &HeaderMap) -> Result<Option<String>, HttpError> {

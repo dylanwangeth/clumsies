@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(newProject(_:)) {
+            return store.canManageProjects && store.phase == .ready
+        }
         if menuItem.action == #selector(newMemory(_:)) {
             guard store.selectedSection == .hub || store.selectedSection == .local else { return false }
             let scope: MemoryScope = store.selectedSection == .hub ? .org : .project
@@ -403,6 +406,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let fileMenu = NSMenu(title: "File")
         let newMemory = fileMenu.addItem(withTitle: "New Memory", action: #selector(newMemory(_:)), keyEquivalent: "n")
         newMemory.target = self
+        let newProject = fileMenu.addItem(
+            withTitle: "New Project…",
+            action: #selector(newProject(_:)),
+            keyEquivalent: "n"
+        )
+        newProject.keyEquivalentModifierMask = [.command, .shift]
+        newProject.target = self
         fileMenu.addItem(.separator())
         let closeTab = fileMenu.addItem(withTitle: "Close Tab", action: #selector(closeActiveTab(_:)), keyEquivalent: "w")
         closeTab.target = self
@@ -478,6 +488,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard store.selectedSection == .hub || store.selectedSection == .local else { return }
         let scope: MemoryScope = store.selectedSection == .hub ? .org : .project
         Task { await store.createMemory(kind: store.selectedKind, scope: scope) }
+    }
+
+    @objc private func newProject(_ sender: Any?) {
+        store.presentProjectCreation()
     }
 
     @objc private func closeActiveTab(_ sender: Any?) {

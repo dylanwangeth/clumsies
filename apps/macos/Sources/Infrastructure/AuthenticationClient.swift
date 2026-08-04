@@ -12,7 +12,6 @@ enum AuthenticationError: LocalizedError, Sendable {
     case stateMismatch
     case provider(String)
     case server(status: Int, message: String)
-    case noProjects
 
     var errorDescription: String? {
         switch self {
@@ -24,7 +23,6 @@ enum AuthenticationError: LocalizedError, Sendable {
         case .stateMismatch: "The organization sign-in state did not match."
         case .provider(let message): "Organization sign-in failed: \(message)"
         case .server(let status, let message): "Server authentication failed (\(status)): \(message)"
-        case .noProjects: "The signed-in account has no accessible project."
         }
     }
 }
@@ -55,13 +53,10 @@ struct AuthenticationClient: Sendable {
         let code = try await callback.waitForCode(expectedState: state)
         let tokens = try await exchangeCode(code, redirectURI: redirectURI, verifier: verifier)
         let currentUser = try await loadCurrentUser(accessToken: tokens.accessToken)
-        guard let projectId = currentUser.defaultProjectId ?? currentUser.projects.first?.projectId else {
-            throw AuthenticationError.noProjects
-        }
         return try await daemon.replaceProjectConfig(
             .init(
                 serverUrl: Self.serverURL.absoluteString,
-                projectId: projectId,
+                projectId: currentUser.defaultProjectId ?? currentUser.projects.first?.projectId,
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken
             )

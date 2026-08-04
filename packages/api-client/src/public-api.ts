@@ -76,8 +76,16 @@ export class ClumsiesApi {
     );
   }
 
-  createProject(request: Schema<"CreateProjectRequest">) {
-    return unwrap(this.raw.POST("/api/v1/projects", { body: request }));
+  createProject(
+    request: Schema<"CreateProjectRequest">,
+    idempotencyKey = globalThis.crypto.randomUUID(),
+  ) {
+    return unwrap(
+      this.raw.POST("/api/v1/projects", {
+        params: { header: { "Idempotency-Key": idempotencyKey } },
+        body: request,
+      }),
+    );
   }
 
   project(projectId: string) {

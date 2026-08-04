@@ -824,18 +824,26 @@ export interface components {
             project_id: string;
             name: string;
         };
+        /** @description A personal selection of active Hub memory from the current organization. */
         PersonalBundleRequest: {
             name: string;
             description?: string;
+            /** @description Active organization-scoped Rule ids. */
             rule_ids?: string[];
+            /** @description Active organization-scoped Context ids. */
             context_ids?: string[];
+            /** @description Active organization-scoped Workflow ids. */
             workflow_ids?: string[];
         };
+        /** @description Updates a personal selection of active Hub memory from the current organization. */
         PersonalBundleUpdateRequest: {
             name?: string;
             description?: string;
+            /** @description Active organization-scoped Rule ids. */
             rule_ids?: string[];
+            /** @description Active organization-scoped Context ids. */
             context_ids?: string[];
+            /** @description Active organization-scoped Workflow ids. */
             workflow_ids?: string[];
         };
         PersonalBundleListResponse: {
@@ -1303,6 +1311,7 @@ export interface components {
         Limit: number;
         Cursor: string;
         IfMatch: string;
+        IdempotencyKey: string;
         IfNoneMatch: string;
         ProjectId: string;
         ProjectIdQuery: string;
@@ -1473,7 +1482,9 @@ export interface operations {
     createProject: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1484,8 +1495,10 @@ export interface operations {
         };
         responses: {
             /** @description Created project. */
-            200: {
+            201: {
                 headers: {
+                    /** @description Canonical URL of the created project. */
+                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {

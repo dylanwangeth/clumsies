@@ -98,6 +98,7 @@ struct WorkspaceView: View {
     private var showsDocumentTabs: Bool {
         (store.selectedSection == .hub || store.selectedSection == .local)
             && !store.visibleTabs.isEmpty
+            && !store.showsProjectSettings
     }
 
     var body: some View {
@@ -219,6 +220,11 @@ struct WorkspaceView: View {
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             Task { await store.prepareWorkspaceIndex(includeContent: true) }
         }
+        .onChange(of: store.selectedSection) { _, section in
+            if section != .local {
+                store.showsProjectSettings = false
+            }
+        }
         .onChange(of: splitVisibility) { _, visibility in
             if visibility == .all {
                 store.sidebarExpanded = true
@@ -258,6 +264,9 @@ struct WorkspaceView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+        .sheet(isPresented: $store.showsProjectCreation) {
+            ProjectCreationSheet(store: store)
+        }
     }
 
     @ToolbarContentBuilder
@@ -280,13 +289,13 @@ struct WorkspaceView: View {
             if store.selectedSection == .local {
                 ToolbarItem {
                     Button {
-                        store.showsOrgSelection = true
+                        store.showsProjectSettings.toggle()
                     } label: {
-                        Image(systemName: "slider.horizontal.3")
+                        Image(systemName: "gearshape")
                     }
-                    .disabled(!store.canManageOrgSelection)
-                    .help("Choose Hub Memory")
-                    .accessibilityLabel("Choose Hub Memory")
+                    .disabled(store.activeProjectId == nil)
+                    .help("Project Settings")
+                    .accessibilityLabel("Project Settings")
                 }
             }
         case .bundles:
@@ -331,7 +340,13 @@ struct WorkspaceView: View {
     private var detail: some View {
         switch store.selectedSection {
         case .hub, .local:
-            MemoryMainPane(store: store)
+            if store.selectedSection == .local, store.activeProjectId == nil {
+                ProjectUnavailableView(store: store)
+            } else if store.selectedSection == .local, store.showsProjectSettings {
+                ProjectSettingsView(store: store)
+            } else {
+                MemoryMainPane(store: store)
+            }
         case .bundles:
             BundleDetail(
                 store: store,
@@ -398,7 +413,8 @@ struct WorkspaceView: View {
     }
 
     private var syncToolbarPresentation: SyncToolbarPresentation? {
-        SyncToolbarPresentation.resolve(
+        guard store.activeProjectId != nil else { return nil }
+        return SyncToolbarPresentation.resolve(
             status: store.runtime?.sync,
             isAvailable: store.syncStatusAvailable,
             serverDataSource: store.runtime?.serverDataSource
@@ -574,24 +590,39 @@ private struct GlobalSidebar: View {
                 SidebarDestinationLabel(section: .hub)
                     .tag(GlobalSidebarDestination.section(.hub))
 
-                Button {
-                    withAnimation(.snappy(duration: 0.16)) {
-                        localExpanded.toggle()
+                HStack(spacing: 4) {
+                    Button {
+                        store.selectedSection = .local
+                        store.selectedItemId = nil
+                        withAnimation(.snappy(duration: 0.16)) {
+                            localExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: WorkspaceSection.local.symbol)
+                                .frame(width: 16)
+                            Text(WorkspaceSection.local.title)
+                            Spacer(minLength: 8)
+                        }
+                        .contentShape(Rectangle())
                     }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: WorkspaceSection.local.symbol)
-                            .frame(width: 16)
-                        Text(WorkspaceSection.local.title)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(localExpanded ? 90 : 0))
+                    .buttonStyle(.plain)
+
+                    if store.canManageProjects {
+                        Button {
+                            store.presentProjectCreation()
+                        } label: {
+                            Image(systemName: "plus")
+                                .frame(width: 16, height: 16, alignment: .center)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 20, height: 20, alignment: .center)
+                        .contentShape(Rectangle())
+                        .help("New Project")
+                        .accessibilityLabel("New Project")
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .tag(GlobalSidebarDestination.section(.local))
 
                 if localExpanded {
                     ForEach(store.projects) { project in
@@ -607,6 +638,14 @@ private struct GlobalSidebar: View {
                         .padding(.leading, 24)
                         .tag(GlobalSidebarDestination.project(project.id))
                         .accessibilityLabel(project.name)
+                        .contextMenu {
+                            Button("Project Settings…") {
+                                Task {
+                                    await store.selectProject(project.id)
+                                    store.showsProjectSettings = true
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -673,6 +712,7 @@ private struct GlobalSidebar: View {
                     store.selectedItemId = nil
                 case .project(let projectId):
                     store.selectedSection = .local
+                    store.showsProjectSettings = false
                     Task { await store.selectProject(projectId) }
                 }
             }

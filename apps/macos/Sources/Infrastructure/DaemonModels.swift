@@ -20,6 +20,96 @@ struct DaemonProjectSelection: Codable, Sendable {
     let projectId: String
 }
 
+struct DaemonProjectBindingListRequest: Codable, Sendable {
+    let projectId: String
+}
+
+struct DaemonProjectBindingReplaceRequest: Codable, Sendable {
+    let workspaceRoot: String
+    let projectId: String
+    let expectedRevision: Int?
+}
+
+struct DaemonProjectBindingRemoveRequest: Codable, Sendable {
+    let workspaceRoot: String
+    let expectedRevision: Int
+}
+
+struct DaemonProjectBindingRemoveResponse: Codable, Sendable {
+    let workspaceRoot: String
+    let removed: Bool
+}
+
+struct DaemonProjectBinding: Codable, Identifiable, Equatable, Sendable {
+    var id: String { workspaceRoot }
+
+    let serverUrl: String
+    let workspaceRoot: String
+    let projectId: String
+    let revision: Int
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct DaemonProjectBindingListResponse: Codable, Sendable {
+    let items: [DaemonProjectBinding]
+}
+
+enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
+    case codex
+    case claudeCode = "claude-code"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .codex: "Codex"
+        case .claudeCode: "Claude Code"
+        }
+    }
+}
+
+struct DaemonProjectAgentAdapterListRequest: Codable, Sendable {
+    let projectId: String
+}
+
+struct DaemonProjectAgentAdapterInstallRequest: Codable, Sendable {
+    let projectId: String
+    let workspaceRoot: String
+    let adapter: ProjectAgentAdapterKind
+    let helperBinaryPath: String
+    let expectedRevision: Int?
+}
+
+struct DaemonProjectAgentAdapterRemoveRequest: Codable, Sendable {
+    let workspaceRoot: String
+    let adapter: ProjectAgentAdapterKind
+    let expectedRevision: Int
+}
+
+struct DaemonProjectAgentAdapterRemoveResponse: Codable, Sendable {
+    let workspaceRoot: String
+    let adapter: ProjectAgentAdapterKind
+    let removed: Bool
+}
+
+struct DaemonProjectAgentAdapter: Codable, Identifiable, Equatable, Sendable {
+    var id: String { "\(workspaceRoot):\(adapter.rawValue)" }
+
+    let serverUrl: String
+    let projectId: String
+    let workspaceRoot: String
+    let adapter: ProjectAgentAdapterKind
+    let revision: Int
+    let managedFiles: [String]
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct DaemonProjectAgentAdapterListResponse: Codable, Sendable {
+    let items: [DaemonProjectAgentAdapter]
+}
+
 enum DaemonProjectStorageMode: String, Codable, Sendable {
     case standard = "default"
     case custom

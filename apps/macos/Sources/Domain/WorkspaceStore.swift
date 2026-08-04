@@ -14,7 +14,7 @@ struct WorkspaceSnapshot: Sendable {
     let organization: OrganizationReference
     let capabilities: Set<String>
     let projects: [ProjectState]
-    let activeProjectId: String
+    let activeProjectId: String?
     let orgRefCommitId: String?
     let orgRefEtag: String
     let resources: [MemoryResource]
@@ -62,6 +62,54 @@ enum ReviewRequestError: LocalizedError, Sendable {
     }
 }
 
+enum ProjectSetupError: LocalizedError, Sendable {
+    case noRepositories
+    case bundledHelperMissing
+    case bundleNotFound
+    case bundleContainsUnavailableMemory
+
+    var errorDescription: String? {
+        switch self {
+        case .noRepositories:
+            "Choose at least one local repository."
+        case .bundledHelperMissing:
+            "The Clumsies MCP executable is missing from this app build."
+        case .bundleNotFound:
+            "The selected Bundle is no longer available."
+        case .bundleContainsUnavailableMemory:
+            "The selected Bundle contains memory that is not available in Hub."
+        }
+    }
+}
+
+enum ProjectMemorySelectionError: LocalizedError, Sendable {
+    case invalidHubResources
+    case projectUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidHubResources:
+            "Only current Hub memory can be added to or removed from a Project."
+        case .projectUnavailable:
+            "The selected Project is no longer available."
+        }
+    }
+}
+
+enum ProjectOrgSelectionMutation: Sendable {
+    case add
+    case remove
+
+    func applying(_ resourceIds: Set<String>, to current: Set<String>) -> Set<String> {
+        switch self {
+        case .add:
+            current.union(resourceIds)
+        case .remove:
+            current.subtracting(resourceIds)
+        }
+    }
+}
+
 struct DraftInventoryPlan: Equatable, Sendable {
     let refreshIds: Set<String>
     let terminalIds: Set<String>
@@ -74,6 +122,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var organization: OrganizationReference?
     @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var projects: [ProjectState] = []
+    @Published private(set) var projectMetadata: [String: ProjectRecord] = [:]
     @Published private(set) var orgRefCommitId: String?
     @Published private(set) var orgRefEtag = ""
     @Published private(set) var resources: [MemoryResource] = []
@@ -91,7 +140,8 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedReviewId: String?
     @Published var searchQuery = ""
     @Published var showsGlobalSearch = false
-    @Published var showsOrgSelection = false
+    @Published var showsProjectCreation = false
+    @Published var showsProjectSettings = false
     @Published var sidebarExpanded = true
     @Published var errorMessage: String?
     @Published var tabs: [WorkbenchTab] = []
@@ -107,6 +157,7 @@ final class WorkspaceStore: ObservableObject {
     private var projectSelectionGeneration = UUID()
     private let draftMutationGate = AsyncMutex()
     private let bundleMutationGate = AsyncMutex()
+    private let projectOrgSelectionMutationGate = AsyncMutex()
     private var pendingDocumentSaves: [String: PendingDocumentSave] = [:]
     private var documentSaveTasks: [String: Task<Void, Never>] = [:]
     private var pendingBundleSaves: [String: PendingBundleSave] = [:]
@@ -117,6 +168,10 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var canManageOrgSelection: Bool {
+        capabilities.contains("admin:write")
+    }
+
+    var canManageProjects: Bool {
         capabilities.contains("admin:write")
     }
 
@@ -133,7 +188,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func canCreateMemory(kind: MemoryKind, scope: MemoryScope) -> Bool {
-        true
+        scope == .org || activeProjectId != nil
     }
 
     var selectedItem: MemoryListItem? {
@@ -239,9 +294,195 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    func presentProjectCreation() {
+        guard canManageProjects else { return }
+        showsProjectCreation = true
+    }
+
+    func createProject(
+        name: String,
+        description: String,
+        idempotencyKey: String,
+        repositoryPaths: [String],
+        bundleId: String?,
+        adapters: Set<ProjectAgentAdapterKind>
+    ) async throws {
+        let repositoryPaths = normalizedRepositoryPaths(repositoryPaths)
+        guard !repositoryPaths.isEmpty else { throw ProjectSetupError.noRepositories }
+        let created: ProjectRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/projects",
+            headers: ["idempotency-key": idempotencyKey],
+            body: CreateProjectRequest(
+                name: name,
+                description: description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : description
+            )
+        )
+        let initialSelection = try await initializeProjectMemory(
+            projectId: created.id,
+            bundleId: bundleId
+        )
+        projectMetadata[created.id] = created
+        let project = ProjectState(
+            id: created.id,
+            name: created.name,
+            refCommitId: nil,
+            refEtag: "",
+            selectedOrgResourceIds: projectOrgResourceIds(initialSelection),
+            orgSelectionRevision: initialSelection.revision,
+            isLoaded: false
+        )
+        if let index = projects.firstIndex(where: { $0.id == created.id }) {
+            projects[index] = project
+        } else {
+            projects.insert(project, at: 0)
+        }
+        for repositoryPath in repositoryPaths {
+            _ = try await daemon.replaceProjectBinding(
+                .init(
+                    workspaceRoot: repositoryPath,
+                    projectId: created.id,
+                    expectedRevision: nil
+                )
+            )
+        }
+        if !adapters.isEmpty {
+            let helperBinaryPath = try bundledHelperBinaryPath()
+            for repositoryPath in repositoryPaths {
+                for adapter in adapters.sorted(by: { $0.rawValue < $1.rawValue }) {
+                    _ = try await daemon.installProjectAgentAdapter(
+                        .init(
+                            projectId: created.id,
+                            workspaceRoot: repositoryPath,
+                            adapter: adapter,
+                            helperBinaryPath: helperBinaryPath,
+                            expectedRevision: nil
+                        )
+                    )
+                }
+            }
+        }
+        selectedSection = .local
+        showsProjectSettings = false
+        await selectProject(created.id)
+    }
+
+    func projectRecord(_ projectId: String, refresh: Bool = false) async throws -> ProjectRecord {
+        if !refresh, let cached = projectMetadata[projectId] {
+            return cached
+        }
+        let project: ProjectRecord = try await server.get("/api/v1/projects/\(projectId)")
+        projectMetadata[projectId] = project
+        return project
+    }
+
+    func updateProject(
+        _ projectId: String,
+        expectedRevision: Int,
+        name: String,
+        description: String
+    ) async throws -> ProjectRecord {
+        let updated: ProjectRecord = try await server.send(
+            method: "PATCH",
+            path: "/api/v1/projects/\(projectId)",
+            headers: ["if-match": String(expectedRevision)],
+            body: UpdateProjectRequest(name: name, description: description)
+        )
+        projectMetadata[projectId] = updated
+        if let index = projects.firstIndex(where: { $0.id == projectId }) {
+            let current = projects[index]
+            projects[index] = ProjectState(
+                id: current.id,
+                name: updated.name,
+                refCommitId: current.refCommitId,
+                refEtag: current.refEtag,
+                selectedOrgResourceIds: current.selectedOrgResourceIds,
+                orgSelectionRevision: current.orgSelectionRevision,
+                isLoaded: current.isLoaded
+            )
+        }
+        return updated
+    }
+
+    func projectBindings(_ projectId: String) async throws -> [DaemonProjectBinding] {
+        try await daemon.projectBindings(projectId)
+    }
+
+    func addProjectRepositories(
+        _ repositoryPaths: [String],
+        projectId: String
+    ) async throws -> [DaemonProjectBinding] {
+        var bindings: [DaemonProjectBinding] = []
+        for repositoryPath in normalizedRepositoryPaths(repositoryPaths) {
+            bindings.append(try await daemon.replaceProjectBinding(
+                .init(
+                    workspaceRoot: repositoryPath,
+                    projectId: projectId,
+                    expectedRevision: nil
+                )
+            ))
+        }
+        return bindings
+    }
+
+    func removeProjectRepository(
+        _ binding: DaemonProjectBinding,
+        adapters: [DaemonProjectAgentAdapter]
+    ) async throws {
+        for adapter in adapters where adapter.workspaceRoot == binding.workspaceRoot {
+            _ = try await daemon.removeProjectAgentAdapter(
+                .init(
+                    workspaceRoot: binding.workspaceRoot,
+                    adapter: adapter.adapter,
+                    expectedRevision: adapter.revision
+                )
+            )
+        }
+        _ = try await daemon.removeProjectBinding(
+            .init(
+                workspaceRoot: binding.workspaceRoot,
+                expectedRevision: binding.revision
+            )
+        )
+    }
+
+    func projectAgentAdapters(_ projectId: String) async throws -> [DaemonProjectAgentAdapter] {
+        try await daemon.projectAgentAdapters(projectId)
+    }
+
+    func setProjectAgentAdapter(
+        _ adapter: ProjectAgentAdapterKind,
+        enabled: Bool,
+        projectId: String,
+        workspaceRoot: String,
+        current: DaemonProjectAgentAdapter?
+    ) async throws {
+        if enabled {
+            _ = try await daemon.installProjectAgentAdapter(
+                .init(
+                    projectId: projectId,
+                    workspaceRoot: workspaceRoot,
+                    adapter: adapter,
+                    helperBinaryPath: try bundledHelperBinaryPath(),
+                    expectedRevision: current?.revision
+                )
+            )
+        } else if let current {
+            _ = try await daemon.removeProjectAgentAdapter(
+                .init(
+                    workspaceRoot: workspaceRoot,
+                    adapter: adapter,
+                    expectedRevision: current.revision
+                )
+            )
+        }
+    }
+
     func selectProject(_ projectId: String) async {
-        guard projectId != activeProjectId else { return }
         guard let project = projects.first(where: { $0.id == projectId }) else { return }
+        guard projectId != activeProjectId || !project.isLoaded else { return }
         guard await flushPendingDocumentChanges() else { return }
         let generation = UUID()
         projectSelectionGeneration = generation
@@ -339,6 +580,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func open(_ item: MemoryListItem, mode: WorkbenchTabMode = .source) {
+        showsProjectSettings = false
         let tab = WorkbenchTab(
             section: selectedSection,
             projectId: selectedSection == .local ? (item.projectId ?? activeProjectId) : nil,
@@ -716,45 +958,133 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func replaceProjectOrgSelection(resourceIds: Set<String>) async throws {
+    func addHubMemory(resourceIds: Set<String>, toProject projectId: String) async throws {
+        try await mutateProjectOrgSelection(
+            projectId: projectId,
+            resourceIds: resourceIds,
+            mutation: .add
+        )
+    }
+
+    func removeHubMemoryFromActiveProject(resourceIds: Set<String>) async throws {
+        guard let projectId = activeProjectId else { throw WorkspaceLoadError.noProjects }
+        try await mutateProjectOrgSelection(
+            projectId: projectId,
+            resourceIds: resourceIds,
+            mutation: .remove
+        )
+    }
+
+    private func mutateProjectOrgSelection(
+        projectId: String,
+        resourceIds: Set<String>,
+        mutation: ProjectOrgSelectionMutation
+    ) async throws {
         guard canManageOrgSelection else {
             throw ServerClientError.forbidden("Organization owners and admins manage project Hub memory.")
         }
-        guard let project = activeProject else { throw WorkspaceLoadError.noProjects }
+        guard projects.contains(where: { $0.id == projectId }) else {
+            throw ProjectMemorySelectionError.projectUnavailable
+        }
+        try validateHubResourceIds(resourceIds)
+        try await withProjectOrgSelectionMutation {
+            let current: ProjectOrgSelection = try await server.get(
+                "/api/v1/projects/\(projectId)/org-selections"
+            )
+            let currentIds = projectOrgResourceIds(current)
+            let nextIds = mutation.applying(resourceIds, to: currentIds)
+            guard nextIds != currentIds else { return }
+            let selection = try await replaceProjectOrgSelection(
+                projectId: projectId,
+                expectedRevision: current.revision,
+                resourceIds: nextIds
+            )
+            await applyProjectOrgSelection(selection, toProject: projectId)
+        }
+    }
+
+    private func applyProjectOrgSelection(
+        _ selection: ProjectOrgSelection,
+        toProject projectId: String
+    ) async {
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        let project = projects[index]
+        let commit: (value: CommitStateResponse, response: DaemonServerResponse)? = try? await server.getWithMetadata(
+            "/api/v1/projects/\(projectId)/commit-state"
+        )
+        projects[index] = ProjectState(
+            id: project.id,
+            name: project.name,
+            refCommitId: commit?.value.ref.commitId ?? project.refCommitId,
+            refEtag: commit?.response.headers.first {
+                $0.key.caseInsensitiveCompare("etag") == .orderedSame
+            }?.value ?? project.refEtag,
+            selectedOrgResourceIds: projectOrgResourceIds(selection),
+            orgSelectionRevision: selection.revision,
+            isLoaded: project.isLoaded
+        )
+        if projectId == activeProjectId {
+            _ = try? await daemon.retrySync(channel: "commits")
+        }
+    }
+
+    private func replaceProjectOrgSelection(
+        projectId: String,
+        expectedRevision: Int,
+        resourceIds: Set<String>
+    ) async throws -> ProjectOrgSelection {
         let selected = resources.filter { $0.scope == .org && resourceIds.contains($0.id) }
         let request = ReplaceProjectOrgSelectionRequest(
             ruleIds: selected.filter { $0.kind == .rules }.map(\.id),
             contextIds: selected.filter { $0.kind == .context }.map(\.id),
             workflowIds: selected.filter { $0.kind == .workflows }.map(\.id)
         )
-        let selection: ProjectOrgSelection = try await server.send(
+        return try await server.send(
             method: "PUT",
-            path: "/api/v1/projects/\(project.id)/org-selections",
-            headers: ["If-Match": String(project.orgSelectionRevision)],
+            path: "/api/v1/projects/\(projectId)/org-selections",
+            headers: ["If-Match": String(expectedRevision)],
             body: request
         )
-        let commit: (value: CommitStateResponse, response: DaemonServerResponse) = try await server.getWithMetadata(
-            "/api/v1/projects/\(project.id)/commit-state"
+    }
+
+    private func initializeProjectMemory(
+        projectId: String,
+        bundleId: String?
+    ) async throws -> ProjectOrgSelection {
+        let current: ProjectOrgSelection = try await server.get(
+            "/api/v1/projects/\(projectId)/org-selections"
         )
-        let updated = ProjectState(
-            id: project.id,
-            name: project.name,
-            refCommitId: commit.value.ref.commitId,
-            refEtag: commit.response.headers.first {
-                $0.key.caseInsensitiveCompare("etag") == .orderedSame
-            }?.value ?? project.refEtag,
-            selectedOrgResourceIds: Set(
-                selection.rules.map(\.ruleId)
-                    + selection.context.map(\.contextId)
-                    + selection.workflows.map(\.workflowId)
-            ),
-            orgSelectionRevision: selection.revision,
-            isLoaded: true
-        )
-        if let index = projects.firstIndex(where: { $0.id == project.id }) {
-            projects[index] = updated
+        guard let bundleId else { return current }
+        guard let bundle = bundles.first(where: { $0.id == bundleId }) else {
+            throw ProjectSetupError.bundleNotFound
         }
-        _ = try? await daemon.retrySync(channel: "commits")
+        let resourceIds = Set(bundle.resourceIds)
+        do {
+            try validateHubResourceIds(resourceIds)
+        } catch {
+            throw ProjectSetupError.bundleContainsUnavailableMemory
+        }
+        guard projectOrgResourceIds(current) != resourceIds else { return current }
+        return try await replaceProjectOrgSelection(
+            projectId: projectId,
+            expectedRevision: current.revision,
+            resourceIds: resourceIds
+        )
+    }
+
+    private func validateHubResourceIds(_ resourceIds: Set<String>) throws {
+        let available = Set(resources.lazy.filter { $0.scope == .org }.map(\.id))
+        guard resourceIds.isSubset(of: available) else {
+            throw ProjectMemorySelectionError.invalidHubResources
+        }
+    }
+
+    private func projectOrgResourceIds(_ selection: ProjectOrgSelection) -> Set<String> {
+        Set(
+            selection.rules.map(\.ruleId)
+                + selection.context.map(\.contextId)
+                + selection.workflows.map(\.workflowId)
+        )
     }
 
     func createBundle() async {
@@ -795,7 +1125,10 @@ final class WorkspaceStore: ObservableObject {
     ) async throws {
         try await withBundleMutation {
             guard let current = bundles.first(where: { $0.id == bundle.id }) else { return }
-            let selected = resources.filter { resourceIds.contains($0.id) }
+            try validateHubResourceIds(resourceIds)
+            let selected = resources.filter {
+                $0.scope == .org && resourceIds.contains($0.id)
+            }
             let request = PersonalBundleRequest(
                 name: name,
                 description: description,
@@ -1038,6 +1371,21 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    private func withProjectOrgSelectionMutation<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        await projectOrgSelectionMutationGate.lock()
+        do {
+            try Task.checkCancellation()
+            let result = try await operation()
+            await projectOrgSelectionMutationGate.unlock()
+            return result
+        } catch {
+            await projectOrgSelectionMutationGate.unlock()
+            throw error
+        }
+    }
+
     private func persistDocumentSave(_ itemId: String, generation: UUID) async {
         guard let pending = pendingDocumentSaves[itemId], pending.generation == generation else { return }
         do {
@@ -1084,6 +1432,9 @@ final class WorkspaceStore: ObservableObject {
         organization = snapshot.organization
         capabilities = snapshot.capabilities
         projects = snapshot.projects
+        projectMetadata = projectMetadata.filter { projectId, _ in
+            projects.contains { $0.id == projectId }
+        }
         orgRefCommitId = snapshot.orgRefCommitId
         orgRefEtag = snapshot.orgRefEtag
         activeProjectId = snapshot.activeProjectId
@@ -1095,6 +1446,13 @@ final class WorkspaceStore: ObservableObject {
         syncStatusAvailable = true
         selectedBundleId = selectedBundleId ?? bundles.first?.id
         selectedReviewId = selectedReviewId ?? reviews.first?.id
+        if projects.isEmpty {
+            selectedSection = .local
+            showsProjectSettings = false
+            tabs = []
+            activeTabId = nil
+            selectedItemId = nil
+        }
     }
 
     private func refreshDraft(_ draftId: String) async throws {
@@ -1291,6 +1649,26 @@ final class WorkspaceStore: ObservableObject {
         return "\(stem)-\(index)\(suffix)"
     }
 
+    private func normalizedRepositoryPaths(_ paths: [String]) -> [String] {
+        Array(
+            Set(
+                paths.compactMap { path in
+                    let normalized = path.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return normalized.isEmpty ? nil : URL(fileURLWithPath: normalized).standardized.path
+                }
+            )
+        )
+        .sorted()
+    }
+
+    private func bundledHelperBinaryPath() throws -> String {
+        guard let path = Bundle.main.resourceURL?.appending(path: "clumsies").path,
+              FileManager.default.isExecutableFile(atPath: path) else {
+            throw ProjectSetupError.bundledHelperMissing
+        }
+        return path
+    }
+
     private func defaultDocument(kind: MemoryKind, path: String) -> EditableMemoryDocument {
         switch kind {
         case .context:
@@ -1352,14 +1730,23 @@ struct WorkspaceLoader: Sendable {
         }
         _ = try? await daemon.retrySync()
         let me: CurrentUserResponse = try await server.get("/api/v1/me")
-        guard let activeProjectId = configuredProject(config, me: me) else {
-            throw WorkspaceLoadError.noProjects
+        let activeProjectId = configuredProject(config, me: me)
+        if let activeProjectId, config.projectId != activeProjectId {
+            _ = try await daemon.selectProject(activeProjectId)
         }
 
         async let orgCommitRequest: (value: CommitStateResponse, response: DaemonServerResponse) = server.getWithMetadata(
             "/api/v1/org/commit-state"
         )
-        let projectStates = try await loadProjectStates(me.projects, activeProjectId: activeProjectId)
+        let projectStates: [ProjectState]
+        if let activeProjectId {
+            projectStates = try await loadProjectStates(
+                me.projects,
+                activeProjectId: activeProjectId
+            )
+        } else {
+            projectStates = []
+        }
         let orgCommit = try await orgCommitRequest
 
         async let draftPageRequest = daemon.listDrafts(.init(limit: 500))
@@ -1368,17 +1755,17 @@ struct WorkspaceLoader: Sendable {
         async let syncRequest = daemon.syncStatus()
         async let mcpRequest = daemon.mcpStatus()
 
-        guard let activeProject = projectStates.first(where: { $0.id == activeProjectId }) else {
-            throw WorkspaceLoadError.noProjects
-        }
-        let scopes = [
+        var scopes = [
             ResourceLoadScope(projectId: nil, projectName: nil, refCommitId: orgCommit.value.ref.commitId),
-            ResourceLoadScope(
+        ]
+        if let activeProjectId,
+           let activeProject = projectStates.first(where: { $0.id == activeProjectId }) {
+            scopes.append(ResourceLoadScope(
                 projectId: activeProject.id,
                 projectName: activeProject.name,
                 refCommitId: activeProject.refCommitId
-            )
-        ]
+            ))
+        }
         let resourceGroups = try await concurrentMap(scopes, maxConcurrent: 2) { scope in
             try await loadResources(
                 projectId: scope.projectId,
@@ -1389,9 +1776,11 @@ struct WorkspaceLoader: Sendable {
         var resources = resourceGroups.flatMap { $0 }
 
         let draftPage = try await draftPageRequest
+        let accessibleProjectIds = Set(me.projects.map(\.projectId))
         let activeDrafts = draftPage.items.filter {
             $0.status != .discarded
                 && $0.status != .merged
+                && accessibleProjectIds.contains($0.projectId)
         }
         let targetIds = Set(activeDrafts.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }

@@ -529,6 +529,20 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert_eq!(project_context_page.items.len(), 1);
 
+    let invalid_bundle = post_response(
+        app.clone(),
+        "/api/v1/me/bundles",
+        &PersonalBundleRequest {
+            name: "Invalid project memory".to_owned(),
+            description: None,
+            rule_ids: Vec::new(),
+            context_ids: vec![project_context_page.items[0].context_id.clone()],
+            workflow_ids: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(invalid_bundle.status(), StatusCode::NOT_FOUND);
+
     let bundle: PersonalBundleDetail = post_json(
         app.clone(),
         "/api/v1/me/bundles",
@@ -2927,6 +2941,7 @@ where
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
+                .header("idempotency-key", format!("test-{}", uuid::Uuid::new_v4()))
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -2934,10 +2949,9 @@ where
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "request failed: {}",
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "request failed with {status}: {}",
         String::from_utf8_lossy(&body)
     );
     serde_json::from_slice(&body).unwrap()

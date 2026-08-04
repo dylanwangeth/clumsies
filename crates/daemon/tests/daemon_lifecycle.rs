@@ -16,15 +16,17 @@ use daemon::{
     DaemonDraftOperationRequest, DaemonDraftOperationSource, DaemonDraftResourceKind,
     DaemonDraftScope, DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcService,
     DaemonIpcTransport, DaemonLocalDraftStatus, DaemonMemoryCacheRequest, DaemonMemoryCacheState,
-    DaemonMemoryCacheStatus, DaemonProjectBindingReplaceRequest,
-    DaemonProjectBindingResolveRequest, DaemonProjectCacheClearRequest, DaemonProjectCheckout,
-    DaemonProjectCheckoutRequest, DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest,
-    DaemonProjectStorage, DaemonProjectStorageMode, DaemonProjectStorageMoveState,
-    DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
-    DaemonProjectStorageResetRequest, DaemonServerRequest, DaemonState, DaemonSyncRetryRequest,
-    DaemonUpdateDraftOperation, DraftOperationSyncStatus, IDENTIFIER_NAMESPACE, LaunchAgentConfig,
-    LaunchAgentController, LaunchAgentRuntimeStatus, ServerCredentials, SyncRetryChannel,
-    SyncState,
+    DaemonMemoryCacheStatus, DaemonProjectAgentAdapterInstallRequest,
+    DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterRemoveRequest,
+    DaemonProjectBindingListRequest, DaemonProjectBindingRemoveRequest,
+    DaemonProjectBindingReplaceRequest, DaemonProjectBindingResolveRequest,
+    DaemonProjectCacheClearRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
+    DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonProjectStorage,
+    DaemonProjectStorageMode, DaemonProjectStorageMoveState, DaemonProjectStorageReplaceRequest,
+    DaemonProjectStorageRequest, DaemonProjectStorageResetRequest, DaemonServerRequest,
+    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
+    IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
+    ProjectAgentAdapterKind, ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -120,6 +122,24 @@ fn fake_daemon_program(root: &Path) -> PathBuf {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "test daemon").unwrap();
     path
+}
+
+fn signed_helper_binary(root: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = root;
+        PathBuf::from("/usr/bin/true")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join("bin/clumsies");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
 }
 
 fn context_content(content: &str) -> DaemonDraftContent {
@@ -2203,6 +2223,13 @@ async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts(
         .await
         .unwrap();
     assert_eq!(second.revision, 1);
+    let first_project_bindings = service
+        .list_project_bindings(DaemonProjectBindingListRequest {
+            project_id: "prj_first".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first_project_bindings.items, vec![first.clone()]);
 
     let first_resolution = service.resolve_project_binding(DaemonProjectBindingResolveRequest {
         workspace_path: first_nested.display().to_string(),
@@ -2245,6 +2272,114 @@ async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts(
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_then_be_removed() {
+    let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let repository_root = tempfile::tempdir().unwrap();
+    let codex_config = repository_root.path().join(".codex/config.toml");
+    std::fs::create_dir_all(codex_config.parent().unwrap()).unwrap();
+    std::fs::write(&codex_config, "[model]\nname = \"gpt\"\n").unwrap();
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}");
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: config.project.server_url.clone(),
+        access_token: "test-token".to_owned(),
+        refresh_token: None,
+    }));
+    let state = common::initialize_daemon(config, credential_store).await;
+    let service = DaemonIpcService::new(state);
+    let binding = service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            project_id: "prj_adapter".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    let helper = signed_helper_binary(daemon_root.path());
+    let installed = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_adapter".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            helper_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(installed.revision, 1);
+    let rendered_config = std::fs::read_to_string(&codex_config).unwrap();
+    assert!(rendered_config.contains("[model]"));
+    assert!(rendered_config.contains("[mcp_servers.clumsies]"));
+    assert!(
+        repository_root
+            .path()
+            .join(".agents/skills/activate/SKILL.md")
+            .is_file()
+    );
+
+    let idempotent = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_adapter".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            helper_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(idempotent.revision, 1);
+    let adapters = service
+        .list_project_agent_adapters(DaemonProjectAgentAdapterListRequest {
+            project_id: "prj_adapter".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(adapters.items, vec![idempotent.clone()]);
+
+    service
+        .remove_project_agent_adapter(DaemonProjectAgentAdapterRemoveRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            expected_revision: installed.revision,
+        })
+        .await
+        .unwrap();
+    let restored_config = std::fs::read_to_string(&codex_config).unwrap();
+    assert!(restored_config.contains("[model]"));
+    assert!(!restored_config.contains("mcp_servers.clumsies"));
+    assert!(
+        !repository_root
+            .path()
+            .join(".agents/skills/activate/SKILL.md")
+            .exists()
+    );
+
+    let removed = service
+        .remove_project_binding(DaemonProjectBindingRemoveRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            expected_revision: binding.revision,
+        })
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    let bindings = service
+        .list_project_bindings(DaemonProjectBindingListRequest {
+            project_id: "prj_adapter".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(bindings.items.is_empty());
 }
 
 #[tokio::test]

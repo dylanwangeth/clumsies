@@ -22,7 +22,6 @@ struct NativeSettingsView: View {
                 LabeledContent("Project", value: store.activeProject?.name ?? "Not selected")
                 LabeledContent("Organization", value: store.organization?.name ?? "Unavailable")
             }
-            ProjectLocalStorageSettings(store: store)
             Section("Local Runtime") {
                 LabeledContent("Draft synchronization", value: "Automatic")
                 LabeledContent("Background service", value: "LaunchAgent")
@@ -33,7 +32,7 @@ struct NativeSettingsView: View {
     }
 }
 
-private struct ProjectLocalStorageSettings: View {
+struct ProjectMemoryCacheSettings: View {
     private enum Confirmation: String, Identifiable {
         case reset
         case clear
@@ -49,7 +48,7 @@ private struct ProjectLocalStorageSettings: View {
     @State private var confirmation: Confirmation?
 
     var body: some View {
-        Section("Project Local Storage") {
+        Section("Memory Cache") {
             if let projectId = store.activeProjectId {
                 if let storage {
                     LabeledContent("Location") {

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MemoryNavigator: View {
@@ -5,10 +6,6 @@ struct MemoryNavigator: View {
 
     var body: some View {
         FileTreeView(store: store, items: store.visibleMemoryItems)
-        .sheet(isPresented: $store.showsOrgSelection) {
-            ProjectOrgSelectionView(store: store)
-                .frame(width: 620, height: 620)
-        }
         .onChange(of: store.selectedKind) { _, _ in
             store.selectedItemId = nil
         }
@@ -20,7 +17,9 @@ struct MemoryMainPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !store.visibleTabs.isEmpty {
+            if store.selectedSection == .local, store.activeProject?.isLoaded == false {
+                ProjectPreparationView(store: store)
+            } else if !store.visibleTabs.isEmpty {
                 if let tab = store.activeVisibleTab,
                    let item = store.item(for: tab) {
                     if item.contentLoaded {
@@ -31,13 +30,22 @@ struct MemoryMainPane: View {
                             .task { await store.loadContentIfNeeded(item) }
                     }
                 } else {
-                    EmptyWorkspaceView()
+                    emptyState
                 }
             } else {
-                EmptyWorkspaceView()
+                emptyState
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if store.visibleMemoryItems.isEmpty {
+            EmptyMemoryCollectionView(store: store)
+        } else {
+            EmptyWorkspaceView()
+        }
     }
 }
 
@@ -62,11 +70,64 @@ private struct EmptyWorkspaceView: View {
     }
 }
 
+private struct EmptyMemoryCollectionView: View {
+    @ObservedObject var store: WorkspaceStore
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("No \(store.selectedKind.title)", systemImage: "doc")
+        } description: {
+            Text("Create the first \(store.selectedKind.singularTitle.lowercased()) here.")
+        } actions: {
+            Button("New \(store.selectedKind.singularTitle)") {
+                Task {
+                    await store.createMemory(
+                        kind: store.selectedKind,
+                        scope: store.selectedSection == .hub ? .org : .project
+                    )
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(
+                !store.canCreateMemory(
+                    kind: store.selectedKind,
+                    scope: store.selectedSection == .hub ? .org : .project
+                )
+            )
+        }
+    }
+}
+
+private struct ProjectPreparationView: View {
+    @ObservedObject var store: WorkspaceStore
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Preparing Project", systemImage: "folder")
+        } description: {
+            Text("Clumsies is preparing the local workspace.")
+        } actions: {
+            if store.loadingProjectId == store.activeProjectId {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let projectId = store.activeProjectId {
+                Button("Try Again") {
+                    Task { await store.selectProject(projectId) }
+                }
+            }
+        }
+    }
+}
+
 private struct FileTreeView: View {
     @ObservedObject var store: WorkspaceStore
     let items: [MemoryListItem]
     @State private var expandedDirectoryIds: Set<String> = []
+    @State private var selectedNodeIds: Set<String> = []
+    @State private var selectionAnchorId: String?
     @State private var initializedExpansion = false
+    @State private var itemToRename: MemoryListItem?
+    @State private var proposedName = ""
 
     private var roots: [FileTreeNode] {
         FileTreeNode.build(items)
@@ -77,31 +138,211 @@ private struct FileTreeView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 1) {
-                ForEach(visibleNodes) { entry in
-                    FileTreeRow(
-                        store: store,
-                        entry: entry,
-                        isExpanded: expandedDirectoryIds.contains(entry.id),
-                        onToggleDirectory: {
-                            withAnimation(.snappy(duration: 0.14)) {
-                                if expandedDirectoryIds.contains(entry.id) {
-                                    expandedDirectoryIds.remove(entry.id)
-                                } else {
-                                    expandedDirectoryIds.insert(entry.id)
-                                }
-                            }
+        List(selection: selection) {
+            ForEach(visibleNodes) { entry in
+                FileTreeRow(
+                    entry: entry,
+                    isExpanded: expandedDirectoryIds.contains(entry.id),
+                    onDirectoryClick: { modifierFlags in
+                        handleDirectoryClick(entry.id, modifierFlags: modifierFlags)
+                    }
+                )
+                .tag(entry.id)
+                .listRowInsets(.init(top: 0, leading: 5, bottom: 0, trailing: 5))
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .contextMenu(forSelectionType: String.self) { nodeIds in
+            fileTreeMenu(for: nodeIds)
+        }
+        .onAppear {
+            guard !initializedExpansion else { return }
+            expandedDirectoryIds = FileTreeNode.directoryIds(in: roots)
+            initializedExpansion = true
+            synchronizeSelectionWithActiveItem()
+        }
+        .onChange(of: items.map { "\($0.id):\($0.document.path)" }) { _, _ in
+            expandedDirectoryIds.formUnion(FileTreeNode.directoryIds(in: roots))
+            selectedNodeIds.formIntersection(Set(FileTreeNode.allIds(in: roots)))
+            if let selectionAnchorId,
+               FileTreeNode.node(withId: selectionAnchorId, in: roots) == nil {
+                self.selectionAnchorId = nil
+            }
+            synchronizeSelectionWithActiveItem()
+        }
+        .onChange(of: store.activeVisibleTab?.itemId ?? store.selectedItemId) { _, _ in
+            synchronizeSelectionWithActiveItem()
+        }
+        .alert(
+            "Rename Memory",
+            isPresented: Binding(
+                get: { itemToRename != nil },
+                set: {
+                    if !$0 {
+                        itemToRename = nil
+                        proposedName = ""
+                    }
+                }
+            )
+        ) {
+            TextField("File name", text: $proposedName)
+            Button("Cancel", role: .cancel) {
+                itemToRename = nil
+            }
+            Button("Rename") {
+                renameSelectedItem()
+            }
+            .disabled(!isValidProposedName)
+        }
+    }
+
+    private var isValidProposedName: Bool {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
+    }
+
+    private func beginRenaming(_ item: MemoryListItem) {
+        proposedName = item.document.path.split(separator: "/").last.map(String.init)
+            ?? item.document.path
+        itemToRename = item
+    }
+
+    private func renameSelectedItem() {
+        guard let item = itemToRename else { return }
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidProposedName else { return }
+        var document = item.document
+        let parent = document.path
+            .split(separator: "/")
+            .dropLast()
+            .joined(separator: "/")
+        document.path = parent.isEmpty ? name : "\(parent)/\(name)"
+        itemToRename = nil
+        proposedName = ""
+        Task {
+            do {
+                try await store.save(item, document: document)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var selection: Binding<Set<String>> {
+        Binding(
+            get: { selectedNodeIds },
+            set: { newSelection in
+                let previous = selectedNodeIds
+                selectedNodeIds = newSelection
+                guard newSelection.count == 1,
+                      let nodeId = newSelection.first,
+                      let node = FileTreeNode.node(withId: nodeId, in: roots) else {
+                    return
+                }
+
+                if newSelection != previous {
+                    selectionAnchorId = nodeId
+                }
+                guard newSelection != previous, let item = node.item else { return }
+                store.open(item)
+            }
+        )
+    }
+
+    private func handleDirectoryClick(
+        _ nodeId: String,
+        modifierFlags: NSEvent.ModifierFlags
+    ) {
+        let result = FileTreeSelectionInteraction.directoryClick(
+            nodeId: nodeId,
+            visibleNodeIds: visibleNodes.map(\.id),
+            currentSelection: selectedNodeIds,
+            anchorId: selectionAnchorId,
+            modifierFlags: modifierFlags
+        )
+        selectedNodeIds = result.selection
+        selectionAnchorId = result.anchorId
+        if result.togglesDirectory {
+            toggleDirectory(nodeId)
+        }
+    }
+
+    private func toggleDirectory(_ nodeId: String) {
+        withAnimation(.snappy(duration: 0.14)) {
+            if expandedDirectoryIds.contains(nodeId) {
+                expandedDirectoryIds.remove(nodeId)
+            } else {
+                expandedDirectoryIds.insert(nodeId)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileTreeMenu(for nodeIds: Set<String>) -> some View {
+        let targetItems = FileTreeNode.items(in: roots, selectedNodeIds: nodeIds)
+        let singleItem = targetItems.count == 1 ? targetItems.first : nil
+        let hubItems = targetItems.filter { $0.scope == .org }
+        let removableItems = targetItems.filter(\.inherited)
+
+        if let singleItem {
+            Button("Open") { store.open(singleItem) }
+            if singleItem.supportsMarkdownPreview {
+                Button("Open Preview") { store.open(singleItem, mode: .preview) }
+            }
+            Divider()
+        }
+
+        if store.selectedSection == .hub, !hubItems.isEmpty {
+            Menu(addToLocalTitle(count: hubItems.count)) {
+                if store.projects.isEmpty {
+                    Button("No Projects") {}
+                        .disabled(true)
+                } else {
+                    ForEach(store.projects) { project in
+                        Button(project.name) {
+                            addToLocal(hubItems, projectId: project.id)
                         }
-                    )
+                    }
                 }
             }
-            .padding(.horizontal, 5)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .disabled(!store.canManageOrgSelection || store.projects.isEmpty)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
-        .contextMenu {
+
+        if store.selectedSection == .local, !removableItems.isEmpty {
+            Button(removeFromLocalTitle(count: removableItems.count)) {
+                removeFromLocal(removableItems)
+            }
+            .disabled(!store.canManageOrgSelection)
+        }
+
+        if let singleItem {
+            if store.selectedSection == .hub && !hubItems.isEmpty
+                || store.selectedSection == .local && !removableItems.isEmpty {
+                Divider()
+            }
+            if singleItem.inherited {
+                Button("Open in Hub") {
+                    Task { await store.reveal(singleItem) }
+                }
+            } else {
+                Button("Rename…") { beginRenaming(singleItem) }
+            }
+            if let draft = singleItem.draft {
+                Button("Discard Draft") {
+                    Task { await store.discard(draft) }
+                }
+            }
+            if !singleItem.inherited {
+                Button("Move to Trash", role: .destructive) {
+                    Task { await store.delete(singleItem) }
+                }
+            }
+        }
+
+        if targetItems.isEmpty {
             Button("New \(store.selectedKind.singularTitle)") {
                 Task {
                     await store.createMemory(
@@ -117,99 +358,97 @@ private struct FileTreeView: View {
                 )
             )
         }
-        .onAppear {
-            guard !initializedExpansion else { return }
-            expandedDirectoryIds = FileTreeNode.directoryIds(in: roots)
-            initializedExpansion = true
+    }
+
+    private func synchronizeSelectionWithActiveItem() {
+        guard selectedNodeIds.count <= 1,
+              let itemId = store.activeVisibleTab?.itemId ?? store.selectedItemId,
+              FileTreeNode.node(withId: itemId, in: roots) != nil else {
+            return
         }
-        .onChange(of: items.map { "\($0.id):\($0.document.path)" }) { _, _ in
-            expandedDirectoryIds.formUnion(FileTreeNode.directoryIds(in: roots))
+        selectedNodeIds = [itemId]
+        selectionAnchorId = itemId
+    }
+
+    private func addToLocal(_ items: [MemoryListItem], projectId: String) {
+        Task {
+            do {
+                try await store.addHubMemory(
+                    resourceIds: Set(items.map(\.id)),
+                    toProject: projectId
+                )
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func removeFromLocal(_ items: [MemoryListItem]) {
+        Task {
+            do {
+                try await store.removeHubMemoryFromActiveProject(
+                    resourceIds: Set(items.map(\.id))
+                )
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func addToLocalTitle(count: Int) -> String {
+        count == 1 ? "Add to Local" : "Add \(count) Items to Local"
+    }
+
+    private func removeFromLocalTitle(count: Int) -> String {
+        count == 1 ? "Remove from Local" : "Remove \(count) Items from Local"
     }
 }
 
 private struct FileTreeRow: View {
-    @ObservedObject var store: WorkspaceStore
     let entry: VisibleFileTreeNode
     let isExpanded: Bool
-    let onToggleDirectory: () -> Void
-    @State private var isHovered = false
-    @State private var showsRenameAlert = false
-    @State private var proposedName = ""
+    let onDirectoryClick: (NSEvent.ModifierFlags) -> Void
 
     private var item: MemoryListItem? { entry.node.item }
-    private var isSelected: Bool {
-        guard let item else { return false }
-        return store.activeVisibleTab?.itemId == item.id || store.selectedItemId == item.id
+
+    @ViewBuilder
+    var body: some View {
+        if item == nil {
+            rowContent
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        onDirectoryClick(NSEvent.modifierFlags)
+                    }
+                )
+        } else {
+            rowContent
+        }
     }
 
-    var body: some View {
-        Button {
+    private var rowContent: some View {
+        HStack(spacing: 6) {
             if let item {
-                store.open(item)
+                FileSymbolView(path: item.document.path)
             } else {
-                onToggleDirectory()
+                Image(systemName: isExpanded ? "folder.fill" : "folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
             }
-        } label: {
-            HStack(spacing: 6) {
-                if let item {
-                    FileSymbolView(path: item.document.path)
-                } else {
-                    Image(systemName: isExpanded ? "folder.fill" : "folder")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14)
-                }
 
-                Text(entry.node.name)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(titleColor)
+            Text(entry.node.name)
+                .font(.system(size: 12.5, weight: .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(titleColor)
 
-                Spacer(minLength: 4)
-            }
-            .padding(.leading, CGFloat(entry.depth) * 13 + 5)
-            .padding(.trailing, 7)
-            .frame(maxWidth: .infinity, minHeight: 25, maxHeight: 25, alignment: .leading)
-            .background(rowBackground, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(Rectangle())
+            Spacer(minLength: 4)
         }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .padding(.leading, CGFloat(entry.depth) * 13 + 5)
+        .padding(.trailing, 7)
+        .frame(maxWidth: .infinity, minHeight: 25, maxHeight: 25, alignment: .leading)
+        .contentShape(Rectangle())
         .help(item?.inherited == true ? "Inherited from Hub" : entry.node.name)
-        .contextMenu {
-            if let item {
-                Button("Open") { store.open(item) }
-                if item.supportsMarkdownPreview {
-                    Button("Open Preview") { store.open(item, mode: .preview) }
-                }
-                Divider()
-                if item.inherited {
-                    Button("Open in Hub") {
-                        Task { await store.reveal(item) }
-                    }
-                } else {
-                    Button("Rename…") { beginRenaming(item) }
-                }
-                if let draft = item.draft {
-                    Button("Discard Draft") { Task { await store.discard(draft) } }
-                }
-                if !item.inherited {
-                    Button("Move to Trash", role: .destructive) { Task { await store.delete(item) } }
-                }
-            }
-        }
-        .alert("Rename Memory", isPresented: $showsRenameAlert) {
-            TextField("File name", text: $proposedName)
-            Button("Cancel", role: .cancel) {}
-            Button("Rename") {
-                if let item {
-                    rename(item)
-                }
-            }
-            .disabled(!isValidProposedName)
-        }
     }
 
     private var titleColor: Color {
@@ -219,50 +458,81 @@ private struct FileTreeRow: View {
         if item.inherited { return .secondary }
         return .primary
     }
+}
 
-    private var rowBackground: Color {
-        if isSelected { return Color.accentColor.opacity(0.16) }
-        if isHovered { return Color(nsColor: .unemphasizedSelectedContentBackgroundColor).opacity(0.55) }
-        return .clear
-    }
+struct FileTreeDirectoryClickResult {
+    let selection: Set<String>
+    let anchorId: String?
+    let togglesDirectory: Bool
+}
 
-    private var isValidProposedName: Bool {
-        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
-    }
-
-    private func beginRenaming(_ item: MemoryListItem) {
-        proposedName = item.document.path.split(separator: "/").last.map(String.init) ?? item.document.path
-        showsRenameAlert = true
-    }
-
-    private func rename(_ item: MemoryListItem) {
-        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isValidProposedName else { return }
-        var document = item.document
-        let parent = document.path
-            .split(separator: "/")
-            .dropLast()
-            .joined(separator: "/")
-        document.path = parent.isEmpty ? name : "\(parent)/\(name)"
-        Task {
-            do {
-                try await store.save(item, document: document)
-            } catch {
-                store.errorMessage = error.localizedDescription
+enum FileTreeSelectionInteraction {
+    static func directoryClick(
+        nodeId: String,
+        visibleNodeIds: [String],
+        currentSelection: Set<String>,
+        anchorId: String?,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> FileTreeDirectoryClickResult {
+        if modifierFlags.contains(.shift) {
+            let effectiveAnchor = anchorId ?? nodeId
+            guard let anchorIndex = visibleNodeIds.firstIndex(of: effectiveAnchor),
+                  let nodeIndex = visibleNodeIds.firstIndex(of: nodeId) else {
+                return .init(
+                    selection: [nodeId],
+                    anchorId: nodeId,
+                    togglesDirectory: false
+                )
             }
+            let range = min(anchorIndex, nodeIndex) ... max(anchorIndex, nodeIndex)
+            let rangeSelection = Set(range.map { visibleNodeIds[$0] })
+            return .init(
+                selection: modifierFlags.contains(.command)
+                    ? currentSelection.union(rangeSelection)
+                    : rangeSelection,
+                anchorId: effectiveAnchor,
+                togglesDirectory: false
+            )
         }
+
+        if modifierFlags.contains(.command) {
+            var selection = currentSelection
+            if selection.contains(nodeId) {
+                selection.remove(nodeId)
+            } else {
+                selection.insert(nodeId)
+            }
+            return .init(
+                selection: selection,
+                anchorId: nodeId,
+                togglesDirectory: false
+            )
+        }
+
+        guard modifierFlags.intersection([.option, .control]).isEmpty else {
+            return .init(
+                selection: currentSelection,
+                anchorId: anchorId,
+                togglesDirectory: false
+            )
+        }
+
+        return .init(
+            selection: [nodeId],
+            anchorId: nodeId,
+            togglesDirectory: true
+        )
     }
 }
 
-private struct VisibleFileTreeNode: Identifiable {
+struct VisibleFileTreeNode: Identifiable {
     let node: FileTreeNode
     let depth: Int
 
     var id: String { node.id }
 }
 
-private struct FileTreeNode: Identifiable {
+struct FileTreeNode: Identifiable {
     let id: String
     let name: String
     let item: MemoryListItem?
@@ -307,6 +577,50 @@ private struct FileTreeNode: Identifiable {
             guard let children = node.children else { return }
             result.insert(node.id)
             result.formUnion(directoryIds(in: children))
+        }
+    }
+
+    static func allIds(in nodes: [FileTreeNode]) -> [String] {
+        nodes.flatMap { node in
+            [node.id] + (node.children.map { allIds(in: $0) } ?? [])
+        }
+    }
+
+    static func node(withId id: String, in nodes: [FileTreeNode]) -> FileTreeNode? {
+        for node in nodes {
+            if node.id == id { return node }
+            if let children = node.children,
+               let match = self.node(withId: id, in: children) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    static func items(
+        in nodes: [FileTreeNode],
+        selectedNodeIds: Set<String>
+    ) -> [MemoryListItem] {
+        var selectedItems: [String: MemoryListItem] = [:]
+
+        func collect(_ node: FileTreeNode) {
+            if let item = node.item {
+                selectedItems[item.id] = item
+            }
+            node.children?.forEach(collect)
+        }
+
+        func visit(_ node: FileTreeNode) {
+            if selectedNodeIds.contains(node.id) {
+                collect(node)
+            } else {
+                node.children?.forEach(visit)
+            }
+        }
+
+        nodes.forEach(visit)
+        return selectedItems.values.sorted {
+            $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending
         }
     }
 
@@ -1089,70 +1403,5 @@ private struct DocumentPathBreadcrumb: View {
         }
         .font(.system(.caption, design: .monospaced))
         .foregroundStyle(.secondary)
-    }
-}
-
-private struct ProjectOrgSelectionView: View {
-    @ObservedObject var store: WorkspaceStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedIds: Set<String>
-    @State private var saving = false
-
-    init(store: WorkspaceStore) {
-        self.store = store
-        _selectedIds = State(initialValue: store.activeProject?.selectedOrgResourceIds ?? [])
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(MemoryKind.allCases) { kind in
-                    Section(kind.title) {
-                        ForEach(store.resources.filter { $0.scope == .org && $0.kind == kind }) { resource in
-                            Toggle(isOn: Binding(
-                                get: { selectedIds.contains(resource.id) },
-                                set: { enabled in
-                                    if enabled { selectedIds.insert(resource.id) }
-                                    else { selectedIds.remove(resource.id) }
-                                }
-                            )) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(resource.document.title)
-                                    Text(resource.document.path)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .accessibilityLabel("\(resource.document.title), \(resource.document.path)")
-                            .disabled(!store.canManageOrgSelection)
-                        }
-                    }
-                }
-            }
-            .listStyle(.inset)
-            .navigationTitle("Hub Memory for \(store.activeProject?.name ?? "Project")")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(saving || !store.canManageOrgSelection)
-                }
-            }
-        }
-    }
-
-    private func save() {
-        saving = true
-        Task {
-            do {
-                try await store.replaceProjectOrgSelection(resourceIds: selectedIds)
-                dismiss()
-            } catch {
-                store.errorMessage = error.localizedDescription
-                saving = false
-            }
-        }
     }
 }
