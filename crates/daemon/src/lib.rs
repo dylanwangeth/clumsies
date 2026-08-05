@@ -1,25 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
-
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sha2::{Digest, Sha256};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
-};
-use sqlx::{Row, SqlitePool};
-use thiserror::Error;
-use tokio::sync::{Mutex, Notify};
-use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 mod agent_adapter;
 mod commit_sync;
@@ -51,8 +32,7 @@ pub use config::{
     IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, ProjectConfig, SyncConfig,
 };
 pub(crate) use config::{
-    META_DRAFT_EVENTS_CURSOR, META_DRAFT_SYNC_LAST_ATTEMPT_AT, META_DRAFT_SYNC_LAST_SUCCESS_AT,
-    META_MEMORY_CACHE_RESET_REQUIRED, RuntimeProjectConfig,
+    META_DRAFT_SYNC_LAST_ATTEMPT_AT, META_DRAFT_SYNC_LAST_SUCCESS_AT, RuntimeProjectConfig,
 };
 pub use credentials::{
     CredentialStore, CredentialStoreError, KEYCHAIN_ACCOUNT, ServerCredentials,
@@ -98,7 +78,6 @@ pub(crate) use server_client::{
     load_cached_server_response, post_server_json, save_cached_server_response,
     validate_server_proxy_path,
 };
-pub(crate) use state::DaemonInner;
 pub use state::DaemonIpcService;
 pub use state::DaemonState;
 pub use types::{
@@ -117,20 +96,21 @@ pub use types::{
     LaunchAgentRuntimeStatus, LocalDbStatus, McpAdapterStatus, SyncChannelStatus, SyncRetryChannel,
     SyncState,
 };
-pub(crate) use types::{
+pub use types::{
     DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
     DaemonDiscardDraftOperation, DaemonLocalDraftOperation, DaemonRenameDraftOperation,
-    DaemonTextDraftUpdate, DaemonTextReplacement, DaemonUpdateDraftOperation, DraftSyncError,
-    ProjectConfigReadiness, QueuedDraftOperation, ServerCreateDraftRequest,
-    ServerDraftCoordination, ServerDraftEvent, ServerDraftEventListResponse,
-    ServerDraftMutationResponse, ServerDraftOperationAction, ServerDraftOperationBatchItem,
-    ServerDraftOperationBatchRequest, ServerDraftOperationBatchResponse, ServerDraftOperationInput,
-    ServerDraftProjection, ServerDraftProjectionDetail, ServerDraftProjectionOperation,
-    ServerDraftResourceRef, ServerDraftVersion, ServerTokenRefreshResponse,
+    DaemonTextDraftUpdate, DaemonTextReplacement, DaemonUpdateDraftOperation,
+};
+pub(crate) use types::{
+    DraftSyncError, ProjectConfigReadiness, QueuedDraftOperation, ServerCreateDraftRequest,
+    ServerDraftEventListResponse, ServerDraftMutationResponse, ServerDraftOperationAction,
+    ServerDraftOperationBatchItem, ServerDraftOperationBatchRequest,
+    ServerDraftOperationBatchResponse, ServerDraftOperationInput, ServerDraftProjectionDetail,
+    ServerDraftProjectionOperation, ServerDraftResourceRef, ServerTokenRefreshResponse,
     project_binding_from_row,
 };
 pub(crate) use util::is_normalized_relative_path;
 use util::{
     apply_exact_text_replacements, canonical_server_url, canonical_workspace_directory,
-    memory_kind_matches_resource, non_empty_string, validate_draft_resource_path,
+    memory_kind_matches_resource, non_empty_string,
 };
