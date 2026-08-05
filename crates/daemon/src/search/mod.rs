@@ -1,21 +1,20 @@
+mod activation;
 mod chunker;
+mod index;
 pub(crate) mod models;
+mod overlay;
+mod query;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, SqlitePool};
 
-use self::chunker::build_units;
 use self::models::{FastEmbedSearchModels, SearchModelRuntimeStatus, SearchModels};
 use super::retrieval_history::{
     RetrievalCandidateInput, RetrievalCorpusResourceInput, RetrievalDeltaAction,
@@ -26,22 +25,12 @@ use super::{
     DaemonMemoryCacheState, DaemonState, DaemonUpdateDraftOperation,
 };
 
-const SEARCH_SCHEMA_VERSION: i64 = 3;
-const PARSER_VERSION: &str = "markdown-units.v1";
-const CHUNKER_VERSION: &str = "markdown-chunker.v1";
-const RANKING_CONFIG_VERSION: &str = "agent_activation.v2";
-const BM25_TOP_K: usize = 60;
-const VECTOR_TOP_K: usize = 60;
-const RRF_CONSTANT: f32 = 60.0;
-const RRF_CANDIDATES: usize = 40;
-const RERANK_CANDIDATES: usize = 24;
-const FINAL_FRAGMENTS: usize = 12;
-const PER_RESOURCE_LIMIT: usize = 2;
-const FRAGMENT_TOKEN_BUDGET: usize = 2400;
+pub(super) const SEARCH_SCHEMA_VERSION: i64 = 3;
+pub(super) const PARSER_VERSION: &str = "markdown-units.v1";
+pub(super) const CHUNKER_VERSION: &str = "markdown-chunker.v1";
+pub(super) const RANKING_CONFIG_VERSION: &str = "agent_activation.v2";
 // BGE emits unbounded logits; the floor is applied after sigmoid normalization.
-const MIN_RERANK_RELEVANCE: f32 = 0.01;
-const MAX_ACTIVATION_IDENTITIES: usize = 256;
-const MAX_ACTIVATION_STATE_BYTES: usize = 64 * 1024;
+pub(super) const MIN_RERANK_RELEVANCE: f32 = 0.01;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -221,15 +210,15 @@ pub struct SearchIndexStatus {
 }
 
 #[derive(Clone, Debug)]
-struct EffectiveMemory {
-    project_id: String,
-    effective_hash: String,
-    resources: Arc<[SourceResource]>,
+pub(super) struct EffectiveMemory {
+    pub(super) project_id: String,
+    pub(super) effective_hash: String,
+    pub(super) resources: Arc<[SourceResource]>,
 }
 
 #[derive(Clone, Debug)]
-struct EffectiveResource {
-    source: SourceResource,
+pub(super) struct EffectiveResource {
+    pub(super) source: SourceResource,
 }
 
 #[derive(Debug)]
@@ -250,7 +239,7 @@ impl SearchFailure {
         Self::new("search_model_unavailable", message)
     }
 
-    fn model_preparing(message: impl Into<String>) -> Self {
+    pub(super) fn model_preparing(message: impl Into<String>) -> Self {
         Self::new("search_model_preparing", message)
     }
 
@@ -258,15 +247,15 @@ impl SearchFailure {
         Self::new("search_vector_corrupt", message)
     }
 
-    fn invalid_state(message: impl Into<String>) -> Self {
+    pub(super) fn invalid_state(message: impl Into<String>) -> Self {
         Self::new("invalid_activation_state", message)
     }
 
-    fn not_ready(message: impl Into<String>) -> Self {
+    pub(super) fn not_ready(message: impl Into<String>) -> Self {
         Self::new("search_index_not_ready", message)
     }
 
-    fn generation_changed(message: impl Into<String>) -> Self {
+    pub(super) fn generation_changed(message: impl Into<String>) -> Self {
         Self::new("search_generation_changed", message)
     }
 
@@ -274,7 +263,7 @@ impl SearchFailure {
         Self::new("memory_resource_not_found", message)
     }
 
-    fn failed(message: impl Into<String>) -> Self {
+    pub(super) fn failed(message: impl Into<String>) -> Self {
         Self::new("search_index_failed", message)
     }
 }
@@ -347,148 +336,12 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
     Ok(())
 }
 
-async fn connect_project_index(path: &Path) -> Result<SqlitePool, DaemonError> {
-    if let Some(parent) = path.parent() {
-        super::project_storage::ensure_private_directory(parent)?;
-    }
-    let options = SqliteConnectOptions::from_str(&path.display().to_string())?
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(3)
-        .connect_with(options)
-        .await?;
-    migrate_project_index(&pool).await?;
-    super::project_storage::secure_managed_tree(path.parent().unwrap_or(path))?;
-    Ok(pool)
-}
-
-async fn migrate_project_index(pool: &SqlitePool) -> Result<(), DaemonError> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS search_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT value FROM search_meta WHERE key = 'schema_version'")
-            .fetch_optional(pool)
-            .await?;
-    let expected_version = SEARCH_SCHEMA_VERSION.to_string();
-    if existing.as_deref() != Some(expected_version.as_str()) {
-        let mut tx = pool.begin().await?;
-        for statement in [
-            "DROP TABLE IF EXISTS search_units_fts",
-            "DROP TABLE IF EXISTS search_heads",
-            "DROP TABLE IF EXISTS search_units",
-            "DROP TABLE IF EXISTS search_resources",
-            "DROP TABLE IF EXISTS search_revisions",
-        ] {
-            sqlx::query(statement).execute(&mut *tx).await?;
-        }
-        tx.commit().await?;
-    }
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS search_revisions (
-            revision_id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            effective_hash TEXT NOT NULL,
-            model_revision TEXT NOT NULL,
-            parser_version TEXT NOT NULL,
-            ranking_version TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('building', 'ready', 'failed')),
-            last_error TEXT,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            ready_at TEXT
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS search_resources (
-            revision_id TEXT NOT NULL REFERENCES search_revisions(revision_id) ON DELETE CASCADE,
-            resource_id TEXT NOT NULL,
-            project_id TEXT NOT NULL,
-            scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
-            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
-            path TEXT NOT NULL,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            source_commit_id TEXT,
-            draft_id TEXT,
-            draft_revision TEXT,
-            PRIMARY KEY (revision_id, resource_id)
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS search_units (
-            unit_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-            revision_id TEXT NOT NULL REFERENCES search_revisions(revision_id) ON DELETE CASCADE,
-            unit_key TEXT NOT NULL,
-            resource_id TEXT NOT NULL,
-            ordinal BIGINT NOT NULL,
-            heading_path_json TEXT NOT NULL,
-            locator_json TEXT NOT NULL,
-            text TEXT NOT NULL,
-            text_hash TEXT NOT NULL,
-            token_count BIGINT NOT NULL,
-            vector BLOB NOT NULL,
-            UNIQUE (revision_id, unit_key),
-            FOREIGN KEY (revision_id, resource_id)
-                REFERENCES search_resources(revision_id, resource_id) ON DELETE CASCADE
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_search_units_revision
-         ON search_units (revision_id, unit_key)",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS search_units_fts USING fts5(
-            revision_id UNINDEXED,
-            unit_key UNINDEXED,
-            path,
-            title,
-            heading,
-            body,
-            tokenize = 'trigram case_sensitive 0'
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS search_heads (
-            project_id TEXT PRIMARY KEY,
-            revision_id TEXT NOT NULL REFERENCES search_revisions(revision_id)
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO search_meta (key, value) VALUES ('schema_version', $1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(SEARCH_SCHEMA_VERSION.to_string())
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-async fn active_project_index(
+pub(super) async fn active_project_index(
     state: &DaemonState,
     project_id: &str,
 ) -> Result<(SqlitePool, super::project_storage::ActiveProjectStorage), DaemonError> {
     let storage = super::project_storage::resolve_active(state, project_id).await?;
-    let pool = connect_project_index(&storage.search_index_path()).await?;
+    let pool = index::connect_project_index(&storage.search_index_path()).await?;
     Ok((pool, storage))
 }
 
@@ -545,12 +398,12 @@ pub(crate) async fn materialize_project_index_at(
     project_id: &str,
     path: &Path,
 ) -> Result<Option<String>, DaemonError> {
-    let pool = connect_project_index(path).await?;
-    delete_project_index(&pool, project_id).await?;
+    let pool = index::connect_project_index(path).await?;
+    index::delete_project_index(&pool, project_id).await?;
     let effective_hash = match load_effective_memory(state, project_id).await {
         Ok(effective) => {
             let effective_hash = effective.effective_hash.clone();
-            ensure_index(state, &pool, &effective).await?;
+            index::ensure_index(state, &pool, &effective).await?;
             Some(effective_hash)
         }
         Err(DaemonError::State {
@@ -578,7 +431,7 @@ pub(crate) async fn verify_project_index_at(
             message: format!("Project search index {} is missing", path.display()),
         });
     }
-    let pool = connect_project_index(path).await?;
+    let pool = index::connect_project_index(path).await?;
     let ready: i64 = match expected_effective_hash {
         Some(effective_hash) => {
             sqlx::query_scalar(
@@ -655,7 +508,7 @@ pub(crate) async fn activate_memory(
     let mut failure_stage = "activation_state";
 
     let result = async {
-        let previous_state = decode_activation_state(request.state.as_deref())?;
+        let previous_state = activation::decode_activation_state(request.state.as_deref())?;
         let _guard = state.inner.search_lock.lock().await;
 
         failure_stage = "effective_memory";
@@ -672,7 +525,7 @@ pub(crate) async fn activate_memory(
         failure_stage = "index_ensure";
         let started = Instant::now();
         let (pool, storage) = active_project_index(state, &project_id).await?;
-        let revision_id = match ensure_index(state, &pool, &effective).await {
+        let revision_id = match index::ensure_index(state, &pool, &effective).await {
             Ok(revision_id) => revision_id,
             Err(error) => {
                 pool.close().await;
@@ -683,7 +536,7 @@ pub(crate) async fn activate_memory(
         completion.index_revision = Some(revision_id.clone());
         publish_search_head(state, &pool, &project_id, storage.location_revision).await?;
 
-        let response = query_index(
+        let response = query::query_index(
             state,
             &pool,
             &revision_id,
@@ -893,79 +746,16 @@ pub(crate) async fn rebuild_search_index(
 ) -> Result<SearchIndexStatus, DaemonError> {
     let _guard = state.inner.search_lock.lock().await;
     let (pool, storage) = active_project_index(state, &request.project_id).await?;
-    delete_project_index(&pool, &request.project_id).await?;
+    index::delete_project_index(&pool, &request.project_id).await?;
     let effective = load_effective_memory(state, &request.project_id).await?;
-    ensure_index(state, &pool, &effective).await?;
+    index::ensure_index(state, &pool, &effective).await?;
     publish_search_head(state, &pool, &request.project_id, storage.location_revision).await?;
     pool.close().await;
     drop(_guard);
     search_index_status(state, request).await
 }
 
-#[derive(Deserialize)]
-struct CachedCommitPayload {
-    commit: CachedCommit,
-    tree: CachedTree,
-    blobs: Vec<CachedBlob>,
-}
-
-#[derive(Deserialize)]
-struct CachedCommit {
-    commit_id: String,
-}
-
-#[derive(Deserialize)]
-struct CachedTree {
-    entries: Vec<CachedTreeEntry>,
-}
-
-#[derive(Deserialize)]
-struct CachedTreeEntry {
-    id: String,
-    #[serde(rename = "type")]
-    kind: CachedMemoryKind,
-    scope: CachedScope,
-    path: Option<String>,
-    blob_id: String,
-}
-
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum CachedMemoryKind {
-    Context,
-    Rule,
-    Workflow,
-    ProjectOrgSelection,
-}
-
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum CachedScope {
-    Org,
-    Project,
-    Daemon,
-}
-
-#[derive(Deserialize)]
-struct CachedBlob {
-    blob_id: String,
-    content: String,
-}
-
-#[derive(Debug)]
-struct DraftOverlay {
-    draft_id: String,
-    base_commit_id: Option<String>,
-    scope: SourceScope,
-    kind: Option<MemoryKind>,
-    target_id: Option<String>,
-    path: Option<String>,
-    base_resource: Option<EffectiveResource>,
-    updated_at: String,
-    operations: Vec<(i64, String, DaemonDraftOperation)>,
-}
-
-async fn load_effective_memory(
+pub(super) async fn load_effective_memory(
     state: &DaemonState,
     project_id: &str,
 ) -> Result<EffectiveMemory, DaemonError> {
@@ -1020,7 +810,7 @@ async fn load_effective_memory(
         cache.commit_id.as_deref(),
     ) {
         let marker_path = PathBuf::from(root_path).join("commit-payload.json");
-        let payload: CachedCommitPayload =
+        let payload: overlay::CachedCommitPayload =
             serde_json::from_slice(&std::fs::read(&marker_path).map_err(|error| {
                 SearchFailure::failed(format!(
                     "failed to read installed Commit payload {}: {error}",
@@ -1045,10 +835,10 @@ async fn load_effective_memory(
             .map(|blob| (blob.blob_id, blob.content))
             .collect::<HashMap<_, _>>();
         for entry in payload.tree.entries {
-            let Some(kind) = cached_memory_kind(entry.kind) else {
+            let Some(kind) = overlay::cached_memory_kind(entry.kind) else {
                 continue;
             };
-            let Some(scope) = cached_scope(entry.scope) else {
+            let Some(scope) = overlay::cached_scope(entry.scope) else {
                 continue;
             };
             let path = entry.path.ok_or_else(|| {
@@ -1085,8 +875,8 @@ async fn load_effective_memory(
         }
     }
 
-    for draft in load_draft_overlays(&state.inner.pool, project_id).await? {
-        apply_draft_overlay(project_id, &mut resources, draft)?;
+    for draft in overlay::load_draft_overlays(&state.inner.pool, project_id).await? {
+        overlay::apply_draft_overlay(project_id, &mut resources, draft)?;
     }
     let source_resources = resources
         .into_values()
@@ -1101,24 +891,7 @@ async fn load_effective_memory(
     })
 }
 
-fn cached_memory_kind(kind: CachedMemoryKind) -> Option<MemoryKind> {
-    match kind {
-        CachedMemoryKind::Context => Some(MemoryKind::Context),
-        CachedMemoryKind::Rule => Some(MemoryKind::Rule),
-        CachedMemoryKind::Workflow => Some(MemoryKind::Workflow),
-        CachedMemoryKind::ProjectOrgSelection => None,
-    }
-}
-
-fn cached_scope(scope: CachedScope) -> Option<SourceScope> {
-    match scope {
-        CachedScope::Org => Some(SourceScope::Org),
-        CachedScope::Project => Some(SourceScope::Project),
-        CachedScope::Daemon => None,
-    }
-}
-
-fn project_authority_content(
+pub(super) fn project_authority_content(
     kind: MemoryKind,
     path: &str,
     blob: &str,
@@ -1130,277 +903,7 @@ fn project_authority_content(
     Ok((blob.to_owned(), title))
 }
 
-async fn load_draft_overlays(
-    pool: &SqlitePool,
-    project_id: &str,
-) -> Result<Vec<DraftOverlay>, DaemonError> {
-    let rows = sqlx::query(
-        "SELECT d.draft_id, d.base_commit_id, d.resource_scope, d.resource_kind,
-                d.target_id, d.path, d.updated_at,
-                o.rowid AS operation_order, o.operation_json
-         FROM local_drafts d
-         JOIN local_draft_operations o ON o.draft_id = d.draft_id
-         WHERE d.project_id = $1
-           AND d.status IN ('open', 'submitted')
-         ORDER BY d.updated_at, d.draft_id, o.rowid",
-    )
-    .bind(project_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut overlays = Vec::<DraftOverlay>::new();
-    for row in rows {
-        let draft_id: String = row.try_get("draft_id")?;
-        let operation_json: String = row.try_get("operation_json")?;
-        let operation = serde_json::from_str(&operation_json).map_err(|error| {
-            SearchFailure::failed(format!(
-                "local Draft {draft_id} contains an invalid operation: {error}"
-            ))
-        })?;
-        if overlays
-            .last()
-            .is_none_or(|overlay| overlay.draft_id != draft_id)
-        {
-            let scope = parse_source_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
-            let kind = parse_memory_kind(row.try_get::<String, _>("resource_kind")?.as_str());
-            overlays.push(DraftOverlay {
-                draft_id: draft_id.clone(),
-                base_commit_id: row.try_get("base_commit_id")?,
-                scope,
-                kind,
-                target_id: row.try_get("target_id")?,
-                path: row.try_get("path")?,
-                base_resource: None,
-                updated_at: row.try_get("updated_at")?,
-                operations: Vec::new(),
-            });
-        }
-        overlays
-            .last_mut()
-            .expect("overlay inserted above")
-            .operations
-            .push((row.try_get("operation_order")?, operation_json, operation));
-    }
-    for overlay in &mut overlays {
-        overlay.base_resource = load_draft_base_resource(pool, project_id, overlay).await?;
-    }
-    Ok(overlays)
-}
-
-async fn load_draft_base_resource(
-    pool: &SqlitePool,
-    project_id: &str,
-    draft: &DraftOverlay,
-) -> Result<Option<EffectiveResource>, DaemonError> {
-    let (Some(commit_id), Some(kind)) = (draft.base_commit_id.as_deref(), draft.kind) else {
-        return Ok(None);
-    };
-    let tree_id: Option<String> =
-        sqlx::query_scalar("SELECT tree_id FROM cached_commits WHERE commit_id = $1")
-            .bind(commit_id)
-            .fetch_optional(pool)
-            .await?;
-    let Some(tree_id) = tree_id else {
-        return Err(SearchFailure::not_ready(format!(
-            "Draft {} requires uncached Base Commit {commit_id}",
-            draft.draft_id
-        ))
-        .into());
-    };
-    let tree_json: String =
-        sqlx::query_scalar("SELECT payload_json FROM cached_trees WHERE tree_id = $1")
-            .bind(tree_id)
-            .fetch_one(pool)
-            .await?;
-    let tree: CachedTree = serde_json::from_str(&tree_json)?;
-    let creates_resource = draft
-        .operations
-        .first()
-        .is_some_and(|(_, _, operation)| operation.create.is_some());
-    let entry = tree.entries.into_iter().find(|entry| {
-        cached_memory_kind(entry.kind) == Some(kind)
-            && cached_scope(entry.scope) == Some(draft.scope)
-            && match draft.target_id.as_deref() {
-                Some(target_id) => entry.id == target_id,
-                None => !creates_resource && entry.path == draft.path,
-            }
-    });
-    let Some(entry) = entry else {
-        return Ok(None);
-    };
-    let path = entry.path.ok_or_else(|| {
-        SearchFailure::failed(format!(
-            "Draft {} Base resource {} has no path",
-            draft.draft_id, entry.id
-        ))
-    })?;
-    let content: String = sqlx::query_scalar("SELECT content FROM cached_blobs WHERE blob_id = $1")
-        .bind(entry.blob_id)
-        .fetch_one(pool)
-        .await?;
-    let (content, title) = project_authority_content(kind, &path, &content)?;
-    Ok(Some(EffectiveResource {
-        source: SourceResource {
-            resource_id: entry.id,
-            project_id: project_id.to_owned(),
-            scope: draft.scope,
-            kind,
-            path,
-            title,
-            content_hash: sha256(&content),
-            content,
-            source_commit_id: Some(commit_id.to_owned()),
-            draft_id: None,
-            draft_revision: None,
-        },
-    }))
-}
-
-fn apply_draft_overlay(
-    project_id: &str,
-    resources: &mut BTreeMap<String, EffectiveResource>,
-    draft: DraftOverlay,
-) -> Result<(), DaemonError> {
-    let Some(kind) = draft.kind else {
-        return Ok(());
-    };
-    if draft
-        .operations
-        .iter()
-        .any(|(_, _, operation)| operation.discard.is_some())
-    {
-        return Ok(());
-    }
-    let mut revision_hasher = Sha256::new();
-    revision_hasher.update(draft.updated_at.as_bytes());
-    for (order, operation_json, _) in &draft.operations {
-        revision_hasher.update(order.to_le_bytes());
-        revision_hasher.update(operation_json.as_bytes());
-    }
-    let draft_revision = format!("sha256:{}", hex::encode(revision_hasher.finalize()));
-
-    let target_key = draft
-        .target_id
-        .clone()
-        .unwrap_or_else(|| draft.draft_id.clone());
-    let mut draft_resources = BTreeMap::new();
-    if let Some(base_resource) = draft.base_resource {
-        draft_resources.insert(target_key.clone(), base_resource);
-    }
-    for (_, _, operation) in &draft.operations {
-        if let Some(create) = &operation.create {
-            let resource_id = draft.draft_id.clone();
-            let resource = draft_content_resource(
-                project_id,
-                resource_id.clone(),
-                draft.scope,
-                kind,
-                create.path.clone(),
-                &create.content,
-                None,
-                &draft.draft_id,
-                &draft_revision,
-            )?;
-            draft_resources.clear();
-            draft_resources.insert(resource_id, resource);
-        }
-        if let Some(update) = &operation.update {
-            let DaemonUpdateDraftOperation::Content(update) = update else {
-                return Err(SearchFailure::failed(format!(
-                    "Draft {} contains an unmaterialized text replacement",
-                    draft.draft_id
-                ))
-                .into());
-            };
-            let existing = draft_resources.remove(&update.id).ok_or_else(|| {
-                SearchFailure::failed(format!(
-                    "Draft {} update target {} is absent from its Base Commit",
-                    draft.draft_id, update.id
-                ))
-            })?;
-            let path = existing.source.path.clone();
-            let updated = draft_content_resource(
-                project_id,
-                update.id.clone(),
-                existing.source.scope,
-                kind,
-                path,
-                &update.content,
-                Some(existing),
-                &draft.draft_id,
-                &draft_revision,
-            )?;
-            draft_resources.insert(update.id.clone(), updated);
-        }
-        if let Some(rename) = &operation.rename
-            && let Some(resource) = draft_resources.get_mut(&rename.id)
-        {
-            resource.source.path = rename.new_path.clone();
-            if markdown_title(&resource.source.content).is_none() {
-                resource.source.title = title_from_path(&rename.new_path);
-            }
-            resource.source.draft_id = Some(draft.draft_id.clone());
-            resource.source.draft_revision = Some(draft_revision.clone());
-        }
-        if let Some(delete) = &operation.delete {
-            draft_resources.remove(&delete.id);
-        }
-    }
-    if let Some(target_id) = draft.target_id.as_ref() {
-        resources.remove(target_id);
-    }
-    resources.remove(&draft.draft_id);
-    resources.extend(draft_resources);
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draft_content_resource(
-    project_id: &str,
-    resource_id: String,
-    scope: SourceScope,
-    kind: MemoryKind,
-    path: String,
-    content: &DaemonDraftContent,
-    existing: Option<EffectiveResource>,
-    draft_id: &str,
-    draft_revision: &str,
-) -> Result<EffectiveResource, DaemonError> {
-    let source_commit_id = existing
-        .as_ref()
-        .and_then(|resource| resource.source.source_commit_id.clone());
-    let (rendered, title) = match (kind, content) {
-        (MemoryKind::Context, DaemonDraftContent::Context { content })
-        | (MemoryKind::Rule, DaemonDraftContent::Rule { content })
-        | (MemoryKind::Workflow, DaemonDraftContent::Workflow { content }) => (
-            content.clone(),
-            markdown_title(content).unwrap_or_else(|| title_from_path(&path)),
-        ),
-        _ => {
-            return Err(SearchFailure::failed(
-                "Draft content kind does not match its indexed memory kind",
-            )
-            .into());
-        }
-    };
-    Ok(EffectiveResource {
-        source: SourceResource {
-            resource_id,
-            project_id: project_id.to_owned(),
-            scope,
-            kind,
-            path,
-            title,
-            content_hash: sha256(&rendered),
-            content: rendered,
-            source_commit_id,
-            draft_id: Some(draft_id.to_owned()),
-            draft_revision: Some(draft_revision.to_owned()),
-        },
-    })
-}
-
-fn parse_source_scope(value: &str) -> Result<SourceScope, DaemonError> {
+pub(super) fn parse_source_scope(value: &str) -> Result<SourceScope, DaemonError> {
     match value {
         "org" => Ok(SourceScope::Org),
         "project" => Ok(SourceScope::Project),
@@ -1408,7 +911,7 @@ fn parse_source_scope(value: &str) -> Result<SourceScope, DaemonError> {
     }
 }
 
-fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
+pub(super) fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
     match value {
         "context" => Some(MemoryKind::Context),
         "rule" => Some(MemoryKind::Rule),
@@ -1417,7 +920,7 @@ fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
     }
 }
 
-fn markdown_title(content: &str) -> Option<String> {
+pub(super) fn markdown_title(content: &str) -> Option<String> {
     let mut in_heading = false;
     let mut title = String::new();
     for event in Parser::new_ext(content, Options::all()) {
@@ -1439,7 +942,7 @@ fn markdown_title(content: &str) -> Option<String> {
     None
 }
 
-fn title_from_path(path: &str) -> String {
+pub(super) fn title_from_path(path: &str) -> String {
     path.rsplit('/')
         .next()
         .unwrap_or(path)
@@ -1477,203 +980,13 @@ fn effective_memory_hash(
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
-fn sha256(value: &str) -> String {
+pub(super) fn sha256(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
-#[derive(Clone, Debug)]
-struct BuiltUnit {
-    resource_index: usize,
-    unit: RetrievalUnit,
-    vector: Vec<f32>,
-}
-
-const INDEX_EMBED_BATCH_SIZE: usize = 32;
-
-async fn ensure_index(
-    state: &DaemonState,
-    pool: &SqlitePool,
-    effective: &EffectiveMemory,
-) -> Result<String, DaemonError> {
-    match state.inner.search_models.status() {
-        SearchModelRuntimeStatus::Missing => {
-            return Err(SearchFailure::model_preparing(
-                "search models are waiting for background preparation",
-            )
-            .into());
-        }
-        SearchModelRuntimeStatus::Preparing {
-            downloaded_bytes,
-            total_bytes,
-        } => {
-            return Err(SearchFailure::model_preparing(format!(
-                "search models are preparing ({downloaded_bytes}/{total_bytes} bytes)"
-            ))
-            .into());
-        }
-        SearchModelRuntimeStatus::Failed => {
-            return Err(SearchFailure::model(
-                "search model preparation failed and will retry in the background",
-            )
-            .into());
-        }
-        SearchModelRuntimeStatus::Ready => {}
-    }
-    let models = state.inner.search_models.clone();
-    let model_revision = run_model_work(move || models.revision()).await?;
-    let revision_id = index_revision_id(&effective.effective_hash, &model_revision);
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT COUNT(*)
-         FROM search_heads h
-         JOIN search_revisions r ON r.revision_id = h.revision_id
-         WHERE h.project_id = $1 AND h.revision_id = $2 AND r.status = 'ready'",
-    )
-    .bind(&effective.project_id)
-    .bind(&revision_id)
-    .fetch_optional(pool)
-    .await?;
-    if existing.unwrap_or_default() == 1 {
-        return Ok(revision_id);
-    }
-
-    let resources = effective.resources.clone();
-    let models = state.inner.search_models.clone();
-    let built = match run_model_work(move || build_index_units(&resources, models.as_ref())).await {
-        Ok(built) => built,
-        Err(error) => {
-            let _ = record_failed_index(
-                pool,
-                effective,
-                &revision_id,
-                &model_revision,
-                &error.to_string(),
-            )
-            .await;
-            return Err(error);
-        }
-    };
-    let current = load_effective_memory(state, &effective.project_id).await?;
-    if current.effective_hash != effective.effective_hash {
-        return Err(SearchFailure::generation_changed(
-            "Commit or Draft state changed while the search index was being built",
-        )
-        .into());
-    }
-    if let Err(error) = install_index(
-        pool,
-        effective,
-        &revision_id,
-        &model_revision,
-        &built,
-        state.inner.search_models.dimensions(),
-    )
-    .await
-    {
-        let _ = record_failed_index(
-            pool,
-            effective,
-            &revision_id,
-            &model_revision,
-            &error.to_string(),
-        )
-        .await;
-        return Err(error);
-    }
-    Ok(revision_id)
-}
-
-async fn record_failed_index(
-    pool: &SqlitePool,
-    effective: &EffectiveMemory,
-    revision_id: &str,
-    model_revision: &str,
-    message: &str,
-) -> Result<(), DaemonError> {
-    sqlx::query(
-        "INSERT INTO search_revisions (
-            revision_id, project_id, effective_hash, model_revision,
-            parser_version, ranking_version, status, last_error
-         ) VALUES ($1, $2, $3, $4, $5, $6, 'failed', $7)
-         ON CONFLICT(revision_id) DO UPDATE SET
-            status = 'failed',
-            last_error = excluded.last_error,
-            ready_at = NULL",
-    )
-    .bind(revision_id)
-    .bind(&effective.project_id)
-    .bind(&effective.effective_hash)
-    .bind(model_revision)
-    .bind(PARSER_VERSION)
-    .bind(RANKING_CONFIG_VERSION)
-    .bind(message)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-fn build_index_units(
-    resources: &[SourceResource],
-    models: &dyn SearchModels,
-) -> Result<Vec<BuiltUnit>, SearchFailure> {
-    let mut built = Vec::new();
-    let mut pending = Vec::with_capacity(INDEX_EMBED_BATCH_SIZE);
-    for (resource_index, resource) in resources.iter().enumerate() {
-        for unit in build_units(resource, models)? {
-            pending.push((resource_index, unit));
-            if pending.len() == INDEX_EMBED_BATCH_SIZE {
-                embed_pending_units(resources, models, &mut pending, &mut built)?;
-            }
-        }
-    }
-    embed_pending_units(resources, models, &mut pending, &mut built)?;
-    Ok(built)
-}
-
-fn embed_pending_units(
-    resources: &[SourceResource],
-    models: &dyn SearchModels,
-    pending: &mut Vec<(usize, RetrievalUnit)>,
-    built: &mut Vec<BuiltUnit>,
-) -> Result<(), SearchFailure> {
-    if pending.is_empty() {
-        return Ok(());
-    }
-    let passages = pending
-        .iter()
-        .map(|(resource_index, unit)| {
-            let resource = &resources[*resource_index];
-            format!(
-                "{}\n{}\n{}",
-                resource.path,
-                unit.heading_path.join(" > "),
-                unit.text
-            )
-        })
-        .collect::<Vec<_>>();
-    let embeddings = models.embed_passages(&passages)?;
-    if embeddings.len() != pending.len() {
-        return Err(SearchFailure::vector(format!(
-            "embedding count {} does not match unit count {}",
-            embeddings.len(),
-            pending.len()
-        )));
-    }
-    built.extend(
-        pending
-            .drain(..)
-            .zip(embeddings)
-            .map(|((resource_index, unit), vector)| BuiltUnit {
-                resource_index,
-                unit,
-                vector,
-            }),
-    );
-    Ok(())
-}
-
-async fn run_model_work<T: Send + 'static>(
+pub(super) async fn run_model_work<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, SearchFailure> + Send + 'static,
 ) -> Result<T, DaemonError> {
     tokio::task::spawn_blocking(operation)
@@ -1686,973 +999,19 @@ async fn run_model_work<T: Send + 'static>(
         .map_err(DaemonError::from)
 }
 
-fn index_revision_id(effective_hash: &str, model_revision: &str) -> String {
-    let mut hasher = Sha256::new();
-    for value in [
-        effective_hash,
-        PARSER_VERSION,
-        model_revision,
-        RANKING_CONFIG_VERSION,
-    ] {
-        hasher.update(value.as_bytes());
-        hasher.update([0]);
-    }
-    format!("search_{}", hex::encode(hasher.finalize()))
-}
-
-async fn install_index(
-    pool: &SqlitePool,
-    effective: &EffectiveMemory,
-    revision_id: &str,
-    model_revision: &str,
-    units: &[BuiltUnit],
-    dimensions: usize,
-) -> Result<(), DaemonError> {
-    if units.iter().any(|built| {
-        built.vector.len() != dimensions
-            || !valid_normalized_vector(&built.vector)
-            || effective
-                .resources
-                .get(built.resource_index)
-                .is_none_or(|resource| resource.resource_id != built.unit.resource_id)
-    }) {
-        return Err(SearchFailure::vector(
-            "index build produced a corrupt or non-normalized vector",
-        )
-        .into());
-    }
-    let mut tx = pool.begin().await?;
-    delete_revision(&mut tx, revision_id).await?;
-    sqlx::query(
-        "INSERT INTO search_revisions (
-            revision_id, project_id, effective_hash, model_revision,
-            parser_version, ranking_version, status
-         ) VALUES ($1, $2, $3, $4, $5, $6, 'building')",
-    )
-    .bind(revision_id)
-    .bind(&effective.project_id)
-    .bind(&effective.effective_hash)
-    .bind(model_revision)
-    .bind(PARSER_VERSION)
-    .bind(RANKING_CONFIG_VERSION)
-    .execute(&mut *tx)
-    .await?;
-
-    for resource in effective.resources.iter() {
-        sqlx::query(
-            "INSERT INTO search_resources (
-                revision_id, resource_id, project_id, scope, kind, path, title,
-                content, content_hash, source_commit_id, draft_id, draft_revision
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-        )
-        .bind(revision_id)
-        .bind(&resource.resource_id)
-        .bind(&resource.project_id)
-        .bind(resource.scope.as_str())
-        .bind(resource.kind.as_str())
-        .bind(&resource.path)
-        .bind(&resource.title)
-        .bind(&resource.content)
-        .bind(&resource.content_hash)
-        .bind(&resource.source_commit_id)
-        .bind(&resource.draft_id)
-        .bind(&resource.draft_revision)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    for built in units {
-        let resource = &effective.resources[built.resource_index];
-        let result = sqlx::query(
-            "INSERT INTO search_units (
-                revision_id, unit_key, resource_id, ordinal, heading_path_json,
-                locator_json, text, text_hash, token_count, vector
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        )
-        .bind(revision_id)
-        .bind(&built.unit.unit_key)
-        .bind(&built.unit.resource_id)
-        .bind(built.unit.ordinal as i64)
-        .bind(serde_json::to_string(&built.unit.heading_path)?)
-        .bind(serde_json::to_string(&built.unit.locator)?)
-        .bind(&built.unit.text)
-        .bind(&built.unit.text_hash)
-        .bind(built.unit.token_count as i64)
-        .bind(encode_vector(&built.vector))
-        .execute(&mut *tx)
-        .await?;
-        let rowid = result.last_insert_rowid();
-        sqlx::query(
-            "INSERT INTO search_units_fts (
-                rowid, revision_id, unit_key, path, title, heading, body
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(rowid)
-        .bind(revision_id)
-        .bind(&built.unit.unit_key)
-        .bind(&resource.path)
-        .bind(&resource.title)
-        .bind(built.unit.heading_path.join(" > "))
-        .bind(&built.unit.text)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let resource_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM search_resources WHERE revision_id = $1")
-            .bind(revision_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let unit_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM search_units WHERE revision_id = $1")
-            .bind(revision_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    if resource_count != effective.resources.len() as i64 || unit_count != units.len() as i64 {
-        return Err(SearchFailure::failed(
-            "search index row counts do not match the Effective Memory build",
-        )
-        .into());
-    }
-
-    let old_revision: Option<String> =
-        sqlx::query_scalar("SELECT revision_id FROM search_heads WHERE project_id = $1")
-            .bind(&effective.project_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    sqlx::query(
-        "UPDATE search_revisions
-         SET status = 'ready', ready_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = NULL
-         WHERE revision_id = $1",
-    )
-    .bind(revision_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO search_heads (project_id, revision_id)
-         VALUES ($1, $2)
-         ON CONFLICT(project_id) DO UPDATE SET revision_id = excluded.revision_id",
-    )
-    .bind(&effective.project_id)
-    .bind(revision_id)
-    .execute(&mut *tx)
-    .await?;
-    if let Some(old_revision) = old_revision.filter(|old| old != revision_id) {
-        delete_revision(&mut tx, &old_revision).await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn delete_revision(
-    tx: &mut Transaction<'_, Sqlite>,
-    revision_id: &str,
-) -> Result<(), DaemonError> {
-    sqlx::query(
-        "DELETE FROM search_units_fts
-         WHERE rowid IN (SELECT unit_rowid FROM search_units WHERE revision_id = $1)",
-    )
-    .bind(revision_id)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("DELETE FROM search_revisions WHERE revision_id = $1")
-        .bind(revision_id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-async fn delete_project_index(pool: &SqlitePool, project_id: &str) -> Result<(), DaemonError> {
-    let mut tx = pool.begin().await?;
-    let revisions = sqlx::query_scalar::<_, String>(
-        "SELECT revision_id FROM search_revisions WHERE project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_all(&mut *tx)
-    .await?;
-    sqlx::query("DELETE FROM search_heads WHERE project_id = $1")
-        .bind(project_id)
-        .execute(&mut *tx)
-        .await?;
-    for revision in revisions {
-        delete_revision(&mut tx, &revision).await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-fn encode_vector(vector: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(vector));
-    for value in vector {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
-
-fn decode_vector(bytes: &[u8], dimensions: usize) -> Result<Vec<f32>, SearchFailure> {
-    if bytes.len() != dimensions * std::mem::size_of::<f32>() {
-        return Err(SearchFailure::vector(format!(
-            "vector byte length {} does not match dimension {dimensions}",
-            bytes.len()
-        )));
-    }
-    let vector = bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect::<Vec<_>>();
-    if !valid_normalized_vector(&vector) {
-        return Err(SearchFailure::vector(
-            "stored vector contains invalid values or is not normalized",
-        ));
-    }
-    Ok(vector)
-}
-
-fn valid_normalized_vector(vector: &[f32]) -> bool {
-    if vector.is_empty() || vector.iter().any(|value| !value.is_finite()) {
-        return false;
-    }
-    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    norm.is_finite() && (norm - 1.0).abs() <= 0.01
-}
-
-#[derive(Clone, Debug)]
-struct IndexRow {
-    rowid: i64,
-    unit_key: String,
-    resource_id: String,
-    scope: SourceScope,
-    kind: MemoryKind,
-    path: String,
-    title: String,
-    heading_path: Vec<String>,
-    locator: SourceLocator,
-    text: String,
-    text_hash: String,
-    resource_content_hash: String,
-    token_count: usize,
-    vector: Vec<f32>,
-}
-
-#[derive(Clone, Debug)]
-struct RankedRow {
-    row: IndexRow,
-    exact_rank: Option<usize>,
-    bm25_rank: Option<usize>,
-    bm25_score: Option<f32>,
-    vector_rank: Option<usize>,
-    vector_score: Option<f32>,
-    rrf_rank: usize,
-    rrf_score: f32,
-    reranker_rank: Option<usize>,
-    rerank_score: Option<f32>,
-    final_rank: Option<usize>,
-    exclusion_reason: RetrievalExclusionReason,
-    delta_action: Option<RetrievalDeltaAction>,
-}
-
-#[derive(Clone, Debug)]
-struct LexicalRank {
-    rowid: i64,
-    exact_rank: Option<usize>,
-    bm25_rank: Option<usize>,
-    bm25_score: Option<f32>,
-}
-
-#[derive(Clone, Debug)]
-struct VectorRank {
-    rowid: i64,
-    rank: usize,
-    score: f32,
-}
-
-async fn query_index(
-    state: &DaemonState,
-    pool: &SqlitePool,
-    revision_id: &str,
-    query: &str,
-    previous_state: ActivationStateToken,
-    completion: &mut RetrievalRunCompletion,
-    failure_stage: &mut &str,
-) -> Result<ActivateMemoryResponse, DaemonError> {
-    let rows = fetch_index_rows(pool, revision_id, state.inner.search_models.dimensions()).await?;
-    completion.unit_count = rows.len();
-    completion.model_revision =
-        sqlx::query_scalar("SELECT model_revision FROM search_revisions WHERE revision_id = $1")
-            .bind(revision_id)
-            .fetch_optional(pool)
-            .await?;
-    if rows.is_empty() {
-        *failure_stage = "assembly";
-        let started = Instant::now();
-        let response = activation_response(revision_id, &mut [], &rows, previous_state)?;
-        completion.latencies.assembly_us = elapsed_us(started);
-        return Ok(response);
-    }
-
-    *failure_stage = "bm25";
-    let started = Instant::now();
-    let lexical = lexical_ranks(pool, revision_id, query, &rows).await?;
-    completion.latencies.bm25_us = elapsed_us(started);
-
-    *failure_stage = "embedding";
-    let started = Instant::now();
-    let query_owned = query.to_owned();
-    let models = state.inner.search_models.clone();
-    let query_vector = run_model_work(move || models.embed_query(&query_owned)).await?;
-    completion.latencies.embedding_us = elapsed_us(started);
-    if query_vector.len() != state.inner.search_models.dimensions()
-        || !valid_normalized_vector(&query_vector)
-    {
-        return Err(SearchFailure::vector("query embedding is corrupt").into());
-    }
-
-    *failure_stage = "vector";
-    let started = Instant::now();
-    let vector = vector_ranks(&rows, &query_vector);
-    completion.latencies.vector_us = elapsed_us(started);
-
-    *failure_stage = "rrf";
-    let started = Instant::now();
-    let mut candidates = rrf_candidates(&rows, &lexical, &vector);
-    completion.latencies.rrf_us = elapsed_us(started);
-    completion.candidates = candidates.iter().map(retrieval_candidate_input).collect();
-
-    let rerank_count = candidates.len().min(RRF_CANDIDATES).min(RERANK_CANDIDATES);
-    if rerank_count > 0 {
-        *failure_stage = "rerank";
-        let started = Instant::now();
-        let documents = candidates
-            .iter()
-            .take(rerank_count)
-            .map(|candidate| {
-                format!(
-                    "{}\n{}\n{}",
-                    candidate.row.path,
-                    candidate.row.heading_path.join(" > "),
-                    candidate.row.text
-                )
-            })
-            .collect::<Vec<_>>();
-        let query_owned = query.to_owned();
-        let models = state.inner.search_models.clone();
-        let scores = run_model_work(move || models.rerank(&query_owned, &documents)).await?;
-        completion.latencies.rerank_us = elapsed_us(started);
-        if scores.len() != rerank_count {
-            return Err(SearchFailure::failed(
-                "reranker result count does not match its candidate count",
-            )
-            .into());
-        }
-        if scores.iter().any(|score| !score.is_finite()) {
-            return Err(SearchFailure::model("reranker returned a non-finite score").into());
-        }
-        for (candidate, score) in candidates.iter_mut().take(rerank_count).zip(scores) {
-            candidate.rerank_score = Some(score);
-        }
-        let mut reranked = (0..rerank_count).collect::<Vec<_>>();
-        reranked.sort_by(|left, right| {
-            candidates[*right]
-                .rerank_score
-                .expect("reranked candidate score")
-                .total_cmp(
-                    &candidates[*left]
-                        .rerank_score
-                        .expect("reranked candidate score"),
-                )
-                .then_with(|| {
-                    candidates[*right]
-                        .rrf_score
-                        .total_cmp(&candidates[*left].rrf_score)
-                })
-                .then_with(|| {
-                    candidates[*left]
-                        .row
-                        .unit_key
-                        .cmp(&candidates[*right].row.unit_key)
-                })
-        });
-        for (index, candidate_index) in reranked.into_iter().enumerate() {
-            candidates[candidate_index].reranker_rank = Some(index + 1);
-        }
-    }
-
-    *failure_stage = "assembly";
-    let started = Instant::now();
-    apply_fragment_budget(&mut candidates);
-    let response = activation_response(revision_id, &mut candidates, &rows, previous_state)?;
-    completion.latencies.assembly_us = elapsed_us(started);
-    completion.returned_token_count = candidates
-        .iter()
-        .filter(|candidate| candidate.final_rank.is_some())
-        .map(|candidate| candidate.row.token_count)
-        .sum();
-    completion.candidates = candidates.iter().map(retrieval_candidate_input).collect();
-    Ok(response)
-}
-
-async fn fetch_index_rows(
-    pool: &SqlitePool,
-    revision_id: &str,
-    dimensions: usize,
-) -> Result<Vec<IndexRow>, DaemonError> {
-    let rows = sqlx::query(
-        "SELECT u.unit_rowid, u.unit_key, u.resource_id, u.heading_path_json,
-                u.locator_json, u.text, u.text_hash, u.token_count, u.vector,
-                r.scope, r.kind, r.path, r.title, r.content_hash AS resource_content_hash
-         FROM search_units u
-         JOIN search_resources r
-           ON r.revision_id = u.revision_id AND r.resource_id = u.resource_id
-         WHERE u.revision_id = $1
-         ORDER BY u.unit_key",
-    )
-    .bind(revision_id)
-    .fetch_all(pool)
-    .await?;
-    rows.into_iter()
-        .map(|row| {
-            let kind_value: String = row.try_get("kind")?;
-            let scope_value: String = row.try_get("scope")?;
-            let vector_bytes: Vec<u8> = row.try_get("vector")?;
-            let token_count: i64 = row.try_get("token_count")?;
-            if token_count < 0 {
-                return Err(SearchFailure::failed("stored token count is negative").into());
-            }
-            Ok(IndexRow {
-                rowid: row.try_get("unit_rowid")?,
-                unit_key: row.try_get("unit_key")?,
-                resource_id: row.try_get("resource_id")?,
-                scope: parse_source_scope(&scope_value)?,
-                kind: parse_memory_kind(&kind_value).ok_or_else(|| {
-                    SearchFailure::failed(format!("unknown indexed memory kind: {kind_value}"))
-                })?,
-                path: row.try_get("path")?,
-                title: row.try_get("title")?,
-                heading_path: serde_json::from_str(
-                    row.try_get::<String, _>("heading_path_json")?.as_str(),
-                )?,
-                locator: serde_json::from_str(row.try_get::<String, _>("locator_json")?.as_str())?,
-                text: row.try_get("text")?,
-                text_hash: row.try_get("text_hash")?,
-                resource_content_hash: row.try_get("resource_content_hash")?,
-                token_count: token_count as usize,
-                vector: decode_vector(&vector_bytes, dimensions)?,
-            })
-        })
-        .collect()
-}
-
-async fn lexical_ranks(
-    pool: &SqlitePool,
-    revision_id: &str,
-    query: &str,
-    rows: &[IndexRow],
-) -> Result<Vec<LexicalRank>, DaemonError> {
-    let normalized = query.trim().to_lowercase();
-    let mut exact = rows
-        .iter()
-        .filter_map(|row| {
-            let resource_id = row.resource_id.to_lowercase();
-            let path = row.path.to_lowercase();
-            let title = row.title.to_lowercase();
-            let priority = if resource_id == normalized {
-                Some(0u8)
-            } else if path == normalized || title == normalized {
-                Some(1)
-            } else if resource_id.starts_with(&normalized)
-                || path.starts_with(&normalized)
-                || title.starts_with(&normalized)
-            {
-                Some(2)
-            } else {
-                None
-            }?;
-            Some((priority, row.unit_key.as_str(), row.rowid))
-        })
-        .collect::<Vec<_>>();
-    exact.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
-    let mut ranks = HashMap::<i64, LexicalRank>::new();
-    let mut ordered = Vec::new();
-    for (index, (_, _, rowid)) in exact.into_iter().enumerate() {
-        ranks.insert(
-            rowid,
-            LexicalRank {
-                rowid,
-                exact_rank: Some(index + 1),
-                bm25_rank: None,
-                bm25_score: None,
-            },
-        );
-        ordered.push(rowid);
-    }
-    let mut seen = ordered.iter().copied().collect::<HashSet<_>>();
-
-    if let Some(expression) = fts_expression(query) {
-        let matches = sqlx::query(
-            "SELECT rowid, bm25(search_units_fts, 0.0, 0.0, 8.0, 6.0, 4.0, 1.0) AS score
-             FROM search_units_fts
-             WHERE search_units_fts MATCH $1 AND revision_id = $2
-             ORDER BY score, unit_key
-             LIMIT $3",
-        )
-        .bind(expression)
-        .bind(revision_id)
-        .bind(BM25_TOP_K as i64)
-        .fetch_all(pool)
-        .await?;
-        for (index, row) in matches.into_iter().enumerate() {
-            let rowid: i64 = row.try_get("rowid")?;
-            let score: f64 = row.try_get("score")?;
-            if !score.is_finite() {
-                return Err(SearchFailure::failed("BM25 returned a non-finite score").into());
-            }
-            let rank = ranks.entry(rowid).or_insert(LexicalRank {
-                rowid,
-                exact_rank: None,
-                bm25_rank: None,
-                bm25_score: None,
-            });
-            rank.bm25_rank = Some(index + 1);
-            rank.bm25_score = Some(score as f32);
-            if seen.insert(rowid) {
-                ordered.push(rowid);
-            }
-        }
-    }
-    ordered.truncate(BM25_TOP_K);
-    Ok(ordered
-        .into_iter()
-        .filter_map(|rowid| ranks.remove(&rowid))
-        .collect())
-}
-
-fn fts_expression(query: &str) -> Option<String> {
-    let mut runs = Vec::<String>::new();
-    let mut current = String::new();
-    for character in query.trim().chars() {
-        if character.is_alphanumeric()
-            || character == '_'
-            || matches!(character, '/' | '-' | '.' | ':')
-        {
-            current.push(character);
-        } else if !current.is_empty() {
-            runs.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        runs.push(current);
-    }
-
-    let mut terms = BTreeSet::new();
-    for run in runs {
-        let characters = run.chars().collect::<Vec<_>>();
-        if characters.len() < 3 {
-            continue;
-        }
-        if characters.iter().any(|character| !character.is_ascii()) {
-            for window in characters.windows(3) {
-                terms.insert(window.iter().collect::<String>());
-                if terms.len() >= 32 {
-                    break;
-                }
-            }
-        } else {
-            terms.insert(run);
-        }
-        if terms.len() >= 32 {
-            break;
-        }
-    }
-    (!terms.is_empty()).then(|| {
-        terms
-            .into_iter()
-            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" OR ")
-    })
-}
-
-fn vector_ranks(rows: &[IndexRow], query_vector: &[f32]) -> Vec<VectorRank> {
-    let mut scored = rows
-        .iter()
-        .map(|row| {
-            let score = row
-                .vector
-                .iter()
-                .zip(query_vector)
-                .map(|(left, right)| left * right)
-                .sum::<f32>();
-            (score, row.unit_key.as_str(), row.rowid)
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|left, right| right.0.total_cmp(&left.0).then_with(|| left.1.cmp(right.1)));
-    scored
-        .into_iter()
-        .take(VECTOR_TOP_K)
-        .enumerate()
-        .map(|(index, (score, _, rowid))| VectorRank {
-            rowid,
-            rank: index + 1,
-            score,
-        })
-        .collect()
-}
-
-fn rrf_candidates(
-    rows: &[IndexRow],
-    lexical: &[LexicalRank],
-    vector: &[VectorRank],
-) -> Vec<RankedRow> {
-    let mut scores = HashMap::<i64, (f32, usize)>::new();
-    for (index, lexical) in lexical.iter().enumerate() {
-        let rank = index + 1;
-        let entry = scores.entry(lexical.rowid).or_insert((0.0, usize::MAX));
-        entry.0 += 1.0 / (RRF_CONSTANT + rank as f32);
-        entry.1 = entry.1.min(rank);
-    }
-    for vector in vector {
-        let entry = scores.entry(vector.rowid).or_insert((0.0, usize::MAX));
-        entry.0 += 1.0 / (RRF_CONSTANT + vector.rank as f32);
-        entry.1 = entry.1.min(vector.rank);
-    }
-    let lexical_by_rowid = lexical
-        .iter()
-        .map(|rank| (rank.rowid, rank))
-        .collect::<HashMap<_, _>>();
-    let vector_by_rowid = vector
-        .iter()
-        .map(|rank| (rank.rowid, rank))
-        .collect::<HashMap<_, _>>();
-    let by_rowid = rows
-        .iter()
-        .map(|row| (row.rowid, row))
-        .collect::<HashMap<_, _>>();
-    let mut fused = scores
-        .into_iter()
-        .filter_map(|(rowid, (rrf_score, best_rank))| {
-            by_rowid.get(&rowid).map(|row| {
-                (
-                    RankedRow {
-                        row: (*row).clone(),
-                        exact_rank: lexical_by_rowid
-                            .get(&rowid)
-                            .and_then(|rank| rank.exact_rank),
-                        bm25_rank: lexical_by_rowid.get(&rowid).and_then(|rank| rank.bm25_rank),
-                        bm25_score: lexical_by_rowid
-                            .get(&rowid)
-                            .and_then(|rank| rank.bm25_score),
-                        vector_rank: vector_by_rowid.get(&rowid).map(|rank| rank.rank),
-                        vector_score: vector_by_rowid.get(&rowid).map(|rank| rank.score),
-                        rrf_rank: 0,
-                        rrf_score,
-                        reranker_rank: None,
-                        rerank_score: None,
-                        final_rank: None,
-                        exclusion_reason: RetrievalExclusionReason::NotReranked,
-                        delta_action: None,
-                    },
-                    best_rank,
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    fused.sort_by(|left, right| {
-        right
-            .0
-            .rrf_score
-            .total_cmp(&left.0.rrf_score)
-            .then_with(|| left.1.cmp(&right.1))
-            .then_with(|| left.0.row.unit_key.cmp(&right.0.row.unit_key))
-    });
-    fused
-        .into_iter()
-        .enumerate()
-        .map(|(index, (mut row, _))| {
-            row.rrf_rank = index + 1;
-            row
-        })
-        .collect()
-}
-
-fn apply_fragment_budget(candidates: &mut [RankedRow]) {
-    let mut reranked = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| candidate.reranker_rank.map(|rank| (rank, index)))
-        .collect::<Vec<_>>();
-    reranked.sort_by_key(|(rank, _)| *rank);
-    let mut selected_indices = Vec::new();
-    let mut per_resource = HashMap::<String, usize>::new();
-    let mut tokens = 0usize;
-    let mut terminal_reason = None;
-    for (_, candidate_index) in reranked {
-        let candidate = &candidates[candidate_index];
-        if let Some(reason) = terminal_reason {
-            candidates[candidate_index].exclusion_reason = reason;
-            continue;
-        }
-        if selected_indices.len() >= FINAL_FRAGMENTS {
-            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::FragmentLimit;
-            terminal_reason = Some(RetrievalExclusionReason::FragmentLimit);
-            continue;
-        }
-        let relevance = candidate
-            .rerank_score
-            .map(rerank_relevance)
-            .unwrap_or_default();
-        if relevance < MIN_RERANK_RELEVANCE {
-            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::BelowRelevance;
-            terminal_reason = Some(RetrievalExclusionReason::BelowRelevance);
-            continue;
-        }
-        if selected_indices
-            .iter()
-            .any(|selected| fragments_overlap(&candidates[*selected], candidate))
-        {
-            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::Overlap;
-            continue;
-        }
-        let count = per_resource
-            .get(&candidate.row.resource_id)
-            .copied()
-            .unwrap_or_default();
-        if count >= PER_RESOURCE_LIMIT {
-            candidates[candidate_index].exclusion_reason =
-                RetrievalExclusionReason::PerResourceLimit;
-            continue;
-        }
-        if !selected_indices.is_empty()
-            && tokens.saturating_add(candidate.row.token_count) > FRAGMENT_TOKEN_BUDGET
-        {
-            candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::TokenBudget;
-            terminal_reason = Some(RetrievalExclusionReason::TokenBudget);
-            continue;
-        }
-        tokens = tokens.saturating_add(candidate.row.token_count);
-        *per_resource
-            .entry(candidate.row.resource_id.clone())
-            .or_default() += 1;
-        candidates[candidate_index].final_rank = Some(selected_indices.len() + 1);
-        candidates[candidate_index].exclusion_reason = RetrievalExclusionReason::Selected;
-        selected_indices.push(candidate_index);
-    }
-}
-
-fn retrieval_candidate_input(candidate: &RankedRow) -> RetrievalCandidateInput {
-    RetrievalCandidateInput {
-        unit_key: candidate.row.unit_key.clone(),
-        resource_id: candidate.row.resource_id.clone(),
-        scope: candidate.row.scope,
-        kind: candidate.row.kind,
-        path: candidate.row.path.clone(),
-        heading_path: candidate.row.heading_path.clone(),
-        locator: candidate.row.locator.clone(),
-        content_hash: candidate.row.text_hash.clone(),
-        resource_content_hash: candidate.row.resource_content_hash.clone(),
-        token_count: candidate.row.token_count,
-        evidence_excerpt: candidate.row.text.clone(),
-        exact_rank: candidate.exact_rank,
-        bm25_rank: candidate.bm25_rank,
-        bm25_score: candidate.bm25_score,
-        vector_rank: candidate.vector_rank,
-        vector_score: candidate.vector_score,
-        rrf_rank: Some(candidate.rrf_rank),
-        rrf_score: Some(candidate.rrf_score),
-        reranker_rank: candidate.reranker_rank,
-        reranker_logit: candidate.rerank_score,
-        reranker_relevance: candidate.rerank_score.map(rerank_relevance),
-        final_rank: candidate.final_rank,
-        exclusion_reason: candidate.exclusion_reason,
-        delta_action: candidate.delta_action,
-    }
-}
-
-fn rerank_relevance(score: f32) -> f32 {
-    if score >= 0.0 {
-        1.0 / (1.0 + (-score).exp())
-    } else {
-        let exponential = score.exp();
-        exponential / (1.0 + exponential)
-    }
-}
-
-fn elapsed_us(started: Instant) -> u64 {
+pub(super) fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
-}
-
-fn fragments_overlap(left: &RankedRow, right: &RankedRow) -> bool {
-    if left.row.resource_id != right.row.resource_id {
-        return false;
-    }
-    match (&left.row.locator, &right.row.locator) {
-        (
-            SourceLocator::MarkdownSpan {
-                start_byte: left_start,
-                end_byte: left_end,
-                ..
-            },
-            SourceLocator::MarkdownSpan {
-                start_byte: right_start,
-                end_byte: right_end,
-                ..
-            },
-        ) => left_start < right_end && right_start < left_end,
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-struct ActivationStateToken {
-    version: u8,
-    epoch: u64,
-    known: Vec<KnownActivationIdentity>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct KnownActivationIdentity {
-    unit_key: String,
-    content_hash: String,
-    last_seen: u64,
-}
-
-fn decode_activation_state(state: Option<&str>) -> Result<ActivationStateToken, DaemonError> {
-    let Some(state) = state else {
-        return Ok(ActivationStateToken {
-            version: 1,
-            epoch: 0,
-            known: Vec::new(),
-        });
-    };
-    if state.len() > MAX_ACTIVATION_STATE_BYTES * 2 {
-        return Err(SearchFailure::invalid_state("activation state is too large").into());
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(state)
-        .map_err(|_| SearchFailure::invalid_state("activation state is not valid base64url"))?;
-    if bytes.len() > MAX_ACTIVATION_STATE_BYTES {
-        return Err(SearchFailure::invalid_state("activation state is too large").into());
-    }
-    let decoded: ActivationStateToken = serde_json::from_slice(&bytes)
-        .map_err(|_| SearchFailure::invalid_state("activation state is not valid JSON"))?;
-    if decoded.version != 1 || decoded.known.len() > MAX_ACTIVATION_IDENTITIES {
-        return Err(SearchFailure::invalid_state(
-            "activation state version or identity count is unsupported",
-        )
-        .into());
-    }
-    let mut identities = HashSet::new();
-    if decoded
-        .known
-        .iter()
-        .any(|identity| !identities.insert(identity.unit_key.as_str()))
-    {
-        return Err(SearchFailure::invalid_state(
-            "activation state contains duplicate unit identities",
-        )
-        .into());
-    }
-    Ok(decoded)
-}
-
-fn activation_response(
-    revision_id: &str,
-    candidates: &mut [RankedRow],
-    all_rows: &[IndexRow],
-    previous_state: ActivationStateToken,
-) -> Result<ActivateMemoryResponse, DaemonError> {
-    let epoch = previous_state.epoch.saturating_add(1);
-    let existing = all_rows
-        .iter()
-        .map(|row| row.unit_key.as_str())
-        .collect::<HashSet<_>>();
-    let previous = previous_state
-        .known
-        .iter()
-        .map(|identity| (identity.unit_key.clone(), identity.content_hash.clone()))
-        .collect::<HashMap<_, _>>();
-    let mut removed = previous_state
-        .known
-        .iter()
-        .filter(|identity| !existing.contains(identity.unit_key.as_str()))
-        .map(|identity| ActivationRemoval {
-            unit_key: identity.unit_key.clone(),
-        })
-        .collect::<Vec<_>>();
-    removed.sort_by(|left, right| left.unit_key.cmp(&right.unit_key));
-
-    let mut next_known = previous_state
-        .known
-        .into_iter()
-        .filter(|identity| existing.contains(identity.unit_key.as_str()))
-        .map(|identity| (identity.unit_key.clone(), identity))
-        .collect::<HashMap<_, _>>();
-    let mut fragments = Vec::new();
-    let mut selected = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| candidate.final_rank.map(|rank| (rank, index)))
-        .collect::<Vec<_>>();
-    selected.sort_by_key(|(rank, _)| *rank);
-    for (_, candidate_index) in selected {
-        let candidate = &mut candidates[candidate_index];
-        let action = match previous.get(candidate.row.unit_key.as_str()) {
-            Some(content_hash) if *content_hash == candidate.row.text_hash => {
-                ActivationAction::Reuse
-            }
-            Some(_) => ActivationAction::Replace,
-            None => ActivationAction::Add,
-        };
-        candidate.delta_action = Some(match action {
-            ActivationAction::Add => RetrievalDeltaAction::Add,
-            ActivationAction::Replace => RetrievalDeltaAction::Replace,
-            ActivationAction::Reuse => RetrievalDeltaAction::Reuse,
-        });
-        next_known.insert(
-            candidate.row.unit_key.clone(),
-            KnownActivationIdentity {
-                unit_key: candidate.row.unit_key.clone(),
-                content_hash: candidate.row.text_hash.clone(),
-                last_seen: epoch,
-            },
-        );
-        fragments.push(ActivationFragment {
-            action,
-            unit_key: candidate.row.unit_key.clone(),
-            content_hash: candidate.row.text_hash.clone(),
-            resource_id: candidate.row.resource_id.clone(),
-            scope: candidate.row.scope,
-            kind: candidate.row.kind,
-            path: candidate.row.path.clone(),
-            heading_path: candidate.row.heading_path.clone(),
-            content: (action != ActivationAction::Reuse).then(|| candidate.row.text.clone()),
-        });
-    }
-    let mut known = next_known.into_values().collect::<Vec<_>>();
-    known.sort_by(|left, right| {
-        right
-            .last_seen
-            .cmp(&left.last_seen)
-            .then_with(|| left.unit_key.cmp(&right.unit_key))
-    });
-    known.truncate(MAX_ACTIVATION_IDENTITIES);
-    let next_state = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&ActivationStateToken {
-        version: 1,
-        epoch,
-        known,
-    })?);
-    Ok(ActivateMemoryResponse {
-        index_revision: revision_id.to_owned(),
-        profile: RANKING_CONFIG_VERSION.to_owned(),
-        next_state,
-        fragments,
-        removed,
-    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -2665,8 +1024,7 @@ mod tests {
         DaemonIpcService, DaemonProjectCacheClearRequest, DaemonProjectStorageRequest,
         DaemonRenameDraftOperation, DaemonUpdateDraftOperation, EvaluationCaseStatus,
         EvaluationEvidenceInput, ExportEvaluationSetRequest, ResolveEvaluationCaseRequest,
-        RetrievalDeltaAction, RetrievalExclusionReason, RetrievalRunListRequest,
-        RetrievalRunRequest, RetrievalRunStatus, ServerCredentials,
+        RetrievalRunListRequest, RetrievalRunRequest, RetrievalRunStatus, ServerCredentials,
     };
 
     struct NoCredentials;
@@ -2856,9 +1214,9 @@ mod tests {
         end_byte: usize,
         token_count: usize,
         rerank_score: f32,
-    ) -> RankedRow {
-        RankedRow {
-            row: IndexRow {
+    ) -> query::RankedRow {
+        query::RankedRow {
+            row: query::IndexRow {
                 rowid: 1,
                 unit_key: unit_key.to_owned(),
                 resource_id: resource_id.to_owned(),
@@ -3682,8 +2040,8 @@ mod tests {
             target_id: Option<&str>,
             base_resource: Option<EffectiveResource>,
             operation: DaemonDraftOperation,
-        ) -> DraftOverlay {
-            DraftOverlay {
+        ) -> super::overlay::DraftOverlay {
+            super::overlay::DraftOverlay {
                 draft_id: draft_id.to_owned(),
                 base_commit_id: Some("commit_base".to_owned()),
                 scope: SourceScope::Project,
@@ -3700,7 +2058,7 @@ mod tests {
         let current = context_resource("context/base.md", "# Remote", "commit_current");
 
         let mut updated = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
-        apply_draft_overlay(
+        super::overlay::apply_draft_overlay(
             "prj_test",
             &mut updated,
             overlay(
@@ -3732,7 +2090,7 @@ mod tests {
         );
 
         let mut renamed = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
-        apply_draft_overlay(
+        super::overlay::apply_draft_overlay(
             "prj_test",
             &mut renamed,
             overlay(
@@ -3757,7 +2115,7 @@ mod tests {
         assert_eq!(renamed["ctx_target"].source.content, "# Base");
 
         let mut deleted = BTreeMap::from([("ctx_target".to_owned(), current.clone())]);
-        apply_draft_overlay(
+        super::overlay::apply_draft_overlay(
             "prj_test",
             &mut deleted,
             overlay(
@@ -3780,7 +2138,7 @@ mod tests {
         assert!(!deleted.contains_key("ctx_target"));
 
         let mut created = BTreeMap::from([("ctx_target".to_owned(), current)]);
-        apply_draft_overlay(
+        super::overlay::apply_draft_overlay(
             "prj_test",
             &mut created,
             overlay(
@@ -3938,9 +2296,9 @@ mod tests {
         let models = BatchRecordingModels {
             largest_batch: AtomicUsize::new(0),
         };
-        let units = build_index_units(&resources, &models).unwrap();
-        assert!(units.len() > INDEX_EMBED_BATCH_SIZE);
-        assert!(models.largest_batch.load(Ordering::Relaxed) <= INDEX_EMBED_BATCH_SIZE);
+        let units = index::build_index_units(&resources, &models).unwrap();
+        assert!(units.len() > index::INDEX_EMBED_BATCH_SIZE);
+        assert!(models.largest_batch.load(Ordering::Relaxed) <= index::INDEX_EMBED_BATCH_SIZE);
         assert!(units.iter().all(|unit| unit.resource_index == 0));
     }
 
@@ -3955,7 +2313,7 @@ mod tests {
         for (index, candidate) in candidates.iter_mut().enumerate() {
             candidate.reranker_rank = Some(index + 1);
         }
-        apply_fragment_budget(&mut candidates);
+        query::apply_fragment_budget(&mut candidates);
 
         assert_eq!(
             candidates
@@ -3973,8 +2331,8 @@ mod tests {
             candidates[3].exclusion_reason,
             RetrievalExclusionReason::BelowRelevance
         );
-        assert!((rerank_relevance(0.0) - 0.5).abs() < f32::EPSILON);
-        assert!(rerank_relevance(-10.0) < MIN_RERANK_RELEVANCE);
+        assert!((query::rerank_relevance(0.0) - 0.5).abs() < f32::EPSILON);
+        assert!(query::rerank_relevance(-10.0) < MIN_RERANK_RELEVANCE);
     }
 
     #[test]
@@ -3987,7 +2345,7 @@ mod tests {
         for (index, candidate) in candidates.iter_mut().enumerate() {
             candidate.reranker_rank = Some(index + 1);
         }
-        apply_fragment_budget(&mut candidates);
+        query::apply_fragment_budget(&mut candidates);
         let selected = candidates
             .iter()
             .filter(|candidate| candidate.final_rank.is_some())
@@ -4015,13 +2373,13 @@ mod tests {
         for (index, candidate) in per_resource.iter_mut().enumerate() {
             candidate.reranker_rank = Some(index + 1);
         }
-        apply_fragment_budget(&mut per_resource);
+        query::apply_fragment_budget(&mut per_resource);
         assert_eq!(
             per_resource[2].exclusion_reason,
             RetrievalExclusionReason::PerResourceLimit
         );
 
-        let mut fragment_limit = (0..=FINAL_FRAGMENTS)
+        let mut fragment_limit = (0..=query::FINAL_FRAGMENTS)
             .map(|index| {
                 ranked_test_row(
                     &format!("unit-{index}"),
@@ -4036,9 +2394,9 @@ mod tests {
         for (index, candidate) in fragment_limit.iter_mut().enumerate() {
             candidate.reranker_rank = Some(index + 1);
         }
-        apply_fragment_budget(&mut fragment_limit);
+        query::apply_fragment_budget(&mut fragment_limit);
         assert_eq!(
-            fragment_limit[FINAL_FRAGMENTS].exclusion_reason,
+            fragment_limit[query::FINAL_FRAGMENTS].exclusion_reason,
             RetrievalExclusionReason::FragmentLimit
         );
     }
@@ -4074,7 +2432,7 @@ mod tests {
         }];
 
         let started = std::time::Instant::now();
-        let units = build_index_units(&resources, &models).unwrap();
+        let units = index::build_index_units(&resources, &models).unwrap();
         // Diagnostic timing for index build benchmark
         eprintln!(
             "built {} real embedding units in {:.2?}",
@@ -4086,7 +2444,7 @@ mod tests {
 
     #[test]
     fn fts_builder_never_exposes_user_syntax() {
-        let expression = fts_expression("混合检索 OR \"secret\" path/file.rs").unwrap();
+        let expression = query::fts_expression("混合检索 OR \"secret\" path/file.rs").unwrap();
         assert!(expression.contains("\"混合检\""));
         assert!(expression.contains("\"path/file.rs\""));
         assert!(
@@ -4098,17 +2456,17 @@ mod tests {
 
     #[test]
     fn activation_state_rejects_corruption_and_duplicate_identities() {
-        assert!(decode_activation_state(Some("not-base64!")).is_err());
-        let duplicate = ActivationStateToken {
+        assert!(activation::decode_activation_state(Some("not-base64!")).is_err());
+        let duplicate = activation::ActivationStateToken {
             version: 1,
             epoch: 1,
             known: vec![
-                KnownActivationIdentity {
+                activation::KnownActivationIdentity {
                     unit_key: "same".to_owned(),
                     content_hash: "one".to_owned(),
                     last_seen: 1,
                 },
-                KnownActivationIdentity {
+                activation::KnownActivationIdentity {
                     unit_key: "same".to_owned(),
                     content_hash: "two".to_owned(),
                     last_seen: 1,
@@ -4116,6 +2474,6 @@ mod tests {
             ],
         };
         let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&duplicate).unwrap());
-        assert!(decode_activation_state(Some(&encoded)).is_err());
+        assert!(activation::decode_activation_state(Some(&encoded)).is_err());
     }
 }
