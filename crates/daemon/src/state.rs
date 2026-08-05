@@ -1,11 +1,9 @@
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use serde_json::json;
-use sqlx::Row;
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
