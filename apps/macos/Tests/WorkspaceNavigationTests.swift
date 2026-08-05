@@ -46,6 +46,38 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(store.selectedItemId, secondLocalTab.itemId)
     }
 
+    func testOpeningMarkdownDefaultsToPreview() {
+        let store = WorkspaceStore()
+
+        store.open(item(path: "context/architecture.md"))
+
+        XCTAssertEqual(store.activeVisibleTab?.mode, .preview)
+    }
+
+    func testOpeningPlainTextDefaultsToSource() {
+        let store = WorkspaceStore()
+
+        store.open(item(path: "context/notes.txt"))
+
+        XCTAssertEqual(store.activeVisibleTab?.mode, .source)
+    }
+
+    func testCenteredTextViewUsesMinimumInsetInNarrowPane() {
+        XCTAssertEqual(
+            CenteredTextView.horizontalInset(for: 700),
+            DocumentContentMetrics.minimumHorizontalInset
+        )
+    }
+
+    func testCenteredTextViewCentersReadableColumnInWidePane() {
+        let paneWidth: CGFloat = 1_200
+
+        XCTAssertEqual(
+            CenteredTextView.horizontalInset(for: paneWidth),
+            (paneWidth - DocumentContentMetrics.maximumWidth) / 2
+        )
+    }
+
     private func tab(
         itemId: String,
         section: WorkspaceSection = .hub,
@@ -58,5 +90,21 @@ final class WorkspaceNavigationTests: XCTestCase {
             mode: .source,
             title: "\(itemId).md"
         )
+    }
+
+    private func item(path: String) -> MemoryListItem {
+        let resource = MemoryResource(
+            id: path,
+            scope: .org,
+            projectId: nil,
+            projectName: nil,
+            kind: .context,
+            contentHash: "hash",
+            updatedAt: "2026-08-05T00:00:00Z",
+            refCommitId: nil,
+            contentLoaded: true,
+            document: .init(title: URL(fileURLWithPath: path).lastPathComponent, path: path, body: "")
+        )
+        return MemoryListItem(id: resource.id, resource: resource, draft: nil, inherited: false)
     }
 }

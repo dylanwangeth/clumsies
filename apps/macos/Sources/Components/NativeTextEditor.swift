@@ -1,6 +1,29 @@
 import AppKit
 import SwiftUI
 
+enum DocumentContentMetrics {
+    static let maximumWidth: CGFloat = 760
+    static let minimumHorizontalInset: CGFloat = 36
+}
+
+@MainActor
+final class CenteredTextView: NSTextView {
+    static func horizontalInset(for width: CGFloat) -> CGFloat {
+        max(
+            DocumentContentMetrics.minimumHorizontalInset,
+            (width - DocumentContentMetrics.maximumWidth) / 2
+        )
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        textContainerInset = NSSize(
+            width: Self.horizontalInset(for: newSize.width),
+            height: 18
+        )
+    }
+}
+
 struct NativeTextEditor: NSViewRepresentable {
     @Binding var text: String
     var font: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -11,7 +34,7 @@ struct NativeTextEditor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let textView = NSTextView()
+        let textView = CenteredTextView()
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
@@ -21,7 +44,10 @@ struct NativeTextEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.usesFindBar = true
         textView.font = font
-        textView.textContainerInset = NSSize(width: 20, height: 18)
+        textView.textContainerInset = NSSize(
+            width: DocumentContentMetrics.minimumHorizontalInset,
+            height: 18
+        )
         textView.drawsBackground = true
         textView.backgroundColor = .textBackgroundColor
         textView.string = text

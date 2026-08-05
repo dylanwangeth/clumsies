@@ -620,14 +620,15 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func open(_ item: MemoryListItem, mode: WorkbenchTabMode = .source) {
+    func open(_ item: MemoryListItem, mode: WorkbenchTabMode? = nil) {
         showsProjectSettings = false
         let previousTabId = activeVisibleTab?.id
+        let resolvedMode = mode ?? (item.supportsMarkdownPreview ? .preview : .source)
         let tab = WorkbenchTab(
             section: selectedSection,
             projectId: selectedSection == .local ? (item.projectId ?? activeProjectId) : nil,
             itemId: item.id,
-            mode: mode,
+            mode: resolvedMode,
             title: item.document.title
         )
         if !tabs.contains(where: { $0.id == tab.id }) {

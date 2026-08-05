@@ -33,14 +33,17 @@ final class DocumentTabStripTests: XCTestCase {
         XCTAssertEqual(DocumentTabPresentation.contentWidth(for: tabs), expected)
     }
 
-    func testItemWidthsRemainPreferredWhenContentFits() {
+    func testItemWidthsExpandEvenlyToFillAvailableWidth() {
         let tabs = [tab(title: "a.md"), tab(title: "architecture.md", itemId: "item-2")]
         let availableWidth = DocumentTabPresentation.contentWidth(for: tabs) + 100
+        let spacing = DocumentTabMetrics.itemSpacing * CGFloat(tabs.count - 1)
+        let expectedWidth = (
+            availableWidth - DocumentTabMetrics.horizontalInset * 2 - spacing
+        ) / CGFloat(tabs.count)
 
-        XCTAssertEqual(
-            DocumentTabPresentation.itemWidths(for: tabs, availableWidth: availableWidth),
-            tabs.map { DocumentTabPresentation.itemWidth(for: $0) }
-        )
+        let widths = DocumentTabPresentation.itemWidths(for: tabs, availableWidth: availableWidth)
+
+        XCTAssertEqual(widths, Array(repeating: expectedWidth, count: tabs.count))
     }
 
     func testItemWidthsShrinkProportionallyToFitAvailableWidth() {
@@ -87,6 +90,8 @@ final class DocumentTabStripTests: XCTestCase {
         XCTAssertTrue(view.bounds.contains(closeButton.frame))
         XCTAssertGreaterThanOrEqual(titleLabel.frame.minX, closeButton.frame.maxX)
         XCTAssertLessThanOrEqual(titleLabel.frame.maxX, view.bounds.maxX)
+        XCTAssertEqual(titleLabel.frame.midX, view.bounds.midX, accuracy: 0.001)
+        XCTAssertEqual(titleLabel.alignment, .center)
     }
 
     func testSelectedTabUsesFilledStyleWithoutOutline() throws {
@@ -144,7 +149,11 @@ final class DocumentTabStripTests: XCTestCase {
 
         XCTAssertEqual(firstFrame.minX, DocumentTabMetrics.horizontalInset)
         XCTAssertEqual(firstFrame.minY, DocumentTabMetrics.verticalInset)
-        XCTAssertEqual(lastFrame.maxX, collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset)
+        XCTAssertEqual(
+            lastFrame.maxX,
+            collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset,
+            accuracy: 0.001
+        )
         XCTAssertEqual(lastFrame.maxY, collectionView.bounds.maxY - DocumentTabMetrics.verticalInset)
     }
 
@@ -177,7 +186,11 @@ final class DocumentTabStripTests: XCTestCase {
 
         XCTAssertEqual(collectionView.frame, view.bounds)
         XCTAssertEqual(firstFrame.minX, DocumentTabMetrics.horizontalInset)
-        XCTAssertEqual(lastFrame.maxX, collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset)
+        XCTAssertEqual(
+            lastFrame.maxX,
+            collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset,
+            accuracy: 0.001
+        )
     }
 
     func testResizingStripRecomputesCompressedTabFrames() throws {
@@ -207,7 +220,11 @@ final class DocumentTabStripTests: XCTestCase {
 
         XCTAssertLessThan(firstFrame.width, DocumentTabMetrics.minimumItemWidth)
         XCTAssertEqual(firstFrame.minX, DocumentTabMetrics.horizontalInset)
-        XCTAssertEqual(lastFrame.maxX, collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset)
+        XCTAssertEqual(
+            lastFrame.maxX,
+            collectionView.bounds.maxX - DocumentTabMetrics.horizontalInset,
+            accuracy: 0.001
+        )
     }
 
     private func tab(

@@ -9,10 +9,10 @@ struct MarkdownPreview: View {
             Markdown(source)
                 .markdownTheme(.gitHub)
                 .textSelection(.enabled)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 36)
+                .frame(maxWidth: DocumentContentMetrics.maximumWidth, alignment: .leading)
+                .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
                 .padding(.vertical, 28)
+                .frame(maxWidth: .infinity, alignment: .top)
         }
         .background(Color(nsColor: .textBackgroundColor))
     }

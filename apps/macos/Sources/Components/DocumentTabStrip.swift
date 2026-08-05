@@ -13,7 +13,7 @@ enum DocumentTabMetrics {
     static let closeButtonWidth: CGFloat = 16
     static let leadingPadding: CGFloat = 5
     static let closeTitleSpacing: CGFloat = 4
-    static let trailingPadding: CGFloat = 9
+    static let titleHorizontalInset = leadingPadding + closeButtonWidth + closeTitleSpacing
     static let itemCornerRadius: CGFloat = itemHeight / 2
     static let stripCornerRadius: CGFloat = height / 2
 }
@@ -28,10 +28,7 @@ enum DocumentTabPresentation {
         font: NSFont = .systemFont(ofSize: NSFont.systemFontSize)
     ) -> CGFloat {
         let titleWidth = (title(for: tab) as NSString).size(withAttributes: [.font: font]).width
-        let chromeWidth = DocumentTabMetrics.leadingPadding
-            + DocumentTabMetrics.closeButtonWidth
-            + DocumentTabMetrics.closeTitleSpacing
-            + DocumentTabMetrics.trailingPadding
+        let chromeWidth = DocumentTabMetrics.titleHorizontalInset * 2
         return min(
             max(ceil(titleWidth) + chromeWidth, DocumentTabMetrics.minimumItemWidth),
             DocumentTabMetrics.maximumItemWidth
@@ -60,8 +57,11 @@ enum DocumentTabPresentation {
             availableWidth - DocumentTabMetrics.horizontalInset * 2 - spacing
         )
         let preferredTotal = preferredWidths.reduce(0, +)
-        guard preferredTotal > availableItemWidth, preferredTotal > 0 else {
-            return preferredWidths
+        guard preferredTotal > 0 else { return [] }
+
+        if preferredTotal <= availableItemWidth {
+            let expandedWidth = availableItemWidth / CGFloat(tabs.count)
+            return Array(repeating: expandedWidth, count: tabs.count)
         }
 
         let scale = availableItemWidth / preferredTotal
@@ -446,6 +446,25 @@ final class DocumentTabItemView: NSView {
         super.updateTrackingAreas()
     }
 
+    override func layout() {
+        super.layout()
+        closeButton.frame = NSRect(
+            x: DocumentTabMetrics.leadingPadding,
+            y: floor((bounds.height - DocumentTabMetrics.closeButtonWidth) / 2),
+            width: DocumentTabMetrics.closeButtonWidth,
+            height: DocumentTabMetrics.closeButtonWidth
+        )
+
+        let titleHeight = min(titleLabel.intrinsicContentSize.height, bounds.height)
+        let titleWidth = max(0, bounds.width - DocumentTabMetrics.titleHorizontalInset * 2)
+        titleLabel.frame = NSRect(
+            x: DocumentTabMetrics.titleHorizontalInset,
+            y: floor((bounds.height - titleHeight) / 2),
+            width: titleWidth,
+            height: titleHeight
+        )
+    }
+
     override func mouseEntered(with event: NSEvent) {
         isHovered = true
     }
@@ -467,6 +486,7 @@ final class DocumentTabItemView: NSView {
         closeButton.setAccessibilityLabel("Close \(title)")
         setAccessibilityLabel(title)
         self.onClose = onClose
+        needsLayout = true
     }
 
     override func prepareForReuse() {
@@ -492,34 +512,15 @@ final class DocumentTabItemView: NSView {
         closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closeTab)
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
         titleLabel.textColor = .labelColor
+        titleLabel.alignment = .center
         titleLabel.lineBreakMode = .byClipping
         titleLabel.maximumNumberOfLines = 1
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(closeButton)
         addSubview(titleLabel)
-        NSLayoutConstraint.activate([
-            closeButton.leadingAnchor.constraint(
-                equalTo: leadingAnchor,
-                constant: DocumentTabMetrics.leadingPadding
-            ),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: DocumentTabMetrics.closeButtonWidth),
-            closeButton.heightAnchor.constraint(equalToConstant: DocumentTabMetrics.closeButtonWidth),
-            titleLabel.leadingAnchor.constraint(
-                equalTo: closeButton.trailingAnchor,
-                constant: DocumentTabMetrics.closeTitleSpacing
-            ),
-            titleLabel.trailingAnchor.constraint(
-                equalTo: trailingAnchor,
-                constant: -DocumentTabMetrics.trailingPadding
-            ),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
         updateAppearance()
     }
 

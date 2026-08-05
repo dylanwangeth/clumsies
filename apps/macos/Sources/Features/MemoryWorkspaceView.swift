@@ -305,7 +305,7 @@ private struct FileTreeView: View {
         if let singleItem {
             Button("Open") { store.open(singleItem) }
             if singleItem.supportsMarkdownPreview {
-                Button("Open Preview") { store.open(singleItem, mode: .preview) }
+                Button("Open Source") { store.open(singleItem, mode: .source) }
             }
             Divider()
         }
