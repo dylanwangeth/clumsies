@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::util::{home_dir, non_empty_string, parse_bool_env, parse_u64_env};
 use crate::{
-    CredentialStoreError, DaemonBootstrapStatus, DaemonError, DaemonIpcEndpoint,
+    DaemonBootstrapStatus, DaemonError, DaemonIpcEndpoint,
     DaemonIpcTransport, LaunchAgentRuntimeStatus, ProjectConfigReadiness, ServerCredentials,
 };
 

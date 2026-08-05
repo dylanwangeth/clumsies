@@ -80,6 +80,9 @@ pub(crate) use server_client::{
 };
 pub use state::DaemonIpcService;
 pub use state::DaemonState;
+pub(crate) use types::ProjectConfigReadiness;
+pub(crate) use types::ServerTokenRefreshResponse;
+pub(crate) use types::project_binding_from_row;
 pub use types::{
     ApiError, DaemonBootstrapStatus, DaemonDraftContent, DaemonDraftDetail,
     DaemonDraftDetailRequest, DaemonDraftFreshness, DaemonDraftListQuery, DaemonDraftListResponse,
@@ -100,14 +103,6 @@ pub use types::{
     DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
     DaemonDiscardDraftOperation, DaemonLocalDraftOperation, DaemonRenameDraftOperation,
     DaemonTextDraftUpdate, DaemonTextReplacement, DaemonUpdateDraftOperation,
-};
-pub(crate) use types::{
-    DraftSyncError, ProjectConfigReadiness, QueuedDraftOperation, ServerCreateDraftRequest,
-    ServerDraftEventListResponse, ServerDraftMutationResponse, ServerDraftOperationAction,
-    ServerDraftOperationBatchItem, ServerDraftOperationBatchRequest,
-    ServerDraftOperationBatchResponse, ServerDraftOperationInput, ServerDraftProjectionDetail,
-    ServerDraftProjectionOperation, ServerDraftResourceRef, ServerTokenRefreshResponse,
-    project_binding_from_row,
 };
 pub(crate) use util::is_normalized_relative_path;
 use util::{

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::config::{
-    CURRENT_LOCAL_SCHEMA_VERSION, META_DRAFT_EVENTS_CURSOR, META_MEMORY_CACHE_RESET_REQUIRED,
+    CURRENT_LOCAL_SCHEMA_VERSION, META_MEMORY_CACHE_RESET_REQUIRED,
 };
 use crate::util::non_empty_string;
 use crate::{
