@@ -7,9 +7,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
-use crate::config::{
-    CURRENT_LOCAL_SCHEMA_VERSION, META_MEMORY_CACHE_RESET_REQUIRED,
-};
+use crate::config::{CURRENT_LOCAL_SCHEMA_VERSION, META_MEMORY_CACHE_RESET_REQUIRED};
 use crate::util::non_empty_string;
 use crate::{
     CredentialStore, CredentialStoreError, DaemonConfig, DaemonError, ProjectConfig,

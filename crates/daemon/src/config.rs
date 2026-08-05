@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::util::{home_dir, non_empty_string, parse_bool_env, parse_u64_env};
 use crate::{
-    DaemonBootstrapStatus, DaemonError, DaemonIpcEndpoint,
-    DaemonIpcTransport, LaunchAgentRuntimeStatus, ProjectConfigReadiness, ServerCredentials,
+    DaemonBootstrapStatus, DaemonError, DaemonIpcEndpoint, DaemonIpcTransport,
+    LaunchAgentRuntimeStatus, ProjectConfigReadiness, ServerCredentials,
 };
 
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
