@@ -1,6 +1,21 @@
 import Combine
 import Foundation
 
+enum DocumentSessionCommand: Equatable, Sendable {
+    case requestReview(itemId: String, draft: LocalDraft)
+    case discardDraft(itemId: String, draft: LocalDraft)
+    case moveToTrash(itemId: String)
+
+    var itemId: String {
+        switch self {
+        case .requestReview(let itemId, _),
+             .discardDraft(let itemId, _),
+             .moveToTrash(let itemId):
+            itemId
+        }
+    }
+}
+
 enum ApplicationPhase: Equatable, Sendable {
     case launching
     case authenticationRequired
@@ -146,6 +161,9 @@ final class WorkspaceStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var tabs: [WorkbenchTab] = []
     @Published var activeTabId: String?
+    @Published private(set) var navigationBackStack: [String] = []
+    @Published private(set) var navigationForwardStack: [String] = []
+    @Published var pendingDocumentCommand: DocumentSessionCommand?
     @Published private(set) var loadingResourceIds: Set<String> = []
     @Published private(set) var loadingProjectId: String?
     @Published private(set) var isPreparingWorkspaceIndex = false
@@ -202,6 +220,29 @@ final class WorkspaceStore: ObservableObject {
 
     var activeVisibleTab: WorkbenchTab? {
         visibleTabs.first { $0.id == activeTabId } ?? visibleTabs.last
+    }
+
+    var canGoBack: Bool {
+        navigationBackStack.contains(where: isVisibleTab)
+    }
+
+    var canGoForward: Bool {
+        navigationForwardStack.contains(where: isVisibleTab)
+    }
+
+    var currentDocumentPath: String? {
+        guard let tab = activeVisibleTab,
+              let item = item(for: tab) else { return nil }
+        return item.document.path
+    }
+
+    var currentItem: MemoryListItem? {
+        guard let tab = activeVisibleTab else { return nil }
+        return item(for: tab)
+    }
+
+    var currentTabMode: WorkbenchTabMode? {
+        activeVisibleTab?.mode
     }
 
     var selectedBundle: PersonalBundle? {
@@ -581,6 +622,7 @@ final class WorkspaceStore: ObservableObject {
 
     func open(_ item: MemoryListItem, mode: WorkbenchTabMode = .source) {
         showsProjectSettings = false
+        let previousTabId = activeVisibleTab?.id
         let tab = WorkbenchTab(
             section: selectedSection,
             projectId: selectedSection == .local ? (item.projectId ?? activeProjectId) : nil,
@@ -592,6 +634,10 @@ final class WorkspaceStore: ObservableObject {
             tabs.append(tab)
         }
         selectedItemId = item.id
+        if let previousTabId, previousTabId != tab.id {
+            navigationBackStack.append(previousTabId)
+            navigationForwardStack.removeAll()
+        }
         activeTabId = tab.id
         Task { await loadContentIfNeeded(item) }
     }
@@ -654,12 +700,61 @@ final class WorkspaceStore: ObservableObject {
         guard let index = tabs.firstIndex(of: tab) else { return }
         let visibleIndex = visibleTabs.firstIndex(of: tab)
         tabs.remove(at: index)
+        navigationBackStack.removeAll { $0 == tab.id }
+        navigationForwardStack.removeAll { $0 == tab.id }
         if activeTabId == tab.id {
             let remaining = visibleTabs
             let replacementIndex = min(visibleIndex ?? remaining.count, remaining.count - 1)
             activeTabId = replacementIndex >= 0 ? remaining[replacementIndex].id : nil
             selectedItemId = tabs.first { $0.id == activeTabId }?.itemId
         }
+    }
+
+    func selectTab(_ tab: WorkbenchTab) {
+        let previousTabId = activeVisibleTab?.id
+        guard tab.id != previousTabId else {
+            activeTabId = tab.id
+            selectedItemId = tab.itemId
+            return
+        }
+        if let previousTabId {
+            navigationBackStack.append(previousTabId)
+            navigationForwardStack.removeAll()
+        }
+        activeTabId = tab.id
+        selectedItemId = tab.itemId
+    }
+
+    func goBack() {
+        while let previousId = navigationBackStack.popLast() {
+            guard isVisibleTab(previousId) else { continue }
+            if let currentId = activeVisibleTab?.id {
+                navigationForwardStack.append(currentId)
+            }
+            activateTab(previousId)
+            return
+        }
+    }
+
+    func goForward() {
+        while let nextId = navigationForwardStack.popLast() {
+            guard isVisibleTab(nextId) else { continue }
+            if let currentId = activeVisibleTab?.id {
+                navigationBackStack.append(currentId)
+            }
+            activateTab(nextId)
+            return
+        }
+    }
+
+    private func isVisibleTab(_ tabId: String) -> Bool {
+        visibleTabs.contains { $0.id == tabId }
+    }
+
+    private func activateTab(_ tabId: String) {
+        guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
+        activeTabId = tab.id
+        selectedItemId = tab.itemId
     }
 
     @discardableResult

@@ -9,9 +9,7 @@ enum DocumentTabMetrics {
     static let itemSpacing: CGFloat = 2
     static let minimumItemWidth: CGFloat = 84
     static let maximumItemWidth: CGFloat = 200
-    static let minimumStripWidth: CGFloat = 160
     static let maximumStripWidth: CGFloat = 560
-    static let maximumFlexibleStripWidth: CGFloat = 10_000
     static let closeButtonWidth: CGFloat = 16
     static let leadingPadding: CGFloat = 5
     static let closeTitleSpacing: CGFloat = 4
@@ -175,10 +173,6 @@ final class DocumentTabStripView: NSView {
     private var onSelect: ((WorkbenchTab) -> Void)?
     private var onClose: ((WorkbenchTab) -> Void)?
     private var isSynchronizingSelection = false
-    private var isToolbarConfigurationScheduled = false
-    private var toolbarConfigurationAttempts = 0
-    private weak var configuredToolbarItemView: NSView?
-    private var toolbarWidthConstraints: [NSLayoutConstraint] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -188,11 +182,6 @@ final class DocumentTabStripView: NSView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        scheduleToolbarConfiguration()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -239,7 +228,6 @@ final class DocumentTabStripView: NSView {
         if contentChanged || selectionChanged {
             synchronizeSelection()
         }
-        scheduleToolbarConfiguration()
     }
 
     private func configureView() {
@@ -282,73 +270,6 @@ final class DocumentTabStripView: NSView {
         tabLayout.prepare()
         collectionView.needsLayout = true
         collectionView.layoutSubtreeIfNeeded()
-    }
-
-    private func scheduleToolbarConfiguration(after delay: TimeInterval = 0) {
-        guard !isToolbarConfigurationScheduled else { return }
-        isToolbarConfigurationScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            self.isToolbarConfigurationScheduled = false
-            self.configureToolbarItem()
-        }
-    }
-
-    private func configureToolbarItem() {
-        guard let (window, toolbar, itemView) = toolbarHost() else {
-            retryToolbarConfiguration()
-            return
-        }
-
-        if configuredToolbarItemView !== itemView {
-            NSLayoutConstraint.deactivate(toolbarWidthConstraints)
-            configuredToolbarItemView = itemView
-            itemView.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
-            itemView.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
-            toolbarWidthConstraints = [
-                itemView.widthAnchor.constraint(
-                    greaterThanOrEqualToConstant: DocumentTabMetrics.minimumStripWidth
-                ),
-                itemView.widthAnchor.constraint(
-                    lessThanOrEqualToConstant: DocumentTabMetrics.maximumFlexibleStripWidth
-                ),
-            ]
-            NSLayoutConstraint.activate(toolbarWidthConstraints)
-        }
-
-        itemView.invalidateIntrinsicContentSize()
-        itemView.needsUpdateConstraints = true
-        toolbar.validateVisibleItems()
-        window.contentView?.superview?.needsLayout = true
-        window.contentView?.superview?.layoutSubtreeIfNeeded()
-        updateCollectionLayoutForBounds()
-        toolbarConfigurationAttempts = 0
-    }
-
-    private func toolbarHost() -> (NSWindow, NSToolbar, NSView)? {
-        var candidateWindows: [NSWindow] = []
-        if let window {
-            candidateWindows.append(window)
-        }
-        candidateWindows.append(contentsOf: NSApp.windows.filter { candidate in
-            !candidateWindows.contains { $0 === candidate }
-        })
-
-        for candidateWindow in candidateWindows {
-            guard let toolbar = candidateWindow.toolbar else { continue }
-            if let itemView = toolbar.items.compactMap(\.view).first(where: { itemView in
-                itemView === self || isDescendant(of: itemView)
-            }) {
-                return (candidateWindow, toolbar, itemView)
-            }
-        }
-        return nil
-    }
-
-    private func retryToolbarConfiguration() {
-        guard toolbarConfigurationAttempts < 20 else { return }
-        toolbarConfigurationAttempts += 1
-        scheduleToolbarConfiguration(after: 0.05)
     }
 
     private func synchronizeSelection() {

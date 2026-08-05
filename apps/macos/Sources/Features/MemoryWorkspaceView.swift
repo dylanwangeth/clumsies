@@ -20,6 +20,21 @@ struct MemoryMainPane: View {
             if store.selectedSection == .local, store.activeProject?.isLoaded == false {
                 ProjectPreparationView(store: store)
             } else if !store.visibleTabs.isEmpty {
+                DocumentTabStrip(
+                    tabs: store.visibleTabs,
+                    selectedTabId: store.activeVisibleTab?.id,
+                    onSelect: { tab in store.selectTab(tab) },
+                    onClose: store.closeTab
+                )
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: DocumentTabMetrics.height,
+                    maxHeight: DocumentTabMetrics.height,
+                    alignment: .leading
+                )
+                .background(.bar)
+                Divider()
+
                 if let tab = store.activeVisibleTab,
                    let item = store.item(for: tab) {
                     if item.contentLoaded {
@@ -685,6 +700,18 @@ private struct DocumentSessionView: View {
             }
         }
         .onChange(of: document) { _, _ in scheduleSave() }
+        .onChange(of: store.pendingDocumentCommand) { _, command in
+            guard let command, command.itemId == item.id else { return }
+            store.pendingDocumentCommand = nil
+            switch command {
+            case .requestReview(_, let draft):
+                reviewDraft = draft
+            case .discardDraft(_, let draft):
+                discard(draft)
+            case .moveToTrash:
+                moveToTrash()
+            }
+        }
         .onDisappear { flushSave() }
         .sheet(item: $reviewDraft) { draft in
             ReviewRequestSheet(
@@ -704,51 +731,6 @@ private struct DocumentSessionView: View {
 
     private var documentContent: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                DocumentPathBreadcrumb(path: mode == .preview ? item.document.path : document.path)
-                    .accessibilityLabel("Path: \(mode == .preview ? item.document.path : document.path)")
-                Spacer()
-                HStack(spacing: 4) {
-                    if supportsMarkdownPreview {
-                        Button {
-                            store.open(item, mode: mode == .preview ? .source : .preview)
-                        } label: {
-                            Image(systemName: mode == .preview ? "doc.plaintext" : "eye")
-                        }
-                        .buttonStyle(DocumentToolButtonStyle())
-                        .help(mode == .preview ? "Open Source" : "Open Preview")
-                        .accessibilityLabel(mode == .preview ? "Open Source" : "Open Preview")
-                    }
-                    Menu {
-                        if item.inherited {
-                            Button("Open in Hub") { openInHub() }
-                        }
-                        if let draft = item.draft, draft.status == .open {
-                            Button("Request Review") {
-                                reviewDraft = draft
-                            }
-                            Divider()
-                        }
-                        if let draft = item.draft {
-                            Button("Discard Draft") { discard(draft) }
-                        }
-                        if !item.inherited {
-                            Button("Move to Trash", role: .destructive) { moveToTrash() }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .buttonStyle(DocumentToolButtonStyle())
-                    .menuIndicator(.hidden)
-                    .help("Document Actions")
-                    .accessibilityLabel("Document Actions")
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(height: WorkbenchChrome.barHeight)
-            .background(.bar)
-            Divider()
-
             if let draft = activeDraft, draft.freshness == .behind {
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
@@ -807,12 +789,6 @@ private struct DocumentSessionView: View {
         case .context, .rules, .workflows:
             return sourceDocument.body
         }
-    }
-
-    private var supportsMarkdownPreview: Bool {
-        guard item.draft?.isDeletion != true else { return false }
-        let path = mode == .preview ? item.document.path : document.path
-        return item.kind.supportsMarkdownPreview(path: path)
     }
 
     private var activeDraft: LocalDraft? {
@@ -892,10 +868,6 @@ private struct DocumentSessionView: View {
         suppressesSaving = true
         store.cancelDocumentSave(item.id)
         Task { await store.discard(draft) }
-    }
-
-    private func openInHub() {
-        Task { await store.reveal(item) }
     }
 
     private func moveToTrash() {
@@ -1344,43 +1316,7 @@ private struct ReviewRequestSheet: View {
     }
 }
 
-private struct DocumentToolButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    @State private var isHovered = false
-
-    init(isSelected: Bool = false) {
-        self.isSelected = isSelected
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .regular))
-            .foregroundStyle(isSelected ? .primary : .secondary)
-            .frame(width: 24, height: 24)
-            .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(backgroundColor(isPressed: configuration.isPressed))
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .onHover { isHovered = $0 }
-    }
-
-    private func backgroundColor(isPressed: Bool) -> Color {
-        if isPressed {
-            return Color(nsColor: .labelColor).opacity(0.14)
-        }
-        if isSelected {
-            return Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
-        }
-        if isHovered {
-            return Color(nsColor: .labelColor).opacity(0.07)
-        }
-        return .clear
-    }
-}
-
-private struct DocumentPathBreadcrumb: View {
+struct DocumentPathBreadcrumb: View {
     let path: String
 
     private var components: [String] {
@@ -1398,10 +1334,11 @@ private struct DocumentPathBreadcrumb: View {
                 Text(component)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .fontWeight(index == components.count - 1 ? .medium : .regular)
+                    .foregroundStyle(index == components.count - 1 ? .primary : .secondary)
                     .layoutPriority(index == components.count - 1 ? 1 : 0)
             }
         }
-        .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(.secondary)
+        .font(.system(size: 14, weight: .regular))
     }
 }

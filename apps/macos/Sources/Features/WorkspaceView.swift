@@ -124,27 +124,42 @@ struct WorkspaceView: View {
                 .toolbar {
                     if showsDocumentTabs {
                         ToolbarItemGroup {
-                            DocumentTabStrip(
-                                tabs: store.visibleTabs,
-                                selectedTabId: store.activeVisibleTab?.id,
-                                onSelect: { tab in
-                                    store.activeTabId = tab.id
-                                    store.selectedItemId = tab.itemId
-                                },
-                                onClose: store.closeTab
-                            )
-                            .frame(
-                                minWidth: DocumentTabMetrics.minimumStripWidth,
-                                maxWidth: .infinity,
-                                minHeight: DocumentTabMetrics.height,
-                                maxHeight: DocumentTabMetrics.height,
-                                alignment: .leading
-                            )
-                            .layoutPriority(1)
+                            Button {
+                                store.goBack()
+                            } label: {
+                                Image(systemName: "chevron.left")
+                            }
+                            .disabled(!store.canGoBack)
+                            .help("Go Back")
+                            .accessibilityLabel("Go Back")
+
+                            Button {
+                                store.goForward()
+                            } label: {
+                                Image(systemName: "chevron.right")
+                            }
+                            .disabled(!store.canGoForward)
+                            .help("Go Forward")
+                            .accessibilityLabel("Go Forward")
                         }
 
                         if #available(macOS 26.0, *) {
                             ToolbarSpacer(.fixed)
+                        }
+
+                        if #available(macOS 26.0, *) {
+                            ToolbarItem {
+                                documentPath
+                            }
+                            .sharedBackgroundVisibility(.hidden)
+                        } else {
+                            ToolbarItem {
+                                documentPath
+                            }
+                        }
+
+                        if #available(macOS 26.0, *) {
+                            ToolbarSpacer(.flexible)
                         }
                     }
 
@@ -160,7 +175,6 @@ struct WorkspaceView: View {
                                 Image(systemName: "plus")
                             }
                             .help("Add Memory")
-                            .accessibilityLabel("Add Memory")
 
                             Menu {
                                 Button("Delete Bundle", role: .destructive) {
@@ -212,6 +226,54 @@ struct WorkspaceView: View {
                                 results: searchResults,
                                 onOpen: open
                             )
+                        }
+
+                        if showsDocumentTabs, let item = store.currentItem {
+                            if item.supportsMarkdownPreview {
+                                let mode = store.currentTabMode ?? .source
+                                Button {
+                                    store.open(item, mode: mode == .preview ? .source : .preview)
+                                } label: {
+                                    Image(systemName: mode == .preview ? "doc.plaintext" : "eye")
+                                }
+                                .help(mode == .preview ? "Open Source" : "Open Preview")
+                                .accessibilityLabel(mode == .preview ? "Open Source" : "Open Preview")
+                            }
+
+                            Menu {
+                                if item.inherited {
+                                    Button("Open in Hub") {
+                                        Task { await store.reveal(item) }
+                                    }
+                                }
+                                if let draft = item.draft, draft.status == .open {
+                                    Button("Request Review") {
+                                        store.pendingDocumentCommand = .requestReview(
+                                            itemId: item.id,
+                                            draft: draft
+                                        )
+                                    }
+                                    Divider()
+                                }
+                                if let draft = item.draft {
+                                    Button("Discard Draft") {
+                                        store.pendingDocumentCommand = .discardDraft(
+                                            itemId: item.id,
+                                            draft: draft
+                                        )
+                                    }
+                                }
+                                if !item.inherited {
+                                    Button("Move to Trash", role: .destructive) {
+                                        store.pendingDocumentCommand = .moveToTrash(itemId: item.id)
+                                    }
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                            }
+                            .menuIndicator(.hidden)
+                            .help("Document Actions")
+                            .accessibilityLabel("Document Actions")
                         }
                     }
                 }
@@ -362,6 +424,15 @@ struct WorkspaceView: View {
         filteredReviews.first { $0.id == store.selectedReviewId } ?? filteredReviews.first
     }
 
+    @ViewBuilder
+    private var documentPath: some View {
+        if let path = store.currentDocumentPath {
+            DocumentPathBreadcrumb(path: path)
+                .frame(minWidth: 120, maxWidth: 360, alignment: .leading)
+                .accessibilityLabel("Path: \(path)")
+        }
+    }
+
     private var filteredReviews: [ReviewRecord] {
         reviewStatusFilter == "all"
             ? store.reviews
@@ -420,6 +491,7 @@ struct WorkspaceView: View {
             serverDataSource: store.runtime?.serverDataSource
         )
     }
+
 }
 
 private extension SyncToolbarPresentation {

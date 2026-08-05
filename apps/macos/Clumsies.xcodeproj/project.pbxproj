@@ -36,8 +36,8 @@
 		9B7285AE1AD725842AD752FB /* ReviewLineDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE4981FAEF7B27892D18EF0F /* ReviewLineDiff.swift */; };
 		A53F0E8912030AA286A4A285 /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A108C769F026D02B9C4326B3 /* WorkspaceStore.swift */; };
 		A76D61667A65C740029F0F2D /* NativeAccountMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A071EB67D684BAD0157C5700 /* NativeAccountMenu.swift */; };
+		AFAFC31F142241083E6ADB70 /* WorkspaceNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1A76BE67F6B85156A3330C /* WorkspaceNavigationTests.swift */; };
 		B06E2A9436C5810135105A05 /* DocumentTabStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED8B574ED4DAF0CF09DEE6C6 /* DocumentTabStrip.swift */; };
-		B37FC0B5FCAF31C079DEB664 /* WorkbenchChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84E05D3A21FA9C481DDEC44 /* WorkbenchChrome.swift */; };
 		BB98BF86F178D4A9B41AF2FF /* ProjectManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C537F29610E41A969EE331A2 /* ProjectManagementView.swift */; };
 		BC981F6141344D57C1D721D6 /* FileSymbols in Resources */ = {isa = PBXBuildFile; fileRef = 9A94470634048BE21398273F /* FileSymbols */; };
 		C5174E339BE7AD75750F1DAD /* ServerModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB646EA39F4397C0A4769A2 /* ServerModels.swift */; };
@@ -62,6 +62,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0D1A76BE67F6B85156A3330C /* WorkspaceNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNavigationTests.swift; sourceTree = "<group>"; };
 		0D653D21BD58E9D24450141A /* DocumentTabStripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentTabStripTests.swift; sourceTree = "<group>"; };
 		18CAC580523AC687B94FA4C9 /* MemoryWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryWorkspaceView.swift; sourceTree = "<group>"; };
 		1B4C4B6CD38A41A323309597 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -87,7 +88,6 @@
 		C2065CEBF21A0AD6D7D70259 /* MarkdownPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownPreview.swift; sourceTree = "<group>"; };
 		C537F29610E41A969EE331A2 /* ProjectManagementView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectManagementView.swift; sourceTree = "<group>"; };
 		C6ABC405480198DD68F37918 /* JSONCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCoding.swift; sourceTree = "<group>"; };
-		C84E05D3A21FA9C481DDEC44 /* WorkbenchChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchChrome.swift; sourceTree = "<group>"; };
 		CAB3E1C996D7A718AE933D03 /* ClumsiesIdentifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClumsiesIdentifiers.swift; sourceTree = "<group>"; };
 		CE4981FAEF7B27892D18EF0F /* ReviewLineDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewLineDiff.swift; sourceTree = "<group>"; };
 		D0D4802A9777F53C78323C0E /* DaemonXPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonXPCClient.swift; sourceTree = "<group>"; };
@@ -136,7 +136,6 @@
 				A071EB67D684BAD0157C5700 /* NativeAccountMenu.swift */,
 				940BD7C82DC144B067648080 /* NativeTextEditor.swift */,
 				CE4981FAEF7B27892D18EF0F /* ReviewLineDiff.swift */,
-				C84E05D3A21FA9C481DDEC44 /* WorkbenchChrome.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -226,6 +225,7 @@
 				84C800F553C36980E0ABDCF2 /* ProjectManagementTests.swift */,
 				907531FC0F69F10F4EC7FC8E /* ProjectOrgSelectionTests.swift */,
 				F244F66E4A5C2C7152B37BE4 /* SettingsWindowLayoutTests.swift */,
+				0D1A76BE67F6B85156A3330C /* WorkspaceNavigationTests.swift */,
 			);
 			path = Tests;
 			sourceTree = "<group>";
@@ -405,7 +405,6 @@
 				C5174E339BE7AD75750F1DAD /* ServerModels.swift in Sources */,
 				978C3F8A44E156309CAA21DC /* SettingsView.swift in Sources */,
 				47AC97FF423BEDDD532DE639 /* SoftwareUpdateController.swift in Sources */,
-				B37FC0B5FCAF31C079DEB664 /* WorkbenchChrome.swift in Sources */,
 				A53F0E8912030AA286A4A285 /* WorkspaceStore.swift in Sources */,
 				DC1B191092F8585B353496E6 /* WorkspaceView.swift in Sources */,
 				D673EA34613D807AEEAE78AD /* main.swift in Sources */,
@@ -426,6 +425,7 @@
 				089379BF6C447A24C02A9215 /* ProjectManagementTests.swift in Sources */,
 				08913149E25C6AF329032893 /* ProjectOrgSelectionTests.swift in Sources */,
 				07B10A96DB89CBC09C76F83A /* SettingsWindowLayoutTests.swift in Sources */,
+				AFAFC31F142241083E6ADB70 /* WorkspaceNavigationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
