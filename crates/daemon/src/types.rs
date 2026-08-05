@@ -9,7 +9,6 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::CredentialStoreError;
-use crate::MemoryKind;
 use crate::server_client::is_retryable_http_status;
 use crate::util::validate_draft_resource_path;
 

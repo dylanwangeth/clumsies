@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
 use serde_json::json;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -9,23 +8,21 @@ use uuid::Uuid;
 use crate::config::{
     META_DRAFT_EVENTS_CURSOR, META_DRAFT_SYNC_LAST_ATTEMPT_AT, META_DRAFT_SYNC_LAST_SUCCESS_AT,
 };
-use crate::util::non_empty_string;
-use crate::{
+use crate::state::DaemonState;
+use crate::types::{
     ApiError, DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
-    DaemonDiscardDraftOperation, DaemonDraftContent, DaemonDraftDetail, DaemonDraftFreshness,
-    DaemonDraftListQuery, DaemonDraftListResponse, DaemonDraftOperation,
-    DaemonDraftOperationRecordSource, DaemonDraftOperationResponse,
+    DaemonDiscardDraftOperation, DaemonDraftDetail, DaemonDraftFreshness, DaemonDraftListQuery,
+    DaemonDraftListResponse, DaemonDraftOperation, DaemonDraftOperationRecordSource,
     DaemonDraftReconciliationStatus, DaemonDraftResourceKind, DaemonDraftScope, DaemonDraftSummary,
     DaemonError, DaemonLocalDraftOperation, DaemonLocalDraftStatus, DaemonRenameDraftOperation,
-    DaemonState, DaemonSyncStatus, DaemonTextReplacement, DaemonUpdateDraftOperation,
-    DraftOperationSyncStatus, DraftSyncError, MemoryKind, QueuedDraftOperation,
-    ServerCreateDraftRequest, ServerDraftCoordination, ServerDraftEventListResponse,
+    DaemonSyncStatus, DaemonUpdateDraftOperation, DraftOperationSyncStatus, DraftSyncError,
+    QueuedDraftOperation, ServerCreateDraftRequest, ServerDraftEventListResponse,
     ServerDraftMutationResponse, ServerDraftOperationAction, ServerDraftOperationBatchItem,
     ServerDraftOperationBatchRequest, ServerDraftOperationBatchResponse, ServerDraftOperationInput,
     ServerDraftProjectionDetail, ServerDraftProjectionOperation, ServerDraftResourceRef,
-    SyncChannelStatus, SyncState, commit_sync, delete_server_json, get_server_json,
-    load_meta_value, post_server_json,
+    SyncChannelStatus, SyncState,
 };
+use crate::{commit_sync, delete_server_json, get_server_json, load_meta_value, post_server_json};
 
 pub(crate) struct LocalDraftResolutionInput<'a> {
     pub(crate) requested_draft_id: Option<&'a str>,
