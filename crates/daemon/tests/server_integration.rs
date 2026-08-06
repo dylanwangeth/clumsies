@@ -1219,6 +1219,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
         projected_behind.draft.freshness,
         daemon::DaemonDraftFreshness::Behind
     );
+    assert!(!projected_behind.draft.has_upstream_resource_changes);
     let synced_offline_operation = projected_behind
         .operations
         .iter()

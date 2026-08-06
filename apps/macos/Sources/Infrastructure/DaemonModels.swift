@@ -321,6 +321,7 @@ struct DaemonDraftSummary: Codable, Identifiable, Hashable, Sendable {
     let baseCommitId: String?
     let currentCommitId: String?
     let freshness: DraftFreshness
+    let hasUpstreamResourceChanges: Bool
     let reconciliation: DraftReconciliationStatus
     let reconciliationCandidateId: String?
     let scope: DaemonDraftScope

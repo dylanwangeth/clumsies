@@ -243,7 +243,8 @@ pub(crate) async fn list_local_drafts(
     let rows = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
-            d.current_commit_id, d.freshness, d.reconciliation, d.reconciliation_candidate_id,
+            d.current_commit_id, d.freshness, d.has_upstream_resource_changes,
+            d.reconciliation, d.reconciliation_candidate_id,
             d.resource_scope, d.resource_kind, d.target_id, d.path,
             d.status, d.created_at, d.updated_at,
             (
@@ -283,7 +284,8 @@ pub(crate) async fn load_local_draft_detail(
     let row = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
-            d.current_commit_id, d.freshness, d.reconciliation, d.reconciliation_candidate_id,
+            d.current_commit_id, d.freshness, d.has_upstream_resource_changes,
+            d.reconciliation, d.reconciliation_candidate_id,
             d.resource_scope, d.resource_kind, d.target_id, d.path,
             d.status, d.created_at, d.updated_at,
             (
@@ -334,6 +336,7 @@ pub(crate) fn local_draft_summary_from_row(
         base_commit_id: row.try_get("base_commit_id")?,
         current_commit_id: row.try_get("current_commit_id")?,
         freshness: draft_freshness_from_str(row.try_get::<String, _>("freshness")?.as_str())?,
+        has_upstream_resource_changes: row.try_get("has_upstream_resource_changes")?,
         reconciliation: draft_reconciliation_status_from_str(
             row.try_get::<String, _>("reconciliation")?.as_str(),
         )?,
@@ -1082,10 +1085,11 @@ pub(crate) async fn project_server_draft(
         sqlx::query(
             "UPDATE local_drafts
              SET project_id = $2, server_version = $3, base_commit_id = $4,
-                 current_commit_id = $5, freshness = $6, reconciliation = $7,
-                 reconciliation_candidate_id = $8,
-                 resource_scope = $9, resource_kind = $10, target_id = $11, path = $12,
-                 status = $13, updated_at = $14
+                 current_commit_id = $5, freshness = $6,
+                 has_upstream_resource_changes = $7, reconciliation = $8,
+                 reconciliation_candidate_id = $9,
+                 resource_scope = $10, resource_kind = $11, target_id = $12, path = $13,
+                 status = $14, updated_at = $15
              WHERE draft_id = $1",
         )
         .bind(&local_draft_id)
@@ -1094,6 +1098,7 @@ pub(crate) async fn project_server_draft(
         .bind(&detail.draft.base_commit_id)
         .bind(&detail.draft.coordination.current_commit_id)
         .bind(detail.draft.coordination.freshness.as_str())
+        .bind(detail.draft.coordination.has_upstream_resource_changes)
         .bind(detail.draft.coordination.reconciliation.as_str())
         .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())
@@ -1109,11 +1114,12 @@ pub(crate) async fn project_server_draft(
         sqlx::query(
             "INSERT INTO local_drafts (
                 draft_id, project_id, server_draft_id, server_version, base_commit_id,
-                current_commit_id, freshness, reconciliation, reconciliation_candidate_id,
+                current_commit_id, freshness, has_upstream_resource_changes,
+                reconciliation, reconciliation_candidate_id,
                 resource_scope, resource_kind, target_id, path,
                 status, created_at, updated_at
              )
-             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+             VALUES ($1, $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(&detail.draft.draft_id)
         .bind(&detail.draft.project_id)
@@ -1121,6 +1127,7 @@ pub(crate) async fn project_server_draft(
         .bind(&detail.draft.base_commit_id)
         .bind(&detail.draft.coordination.current_commit_id)
         .bind(detail.draft.coordination.freshness.as_str())
+        .bind(detail.draft.coordination.has_upstream_resource_changes)
         .bind(detail.draft.coordination.reconciliation.as_str())
         .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())

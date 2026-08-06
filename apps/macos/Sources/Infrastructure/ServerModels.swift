@@ -194,9 +194,24 @@ struct CommitTree: Codable, Sendable {
     let entries: [CommitTreeEntry]
 }
 
+enum ServerTreeEntryKind: String, Codable, Hashable, Sendable {
+    case context
+    case rule
+    case workflow
+    case projectOrgSelection = "project_org_selection"
+
+    init(_ kind: DaemonResourceKind) {
+        switch kind {
+        case .context: self = .context
+        case .rule: self = .rule
+        case .workflow: self = .workflow
+        }
+    }
+}
+
 struct CommitTreeEntry: Codable, Sendable {
     let id: String
-    let type: DaemonResourceKind
+    let type: ServerTreeEntryKind
     let scope: String
     let projectId: String?
     let path: String?
@@ -280,6 +295,7 @@ struct ReviewDetail: Codable, Sendable {
 struct DraftCoordination: Codable, Hashable, Sendable {
     let freshness: DraftFreshness
     let currentCommitId: String?
+    let hasUpstreamResourceChanges: Bool
     let reconciliation: DraftReconciliationStatus
     let candidateId: String?
 }
@@ -316,6 +332,10 @@ struct DraftReconciliationCandidate: Codable, Identifiable, Hashable, Sendable {
     let valid: Bool
     let createdAt: String
     let invalidatedAt: String?
+
+    var hasDraftResultChanges: Bool {
+        draftState != (proposedState ?? draftState)
+    }
 }
 
 struct CreateDraftReconciliationCandidateRequest: Codable, Sendable {

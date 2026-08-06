@@ -2854,6 +2854,7 @@ async fn server_reconciliation_projection_keeps_lifecycle_separate_from_coordina
     assert_eq!(draft.base_commit_id.as_deref(), Some(COMMIT_A));
     assert_eq!(draft.current_commit_id.as_deref(), Some(COMMIT_B));
     assert_eq!(draft.freshness, daemon::DaemonDraftFreshness::Behind);
+    assert!(draft.has_upstream_resource_changes);
     assert_eq!(
         draft.reconciliation,
         daemon::DaemonDraftReconciliationStatus::Conflicts
@@ -4223,6 +4224,7 @@ async fn fake_get_draft(
             "coordination": {
                 "current_commit_id": create_request["base_commit_id"],
                 "freshness": "current",
+                "has_upstream_resource_changes": false,
                 "reconciliation": "unknown",
                 "candidate_id": null
             },
@@ -4279,6 +4281,7 @@ async fn fake_stale_draft(
             "coordination": {
                 "current_commit_id": null,
                 "freshness": "current",
+                "has_upstream_resource_changes": false,
                 "reconciliation": "unknown",
                 "candidate_id": null
             },
@@ -4431,6 +4434,7 @@ async fn fake_conflicted_draft(
                 "coordination": {
                     "current_commit_id": COMMIT_B,
                     "freshness": "current",
+                    "has_upstream_resource_changes": false,
                     "reconciliation": "unknown",
                     "candidate_id": null
                 },
@@ -4473,6 +4477,7 @@ async fn fake_conflicted_draft(
             "coordination": {
                 "current_commit_id": COMMIT_B,
                 "freshness": "behind",
+                "has_upstream_resource_changes": true,
                 "reconciliation": "conflicts",
                 "candidate_id": "rcn_conflict"
             },

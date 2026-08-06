@@ -324,6 +324,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-1",
             currentCommitId: "commit-1",
             freshness: .current,
+            hasUpstreamResourceChanges: false,
             reconciliation: .unknown,
             reconciliationCandidateId: nil,
             scope: .project,
@@ -391,6 +392,29 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(plan.terminalIds, ["draft-terminal"])
     }
 
+    func testDraftInventoryPlanRefreshesFileLevelUpstreamChangeState() {
+        let summary = inventorySummary(
+            id: "draft-behind",
+            hasUpstreamResourceChanges: true,
+            updatedAt: "2026-07-23T01:00:00Z"
+        )
+        let current = inventoryDraft(
+            from: inventorySummary(
+                id: "draft-behind",
+                hasUpstreamResourceChanges: false,
+                updatedAt: "2026-07-23T01:00:00Z"
+            )
+        )
+
+        let plan = WorkspaceStore.draftInventoryPlan(
+            summaries: [summary],
+            currentDrafts: [current],
+            includeFailed: false
+        )
+
+        XCTAssertEqual(plan.refreshIds, ["draft-behind"])
+    }
+
     func testBehindDraftProjectionPreservesCoordinationWithoutChangingTheBase() {
         let summary = DaemonDraftSummary(
             draftId: "draft-behind",
@@ -400,6 +424,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-base",
             currentCommitId: "commit-current",
             freshness: .behind,
+            hasUpstreamResourceChanges: true,
             reconciliation: .conflicts,
             reconciliationCandidateId: "candidate-1",
             scope: .project,
@@ -432,6 +457,7 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(draft.baseCommitId, "commit-base")
         XCTAssertEqual(draft.currentCommitId, "commit-current")
         XCTAssertEqual(draft.freshness, .behind)
+        XCTAssertTrue(draft.hasUpstreamResourceChanges)
         XCTAssertEqual(draft.reconciliation, .conflicts)
         XCTAssertEqual(draft.reconciliationCandidateId, "candidate-1")
         XCTAssertEqual(draft.document.body, "Draft body")
@@ -449,6 +475,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-base",
             currentCommitId: "commit-current",
             freshness: .behind,
+            hasUpstreamResourceChanges: true,
             reconciliation: .clean,
             reconciliationCandidateId: "candidate-1",
             scope: .project,
@@ -515,6 +542,18 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(candidate.baseCommitId, "commit-base")
         XCTAssertEqual(candidate.currentCommitId, "commit-current")
         XCTAssertEqual(candidate.proposedState?.content?.primaryText, "Merged")
+        XCTAssertTrue(candidate.hasDraftResultChanges)
+
+        let unchangedCandidate = try JSONCoding.decoder().decode(
+            DraftReconciliationCandidate.self,
+            from: Data(
+                json.replacingOccurrences(
+                    of: "\"content\":\"Merged\"",
+                    with: "\"content\":\"Draft\""
+                ).utf8
+            )
+        )
+        XCTAssertFalse(unchangedCandidate.hasDraftResultChanges)
 
         let request = CreateDraftRebaseRequest(
             candidateId: candidate.candidateId,
@@ -737,22 +776,146 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
-    func testReviewLineDiffIdentifiesInsertionsAndRemovals() {
-        let lines = ReviewLineDiff.make(base: "one\ntwo", proposed: "one\nthree")
+    func testReviewListMetadataMapsWithoutLoadingReviewDetail() {
+        let metadata = ReviewMetadata(
+            reviewId: "review-1",
+            projectId: "project-1",
+            draftId: "draft-1",
+            author: UserReference(
+                userId: "user-1",
+                email: "dylan@example.com",
+                displayName: "Dylan",
+                avatarUrl: nil,
+                role: "owner"
+            ),
+            title: "Split diff UI example",
+            description: "Review the proposed memory change.",
+            status: "open",
+            version: 1,
+            decisionBody: nil,
+            approvedResultHash: nil,
+            coordination: DraftCoordination(
+                freshness: .current,
+                currentCommitId: "commit-1",
+                hasUpstreamResourceChanges: false,
+                reconciliation: .unknown,
+                candidateId: nil
+            ),
+            createdAt: "2026-08-06T00:00:00Z",
+            updatedAt: "2026-08-06T00:00:00Z"
+        )
 
-        XCTAssertEqual(lines.map(\.kind), [.context, .removal, .insertion])
-        XCTAssertEqual(lines.map(\.text), ["one", "two", "three"])
-        XCTAssertEqual(lines.map(\.oldLineNumber), [1, 2, nil])
-        XCTAssertEqual(lines.map(\.newLineNumber), [1, nil, 2])
+        let review = WorkspaceLoader.mapReview(metadata)
+
+        XCTAssertEqual(review.id, "review-1")
+        XCTAssertEqual(review.title, "Split diff UI example")
+        XCTAssertEqual(review.freshness, .current)
+        XCTAssertEqual(review.currentCommitId, "commit-1")
     }
 
-    func testReviewLineDiffTreatsEmptyContentAsNoLines() {
-        XCTAssertTrue(ReviewLineDiff.make(base: "", proposed: "").isEmpty)
+    func testCommitPayloadDecodesInternalProjectSelectionTreeEntry() throws {
+        let json = """
+        {
+          "commit": {
+            "commit_id": "commit-1",
+            "scope": "project",
+            "org_id": "org-1",
+            "project_id": "project-1",
+            "tree_id": "tree-1",
+            "parent_commit_id": null,
+            "version": 1,
+            "created_at": "2026-07-16T11:42:58.008401Z"
+          },
+          "tree": {
+            "tree_id": "tree-1",
+            "entries": [{
+              "id": "project_org_selection:project-1",
+              "type": "project_org_selection",
+              "scope": "daemon",
+              "project_id": "project-1",
+              "path": null,
+              "blob_id": "blob-1",
+              "source": "config"
+            }]
+          },
+          "blobs": [{
+            "blob_id": "blob-1",
+            "content": "{\\"project_id\\":\\"project-1\\",\\"rules\\":[],\\"context\\":[],\\"workflows\\":[],\\"revision\\":0}"
+          }]
+        }
+        """
 
-        let lines = ReviewLineDiff.make(base: "", proposed: "created")
-        XCTAssertEqual(lines.map(\.kind), [.insertion])
-        XCTAssertEqual(lines.map(\.oldLineNumber), [nil])
-        XCTAssertEqual(lines.map(\.newLineNumber), [1])
+        let payload = try JSONCoding.decoder().decode(CommitPayload.self, from: Data(json.utf8))
+
+        XCTAssertEqual(payload.tree.entries.first?.type, .projectOrgSelection)
+    }
+
+    func testServerDecodeFailureIncludesRequestAndCodingPath() {
+        struct MissingValue: Decodable {
+            let value: String
+        }
+
+        do {
+            _ = try JSONCoding.decoder().decode(MissingValue.self, from: Data("{}".utf8))
+            XCTFail("Expected decoding to fail")
+        } catch {
+            let message = ServerClient.decodingFailureMessage(
+                error,
+                method: "GET",
+                path: "/api/v1/example",
+                responseType: MissingValue.self
+            )
+            XCTAssertTrue(message.contains("GET /api/v1/example"))
+            XCTAssertTrue(message.contains("MissingValue"))
+            XCTAssertTrue(message.contains("value"))
+        }
+    }
+
+    func testSplitDiffAlignsReplacementRows() {
+        let model = SplitDiffModel.make(original: "one\ntwo", modified: "one\nthree")
+
+        XCTAssertEqual(model.rows.count, 2)
+        XCTAssertEqual(model.rows[0].original?.kind, .context)
+        XCTAssertEqual(model.rows[0].modified?.kind, .context)
+        XCTAssertEqual(model.rows[1].original?.kind, .removal)
+        XCTAssertEqual(model.rows[1].modified?.kind, .insertion)
+        XCTAssertEqual(model.rows[1].original?.text, "two")
+        XCTAssertEqual(model.rows[1].modified?.text, "three")
+        XCTAssertEqual(model.rows[1].original?.lineNumber, 2)
+        XCTAssertEqual(model.rows[1].modified?.lineNumber, 2)
+    }
+
+    func testSplitDiffTreatsEmptyContentAsNoLines() {
+        let empty = SplitDiffModel.make(original: "", modified: "")
+        XCTAssertTrue(empty.rows.isEmpty)
+        XCTAssertTrue(empty.blocks.isEmpty)
+
+        let created = SplitDiffModel.make(original: "", modified: "created")
+        XCTAssertEqual(created.rows.count, 1)
+        XCTAssertNil(created.rows[0].original)
+        XCTAssertEqual(created.rows[0].modified?.kind, .insertion)
+        XCTAssertEqual(created.rows[0].modified?.lineNumber, 1)
+    }
+
+    func testSplitDiffCollapsesUnchangedLinesBetweenDistantHunks() {
+        let original = (1...20).map { "line \($0)" }.joined(separator: "\n")
+        var modifiedLines = (1...20).map { "line \($0)" }
+        modifiedLines[1] = "changed 2"
+        modifiedLines[18] = "changed 19"
+
+        let model = SplitDiffModel.make(
+            original: original,
+            modified: modifiedLines.joined(separator: "\n")
+        )
+
+        XCTAssertEqual(model.blocks.count, 3)
+        guard case .hunk = model.blocks[0].kind else {
+            return XCTFail("Expected the first diff block to be a hunk")
+        }
+        XCTAssertEqual(model.blocks[1].kind, .omission)
+        guard case .hunk = model.blocks[2].kind else {
+            return XCTFail("Expected the last diff block to be a hunk")
+        }
     }
 
     func testMarkdownPreviewAppliesToMarkdownContextAndStructuredMemory() {
@@ -937,6 +1100,7 @@ final class DaemonContractTests: XCTestCase {
     private func inventorySummary(
         id: String,
         status: DaemonLocalDraftStatus = .open,
+        hasUpstreamResourceChanges: Bool = false,
         updatedAt: String
     ) -> DaemonDraftSummary {
         .init(
@@ -947,6 +1111,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-1",
             currentCommitId: "commit-1",
             freshness: .current,
+            hasUpstreamResourceChanges: hasUpstreamResourceChanges,
             reconciliation: .unknown,
             reconciliationCandidateId: nil,
             scope: .project,
@@ -974,6 +1139,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: summary.baseCommitId,
             currentCommitId: summary.currentCommitId,
             freshness: summary.freshness,
+            hasUpstreamResourceChanges: summary.hasUpstreamResourceChanges,
             reconciliation: summary.reconciliation,
             reconciliationCandidateId: summary.reconciliationCandidateId,
             scope: .project,
@@ -1005,6 +1171,7 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-1",
             currentCommitId: "commit-1",
             freshness: .current,
+            hasUpstreamResourceChanges: false,
             reconciliation: .unknown,
             reconciliationCandidateId: nil,
             scope: .project,
@@ -1107,12 +1274,14 @@ final class DaemonContractTests: XCTestCase {
     private func coordination(
         freshness: DraftFreshness = .current,
         currentCommitId: String? = "commit-base",
+        hasUpstreamResourceChanges: Bool = false,
         reconciliation: DraftReconciliationStatus = .unknown,
         candidateId: String? = nil
     ) -> DraftCoordination {
         .init(
             freshness: freshness,
             currentCommitId: currentCommitId,
+            hasUpstreamResourceChanges: hasUpstreamResourceChanges,
             reconciliation: reconciliation,
             candidateId: candidateId
         )
@@ -1145,7 +1314,7 @@ final class DaemonContractTests: XCTestCase {
                 entries: [
                     .init(
                         id: resource.id ?? "context-1",
-                        type: resource.kind,
+                        type: ServerTreeEntryKind(resource.kind),
                         scope: resource.scope,
                         projectId: "project-1",
                         path: resource.path,

@@ -4,16 +4,29 @@ import Foundation
 enum DocumentSessionCommand: Equatable, Sendable {
     case requestReview(itemId: String, draft: LocalDraft)
     case discardDraft(itemId: String, draft: LocalDraft)
+    case reviewSharedChanges(itemId: String, draft: LocalDraft)
+    case applyReconciliation(itemId: String)
+    case closeReconciliation(itemId: String)
     case moveToTrash(itemId: String)
 
     var itemId: String {
         switch self {
         case .requestReview(let itemId, _),
              .discardDraft(let itemId, _),
+             .reviewSharedChanges(let itemId, _),
+             .applyReconciliation(let itemId),
+             .closeReconciliation(let itemId),
              .moveToTrash(let itemId):
             itemId
         }
     }
+}
+
+struct DocumentReconciliationToolbarState: Equatable, Sendable {
+    let itemId: String
+    let isLoading: Bool
+    let canUpdate: Bool
+    let isUpdating: Bool
 }
 
 enum ApplicationPhase: Equatable, Sendable {
@@ -164,6 +177,8 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var navigationBackStack: [String] = []
     @Published private(set) var navigationForwardStack: [String] = []
     @Published var pendingDocumentCommand: DocumentSessionCommand?
+    @Published var pendingReviewReconciliationId: String?
+    @Published var documentReconciliationToolbarState: DocumentReconciliationToolbarState?
     @Published private(set) var loadingResourceIds: Set<String> = []
     @Published private(set) var loadingProjectId: String?
     @Published private(set) var isPreparingWorkspaceIndex = false
@@ -1610,6 +1625,7 @@ final class WorkspaceStore: ObservableObject {
                 || current.baseCommitId != summary.baseCommitId
                 || current.currentCommitId != summary.currentCommitId
                 || current.freshness != summary.freshness
+                || current.hasUpstreamResourceChanges != summary.hasUpstreamResourceChanges
                 || current.reconciliation != summary.reconciliation
                 || current.reconciliationCandidateId != summary.reconciliationCandidateId
                 || current.scope != (summary.scope == .org ? .org : .project)
@@ -2190,12 +2206,7 @@ struct WorkspaceLoader: Sendable {
 
     private func loadReviews() async throws -> [ReviewRecord] {
         let items: [ReviewMetadata] = try await loadAll("/api/v1/reviews")
-        let details = try await concurrentMap(items) { metadata in
-            let detail: ReviewDetail = try await server.get("/api/v1/reviews/\(metadata.reviewId)")
-            return detail
-        }
-        return details
-            .map(Self.mapReview)
+        return items.map(Self.mapReview)
     }
 
     private func loadAll<Item: Decodable & Sendable>(_ path: String) async throws -> [Item] {
@@ -2212,7 +2223,10 @@ struct WorkspaceLoader: Sendable {
     }
 
     static func mapReview(_ detail: ReviewDetail) -> ReviewRecord {
-        let metadata = detail.review
+        mapReview(detail.review)
+    }
+
+    static func mapReview(_ metadata: ReviewMetadata) -> ReviewRecord {
         return .init(
             id: metadata.reviewId,
             projectId: metadata.projectId,
@@ -2228,9 +2242,7 @@ struct WorkspaceLoader: Sendable {
             reconciliation: metadata.coordination.reconciliation,
             reconciliationCandidateId: metadata.coordination.candidateId,
             currentCommitId: metadata.coordination.currentCommitId,
-            updatedAt: metadata.updatedAt,
-            operationCount: detail.operations.count,
-            commentCount: detail.comments.count
+            updatedAt: metadata.updatedAt
         )
     }
 
@@ -2283,8 +2295,9 @@ struct WorkspaceLoader: Sendable {
     ) throws -> String? {
         guard let payload else { return nil }
         let entry = payload.tree.entries.first { candidate in
+            guard candidate.type == ServerTreeEntryKind(resource.kind) else { return false }
             if let resourceId = resource.id { return candidate.id == resourceId }
-            return candidate.path == resource.path && candidate.type == resource.kind
+            return candidate.path == resource.path
         }
         guard let entry,
               let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }) else { return nil }
@@ -2328,6 +2341,7 @@ struct WorkspaceLoader: Sendable {
             baseCommitId: summary.baseCommitId,
             currentCommitId: summary.currentCommitId,
             freshness: summary.freshness,
+            hasUpstreamResourceChanges: summary.hasUpstreamResourceChanges,
             reconciliation: summary.reconciliation,
             reconciliationCandidateId: summary.reconciliationCandidateId,
             scope: summary.scope == .org ? .org : .project,

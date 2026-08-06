@@ -506,6 +506,7 @@ pub enum DraftReconciliationStatus {
 pub struct DraftCoordination {
     pub freshness: DraftFreshness,
     pub current_commit_id: Option<String>,
+    pub has_upstream_resource_changes: bool,
     pub reconciliation: DraftReconciliationStatus,
     pub candidate_id: Option<String>,
 }

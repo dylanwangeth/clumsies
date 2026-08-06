@@ -1243,6 +1243,7 @@ components:
         - base_commit_id
         - current_commit_id
         - freshness
+        - has_upstream_resource_changes
         - reconciliation
         - reconciliation_candidate_id
         - scope
@@ -1269,6 +1270,9 @@ components:
           type: [string, "null"]
         freshness:
           $ref: "#/components/schemas/DaemonDraftFreshness"
+        has_upstream_resource_changes:
+          type: boolean
+          description: Whether the Draft resource changed between its Base Commit and current target Ref.
         reconciliation:
           $ref: "#/components/schemas/DaemonDraftReconciliationStatus"
         reconciliation_candidate_id:

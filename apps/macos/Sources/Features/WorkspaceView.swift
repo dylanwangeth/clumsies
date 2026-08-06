@@ -101,6 +101,12 @@ struct WorkspaceView: View {
             && !store.showsProjectSettings
     }
 
+    private var documentReconciliationState: DocumentReconciliationToolbarState? {
+        guard let state = store.documentReconciliationToolbarState,
+              state.itemId == store.currentItem?.id else { return nil }
+        return state
+    }
+
     var body: some View {
         NavigationSplitView(columnVisibility: $splitVisibility) {
                 GlobalSidebar(
@@ -125,20 +131,28 @@ struct WorkspaceView: View {
                     if showsDocumentTabs {
                         ToolbarItemGroup {
                             Button {
-                                store.goBack()
+                                if let state = documentReconciliationState {
+                                    store.pendingDocumentCommand = .closeReconciliation(
+                                        itemId: state.itemId
+                                    )
+                                } else {
+                                    store.goBack()
+                                }
                             } label: {
                                 Image(systemName: "chevron.left")
                             }
-                            .disabled(!store.canGoBack)
-                            .help("Go Back")
-                            .accessibilityLabel("Go Back")
+                            .disabled(documentReconciliationState == nil && !store.canGoBack)
+                            .help(documentReconciliationState == nil ? "Go Back" : "Back to Document")
+                            .accessibilityLabel(
+                                documentReconciliationState == nil ? "Go Back" : "Back to Document"
+                            )
 
                             Button {
                                 store.goForward()
                             } label: {
                                 Image(systemName: "chevron.right")
                             }
-                            .disabled(!store.canGoForward)
+                            .disabled(documentReconciliationState != nil || !store.canGoForward)
                             .help("Go Forward")
                             .accessibilityLabel("Go Forward")
                         }
@@ -229,6 +243,29 @@ struct WorkspaceView: View {
                         }
 
                         if showsDocumentTabs, let item = store.currentItem {
+                            if let state = documentReconciliationState {
+                                if state.isLoading || state.isUpdating {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .frame(width: 24, height: 24)
+                                        .help(state.isLoading ? "Reviewing changes" : "Updating draft")
+                                        .accessibilityLabel(
+                                            state.isLoading ? "Reviewing changes" : "Updating draft"
+                                        )
+                                } else {
+                                    Button {
+                                        store.pendingDocumentCommand = .applyReconciliation(
+                                            itemId: state.itemId
+                                        )
+                                    } label: {
+                                        Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                                    }
+                                    .disabled(!state.canUpdate)
+                                    .help("Update Draft")
+                                    .accessibilityLabel("Update Draft")
+                                }
+                            }
+
                             if item.supportsMarkdownPreview {
                                 let mode = store.currentTabMode ?? .source
                                 Button {
@@ -705,6 +742,13 @@ private struct GlobalSidebar: View {
                             if store.loadingProjectId == project.id {
                                 ProgressView()
                                     .controlSize(.mini)
+                            } else if store.drafts.contains(where: {
+                                $0.projectId == project.id
+                                    && $0.status != .discarded
+                                    && $0.status != .merged
+                                    && $0.freshness == .behind
+                            }) {
+                                DraftBaseBehindIndicator()
                             }
                         }
                         .padding(.leading, 24)

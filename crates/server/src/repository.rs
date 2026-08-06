@@ -3713,6 +3713,16 @@ async fn load_draft_detail(
 
     let daemon_installation_id: String = row.try_get("daemon_installation_id")?;
     let resource_scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
+    let resource = DraftResourceRef {
+        scope: resource_scope,
+        kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
+        id: row.try_get("target_id")?,
+        path: row.try_get("path")?,
+    };
+    let operations = load_draft_operations(tx, draft_id).await?;
+    let allow_path_lookup = operations
+        .first()
+        .is_none_or(|operation| operation.input.action != DraftOperationAction::Create);
     let coordination = load_draft_coordination(
         tx,
         draft_id,
@@ -3720,6 +3730,8 @@ async fn load_draft_detail(
         resource_scope,
         row.try_get("base_commit_id")?,
         row.try_get("version")?,
+        &resource,
+        allow_path_lookup,
     )
     .await?;
     let draft = Draft {
@@ -3729,20 +3741,13 @@ async fn load_draft_detail(
         author: user_ref_from_row(&row)?,
         title: row.try_get("title")?,
         description: row.try_get("description")?,
-        resource: DraftResourceRef {
-            scope: resource_scope,
-            kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
-            id: row.try_get("target_id")?,
-            path: row.try_get("path")?,
-        },
+        resource,
         status: draft_status(row.try_get::<String, _>("status")?.as_str())?,
         coordination,
         version: row.try_get("version")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     };
-    let operations = load_draft_operations(tx, draft_id).await?;
-
     Ok(DraftDetail {
         draft,
         operations,
@@ -3765,6 +3770,8 @@ async fn load_draft_coordination(
     scope: ResourceScope,
     base_commit_id: Option<String>,
     draft_version: i64,
+    resource: &DraftResourceRef,
+    allow_path_lookup: bool,
 ) -> Result<DraftCoordination, ServerError> {
     let current_commit_id = match scope {
         ResourceScope::Org => {
@@ -3777,6 +3784,21 @@ async fn load_draft_coordination(
         DraftFreshness::Current
     } else {
         DraftFreshness::Behind
+    };
+    let has_upstream_resource_changes = if freshness == DraftFreshness::Behind {
+        let base_state =
+            resource_state_at_commit(tx, base_commit_id.as_deref(), resource, allow_path_lookup)
+                .await?;
+        let current_state = resource_state_at_commit(
+            tx,
+            current_commit_id.as_deref(),
+            resource,
+            allow_path_lookup,
+        )
+        .await?;
+        base_state != current_state
+    } else {
+        false
     };
     let candidate = if freshness == DraftFreshness::Behind {
         sqlx::query(
@@ -3819,6 +3841,7 @@ async fn load_draft_coordination(
     Ok(DraftCoordination {
         freshness,
         current_commit_id,
+        has_upstream_resource_changes,
         reconciliation,
         candidate_id,
     })

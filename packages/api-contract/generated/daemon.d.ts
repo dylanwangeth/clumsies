@@ -495,6 +495,8 @@ export interface components {
             base_commit_id: string | null;
             current_commit_id: string | null;
             freshness: components["schemas"]["DaemonDraftFreshness"];
+            /** @description Whether the Draft resource changed between its Base Commit and current target Ref. */
+            has_upstream_resource_changes: boolean;
             reconciliation: components["schemas"]["DaemonDraftReconciliationStatus"];
             reconciliation_candidate_id: string | null;
             scope: components["schemas"]["DaemonDraftScope"];

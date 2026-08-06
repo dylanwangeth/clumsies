@@ -76,6 +76,55 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(selected.map(\.id), ["b"])
     }
 
+    func testCurrentDraftDoesNotShowSharedUpdateAccessory() {
+        XCTAssertNil(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: .current,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .unknown
+            )
+        )
+    }
+
+    func testBehindDraftShowsSharedUpdateAccessory() throws {
+        let presentation = try XCTUnwrap(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: .behind,
+                hasUpstreamResourceChanges: true,
+                reconciliation: .clean
+            )
+        )
+
+        XCTAssertEqual(
+            presentation.symbolName,
+            "arrow.trianglehead.2.clockwise.rotate.90"
+        )
+        XCTAssertEqual(presentation.help, "The shared version of this file has changed")
+    }
+
+    func testBehindDraftWithoutResourceChangesDoesNotShowFileAccessory() {
+        XCTAssertNil(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: .behind,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .clean
+            )
+        )
+    }
+
+    func testConflictedBehindDraftShowsConflictAccessory() throws {
+        let presentation = try XCTUnwrap(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: .behind,
+                hasUpstreamResourceChanges: true,
+                reconciliation: .conflicts
+            )
+        )
+
+        XCTAssertEqual(presentation.symbolName, "exclamationmark.triangle")
+        XCTAssertEqual(presentation.help, "Shared update has conflicts")
+    }
+
     private func memoryItem(id: String, path: String) -> MemoryListItem {
         .init(
             id: id,

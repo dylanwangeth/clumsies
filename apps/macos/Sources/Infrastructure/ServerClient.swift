@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum ServerClientError: LocalizedError, Sendable {
     case invalidPath
@@ -21,6 +22,11 @@ enum ServerClientError: LocalizedError, Sendable {
 }
 
 struct ServerClient: Sendable {
+    private static let logger = Logger(
+        subsystem: ClumsiesIdentifiers.namespace,
+        category: "ServerClient"
+    )
+
     let daemon: DaemonXPCClient
     private let dataSourceTracker = ServerDataSourceTracker()
     private let requestLimiter = ServerRequestLimiter(limit: 12)
@@ -45,7 +51,8 @@ struct ServerClient: Sendable {
         headers: [String: String] = [:]
     ) async throws -> (value: Response, response: DaemonServerResponse) {
         let response = try await raw(method: "GET", path: path, query: query, headers: headers)
-        let value: Response = try decode(response)
+        let requestPath = (try? buildPath(path, query: query)) ?? path
+        let value: Response = try decode(response, method: "GET", path: requestPath)
         return (value, response)
     }
 
@@ -99,10 +106,15 @@ struct ServerClient: Sendable {
         body: String?
     ) async throws -> Response {
         let response = try await raw(method: method, path: path, query: query, headers: headers, body: body)
-        return try decode(response)
+        let requestPath = (try? buildPath(path, query: query)) ?? path
+        return try decode(response, method: method, path: requestPath)
     }
 
-    private func decode<Response: Decodable & Sendable>(_ response: DaemonServerResponse) throws -> Response {
+    private func decode<Response: Decodable & Sendable>(
+        _ response: DaemonServerResponse,
+        method: String,
+        path: String
+    ) throws -> Response {
         guard (200..<300).contains(response.status) else {
             let message = Self.errorMessage(from: response.body)
             throw ServerClientError.response(status: response.status, message: message)
@@ -113,8 +125,49 @@ struct ServerClient: Sendable {
         do {
             return try JSONCoding.decoder().decode(Response.self, from: data)
         } catch {
-            throw ServerClientError.invalidResponse(error.localizedDescription)
+            let message = Self.decodingFailureMessage(
+                error,
+                method: method,
+                path: path,
+                responseType: Response.self
+            )
+            Self.logger.error("\(message, privacy: .public)")
+            throw ServerClientError.invalidResponse(message)
         }
+    }
+
+    static func decodingFailureMessage(
+        _ error: Error,
+        method: String,
+        path: String,
+        responseType: Any.Type
+    ) -> String {
+        let detail: String
+        switch error {
+        case DecodingError.dataCorrupted(let context):
+            detail = decodingDetail(context.debugDescription, path: context.codingPath)
+        case DecodingError.keyNotFound(let key, let context):
+            detail = decodingDetail("Missing key '\(key.stringValue)'.", path: context.codingPath + [key])
+        case DecodingError.typeMismatch(let type, let context):
+            detail = decodingDetail("Expected \(type). \(context.debugDescription)", path: context.codingPath)
+        case DecodingError.valueNotFound(let type, let context):
+            detail = decodingDetail("Missing \(type) value. \(context.debugDescription)", path: context.codingPath)
+        default:
+            detail = error.localizedDescription
+        }
+        return "\(method) \(path) could not decode \(responseType): \(detail)"
+    }
+
+    private static func decodingDetail(_ description: String, path: [CodingKey]) -> String {
+        let field = path.reduce(into: "") { result, key in
+            if let index = key.intValue {
+                result += "[\(index)]"
+            } else {
+                if !result.isEmpty { result += "." }
+                result += key.stringValue
+            }
+        }
+        return field.isEmpty ? description : "\(field): \(description)"
     }
 
     private func buildPath(_ path: String, query: [URLQueryItem]) throws -> String {

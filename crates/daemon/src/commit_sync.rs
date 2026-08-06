@@ -1090,6 +1090,7 @@ async fn upsert_ref(
             .bind(&reference.commit_id)
             .execute(&mut **tx)
             .await?;
+            refresh_upstream_resource_changes(tx, "project", project_id).await?;
         }
         ServerCommitScope::Org => {
             sqlx::query(
@@ -1108,9 +1109,122 @@ async fn upsert_ref(
             .bind(&reference.commit_id)
             .execute(&mut **tx)
             .await?;
+            refresh_upstream_resource_changes(tx, "org", &reference.org_id).await?;
         }
     }
     Ok(())
+}
+
+async fn refresh_upstream_resource_changes(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    scope: &str,
+    owner_id: &str,
+) -> Result<(), DaemonError> {
+    let rows = match scope {
+        "project" => {
+            sqlx::query(
+                "SELECT draft_id, base_commit_id, current_commit_id, target_id, resource_kind
+                 FROM local_drafts
+                 WHERE resource_scope = 'project' AND project_id = $1",
+            )
+            .bind(owner_id)
+            .fetch_all(&mut **tx)
+            .await?
+        }
+        "org" => {
+            sqlx::query(
+                "SELECT d.draft_id, d.base_commit_id, d.current_commit_id, d.target_id,
+                        d.resource_kind
+                 FROM local_drafts d
+                 WHERE d.resource_scope = 'org'
+                   AND d.project_id IN (
+                       SELECT project_id FROM cached_refs
+                       WHERE scope = 'project' AND org_id = $1 AND project_id IS NOT NULL
+                   )",
+            )
+            .bind(owner_id)
+            .fetch_all(&mut **tx)
+            .await?
+        }
+        _ => {
+            return Err(DaemonError::Server(format!(
+                "cannot refresh Draft resource changes for unknown scope {scope}"
+            )));
+        }
+    };
+
+    for row in rows {
+        let draft_id: String = row.try_get("draft_id")?;
+        let base_commit_id: Option<String> = row.try_get("base_commit_id")?;
+        let current_commit_id: Option<String> = row.try_get("current_commit_id")?;
+        let target_id: Option<String> = row.try_get("target_id")?;
+        let resource_kind: String = row.try_get("resource_kind")?;
+        let changed = if base_commit_id == current_commit_id {
+            false
+        } else if let Some(target_id) = target_id.as_deref() {
+            cached_resource_entry(tx, base_commit_id.as_deref(), target_id, &resource_kind).await?
+                != cached_resource_entry(
+                    tx,
+                    current_commit_id.as_deref(),
+                    target_id,
+                    &resource_kind,
+                )
+                .await?
+        } else {
+            false
+        };
+        sqlx::query(
+            "UPDATE local_drafts
+             SET has_upstream_resource_changes = $2
+             WHERE draft_id = $1",
+        )
+        .bind(draft_id)
+        .bind(changed)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn cached_resource_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    commit_id: Option<&str>,
+    target_id: &str,
+    resource_kind: &str,
+) -> Result<Option<(Option<String>, String)>, DaemonError> {
+    let Some(commit_id) = commit_id else {
+        return Ok(None);
+    };
+    let tree_json: String = sqlx::query_scalar(
+        "SELECT t.payload_json
+         FROM cached_commits c
+         JOIN cached_trees t ON t.tree_id = c.tree_id
+         WHERE c.commit_id = $1",
+    )
+    .bind(commit_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| {
+        DaemonError::Server(format!(
+            "cached Commit {commit_id} is unavailable while refreshing Draft state"
+        ))
+    })?;
+    let tree: ServerTree = serde_json::from_str(&tree_json)?;
+    let expected_kind = match resource_kind {
+        "context" => ServerTreeEntryKind::Context,
+        "rule" => ServerTreeEntryKind::Rule,
+        "workflow" => ServerTreeEntryKind::Workflow,
+        _ => {
+            return Err(DaemonError::Server(format!(
+                "unknown Draft resource kind {resource_kind}"
+            )));
+        }
+    };
+    Ok(tree
+        .entries
+        .into_iter()
+        .find(|entry| entry.id == target_id && entry.kind == expected_kind)
+        .map(|entry| (entry.path, entry.blob_id)))
 }
 
 async fn load_ref_commit(pool: &SqlitePool, key: &str) -> Result<Option<String>, DaemonError> {

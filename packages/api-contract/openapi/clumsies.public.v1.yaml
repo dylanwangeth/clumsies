@@ -1654,12 +1654,15 @@ components:
           type: [string, "null"]
     DraftCoordination:
       type: object
-      required: [freshness, current_commit_id, reconciliation, candidate_id]
+      required: [freshness, current_commit_id, has_upstream_resource_changes, reconciliation, candidate_id]
       properties:
         freshness:
           $ref: "#/components/schemas/DraftFreshness"
         current_commit_id:
           type: [string, "null"]
+        has_upstream_resource_changes:
+          type: boolean
+          description: Whether the Draft resource changed between its Base Commit and the current target Ref.
         reconciliation:
           $ref: "#/components/schemas/DraftReconciliationStatus"
         candidate_id:

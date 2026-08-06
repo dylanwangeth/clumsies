@@ -378,6 +378,7 @@ pub struct DaemonDraftSummary {
     pub base_commit_id: Option<String>,
     pub current_commit_id: Option<String>,
     pub freshness: DaemonDraftFreshness,
+    pub has_upstream_resource_changes: bool,
     pub reconciliation: DaemonDraftReconciliationStatus,
     pub reconciliation_candidate_id: Option<String>,
     pub scope: DaemonDraftScope,
@@ -993,6 +994,7 @@ pub(crate) struct ServerDraftProjectionDetail {
 pub(crate) struct ServerDraftCoordination {
     pub(crate) current_commit_id: Option<String>,
     pub(crate) freshness: DaemonDraftFreshness,
+    pub(crate) has_upstream_resource_changes: bool,
     pub(crate) reconciliation: DaemonDraftReconciliationStatus,
     pub(crate) candidate_id: Option<String>,
 }

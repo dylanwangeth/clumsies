@@ -987,6 +987,8 @@ export interface components {
         DraftCoordination: {
             freshness: components["schemas"]["DraftFreshness"];
             current_commit_id: string | null;
+            /** @description Whether the Draft resource changed between its Base Commit and the current target Ref. */
+            has_upstream_resource_changes: boolean;
             reconciliation: components["schemas"]["DraftReconciliationStatus"];
             candidate_id: string | null;
         };

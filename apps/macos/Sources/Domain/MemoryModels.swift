@@ -117,6 +117,7 @@ struct LocalDraft: Identifiable, Hashable, Sendable {
     let baseCommitId: String?
     let currentCommitId: String?
     let freshness: DraftFreshness
+    let hasUpstreamResourceChanges: Bool
     let reconciliation: DraftReconciliationStatus
     let reconciliationCandidateId: String?
     let scope: MemoryScope
@@ -179,8 +180,6 @@ struct ReviewRecord: Identifiable, Hashable, Sendable {
     let reconciliationCandidateId: String?
     let currentCommitId: String?
     let updatedAt: String
-    let operationCount: Int
-    let commentCount: Int
 }
 
 struct ReviewChangeSources: Sendable {

@@ -16,18 +16,32 @@ struct ReviewNavigator: View {
     var body: some View {
         List(selection: $store.selectedReviewId) {
             ForEach(filteredReviews) { review in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(review.title)
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
-                        Text(review.status.capitalized)
-                        Text("·")
-                        Text(review.author.displayName ?? review.author.email)
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(review.title)
+                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(review.status.capitalized)
+                            Text("·")
+                            Text(review.author.displayName ?? review.author.email)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    if review.freshness == .behind {
+                        DraftBaseBehindIndicator(reconciliation: review.reconciliation)
+                    }
                 }
                 .tag(review.id)
+                .contextMenu {
+                    if review.freshness == .behind {
+                        Button("Review Changes") {
+                            store.selectedReviewId = review.id
+                            store.pendingReviewReconciliationId = review.id
+                        }
+                    }
+                }
             }
         }
         .listStyle(.inset)
@@ -64,14 +78,12 @@ private struct ReviewEditor: View {
     @State private var reconciliationCandidate: DraftReconciliationCandidate?
     @State private var loadsReconciliation = false
     @State private var reconciliationPurpose = ReviewReconciliationPurpose.updateDraft
-    @State private var reconciliationInitialComparison = DraftReconciliationComparison.shared
 
     var body: some View {
         Group {
             if let candidate = reconciliationCandidate {
                 DraftReconciliationView(
                     candidate: candidate,
-                    initialComparison: reconciliationInitialComparison,
                     onCancel: { reconciliationCandidate = nil }
                 ) { resolvedState in
                     guard let detail else {
@@ -116,51 +128,27 @@ private struct ReviewEditor: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        if review.freshness == .behind, let detail {
-                            HStack(spacing: 10) {
-                                Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
-                                    .foregroundStyle(.orange)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text("Shared memory has changed")
-                                        .font(.callout.weight(.medium))
-                                    Text("This review is based on an older shared version.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("Review") {
-                                    loadReconciliation(detail, comparison: .shared)
-                                }
-                                if store.isReviewAuthor(review) {
-                                    Button("Update…") {
-                                        loadReconciliation(detail, comparison: .result)
-                                    }
-                                        .buttonStyle(.borderedProminent)
-                                }
-                                if loadsReconciliation {
-                                    ProgressView().controlSize(.small)
-                                }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Changes")
+                                .font(.headline)
+                            ForEach(changeSources?.operationLabels ?? [], id: \.self) { label in
+                                Text(label)
+                                    .foregroundStyle(.secondary)
                             }
-                            .padding(10)
-                            .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                        }
-
-                        GroupBox("Changes") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(changeSources?.operationLabels ?? [], id: \.self) { label in
-                                    Text(label)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let proposed = changeSources?.draftContent {
-                                    ReviewDiffView(base: changeSources?.baseContent ?? "", proposed: proposed)
-                                } else if changeSources?.operationLabels.isEmpty != false {
-                                    Text("No content change")
-                                        .foregroundStyle(.secondary)
-                                }
+                            if let proposed = changeSources?.draftContent {
+                                SplitDiffView(
+                                    original: changeSources?.baseContent ?? "",
+                                    modified: proposed,
+                                    originalTitle: "Base",
+                                    modifiedTitle: "Proposed"
+                                )
+                                .frame(minHeight: 260)
+                            } else if changeSources?.operationLabels.isEmpty != false {
+                                Text("No content change")
+                                    .foregroundStyle(.secondary)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                         if let detail {
                             GroupBox("Discussion") {
@@ -209,7 +197,13 @@ private struct ReviewEditor: View {
                 }
             }
         }
-        .task { await load() }
+        .onChange(of: store.pendingReviewReconciliationId) { _, reviewId in
+            handlePendingReconciliation(reviewId)
+        }
+        .task {
+            await load()
+            handlePendingReconciliation(store.pendingReviewReconciliationId)
+        }
     }
 
     private func load() async {
@@ -261,7 +255,7 @@ private struct ReviewEditor: View {
 
     private func resubmit(_ detail: ReviewDetail) {
         if detail.draft.coordination.freshness == .behind {
-            loadReconciliation(detail, purpose: .resubmit, comparison: .result)
+            loadReconciliation(detail, purpose: .resubmit)
             return
         }
         Task {
@@ -275,13 +269,11 @@ private struct ReviewEditor: View {
 
     private func loadReconciliation(
         _ detail: ReviewDetail,
-        purpose: ReviewReconciliationPurpose = .updateDraft,
-        comparison: DraftReconciliationComparison = .shared
+        purpose: ReviewReconciliationPurpose = .updateDraft
     ) {
         guard !loadsReconciliation else { return }
         loadsReconciliation = true
         reconciliationPurpose = purpose
-        reconciliationInitialComparison = comparison
         Task {
             defer { loadsReconciliation = false }
             do {
@@ -290,5 +282,11 @@ private struct ReviewEditor: View {
                 store.errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func handlePendingReconciliation(_ reviewId: String?) {
+        guard reviewId == review.id, let detail else { return }
+        store.pendingReviewReconciliationId = nil
+        loadReconciliation(detail)
     }
 }

@@ -71,6 +71,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_19_to_20(pool).await?;
         existing_schema_version = 20;
     }
+    if existing_schema_version == 20 {
+        migrate_local_schema_20_to_21(pool).await?;
+        existing_schema_version = 21;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -91,6 +95,7 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
             base_commit_id TEXT,
             current_commit_id TEXT,
             freshness TEXT NOT NULL CHECK (freshness IN ('current', 'behind')) DEFAULT 'current',
+            has_upstream_resource_changes INTEGER NOT NULL CHECK (has_upstream_resource_changes IN (0, 1)) DEFAULT 0,
             reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
             reconciliation_candidate_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
@@ -359,6 +364,28 @@ pub(crate) async fn migrate_local_schema_18_to_19(pool: &SqlitePool) -> Result<(
 
 pub(crate) async fn migrate_local_schema_19_to_20(pool: &SqlitePool) -> Result<(), DaemonError> {
     agent_adapter::migrate(pool).await
+}
+
+pub(crate) async fn migrate_local_schema_20_to_21(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let local_drafts_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'local_drafts'
+         )",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !local_drafts_exists {
+        return Ok(());
+    }
+    sqlx::query(
+        "ALTER TABLE local_drafts
+         ADD COLUMN has_upstream_resource_changes INTEGER NOT NULL
+         CHECK (has_upstream_resource_changes IN (0, 1)) DEFAULT 0",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {

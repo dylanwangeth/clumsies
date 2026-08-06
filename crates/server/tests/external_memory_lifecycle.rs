@@ -1421,6 +1421,12 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         behind_before_submission.draft.coordination.freshness,
         DraftFreshness::Behind
     );
+    assert!(
+        !behind_before_submission
+            .draft
+            .coordination
+            .has_upstream_resource_changes
+    );
     assert_eq!(behind_before_submission.operations, edited.operations);
 
     let stale_review_submission = post_response_with_etag(
@@ -2293,6 +2299,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
         Some(base_commit_id.as_str())
     );
     assert_eq!(renamed.draft.coordination.freshness, DraftFreshness::Behind);
+    assert!(renamed.draft.coordination.has_upstream_resource_changes);
     let invalidated = repo
         .get_draft_reconciliation_candidate(&rename.draft.draft_id, &rename_candidate.candidate_id)
         .await

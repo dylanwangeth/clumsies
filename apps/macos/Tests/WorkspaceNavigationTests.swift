@@ -78,6 +78,17 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+    func testReconciliationToolbarCommandsRemainBoundToDocument() {
+        XCTAssertEqual(
+            DocumentSessionCommand.applyReconciliation(itemId: "document").itemId,
+            "document"
+        )
+        XCTAssertEqual(
+            DocumentSessionCommand.closeReconciliation(itemId: "document").itemId,
+            "document"
+        )
+    }
+
     private func tab(
         itemId: String,
         section: WorkspaceSection = .hub,
