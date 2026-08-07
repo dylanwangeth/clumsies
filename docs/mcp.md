@@ -1,16 +1,17 @@
 # MCP
 
-Clumsies exposes three agent-facing memory tools:
+Clumsies exposes four agent-facing tools:
 
 | Tool | Purpose |
 |---|---|
 | `activate` | Retrieve ranked, directly usable memory fragments for the current task. |
 | `load` | Read complete resources by a known stable ID or exact path. |
-| `store` | Persist an explicit user-requested Context, Rule, or Workflow Draft. |
+| `store` | Persist an explicitly requested Context, Rule, or Workflow Draft. |
+| `issue` | Create, update, list, or semantically transition native Issues. |
 
 The Zig MCP server is a protocol adapter. Effective Memory construction,
-indexing, retrieval, exact loading, and Draft persistence belong to the Rust
-daemon and are reached over local XPC.
+indexing, retrieval, exact loading, Draft persistence, and AgentRun projection
+belong to the Rust daemon and are reached over local XPC.
 
 There is no setup call. The removed `retrieve` tool, host-session binding,
 `META_PROMPT.md` bootstrap, and MCP attestation path have no compatibility
@@ -106,8 +107,8 @@ Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 ## Store
 
 Call `store` only when the user explicitly asks to create, update, rename,
-delete, or discard managed memory. Ordinary task execution, summarization, and
-the agent's judgment that something may be useful are not write authorization.
+delete, or discard managed memory. Issues are native objects managed by
+`issue`; do not model them as Context documents.
 
 Top-level input:
 
@@ -185,6 +186,72 @@ and sync status. It means the operation is durably stored locally and queued
 for automatic synchronization. It does not mean a Review was merged or an
 authority Ref moved.
 
+## Issue
+
+`issue` manages durable native Issues and connects them to installation-local
+AgentRun observations without deriving semantic state from execution telemetry. An
+AgentRun records one root turn or subagent execution; its Stop does not advance
+an Issue.
+
+The input contains exactly one tagged operation under `op`:
+
+| Operation | Fields | Result |
+|---|---|---|
+| `list` | none | The bound Project's native Issue board and recent unlinked runs. |
+| `get` | global `issue_id` | The complete Issue, acceptance criteria, external references, state, revision, and owning `project_id`. |
+| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references` | A new Todo Issue with an atomically allocated key. |
+| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references` | Updated Issue content without a status transition. |
+| `start` | `run_id`, `issue_key`, `expected_revision` | In Progress state plus the linked AgentRun. |
+| `request_closure` | `run_id`, `expected_revision`; optional `summary` | Closure Requested state plus the linked AgentRun. |
+
+`issue_id` uses `issue_` followed by 32 lowercase hexadecimal characters and is
+globally unique. This is the value copied from Kanban and passed to `get`.
+`issue_key` uses the exact `ISSUE-NNN` form and is only Project-local: exactly three
+digits, with `ISSUE-000` reserved as invalid. Repeating the same start is
+idempotent; changing an existing run association to another Issue is a
+conflict. `expected_revision` is the exact positive run revision injected by
+the lifecycle hook.
+
+`external_references` is a bounded array of objects with `kind` (`issue` or
+`pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
+empty list; omitting it on update preserves the current list; passing `[]`
+clears it. `list` and `get` return the normalized list.
+
+On a successful root or subagent start, the lifecycle hook adds a short context
+message containing that agent's current `run_id` and revision. Use those exact
+values after deciding semantically whether the prompt continues an Issue,
+creates a new native Issue, or should not create one. Use `create` for durable
+work and `start` only when it is the active line of work. Before finishing, a root
+Agent uses `request_closure` only after judging the linked Issue acceptance
+criteria satisfied. Subagents cannot request closure. Do not choose a current
+run from `list` by recency: concurrent runs make that inference ambiguous.
+
+The optional closure summary is limited to 1,000 UTF-8 bytes. Closure Requested
+is an Agent proposal. Agents cannot approve it; only the user's desktop Approve
+gate makes the Issue Done.
+
+Example:
+
+```json
+{
+  "op": {
+    "request_closure": {
+      "run_id": "arun_123",
+      "summary": "Acceptance criteria are satisfied.",
+      "expected_revision": 4
+    }
+  }
+}
+```
+
+`get` resolves its global ID independently and returns the owning Project. List
+and mutations use the Project binding established for the MCP process. For
+start and request_closure, the Zig server injects that Project ID into the private
+daemon request; a run from another Project is not visible or mutable even if
+its ID and revision are known. The daemon owns Issue discovery, AgentRun
+association, and board-state derivation; the Zig MCP server only validates the
+tagged input and forwards the operation.
+
 ## Daemon operations
 
 | XPC method | Consumer |
@@ -192,8 +259,31 @@ authority Ref moved.
 | `activate_memory` | MCP `activate` |
 | `load_memory` | MCP `load` |
 | `store_draft_operation` | MCP `store`, Desktop, and other clients |
+| `list_issue_board` | MCP `issue.list` and Desktop |
+| `get_issue_detail` | Native Issue detail lookup for local clients |
+| `get_issue` | MCP `issue.get` global Issue lookup |
+| `start_issue_work` | MCP `issue.start` |
+| `request_issue_closure` | MCP `issue.request_closure` |
+| `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
 | `search_index_status` | Desktop diagnostics and tests |
 | `rebuild_search_index` | Recovery, tests, and development tooling |
+
+Lifecycle hooks do not call the agent-facing `issue` tool. Adapter-managed
+scripts pipe the host event to the private command
+`clumsies _agent issue-run-event --host codex|claude-code`. The command resolves
+the repository's daemon Project binding, reduces the host payload to bounded
+identifiers and lifecycle fields, and calls `record_agent_run_event`. It emits
+a bounded current-run context containing `run_id`, revision, and the semantic
+decision instruction after a successful root or subagent start. Claude Code's
+first root Stop is blocked once to request the closure decision; that blocked
+Stop is not recorded as ended. All parsing, binding, binary, IPC, and daemon
+failures remain fail-open.
+
+The private bridge does not persist raw hook JSON, prompts, transcripts, tool
+payloads, or assistant messages. `record_agent_run_event` is not exposed as an
+MCP tool; agents use `issue.start` and `issue.request_closure` for explicit
+semantic updates. Prompt text is not matched to an Issue automatically, and a
+normal Stop records no semantic outcome.
 
 Every valid `activate_memory` call also writes one local Retrieval Run from the
 same ranked candidate trace used for the response. This does not add fields to

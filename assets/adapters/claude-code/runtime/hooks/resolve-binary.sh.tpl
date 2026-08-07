@@ -7,7 +7,9 @@ set -euo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 
-if command -v clumsies &>/dev/null; then
+if [ -n "${CLUMSIES_ADAPTER_BINARY:-}" ] && [ -x "$CLUMSIES_ADAPTER_BINARY" ]; then
+  CLUMSIES="$CLUMSIES_ADAPTER_BINARY"
+elif command -v clumsies &>/dev/null; then
   CLUMSIES="clumsies"
 elif [ -x "$HOME/.clumsies/bin/clumsies" ]; then
   CLUMSIES="$HOME/.clumsies/bin/clumsies"

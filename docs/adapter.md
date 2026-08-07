@@ -26,7 +26,7 @@ These two layers are adjacent but different:
 
 | Layer | Job |
 | --- | --- |
-| MCP | define the agent-facing activate, load, and store protocol |
+| MCP | define the agent-facing activate, load, store, and issue protocol |
 | Adapter | make the host actually launch and reinforce that protocol |
 
 MCP tells you what the runtime contract is. Adapter tells you how a specific host gets wired up so that contract becomes usable.
@@ -46,7 +46,7 @@ In the current implementation, the Codex package renders at least these managed 
 | `codex.config` | `config.toml` | shared | configure Codex runtime behavior for clumsies |
 | `codex.hooks.registry` | `hooks.json` | shared | register the currently managed host hooks |
 | `codex.hooks.resolve_binary` | `hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
-| `codex.hooks.user_prompt_submit` | `hooks/user-prompt-submit.sh` | exclusive | append session input telemetry |
+| `codex.hooks.issue_run_event` | `hooks/issue-run-event.sh` | exclusive | normalize root and subagent lifecycle events for the private daemon bridge |
 | `codex.skills.*` | `skills/...` | exclusive | install built-in and imported workflow skills |
 
 Scope changes the target root rather than the package identity:
@@ -70,10 +70,78 @@ In the current implementation, the adapter manages at least:
 | `claude-code.mcp` | `.mcp.json` or user-scoped MCP file | shared | register the clumsies MCP server |
 | `claude-code.hooks.resolve_binary` | `.claude/hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
 | `claude-code.hooks.session_start` | `.claude/hooks/session-start.sh` | exclusive | run bootstrap at session start |
-| `claude-code.hooks.user_prompt_submit` | `.claude/hooks/user-prompt-submit.sh` | exclusive | append session input telemetry |
+| `claude-code.hooks.issue_run_event` | `.claude/hooks/issue-run-event.sh` | exclusive | normalize root, subagent, session-end, and failure lifecycle events for the private daemon bridge |
 | `claude-code.skills.*` | `.claude/skills/...` | exclusive | install built-in and imported workflow skills |
 
 The point is not just that Codex and Claude Code use different file names. The point is that Adapter absorbs those host differences behind one command surface.
+
+## Issue lifecycle decision hooks
+
+Both adapters register the same core AgentRun lifecycle events:
+
+| Host event | Normalized observation |
+| --- | --- |
+| `UserPromptSubmit` | start or upsert a root AgentRun and prompt the Agent to decide whether to call `issue.start` |
+| `Stop` | prompt the root Agent to decide whether to call `issue.request_closure`, then end the AgentRun without an inferred outcome |
+| `SubagentStart` | start or upsert a child AgentRun and retain its parent host key |
+| `SubagentStop` | end the child AgentRun without inferring Issue state or an outcome |
+| `SessionEnd` | end remaining runs for the host session with an `unknown` outcome |
+
+Claude Code additionally registers `StopFailure`, which ends the root run with
+`failed`. Its existing `SessionStart` hook remains a separate workflow-skill
+bootstrap surface and does not create an AgentRun. Codex does not register
+`StopFailure`.
+
+Claude Code root lifecycle correlation uses the common `prompt_id` field added
+in Claude Code 2.1.196. Earlier payloads are ignored fail-open; falling back to
+the session ID would incorrectly merge every turn in a session.
+
+All lifecycle events use the same private path:
+
+```text
+Codex or Claude Code hook JSON
+  -> managed issue-run-event.sh
+  -> clumsies _agent issue-run-event --host <host>
+  -> daemon record_agent_run_event
+```
+
+The hook command is fail-open. It resolves the repository binding, keeps only
+bounded host IDs, run keys, parentage, normalized outcomes, and a short display
+label, then discards the raw host payload. A successful root or subagent start
+returns the current `run_id`, revision, and semantic Issue instruction as
+bounded host-native context. Prompt text is not matched to an Issue.
+Transcripts, tool payloads, assistant messages, and raw hook JSON are not sent
+to daemon.
+
+Claude Code's first root Stop returns a loop-safe `decision=block` reminder
+when `stop_hook_active=false`; it is not yet an ended run. The follow-up Stop is
+recorded and not blocked. Codex receives Stop additional context on a fail-open
+basis.
+
+Hooks observe execution. They do not close or reopen Issues. The agent-facing
+MCP `issue` tool provides explicit `list`, `start`, and `request_closure`
+operations. Done continues to come only from the Effective Memory path.
+
+## Equivalent installation paths
+
+The Zig `clumsies adapt` package and native Project Management through the Rust
+daemon both install the lifecycle bridge. They use the same core event set and
+managed script name while preserving the host's unrelated hook handlers.
+
+For repository-scoped native installation, Codex uses
+`.codex/hooks.json` and `.codex/hooks/issue-run-event.sh`; Claude Code uses
+`.claude/settings.json` and `.claude/hooks/issue-run-event.sh`. Shared JSON
+registries are merged, while hook scripts are exclusive managed files whose
+installed hashes are checked before update or removal.
+
+During upgrade, both installers remove legacy Clumsies
+`user-prompt-submit.sh` registry handlers and stale lifecycle-handler paths only
+when previous managed content, a manifest, or a known managed-content hash
+proves ownership. Unrelated and unowned same-name commands are preserved. A
+legacy script file without such ownership proof may remain inert on disk. The
+native installer replaces or removes only the exact managed hook group; a
+user-added matcher, sibling handler, or duplicate is reported as drift and is
+left unchanged.
 
 ## Skills are workflow proxies
 

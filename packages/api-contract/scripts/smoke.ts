@@ -85,6 +85,23 @@ type _adminContract = [
 ];
 
 type DaemonSchemas = DaemonComponents["schemas"];
+type DaemonMethods = DaemonSchemas["DaemonIpcMethod"];
+type AgentRunSchema = DaemonSchemas["AgentRun"];
+type RecordAgentRunEventRequestSchema = DaemonSchemas["RecordAgentRunEventRequest"];
+type RecordAgentRunEventResponseSchema = DaemonSchemas["RecordAgentRunEventResponse"];
+type IssueExternalReferenceSchema = DaemonSchemas["IssueExternalReference"];
+type IssueBoardCardSchema = DaemonSchemas["IssueBoardCard"];
+type IssueBoardResponseSchema = DaemonSchemas["IssueBoardResponse"];
+type IssueDetailResponseSchema = DaemonSchemas["IssueDetailResponse"];
+type GetIssueRequestSchema = DaemonSchemas["GetIssueRequest"];
+type CreateIssueRequestSchema = DaemonSchemas["CreateIssueRequest"];
+type UpdateIssueRequestSchema = DaemonSchemas["UpdateIssueRequest"];
+type RemoveIssueRequestSchema = DaemonSchemas["RemoveIssueRequest"];
+type IssueRemovalResponseSchema = DaemonSchemas["IssueRemovalResponse"];
+type StartIssueWorkRequestSchema = DaemonSchemas["StartIssueWorkRequest"];
+type RequestIssueClosureRequestSchema = DaemonSchemas["RequestIssueClosureRequest"];
+type IssueWorkflowMutationResponseSchema = DaemonSchemas["IssueWorkflowMutationResponse"];
+
 type _daemonContract = [
   Expect<Equals<"DaemonBootstrapStatus" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"DaemonIpcEndpoint" extends keyof DaemonSchemas ? true : false, true>>,
@@ -98,4 +115,71 @@ type _daemonContract = [
   Expect<Equals<"DaemonDraftOperationResponse" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"DaemonServerRequest" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"DaemonServerResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"AgentRun" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"RecordAgentRunEventRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"RecordAgentRunEventResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueBoardListRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueBoardResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueDetailRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueDetailResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"GetIssueRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"CreateIssueRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"UpdateIssueRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"RemoveIssueRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueRemovalResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"StartIssueWorkRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"RequestIssueClosureRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"IssueWorkflowMutationResponse" extends keyof DaemonSchemas ? true : false, true>>,
+];
+
+type _daemonIssueRunMethods = [
+  Expect<Equals<Extract<DaemonMethods, "record_agent_run_event">, "record_agent_run_event">>,
+  Expect<Equals<Extract<DaemonMethods, "list_issue_board">, "list_issue_board">>,
+  Expect<Equals<Extract<DaemonMethods, "get_issue_detail">, "get_issue_detail">>,
+  Expect<Equals<Extract<DaemonMethods, "get_issue">, "get_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "create_issue">, "create_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "update_issue">, "update_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "apply_issue_gate">, "apply_issue_gate">>,
+  Expect<Equals<Extract<DaemonMethods, "remove_issue">, "remove_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "start_issue_work">, "start_issue_work">>,
+  Expect<Equals<Extract<DaemonMethods, "request_issue_closure">, "request_issue_closure">>,
+];
+
+type _daemonIssueRunContract = [
+  Expect<Equals<DaemonSchemas["AgentRunHost"], "codex" | "claude-code">>,
+  Expect<Equals<DaemonSchemas["IssueExternalReferenceKind"], "issue" | "pull_request">>,
+  Expect<Equals<
+    DaemonSchemas["AgentRunEventType"],
+    "started" | "heartbeat" | "ended" | "session_ended"
+  >>,
+  Expect<Equals<RecordAgentRunEventRequestSchema["host_run_key"], string | null>>,
+  Expect<Equals<RecordAgentRunEventRequestSchema["parent_host_run_key"], string | null>>,
+  Expect<Equals<RecordAgentRunEventRequestSchema["occurred_at"], string | null>>,
+  Expect<Equals<RecordAgentRunEventResponseSchema["run"], AgentRunSchema | null>>,
+  Expect<Equals<RecordAgentRunEventResponseSchema["affected_runs"], AgentRunSchema[]>>,
+  Expect<Equals<AgentRunSchema["issue_number"], number | null>>,
+  Expect<Equals<AgentRunSchema["parent_run_id"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["draft_revision"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["issue_id"], string>>,
+  Expect<Equals<IssueBoardCardSchema["description"], string>>,
+  Expect<Equals<IssueBoardCardSchema["external_references"], IssueExternalReferenceSchema[]>>,
+  Expect<Equals<IssueBoardCardSchema["created_at"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["started_at"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["closed_at"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["archived_at"], string | null>>,
+  Expect<Equals<IssueBoardCardSchema["is_stale"], boolean>>,
+  Expect<Equals<IssueBoardCardSchema["state_revision"], number>>,
+  Expect<Equals<IssueBoardResponseSchema["unlinked_runs"], AgentRunSchema[]>>,
+  Expect<Equals<IssueDetailResponseSchema["body"], string>>,
+  Expect<Equals<GetIssueRequestSchema["issue_id"], string>>,
+  Expect<Equals<CreateIssueRequestSchema["description"], string>>,
+  Expect<Equals<CreateIssueRequestSchema["external_references"], IssueExternalReferenceSchema[] | undefined>>,
+  Expect<Equals<UpdateIssueRequestSchema["description"], string | null | undefined>>,
+  Expect<Equals<UpdateIssueRequestSchema["external_references"], IssueExternalReferenceSchema[] | null | undefined>>,
+  Expect<Equals<RemoveIssueRequestSchema["action"], "archive" | "delete">>,
+  Expect<Equals<IssueRemovalResponseSchema["action"], "archive" | "delete">>,
+  Expect<Equals<StartIssueWorkRequestSchema["project_id"], string>>,
+  Expect<Equals<RequestIssueClosureRequestSchema["project_id"], string>>,
+  Expect<Equals<IssueWorkflowMutationResponseSchema["board_state"], "todo" | "in_progress" | "closure_requested" | "done">>,
+  Expect<Equals<IssueWorkflowMutationResponseSchema["issue_id"], string>>,
 ];

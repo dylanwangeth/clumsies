@@ -56,13 +56,13 @@ pub fn renderRuntimeAssets(
         .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_resolve_binary_sh),
     });
     try assets.append(allocator, .{
-        .resource_id = "codex.hooks.user_prompt_submit",
+        .resource_id = "codex.hooks.issue_run_event",
         .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, "hooks/user-prompt-submit.sh"),
+        .relative_path = try scopedRelativePath(allocator, "hooks/issue-run-event.sh"),
         .ownership = "exclusive",
-        .label = "Codex UserPromptSubmit hook",
+        .label = "Codex Issue run lifecycle hook",
         .file_mode = 0o755,
-        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_user_prompt_submit_sh),
+        .content = try allocator.dupe(u8, build_options.adapter_codex_runtime_issue_run_event_sh),
     });
     try appendCodexCoreSkills(allocator, &assets, target_root);
 
@@ -114,16 +114,16 @@ pub fn renderHooksRegistry(
     allocator: std.mem.Allocator,
     target_root: []const u8,
 ) ![]u8 {
-    const user_prompt_submit_cmd_json = try commandJsonLiteral(allocator, target_root, "user-prompt-submit.sh");
-    defer allocator.free(user_prompt_submit_cmd_json);
+    const issue_run_event_cmd_json = try commandJsonLiteral(allocator, target_root, "issue-run-event.sh");
+    defer allocator.free(issue_run_event_cmd_json);
     var rendered = try allocator.dupe(u8, build_options.adapter_codex_runtime_hooks_json);
     errdefer allocator.free(rendered);
 
     rendered = try replaceOwned(
         allocator,
         rendered,
-        "__CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__",
-        user_prompt_submit_cmd_json,
+        "__CLUMSIES_ISSUE_RUN_EVENT_COMMAND_JSON__",
+        issue_run_event_cmd_json,
     );
     return rendered;
 }
@@ -283,12 +283,13 @@ fn replaceOwned(
     return replaced;
 }
 
-test "renderRuntimeAssets uses an absolute workspace-local prompt hook path" {
+test "renderRuntimeAssets uses one absolute workspace-local lifecycle hook path" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
     defer deinitRenderedAssets(allocator, assets);
 
-    try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/user-prompt-submit.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "/tmp/workspace/.codex/hooks/issue-run-event.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[1].content, "user-prompt-submit.sh") == null);
 }
 
 test "codex config does not require Codex thread id in MCP server env" {
@@ -299,27 +300,50 @@ test "codex config does not require Codex thread id in MCP server env" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "env_vars") == null);
 }
 
-test "codex hooks pass Codex session id through clumsies host session env" {
+test "codex lifecycle hook forwards raw stdin through the private fail-open command" {
     const allocator = std.testing.allocator;
     const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
     defer deinitRenderedAssets(allocator, assets);
 
-    var found_user_prompt = false;
-    var found_stop_check = false;
+    var found_lifecycle = false;
     for (assets) |asset| {
-        if (std.mem.eql(u8, asset.resource_id, "codex.hooks.user_prompt_submit")) {
-            found_user_prompt = true;
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "session_id") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "model") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "--model") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "CLUMSIES_HOST_SESSION_ID") != null);
-            try std.testing.expect(std.mem.indexOf(u8, asset.content, "turn_id") == null);
-        } else if (std.mem.eql(u8, asset.resource_id, "codex.hooks.stop_check")) {
-            found_stop_check = true;
-        }
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "codex.hooks.user_prompt_submit"));
+        if (!std.mem.eql(u8, asset.resource_id, "codex.hooks.issue_run_event")) continue;
+        found_lifecycle = true;
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "_agent issue-run-event --host codex") != null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "printf '%s' \"$INPUT\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "|| true") != null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "jq") == null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "python") == null);
     }
-    try std.testing.expect(found_user_prompt);
-    try std.testing.expect(!found_stop_check);
+    try std.testing.expect(found_lifecycle);
+}
+
+test "codex registry covers root child and session lifecycle events once" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderHooksRegistry(allocator, "/tmp/workspace/.codex");
+    defer allocator.free(rendered);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
+    defer parsed.deinit();
+    const hooks = parsed.value.object.get("hooks").?.object;
+    for ([_][]const u8{ "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionEnd" }) |event| {
+        const groups = hooks.get(event).?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), groups.len);
+        const handlers = groups[0].object.get("hooks").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), handlers.len);
+        try std.testing.expect(std.mem.indexOf(u8, handlers[0].object.get("command").?.string, "issue-run-event.sh") != null);
+    }
+    try std.testing.expect(hooks.get("StopFailure") == null);
+}
+
+test "codex resolver prefers an executable desktop-managed helper" {
+    const allocator = std.testing.allocator;
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace/.codex");
+    defer deinitRenderedAssets(allocator, assets);
+
+    try std.testing.expect(std.mem.indexOf(u8, assets[2].content, "CLUMSIES_ADAPTER_BINARY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[2].content, "[ -x \"$CLUMSIES_ADAPTER_BINARY\" ]") != null);
 }
 
 test "runtime no longer injects a SessionStart memory bootstrap" {

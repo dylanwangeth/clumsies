@@ -32,6 +32,7 @@ pub(crate) struct DaemonInner {
     pub(crate) retrieval_history_lock: Mutex<()>,
     pub(crate) draft_mutation_lock: Mutex<()>,
     pub(crate) local_setup_lock: Mutex<()>,
+    pub(crate) agent_run_lock: Mutex<()>,
     pub(crate) storage_access: tokio::sync::RwLock<()>,
 }
 
@@ -65,6 +66,7 @@ impl DaemonState {
         reset_memory_cache_if_required(&pool, &config.cache_dir).await?;
         recover_interrupted_operations(&pool).await?;
         retrieval_history::recover_interrupted_runs(&pool).await?;
+        work_tracking::recover_expired_runs(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
         let credentials = load_server_credentials(credential_store.clone()).await?;
         let project_config = load_project_config(&pool, &config.project, credentials).await?;
@@ -86,6 +88,7 @@ impl DaemonState {
                 retrieval_history_lock: Mutex::new(()),
                 draft_mutation_lock: Mutex::new(()),
                 local_setup_lock: Mutex::new(()),
+                agent_run_lock: Mutex::new(()),
                 storage_access: tokio::sync::RwLock::new(()),
             }),
         };
@@ -605,6 +608,241 @@ impl DaemonState {
         request: LoadMemoryRequest,
     ) -> Result<LoadMemoryResponse, DaemonError> {
         search::load_memory(self, request).await
+    }
+
+    pub async fn record_agent_run_event(
+        &self,
+        request: RecordAgentRunEventRequest,
+    ) -> Result<RecordAgentRunEventResponse, DaemonError> {
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::record_agent_run_event(&self.inner.pool, request).await
+    }
+
+    pub async fn list_issue_board(
+        &self,
+        request: IssueBoardListRequest,
+    ) -> Result<IssueBoardResponse, DaemonError> {
+        let project_id = request.project_id.trim();
+        if project_id.is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "project_id must not be empty".to_owned(),
+            ));
+        }
+        self.ensure_native_issues_imported(project_id).await?;
+        let runs = work_tracking::load_project_runs(&self.inner.pool, project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        let issues = work_tracking::project_native_issue_board(
+            &self.inner.pool,
+            project_id,
+            &runs,
+            &now,
+            &stale_before,
+        )
+        .await?;
+        let valid_issue_numbers = issues
+            .iter()
+            .map(|issue| issue.issue_number)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut unlinked_runs = runs
+            .into_iter()
+            .filter(|run| match run.issue_number {
+                Some(number) => !valid_issue_numbers.contains(&number),
+                None => true,
+            })
+            .map(|run| work_tracking::project_agent_run(run, &now))
+            .collect::<Vec<_>>();
+        unlinked_runs.sort_by(|left, right| {
+            right
+                .last_seen_at
+                .cmp(&left.last_seen_at)
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        unlinked_runs.truncate(100);
+        Ok(IssueBoardResponse {
+            project_id: project_id.to_owned(),
+            effective_hash: work_tracking::native_board_hash(&issues),
+            issues,
+            unlinked_runs,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    pub async fn get_issue_detail(
+        &self,
+        request: IssueDetailRequest,
+    ) -> Result<IssueDetailResponse, DaemonError> {
+        let project_id = request.project_id.trim();
+        if project_id.is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "project_id must not be empty".to_owned(),
+            ));
+        }
+        if !(1..=999).contains(&request.issue_number) {
+            return Err(DaemonError::InvalidRequest(
+                "issue_number must be between 1 and 999".to_owned(),
+            ));
+        }
+        self.ensure_native_issues_imported(project_id).await?;
+        let runs = work_tracking::load_project_runs(&self.inner.pool, project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        work_tracking::load_native_issue_detail(
+            &self.inner.pool,
+            project_id,
+            request.issue_number,
+            &runs,
+            &now,
+            &stale_before,
+        )
+        .await
+    }
+
+    pub async fn get_issue(
+        &self,
+        request: GetIssueRequest,
+    ) -> Result<IssueDetailResponse, DaemonError> {
+        let issue_id = request.issue_id.trim();
+        let (project_id, issue_number) =
+            work_tracking::resolve_native_issue_identity(&self.inner.pool, issue_id)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(format!("Issue {issue_id}")))?;
+        let runs = work_tracking::load_project_runs(&self.inner.pool, &project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        work_tracking::load_native_issue_detail(
+            &self.inner.pool,
+            &project_id,
+            issue_number,
+            &runs,
+            &now,
+            &stale_before,
+        )
+        .await
+    }
+
+    pub async fn create_issue(
+        &self,
+        request: CreateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::create_issue(&self.inner.pool, request).await
+    }
+
+    pub async fn update_issue(
+        &self,
+        request: UpdateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::update_issue(&self.inner.pool, request).await
+    }
+
+    pub async fn apply_issue_gate(
+        &self,
+        request: ApplyIssueGateRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::apply_issue_gate(&self.inner.pool, request).await
+    }
+
+    pub async fn remove_issue(
+        &self,
+        request: RemoveIssueRequest,
+    ) -> Result<IssueRemovalResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::remove_issue(&self.inner.pool, request).await
+    }
+
+    pub async fn start_issue_work(
+        &self,
+        request: StartIssueWorkRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            &request.run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::start_issue_work(&self.inner.pool, request).await
+    }
+
+    pub async fn request_issue_closure(
+        &self,
+        request: RequestIssueClosureRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            &request.run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::request_issue_closure(&self.inner.pool, request).await
+    }
+
+    async fn ensure_native_issues_imported(&self, project_id: &str) -> Result<(), DaemonError> {
+        if work_tracking::native_issue_import_completed(&self.inner.pool, project_id).await? {
+            return Ok(());
+        }
+        let effective = search::load_effective_memory(self, project_id).await?;
+        let runs = work_tracking::load_project_runs(&self.inner.pool, project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        let (mut cards, _) = work_tracking::project_issue_board(
+            project_id,
+            effective.resources.as_ref(),
+            &runs,
+            &now,
+        );
+        let _guard = self.inner.agent_run_lock.lock().await;
+        if work_tracking::native_issue_import_completed(&self.inner.pool, project_id).await? {
+            return Ok(());
+        }
+        work_tracking::reconcile_issue_workflow_states(
+            &self.inner.pool,
+            project_id,
+            &mut cards,
+            &stale_before,
+        )
+        .await?;
+        work_tracking::import_legacy_issues(
+            &self.inner.pool,
+            project_id,
+            &cards,
+            effective.resources.as_ref(),
+        )
+        .await
     }
 
     pub async fn search_index_status(
@@ -1159,6 +1397,76 @@ impl DaemonIpcService {
         self.state.load_memory(request).await
     }
 
+    pub async fn record_agent_run_event(
+        &self,
+        request: RecordAgentRunEventRequest,
+    ) -> Result<RecordAgentRunEventResponse, DaemonError> {
+        self.state.record_agent_run_event(request).await
+    }
+
+    pub async fn list_issue_board(
+        &self,
+        request: IssueBoardListRequest,
+    ) -> Result<IssueBoardResponse, DaemonError> {
+        self.state.list_issue_board(request).await
+    }
+
+    pub async fn get_issue_detail(
+        &self,
+        request: IssueDetailRequest,
+    ) -> Result<IssueDetailResponse, DaemonError> {
+        self.state.get_issue_detail(request).await
+    }
+
+    pub async fn get_issue(
+        &self,
+        request: GetIssueRequest,
+    ) -> Result<IssueDetailResponse, DaemonError> {
+        self.state.get_issue(request).await
+    }
+
+    pub async fn create_issue(
+        &self,
+        request: CreateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.state.create_issue(request).await
+    }
+
+    pub async fn update_issue(
+        &self,
+        request: UpdateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.state.update_issue(request).await
+    }
+
+    pub async fn apply_issue_gate(
+        &self,
+        request: ApplyIssueGateRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.state.apply_issue_gate(request).await
+    }
+
+    pub async fn remove_issue(
+        &self,
+        request: RemoveIssueRequest,
+    ) -> Result<IssueRemovalResponse, DaemonError> {
+        self.state.remove_issue(request).await
+    }
+
+    pub async fn start_issue_work(
+        &self,
+        request: StartIssueWorkRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.state.start_issue_work(request).await
+    }
+
+    pub async fn request_issue_closure(
+        &self,
+        request: RequestIssueClosureRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.state.request_issue_closure(request).await
+    }
+
     pub async fn search_index_status(
         &self,
         request: SearchIndexProjectRequest,
@@ -1298,6 +1606,22 @@ impl DaemonIpcService {
             "project_checkout" => dispatch_async!(self, request.payload, project_checkout),
             "activate_memory" => dispatch_async!(self, request.payload, activate_memory),
             "load_memory" => dispatch_async!(self, request.payload, load_memory),
+            "record_agent_run_event" => {
+                dispatch_async!(self, request.payload, record_agent_run_event)
+            }
+            "list_issue_board" => dispatch_async!(self, request.payload, list_issue_board),
+            "get_issue_detail" => dispatch_async!(self, request.payload, get_issue_detail),
+            "get_issue" => dispatch_async!(self, request.payload, get_issue),
+            "create_issue" => dispatch_async!(self, request.payload, create_issue),
+            "update_issue" => dispatch_async!(self, request.payload, update_issue),
+            "apply_issue_gate" => dispatch_async!(self, request.payload, apply_issue_gate),
+            "remove_issue" => dispatch_async!(self, request.payload, remove_issue),
+            "start_issue_work" => {
+                dispatch_async!(self, request.payload, start_issue_work)
+            }
+            "request_issue_closure" => {
+                dispatch_async!(self, request.payload, request_issue_closure)
+            }
             "search_index_status" => {
                 dispatch_async!(self, request.payload, search_index_status)
             }

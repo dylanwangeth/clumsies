@@ -131,9 +131,9 @@ fn addCodexAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Options) 
         b,
         "assets/adapters/codex/runtime/hooks/resolve-binary.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_codex_runtime_user_prompt_submit_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_codex_runtime_issue_run_event_sh", readSourceAsset(
         b,
-        "assets/adapters/codex/runtime/hooks/user-prompt-submit.sh.tpl",
+        "assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl",
     ));
 }
 
@@ -154,9 +154,9 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/hooks/session-start.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_user_prompt_submit_sh", readSourceAsset(
+    options.addOption([]const u8, "adapter_claude_code_runtime_issue_run_event_sh", readSourceAsset(
         b,
-        "assets/adapters/claude-code/runtime/hooks/user-prompt-submit.sh.tpl",
+        "assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl",
     ));
     options.addOption([]const u8, "adapter_claude_code_runtime_skill_activate", readSourceAsset(
         b,

@@ -3,6 +3,37 @@ import XCTest
 
 @MainActor
 final class WorkspaceNavigationTests: XCTestCase {
+    func testIssueWorkspaceIsPresentedAsKanban() {
+        XCTAssertEqual(WorkspaceSection.issues.title, "Kanban")
+    }
+
+    func testIssuesUseSidebarAndDetailWhileOtherSectionsKeepThreeColumns() {
+        XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
+
+        for section in [
+            WorkspaceSection.hub,
+            .local,
+            .bundles,
+            .reviews,
+        ] {
+            XCTAssertEqual(
+                WorkspaceColumnLayout(section: section),
+                .sidebarContentDetail
+            )
+        }
+    }
+
+    func testIssueDetailRouteCarriesOnlyTheGlobalIssueId() {
+        let route = IssueBoardRoute(
+            issueId: "issue_0123456789abcdef0123456789abcdef"
+        )
+
+        XCTAssertEqual(
+            route.issueId,
+            "issue_0123456789abcdef0123456789abcdef"
+        )
+    }
+
     func testBackAndForwardFollowTabSelectionHistory() {
         let store = WorkspaceStore()
         let first = tab(itemId: "first")

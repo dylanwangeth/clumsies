@@ -35,6 +35,24 @@ pub const ProjectBinding = struct {
     }
 };
 
+pub const RecordAgentRunEventPayload = struct {
+    event_id: []const u8,
+    project_id: []const u8,
+    host: []const u8,
+    host_run_key: ?[]const u8,
+    event_type: []const u8,
+    source: []const u8 = "hook",
+    host_session_id: ?[]const u8 = null,
+    parent_run_id: ?[]const u8 = null,
+    parent_host_run_key: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    issue_key: ?[]const u8 = null,
+    outcome: ?[]const u8 = null,
+    display_label: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    occurred_at: ?[]const u8 = null,
+};
+
 pub fn resolveProjectBinding(
     allocator: std.mem.Allocator,
     workspace_path: []const u8,
@@ -193,6 +211,172 @@ pub fn loadMemoryRequestJsonAlloc(
         .project_id = project_id,
         .ids = ids,
         .known_hashes = known_hashes,
+    });
+}
+
+pub fn recordAgentRunEventOperation(
+    allocator: std.mem.Allocator,
+    payload: RecordAgentRunEventPayload,
+) !OperationResult {
+    const request_json = try recordAgentRunEventRequestJsonAlloc(allocator, payload);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn recordAgentRunEventRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    payload: RecordAgentRunEventPayload,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "record_agent_run_event", payload);
+}
+
+pub fn listIssueBoardOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+) !OperationResult {
+    const request_json = try listIssueBoardRequestJsonAlloc(allocator, project_id);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn listIssueBoardRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "list_issue_board", .{
+        .project_id = project_id,
+    });
+}
+
+pub fn getIssueOperation(
+    allocator: std.mem.Allocator,
+    issue_id: []const u8,
+) !OperationResult {
+    const request_json = try getIssueRequestJsonAlloc(allocator, issue_id);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn getIssueRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    issue_id: []const u8,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "get_issue", .{
+        .issue_id = issue_id,
+    });
+}
+
+pub fn issueOperation(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    project_id: []const u8,
+    args: std.json.ObjectMap,
+) !OperationResult {
+    const request_json = try issueOperationRequestJsonAlloc(
+        allocator,
+        method,
+        project_id,
+        args,
+    );
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn issueOperationRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    project_id: []const u8,
+    args: std.json.ObjectMap,
+) ![]u8 {
+    var payload: std.json.ObjectMap = .empty;
+    defer payload.deinit(allocator);
+    try payload.put(allocator, "project_id", .{ .string = project_id });
+    var iterator = args.iterator();
+    while (iterator.next()) |entry| {
+        try payload.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    return try requestWithPayloadJsonAlloc(
+        allocator,
+        method,
+        std.json.Value{ .object = payload },
+    );
+}
+
+pub fn startIssueWorkOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    issue_key: []const u8,
+    expected_revision: i64,
+) !OperationResult {
+    const request_json = try startIssueWorkRequestJsonAlloc(
+        allocator,
+        project_id,
+        run_id,
+        issue_key,
+        expected_revision,
+    );
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn startIssueWorkRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    issue_key: []const u8,
+    expected_revision: i64,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "start_issue_work", .{
+        .project_id = project_id,
+        .run_id = run_id,
+        .issue_key = issue_key,
+        .expected_revision = expected_revision,
+    });
+}
+
+pub fn requestIssueClosureOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    summary: ?[]const u8,
+    expected_revision: i64,
+) !OperationResult {
+    const request_json = try requestIssueClosureRequestJsonAlloc(
+        allocator,
+        project_id,
+        run_id,
+        summary,
+        expected_revision,
+    );
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn requestIssueClosureRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    summary: ?[]const u8,
+    expected_revision: i64,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "request_issue_closure", .{
+        .project_id = project_id,
+        .run_id = run_id,
+        .summary = summary,
+        .expected_revision = expected_revision,
     });
 }
 
@@ -526,6 +710,169 @@ test "loadMemoryRequestJsonAlloc maps MCP knownHashes to daemon known_hashes" {
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"method\":\"load_memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"known_hashes\":{\"ctx_api\":\"sha256:abc\"}") != null);
+}
+
+test "agent run request builders preserve the daemon wire contract" {
+    const record = try recordAgentRunEventRequestJsonAlloc(std.testing.allocator, .{
+        .event_id = "hook_abc",
+        .project_id = "prj_test",
+        .host = "codex",
+        .host_run_key = "root:turn_1",
+        .event_type = "started",
+        .host_session_id = "session_1",
+        .parent_host_run_key = null,
+        .kind = "root",
+        .issue_key = "ISSUE-003",
+        .display_label = "ISSUE-003",
+    });
+    defer std.testing.allocator.free(record);
+    try std.testing.expect(std.mem.indexOf(u8, record, "\"method\":\"record_agent_run_event\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, record, "\"host\":\"codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, record, "\"host_run_key\":\"root:turn_1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, record, "\"issue_key\":\"ISSUE-003\"") != null);
+
+    const session_end = try recordAgentRunEventRequestJsonAlloc(std.testing.allocator, .{
+        .event_id = "hook_end",
+        .project_id = "prj_test",
+        .host = "claude-code",
+        .host_run_key = null,
+        .event_type = "session_ended",
+        .host_session_id = "session_2",
+        .outcome = "unknown",
+    });
+    defer std.testing.allocator.free(session_end);
+    try std.testing.expect(std.mem.indexOf(u8, session_end, "\"host\":\"claude-code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session_end, "\"host_run_key\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, session_end, "\"event_type\":\"session_ended\"") != null);
+
+    const list = try listIssueBoardRequestJsonAlloc(std.testing.allocator, "prj_test");
+    defer std.testing.allocator.free(list);
+    try std.testing.expectEqualStrings(
+        \\{"method":"list_issue_board","payload":{"project_id":"prj_test"}}
+    , list);
+
+    const get = try getIssueRequestJsonAlloc(
+        std.testing.allocator,
+        "issue_0123456789abcdef0123456789abcdef",
+    );
+    defer std.testing.allocator.free(get);
+    try std.testing.expectEqualStrings(
+        \\{"method":"get_issue","payload":{"issue_id":"issue_0123456789abcdef0123456789abcdef"}}
+    , get);
+
+    const start = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", "ISSUE-003", 4);
+    defer std.testing.allocator.free(start);
+    try std.testing.expectEqualStrings(
+        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":4}}
+    , start);
+
+    const request_closure = try requestIssueClosureRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", "Acceptance criteria are satisfied", 5);
+    defer std.testing.allocator.free(request_closure);
+    try std.testing.expectEqualStrings(
+        \\{"method":"request_issue_closure","payload":{"project_id":"prj_test","run_id":"arun_1","summary":"Acceptance criteria are satisfied","expected_revision":5}}
+    , request_closure);
+}
+
+test "Issue request forwarding preserves external reference patch semantics" {
+    const create_args = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{"title":"Track upstream","description":"Keep remote work connected.","external_references":[{"kind":"issue","url":"https://github.com/acme/clumsies/issues/11"},{"kind":"pull_request","url":"https://github.com/acme/clumsies/pull/12?diff=split#discussion"}]}
+    ,
+        .{},
+    );
+    defer create_args.deinit();
+    const create_json = try issueOperationRequestJsonAlloc(
+        std.testing.allocator,
+        "create_issue",
+        "prj_test",
+        create_args.value.object,
+    );
+    defer std.testing.allocator.free(create_json);
+    const create_request = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, create_json, .{});
+    defer create_request.deinit();
+    const create_payload = create_request.value.object.get("payload").?.object;
+    try std.testing.expectEqualStrings("create_issue", create_request.value.object.get("method").?.string);
+    try std.testing.expectEqualStrings("prj_test", create_payload.get("project_id").?.string);
+    const create_references = create_payload.get("external_references").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), create_references.len);
+    try std.testing.expectEqualStrings("issue", create_references[0].object.get("kind").?.string);
+    try std.testing.expectEqualStrings("https://github.com/acme/clumsies/issues/11", create_references[0].object.get("url").?.string);
+    try std.testing.expectEqualStrings("pull_request", create_references[1].object.get("kind").?.string);
+    try std.testing.expectEqualStrings("https://github.com/acme/clumsies/pull/12?diff=split#discussion", create_references[1].object.get("url").?.string);
+
+    const create_without_references = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{"title":"Local only","description":"The daemon supplies the empty create default."}
+    ,
+        .{},
+    );
+    defer create_without_references.deinit();
+    const create_without_references_json = try issueOperationRequestJsonAlloc(
+        std.testing.allocator,
+        "create_issue",
+        "prj_test",
+        create_without_references.value.object,
+    );
+    defer std.testing.allocator.free(create_without_references_json);
+    const create_without_references_request = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        create_without_references_json,
+        .{},
+    );
+    defer create_without_references_request.deinit();
+    try std.testing.expect(create_without_references_request.value.object.get("payload").?.object.get("external_references") == null);
+
+    const update_without_references = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{"issue_key":"ISSUE-011","expected_revision":2,"description":"Do not change links."}
+    ,
+        .{},
+    );
+    defer update_without_references.deinit();
+    const update_without_references_json = try issueOperationRequestJsonAlloc(
+        std.testing.allocator,
+        "update_issue",
+        "prj_test",
+        update_without_references.value.object,
+    );
+    defer std.testing.allocator.free(update_without_references_json);
+    const update_without_references_request = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        update_without_references_json,
+        .{},
+    );
+    defer update_without_references_request.deinit();
+    try std.testing.expect(update_without_references_request.value.object.get("payload").?.object.get("external_references") == null);
+
+    const clear_references = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        \\{"issue_key":"ISSUE-011","expected_revision":3,"external_references":[]}
+    ,
+        .{},
+    );
+    defer clear_references.deinit();
+    const clear_references_json = try issueOperationRequestJsonAlloc(
+        std.testing.allocator,
+        "update_issue",
+        "prj_test",
+        clear_references.value.object,
+    );
+    defer std.testing.allocator.free(clear_references_json);
+    const clear_references_request = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        clear_references_json,
+        .{},
+    );
+    defer clear_references_request.deinit();
+    const clear_references_value = clear_references_request.value.object.get("payload").?.object.get("external_references").?;
+    try std.testing.expectEqual(@as(usize, 0), clear_references_value.array.items.len);
 }
 
 test "memoryCacheRequestJsonAlloc builds daemon cache envelope" {

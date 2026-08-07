@@ -210,10 +210,10 @@ pub struct SearchIndexStatus {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct EffectiveMemory {
-    pub(super) project_id: String,
-    pub(super) effective_hash: String,
-    pub(super) resources: Arc<[SourceResource]>,
+pub(crate) struct EffectiveMemory {
+    pub(crate) project_id: String,
+    pub(crate) effective_hash: String,
+    pub(crate) resources: Arc<[SourceResource]>,
 }
 
 #[derive(Clone, Debug)]
@@ -755,7 +755,7 @@ pub(crate) async fn rebuild_search_index(
     search_index_status(state, request).await
 }
 
-pub(super) async fn load_effective_memory(
+pub(crate) async fn load_effective_memory(
     state: &DaemonState,
     project_id: &str,
 ) -> Result<EffectiveMemory, DaemonError> {

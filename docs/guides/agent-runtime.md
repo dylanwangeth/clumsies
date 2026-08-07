@@ -54,6 +54,8 @@ The current tool surface is:
   ready for the current reasoning context.
 - `load`: read complete resources by known stable ID or exact path.
 - `store`: persist an explicit user-requested Context, Rule, or Workflow Draft.
+- `issue`: get a native Issue by global ID, create/update/list native Issues, explicitly start Issue work, or
+  request Issue closure after semantic judgment.
 
 Typical use is:
 
@@ -61,7 +63,11 @@ Typical use is:
 activate(query, optional state)
   -> use returned fragments
   -> optionally load known complete resources
-  -> store only when the user explicitly requests memory maintenance
+  -> store only for explicit Context, Rule, or Workflow maintenance
+  -> issue.get when the user supplies a copied global Issue ID
+  -> issue.create for durable new or follow-up work
+  -> explicitly issue.start when this is durable Local Issue work
+  -> issue.request_closure only when acceptance criteria are satisfied
 ```
 
 For an update, `load` is mandatory: use the returned complete-resource hash and

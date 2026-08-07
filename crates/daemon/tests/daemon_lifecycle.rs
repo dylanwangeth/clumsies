@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use daemon::{
-    ActivateMemoryRequest, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
+    ActivateMemoryRequest, AgentRunPhase, CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL,
     DAEMON_MACH_SERVICE_NAME, DaemonConfig, DaemonContentDraftUpdate, DaemonCreateDraftOperation,
     DaemonDeleteDraftOperation, DaemonDiscardDraftOperation, DaemonDraftContent,
     DaemonDraftListQuery, DaemonDraftOperation, DaemonDraftOperationRecordSource,
@@ -26,7 +26,8 @@ use daemon::{
     DaemonProjectStorageRequest, DaemonProjectStorageResetRequest, DaemonServerRequest,
     DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
     IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
-    ProjectAgentAdapterKind, ServerCredentials, SyncRetryChannel, SyncState,
+    ProjectAgentAdapterKind, RecordAgentRunEventResponse, ServerCredentials, SyncRetryChannel,
+    SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -1208,6 +1209,293 @@ async fn schema_17_migration_adds_retrieval_history_and_restart_recovers_running
 }
 
 #[tokio::test]
+async fn schema_20_migration_adds_draft_change_flag_before_agent_run_tracking() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    for statement in [
+        "CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '20')",
+        "CREATE TABLE local_drafts (
+            draft_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            server_draft_id TEXT,
+            server_version BIGINT NOT NULL DEFAULT 0,
+            base_commit_id TEXT,
+            current_commit_id TEXT,
+            freshness TEXT NOT NULL CHECK (freshness IN ('current', 'behind')) DEFAULT 'current',
+            reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
+            reconciliation_candidate_id TEXT,
+            resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            target_id TEXT,
+            path TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    let change_flag_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('local_drafts')
+         WHERE name = 'has_upstream_resource_changes'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(change_flag_count, 1);
+    let agent_runs_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(agent_runs_count, 1);
+}
+
+#[tokio::test]
+async fn schema_24_migration_adds_issue_started_at_without_losing_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '24')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE native_issues (
+            issue_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+            issue_type TEXT,
+            priority TEXT,
+            components_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            revision BIGINT NOT NULL DEFAULT 1,
+            changed_by_run_id TEXT,
+            closure_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            UNIQUE (project_id, issue_number)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO native_issues (
+            issue_id, project_id, issue_number, title, description,
+            status, created_at, updated_at
+         ) VALUES ('issue_1', 'project-1', 1, 'Keep me', 'Description',
+                   'todo', '2026-08-06T00:00:00.000Z', '2026-08-06T00:00:00.000Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let started_at_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('native_issues') WHERE name = 'started_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(started_at_count, 1);
+    let archived_at_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('native_issues') WHERE name = 'archived_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(archived_at_count, 1);
+    let removed_metadata_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('native_issues')
+         WHERE name IN ('issue_type', 'priority', 'components_json')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removed_metadata_count, 0);
+    let title: String = sqlx::query_scalar(
+        "SELECT title FROM native_issues WHERE project_id = 'project-1' AND issue_number = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(title, "Keep me");
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+}
+
+#[tokio::test]
+async fn schema_26_migration_adds_empty_external_references_without_losing_issues() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '26')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE native_issues (
+            issue_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            revision BIGINT NOT NULL DEFAULT 1,
+            changed_by_run_id TEXT,
+            closure_summary TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            archived_at TEXT,
+            UNIQUE (project_id, issue_number)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO native_issues (
+            issue_id, project_id, issue_number, title, description,
+            status, created_at, updated_at
+         ) VALUES (
+            'issue_0123456789abcdef0123456789abcdef', 'project-1', 1,
+            'Keep references compatible', 'Existing native Issue', 'todo',
+            '2026-08-07T00:00:00.000Z', '2026-08-07T00:00:00.000Z'
+         )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let references: String = sqlx::query_scalar(
+        "SELECT external_references_json FROM native_issues
+         WHERE issue_id = 'issue_0123456789abcdef0123456789abcdef'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(references, "[]");
+    let title: String = sqlx::query_scalar(
+        "SELECT title FROM native_issues
+         WHERE issue_id = 'issue_0123456789abcdef0123456789abcdef'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(title, "Keep references compatible");
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+}
+
+#[tokio::test]
+async fn schema_21_migration_adds_local_agent_run_tracking_without_an_issue_table() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '21')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    for table in ["agent_runs", "agent_run_events"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "{table} was not created");
+    }
+    let issue_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'issues'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(issue_table_count, 0);
+}
+
+#[tokio::test]
 async fn schema_18_migration_replaces_graded_judgments_with_confirmed_evidence() {
     let root = tempfile::tempdir().unwrap();
     let database_path = root.path().join("local.db");
@@ -1697,6 +1985,137 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
     assert!(!activation.ok);
     assert_eq!(activation.error.unwrap().code, "project_ref_not_synced");
 
+    let observed: RecordAgentRunEventResponse = service
+        .dispatch(DaemonIpcRequest::new(
+            "record_agent_run_event",
+            json!({
+                "event_id": "hook_dispatch_start",
+                "project_id": "prj_test",
+                "host": "codex",
+                "host_run_key": "root:dispatch-turn",
+                "event_type": "started",
+                "source": "hook",
+                "host_session_id": "session-dispatch",
+                "parent_run_id": null,
+                "parent_host_run_key": null,
+                "kind": "root",
+                "issue_key": null,
+                "outcome": null,
+                "display_label": null,
+                "summary": null,
+                "occurred_at": null
+            }),
+        ))
+        .await
+        .into_payload()
+        .unwrap();
+    let observed_run = observed.run.unwrap();
+    assert_eq!(observed_run.phase, AgentRunPhase::Running);
+
+    let global_issue_lookup = service
+        .dispatch(DaemonIpcRequest::new(
+            "get_issue",
+            json!({ "issue_id": "issue_0123456789abcdef0123456789abcdef" }),
+        ))
+        .await;
+    assert!(!global_issue_lookup.ok);
+    assert_eq!(global_issue_lookup.error.unwrap().code, "not_found");
+
+    for (method, payload) in [
+        (
+            "request_issue_closure",
+            json!({
+                "project_id": "prj_other",
+                "run_id": observed_run.run_id,
+                "summary": null,
+                "expected_revision": observed_run.revision
+            }),
+        ),
+        (
+            "start_issue_work",
+            json!({
+                "project_id": "prj_other",
+                "run_id": observed_run.run_id,
+                "issue_key": "ISSUE-003",
+                "expected_revision": observed_run.revision
+            }),
+        ),
+    ] {
+        let response = service
+            .dispatch(DaemonIpcRequest::new(method, payload))
+            .await;
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "not_found");
+    }
+
+    for (method, payload) in [
+        ("list_issue_board", json!({ "project_id": "prj_test" })),
+        (
+            "get_issue_detail",
+            json!({ "project_id": "prj_test", "issue_number": 3 }),
+        ),
+        (
+            "create_issue",
+            json!({
+                "project_id": "prj_test",
+                "title": "Native Issue",
+                "description": "Created by an Agent",
+                "acceptance_criteria": []
+            }),
+        ),
+        (
+            "update_issue",
+            json!({
+                "project_id": "prj_test",
+                "issue_key": "ISSUE-003",
+                "expected_revision": 1,
+                "title": "Updated Issue"
+            }),
+        ),
+        (
+            "apply_issue_gate",
+            json!({
+                "project_id": "prj_test",
+                "issue_number": 3,
+                "expected_revision": 1,
+                "action": "approve_closure"
+            }),
+        ),
+        (
+            "remove_issue",
+            json!({
+                "project_id": "prj_test",
+                "issue_number": 3,
+                "expected_revision": 1,
+                "action": "delete"
+            }),
+        ),
+        (
+            "start_issue_work",
+            json!({
+                "project_id": "prj_test",
+                "run_id": observed_run.run_id,
+                "issue_key": "ISSUE-003",
+                "expected_revision": observed_run.revision
+            }),
+        ),
+        (
+            "request_issue_closure",
+            json!({
+                "project_id": "prj_test",
+                "run_id": observed_run.run_id,
+                "summary": "Acceptance criteria are satisfied",
+                "expected_revision": observed_run.revision
+            }),
+        ),
+    ] {
+        let response = service
+            .dispatch(DaemonIpcRequest::new(method, payload))
+            .await;
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "project_ref_not_synced");
+    }
+
     let project_checkout: DaemonProjectCheckout = service
         .dispatch(DaemonIpcRequest::new(
             "project_checkout",
@@ -1862,6 +2281,93 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
     assert_eq!(
         detail.operations[0].source,
         DaemonDraftOperationRecordSource::McpStore
+    );
+}
+
+#[tokio::test]
+async fn mcp_issue_external_references_round_trip_through_daemon_contract() {
+    let (_root, state, service) = common::test_daemon().await;
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO native_issue_imports (project_id, imported_at) VALUES ($1, $2)")
+        .bind("prj_mcp")
+        .bind("2026-08-08T00:00:00.000Z")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let create_request: DaemonIpcRequest = serde_json::from_str(
+        r#"{
+            "method": "create_issue",
+            "payload": {
+                "project_id": "prj_mcp",
+                "title": "Track upstream",
+                "description": "Keep remote work connected.",
+                "external_references": [
+                    {
+                        "kind": "issue",
+                        "url": "https://github.com/acme/clumsies/issues/11"
+                    },
+                    {
+                        "kind": "pull_request",
+                        "url": "https://github.com/acme/clumsies/pull/12?diff=split#discussion"
+                    }
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let created = service.dispatch(create_request).await;
+    assert!(
+        created.ok,
+        "daemon rejected MCP Issue envelope: {:?}",
+        created.error
+    );
+    let issue_id = created.payload["issue_id"].as_str().unwrap().to_owned();
+
+    let list_request: DaemonIpcRequest = serde_json::from_str(
+        r#"{
+            "method": "list_issue_board",
+            "payload": { "project_id": "prj_mcp" }
+        }"#,
+    )
+    .unwrap();
+    let listed = service.dispatch(list_request).await;
+    assert!(
+        listed.ok,
+        "daemon rejected MCP list envelope: {:?}",
+        listed.error
+    );
+
+    let expected_references = json!([
+        {
+            "kind": "issue",
+            "url": "https://github.com/acme/clumsies/issues/11"
+        },
+        {
+            "kind": "pull_request",
+            "url": "https://github.com/acme/clumsies/pull/12?diff=split#discussion"
+        }
+    ]);
+    assert_eq!(
+        listed.payload["issues"][0]["external_references"],
+        expected_references
+    );
+
+    let detail = service
+        .dispatch(DaemonIpcRequest::new(
+            "get_issue",
+            json!({ "issue_id": issue_id }),
+        ))
+        .await;
+    let mcp_response = serde_json::to_value(&detail).unwrap();
+    assert_eq!(mcp_response["ok"], true);
+    assert_eq!(mcp_response["error"], serde_json::Value::Null);
+    assert_eq!(
+        mcp_response["payload"]["issue"]["external_references"],
+        expected_references
     );
 }
 

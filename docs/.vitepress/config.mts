@@ -88,6 +88,8 @@ export default withMermaid(
                 { text: "Runtime surfaces", link: "/runtime" },
                 { text: "MCP", link: "/mcp" },
                 { text: "Adapter", link: "/adapter" },
+                { text: "Issue board requirements", link: "/issue-board-requirements" },
+                { text: "Issue board design", link: "/issue-board-design" },
                 { text: "TUI", link: "/tui" },
                 { text: "META_PROMPT", link: "/meta-prompt" }
               ]

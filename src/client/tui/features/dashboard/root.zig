@@ -224,7 +224,6 @@ fn drawMetricValue(
 }
 
 pub fn isExceptionRound(round: attestation_reader.RoundEvent) bool {
-    if (round.missing_user_prompt) return true;
     if (round.reject_count > 0) return true;
     return round.load_count > 0 and round.refer_count == 0;
 }
@@ -702,7 +701,7 @@ fn syncRoundWidgets(
         }
 
         var remaining = if (round.missing_user_prompt)
-            "Per-session log has MCP calls, but no user_prompt. Reinstall or rebuild the adapter hook."
+            "Prompt content was not captured for this legacy session."
         else
             round.content;
         var line_idx: usize = 0;

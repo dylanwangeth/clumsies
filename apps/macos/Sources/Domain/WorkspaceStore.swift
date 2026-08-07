@@ -282,7 +282,7 @@ final class WorkspaceStore: ObservableObject {
                 $0.scope == .org && $0.kind == selectedKind && inheritedIds.contains($0.id)
             }
             authoritative = projectResources + inherited
-        case .bundles, .reviews:
+        case .issues, .bundles, .reviews:
             return []
         }
 

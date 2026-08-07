@@ -150,6 +150,28 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "store_draft_operation", payload: request)
     }
 
+    func issueBoard(_ projectId: String) async throws -> IssueBoardResponse {
+        try await call(
+            method: "list_issue_board",
+            payload: IssueBoardListRequest(projectId: projectId)
+        )
+    }
+
+    func issueDetail(projectId: String, issueNumber: Int) async throws -> IssueDetailResponse {
+        try await call(
+            method: "get_issue_detail",
+            payload: IssueDetailRequest(projectId: projectId, issueNumber: issueNumber)
+        )
+    }
+
+    func applyIssueGate(_ request: ApplyIssueGateRequest) async throws -> IssueMutationResponse {
+        try await call(method: "apply_issue_gate", payload: request)
+    }
+
+    func removeIssue(_ request: RemoveIssueRequest) async throws -> IssueRemovalResponse {
+        try await call(method: "remove_issue", payload: request)
+    }
+
     func listRetrievalRuns(_ request: RetrievalRunListRequest) async throws
         -> RetrievalRunListResponse {
         try await call(method: "list_retrieval_runs", payload: request)

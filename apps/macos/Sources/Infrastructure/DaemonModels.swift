@@ -551,6 +551,248 @@ enum DaemonDraftOperation: Codable, Sendable {
     }
 }
 
+enum IssueLifecycle: String, Codable, CaseIterable, Hashable, Sendable {
+    case open
+    case closed
+}
+
+enum IssueBoardState: String, Codable, CaseIterable, Hashable, Sendable {
+    case todo
+    case inProgress = "in_progress"
+    case closureRequested = "closure_requested"
+    case done
+}
+
+enum IssueGateAction: String, Codable, Hashable, Sendable {
+    case approveClosure = "approve_closure"
+    case requestChanges = "request_changes"
+    case reopen
+}
+
+enum IssueRemovalAction: String, Codable, Hashable, Sendable {
+    case archive
+    case delete
+}
+
+enum IssueExternalReferenceKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case issue
+    case pullRequest = "pull_request"
+}
+
+struct IssueExternalReference: Codable, Equatable, Hashable, Sendable {
+    let kind: IssueExternalReferenceKind
+    let url: String
+}
+
+enum AgentRunHost: String, Codable, Hashable, Sendable {
+    case codex
+    case claudeCode = "claude-code"
+}
+
+enum AgentRunKind: String, Codable, Hashable, Sendable {
+    case root
+    case subagent
+}
+
+enum AgentRunPhase: String, Codable, Hashable, Sendable {
+    case running
+    case ended
+}
+
+enum AgentRunOutcome: String, Codable, Hashable, Sendable {
+    case completed
+    case blocked
+    case failed
+    case cancelled
+    case unknown
+}
+
+enum IssueBoardDiagnosticCode: String, Codable, Hashable, Sendable {
+    case malformedPath = "malformed_path"
+    case malformedTitle = "malformed_title"
+    case titleNumberMismatch = "title_number_mismatch"
+    case duplicateIssueNumber = "duplicate_issue_number"
+}
+
+struct IssueBoardListRequest: Codable, Equatable, Sendable {
+    let projectId: String
+}
+
+struct IssueDetailRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueNumber: Int
+}
+
+struct IssueDetailResponse: Codable, Equatable, Sendable {
+    let issue: IssueBoardCard
+    let body: String
+    let acceptanceCriteria: [String]
+}
+
+struct ApplyIssueGateRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueNumber: Int
+    let expectedRevision: Int
+    let action: IssueGateAction
+}
+
+struct IssueMutationResponse: Codable, Equatable, Sendable {
+    let issueId: String
+    let issueKey: String
+    let boardState: IssueBoardState
+    let revision: Int
+    let updatedAt: String
+}
+
+struct RemoveIssueRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueNumber: Int
+    let expectedRevision: Int
+    let action: IssueRemovalAction
+}
+
+struct IssueRemovalResponse: Codable, Equatable, Sendable {
+    let issueId: String
+    let issueKey: String
+    let action: IssueRemovalAction
+    let removedAt: String
+}
+
+struct IssueBoardResponse: Codable, Equatable, Sendable {
+    let projectId: String
+    let effectiveHash: String
+    let issues: [IssueBoardCard]
+    let unlinkedRuns: [AgentRun]
+    let diagnostics: [IssueBoardDiagnostic]
+}
+
+struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
+    var id: String { issueId }
+
+    let issueId: String
+    let projectId: String
+    let issueNumber: Int
+    let issueKey: String
+    let resourceId: String
+    let path: String
+    let lifecycle: IssueLifecycle
+    let title: String
+    let description: String
+    let externalReferences: [IssueExternalReference]
+    let foundAt: String?
+    let createdAt: String?
+    let startedAt: String?
+    let closedAt: String?
+    let archivedAt: String?
+    let contentHash: String
+    let sourceCommitId: String?
+    let draftId: String?
+    let draftRevision: String?
+    let boardState: IssueBoardState
+    let stateRevision: Int
+    let stateUpdatedAt: String?
+    let closureSummary: String?
+    let isStale: Bool
+    let activeRuns: [AgentRun]
+    let latestRun: AgentRun?
+}
+
+extension IssueBoardCard {
+    private enum CodingKeys: String, CodingKey {
+        case issueId
+        case projectId
+        case issueNumber
+        case issueKey
+        case resourceId
+        case path
+        case lifecycle
+        case title
+        case description
+        case externalReferences
+        case foundAt
+        case createdAt
+        case startedAt
+        case closedAt
+        case archivedAt
+        case contentHash
+        case sourceCommitId
+        case draftId
+        case draftRevision
+        case boardState
+        case stateRevision
+        case stateUpdatedAt
+        case closureSummary
+        case isStale
+        case activeRuns
+        case latestRun
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        issueId = try container.decode(String.self, forKey: .issueId)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        issueNumber = try container.decode(Int.self, forKey: .issueNumber)
+        issueKey = try container.decode(String.self, forKey: .issueKey)
+        resourceId = try container.decode(String.self, forKey: .resourceId)
+        path = try container.decode(String.self, forKey: .path)
+        lifecycle = try container.decode(IssueLifecycle.self, forKey: .lifecycle)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decode(String.self, forKey: .description)
+        externalReferences = try container.decodeIfPresent(
+            [IssueExternalReference].self,
+            forKey: .externalReferences
+        ) ?? []
+        foundAt = try container.decodeIfPresent(String.self, forKey: .foundAt)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        startedAt = try container.decodeIfPresent(String.self, forKey: .startedAt)
+        closedAt = try container.decodeIfPresent(String.self, forKey: .closedAt)
+        archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        sourceCommitId = try container.decodeIfPresent(String.self, forKey: .sourceCommitId)
+        draftId = try container.decodeIfPresent(String.self, forKey: .draftId)
+        draftRevision = try container.decodeIfPresent(String.self, forKey: .draftRevision)
+        boardState = try container.decode(IssueBoardState.self, forKey: .boardState)
+        stateRevision = try container.decode(Int.self, forKey: .stateRevision)
+        stateUpdatedAt = try container.decodeIfPresent(String.self, forKey: .stateUpdatedAt)
+        closureSummary = try container.decodeIfPresent(String.self, forKey: .closureSummary)
+        isStale = try container.decode(Bool.self, forKey: .isStale)
+        activeRuns = try container.decode([AgentRun].self, forKey: .activeRuns)
+        latestRun = try container.decodeIfPresent(AgentRun.self, forKey: .latestRun)
+    }
+}
+
+struct AgentRun: Codable, Identifiable, Equatable, Sendable {
+    var id: String { runId }
+
+    let runId: String
+    let projectId: String
+    let issueNumber: Int?
+    let host: AgentRunHost
+    let hostRunKey: String
+    let hostSessionId: String?
+    let parentRunId: String?
+    let kind: AgentRunKind
+    let phase: AgentRunPhase
+    let outcome: AgentRunOutcome?
+    let endReason: String?
+    let displayLabel: String?
+    let summary: String?
+    let revision: Int
+    let startedAt: String
+    let lastSeenAt: String
+    let leaseExpiresAt: String
+    let endedAt: String?
+}
+
+struct IssueBoardDiagnostic: Codable, Identifiable, Equatable, Sendable {
+    var id: String { "\(resourceId):\(code.rawValue):\(path)" }
+
+    let resourceId: String
+    let path: String
+    let code: IssueBoardDiagnosticCode
+    let message: String
+}
+
 enum RetrievalRunStatus: String, Codable, Hashable, Sendable {
     case running
     case succeeded

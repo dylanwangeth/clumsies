@@ -16,6 +16,7 @@ mod server_client;
 mod state;
 mod types;
 mod util;
+mod work_tracking;
 
 pub use agent_adapter::{
     DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
@@ -108,4 +109,14 @@ pub(crate) use util::is_normalized_relative_path;
 use util::{
     apply_exact_text_replacements, canonical_server_url, canonical_workspace_directory,
     memory_kind_matches_resource, non_empty_string,
+};
+pub use work_tracking::{
+    AgentRun, AgentRunEventSource, AgentRunEventType, AgentRunHost, AgentRunKind, AgentRunOutcome,
+    AgentRunPhase, ApplyIssueGateRequest, CreateIssueRequest, GetIssueRequest, IssueBoardCard,
+    IssueBoardDiagnostic, IssueBoardDiagnosticCode, IssueBoardListRequest, IssueBoardResponse,
+    IssueBoardState, IssueDetailRequest, IssueDetailResponse, IssueExternalReference,
+    IssueExternalReferenceKind, IssueGateAction, IssueLifecycle, IssueMutationResponse,
+    IssueRemovalAction, IssueRemovalResponse, IssueWorkflowMutationResponse,
+    RecordAgentRunEventRequest, RecordAgentRunEventResponse, RemoveIssueRequest,
+    RequestIssueClosureRequest, StartIssueWorkRequest, UpdateIssueRequest,
 };

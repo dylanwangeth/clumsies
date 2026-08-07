@@ -3,6 +3,7 @@ import Foundation
 enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     case hub
     case local
+    case issues
     case bundles
     case reviews
 
@@ -12,6 +13,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .hub: "Hub"
         case .local: "Local"
+        case .issues: "Kanban"
         case .bundles: "Bundles"
         case .reviews: "Reviews"
         }
@@ -21,6 +23,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .hub: "cloud"
         case .local: "macbook.and.ipod"
+        case .issues: "rectangle.3.group"
         case .bundles: "shippingbox"
         case .reviews: "checkmark.bubble"
         }

@@ -13,7 +13,9 @@ use crate::{
     CredentialStore, CredentialStoreError, DaemonConfig, DaemonError, ProjectConfig,
     RuntimeProjectConfig, ServerCredentials,
 };
-use crate::{agent_adapter, commit_sync, project_storage, retrieval_history, search};
+use crate::{
+    agent_adapter, commit_sync, project_storage, retrieval_history, search, work_tracking,
+};
 
 pub(crate) fn prepare_directories(config: &DaemonConfig) -> Result<(), DaemonError> {
     project_storage::ensure_private_directory(&config.root_dir)?;
@@ -74,6 +76,30 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
     if existing_schema_version == 20 {
         migrate_local_schema_20_to_21(pool).await?;
         existing_schema_version = 21;
+    }
+    if existing_schema_version == 21 {
+        migrate_local_schema_21_to_22(pool).await?;
+        existing_schema_version = 22;
+    }
+    if existing_schema_version == 22 {
+        migrate_local_schema_22_to_23(pool).await?;
+        existing_schema_version = 23;
+    }
+    if existing_schema_version == 23 {
+        migrate_local_schema_23_to_24(pool).await?;
+        existing_schema_version = 24;
+    }
+    if existing_schema_version == 24 {
+        migrate_local_schema_24_to_25(pool).await?;
+        existing_schema_version = 25;
+    }
+    if existing_schema_version == 25 {
+        migrate_local_schema_25_to_26(pool).await?;
+        existing_schema_version = 26;
+    }
+    if existing_schema_version == 26 {
+        migrate_local_schema_26_to_27(pool).await?;
+        existing_schema_version = 27;
     }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
@@ -192,6 +218,7 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
     project_storage::migrate(pool).await?;
     search::migrate(pool).await?;
     retrieval_history::migrate(pool).await?;
+    work_tracking::migrate(pool).await?;
     sqlx::query(
         "INSERT INTO daemon_meta (key, value)
          VALUES ('schema_version', $1)
@@ -200,6 +227,143 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
     .bind(CURRENT_LOCAL_SCHEMA_VERSION.to_string())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_20_to_21(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let local_drafts_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'local_drafts'
+         )",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !local_drafts_exists {
+        return Ok(());
+    }
+    sqlx::query(
+        "ALTER TABLE local_drafts
+         ADD COLUMN has_upstream_resource_changes INTEGER NOT NULL
+         CHECK (has_upstream_resource_changes IN (0, 1)) DEFAULT 0",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_21_to_22(pool: &SqlitePool) -> Result<(), DaemonError> {
+    work_tracking::migrate(pool).await
+}
+
+pub(crate) async fn migrate_local_schema_22_to_23(pool: &SqlitePool) -> Result<(), DaemonError> {
+    work_tracking::migrate(pool).await
+}
+
+pub(crate) async fn migrate_local_schema_23_to_24(pool: &SqlitePool) -> Result<(), DaemonError> {
+    work_tracking::migrate(pool).await
+}
+
+pub(crate) async fn migrate_local_schema_24_to_25(pool: &SqlitePool) -> Result<(), DaemonError> {
+    work_tracking::migrate(pool).await?;
+    let columns = sqlx::query("PRAGMA table_info(native_issues)")
+        .fetch_all(pool)
+        .await?;
+    if !columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "started_at")
+    {
+        sqlx::query("ALTER TABLE native_issues ADD COLUMN started_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_25_to_26(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "CREATE TABLE native_issues_v26 (
+            issue_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK (status IN (
+                'todo', 'in_progress', 'closure_requested', 'done'
+            )),
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
+            closure_summary TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            archived_at TEXT,
+            UNIQUE (project_id, issue_number)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO native_issues_v26 (
+            issue_id, project_id, issue_number, title, description,
+            acceptance_criteria_json, status, revision, changed_by_run_id,
+            closure_summary, created_at, started_at, updated_at, closed_at,
+            archived_at
+         )
+         SELECT issue_id, project_id, issue_number, title, description,
+                acceptance_criteria_json, status, revision, changed_by_run_id,
+                closure_summary, created_at, started_at, updated_at, closed_at,
+                NULL
+         FROM native_issues",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE native_issues")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("ALTER TABLE native_issues_v26 RENAME TO native_issues")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_native_issues_project_status
+         ON native_issues (project_id, status, issue_number)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_26_to_27(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    let columns = sqlx::query("PRAGMA table_info(native_issues)")
+        .fetch_all(&mut *connection)
+        .await?;
+    if !columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "external_references_json")
+    {
+        let result = sqlx::query(
+            "ALTER TABLE native_issues
+             ADD COLUMN external_references_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&mut *connection)
+        .await;
+        if let Err(error) = result {
+            let columns = sqlx::query("PRAGMA table_info(native_issues)")
+                .fetch_all(&mut *connection)
+                .await?;
+            if !columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == "external_references_json")
+            {
+                return Err(error.into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -364,28 +528,6 @@ pub(crate) async fn migrate_local_schema_18_to_19(pool: &SqlitePool) -> Result<(
 
 pub(crate) async fn migrate_local_schema_19_to_20(pool: &SqlitePool) -> Result<(), DaemonError> {
     agent_adapter::migrate(pool).await
-}
-
-pub(crate) async fn migrate_local_schema_20_to_21(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let local_drafts_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'table' AND name = 'local_drafts'
-         )",
-    )
-    .fetch_one(pool)
-    .await?;
-    if !local_drafts_exists {
-        return Ok(());
-    }
-    sqlx::query(
-        "ALTER TABLE local_drafts
-         ADD COLUMN has_upstream_resource_changes INTEGER NOT NULL
-         CHECK (has_upstream_resource_changes IN (0, 1)) DEFAULT 0",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 pub(crate) async fn create_project_bindings_table(pool: &SqlitePool) -> Result<(), DaemonError> {

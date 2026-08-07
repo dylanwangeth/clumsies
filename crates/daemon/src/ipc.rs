@@ -1,10 +1,10 @@
 use crate::{
-    ActivateMemoryRequest, ActivateMemoryResponse, ClearRetrievalRunsRequest,
-    ClearRetrievalRunsResponse, CreateEvaluationCaseRequest, DaemonDraftDetail,
-    DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
-    DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
-    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService, DaemonMcpStatus,
-    DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
+    ActivateMemoryRequest, ActivateMemoryResponse, ApplyIssueGateRequest,
+    ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
+    CreateIssueRequest, DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery,
+    DaemonDraftListResponse, DaemonDraftOperationRequest, DaemonDraftOperationResponse,
+    DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
+    DaemonMcpStatus, DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
     DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
     DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
     DaemonProjectBinding, DaemonProjectBindingListRequest, DaemonProjectBindingListResponse,
@@ -16,9 +16,13 @@ use crate::{
     DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
     DaemonProjectStorageResetRequest, DaemonRetryResponse, DaemonServerRequest,
     DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, EvaluationCaseDetail,
-    ExportEvaluationSetRequest, ExportEvaluationSetResponse, LoadMemoryRequest, LoadMemoryResponse,
-    ResolveEvaluationCaseRequest, RetrievalRunDetail, RetrievalRunListRequest,
-    RetrievalRunListResponse, RetrievalRunRequest, SearchIndexProjectRequest, SearchIndexStatus,
+    ExportEvaluationSetRequest, ExportEvaluationSetResponse, GetIssueRequest,
+    IssueBoardListRequest, IssueBoardResponse, IssueDetailRequest, IssueDetailResponse,
+    IssueMutationResponse, IssueRemovalResponse, IssueWorkflowMutationResponse, LoadMemoryRequest,
+    LoadMemoryResponse, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
+    RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
+    RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
+    SearchIndexProjectRequest, SearchIndexStatus, StartIssueWorkRequest, UpdateIssueRequest,
 };
 
 #[derive(Clone, Debug)]
@@ -237,6 +241,113 @@ impl DaemonIpcClient {
     ) -> Result<LoadMemoryResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "load_memory",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn record_agent_run_event(
+        &self,
+        request: RecordAgentRunEventRequest,
+    ) -> Result<RecordAgentRunEventResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "record_agent_run_event",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_issue_board(
+        &self,
+        request: IssueBoardListRequest,
+    ) -> Result<IssueBoardResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_issue_board",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn get_issue_detail(
+        &self,
+        request: IssueDetailRequest,
+    ) -> Result<IssueDetailResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "get_issue_detail",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn get_issue(&self, request: GetIssueRequest) -> Result<IssueDetailResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "get_issue",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn create_issue(
+        &self,
+        request: CreateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "create_issue",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn update_issue(
+        &self,
+        request: UpdateIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "update_issue",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn apply_issue_gate(
+        &self,
+        request: ApplyIssueGateRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "apply_issue_gate",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn remove_issue(
+        &self,
+        request: RemoveIssueRequest,
+    ) -> Result<IssueRemovalResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "remove_issue",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn start_issue_work(
+        &self,
+        request: StartIssueWorkRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "start_issue_work",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn request_issue_closure(
+        &self,
+        request: RequestIssueClosureRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "request_issue_closure",
             serde_json::to_value(request)?,
         ))?
         .into_payload()
