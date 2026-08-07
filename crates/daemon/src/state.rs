@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 use super::*;
 
+const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct DaemonState {
     pub(crate) inner: Arc<DaemonInner>,
@@ -68,7 +70,9 @@ impl DaemonState {
         retrieval_history::recover_interrupted_runs(&pool).await?;
         work_tracking::recover_expired_runs(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
-        let credentials = load_server_credentials(credential_store.clone()).await?;
+        let credentials =
+            load_startup_credentials(credential_store.clone(), STARTUP_CREDENTIAL_LOAD_TIMEOUT)
+                .await;
         let project_config = load_project_config(&pool, &config.project, credentials).await?;
 
         let state = Self {
@@ -1218,6 +1222,28 @@ impl DaemonState {
     }
 }
 
+async fn load_startup_credentials(
+    credential_store: Arc<dyn CredentialStore>,
+    timeout: Duration,
+) -> Option<ServerCredentials> {
+    match tokio::time::timeout(timeout, load_server_credentials(credential_store)).await {
+        Ok(Ok(credentials)) => credentials,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                "Server credentials are unavailable; continuing daemon startup without authentication: {error}"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                "Timed out loading Server credentials after {} ms; continuing daemon startup without authentication",
+                timeout.as_millis()
+            );
+            None
+        }
+    }
+}
+
 macro_rules! dispatch_async {
     ($self:expr, $payload:expr, $method:ident) => {{
         let payload = $self.decode_dispatch_payload::<_>($payload);
@@ -1674,5 +1700,57 @@ impl DaemonIpcService {
         T: DeserializeOwned,
     {
         serde_json::from_value(payload).map_err(DaemonError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Condvar, Mutex as StdMutex};
+
+    use super::*;
+
+    struct BlockingCredentialStore {
+        gate: Arc<(StdMutex<bool>, Condvar)>,
+    }
+
+    impl CredentialStore for BlockingCredentialStore {
+        fn load(&self) -> Result<Option<ServerCredentials>, CredentialStoreError> {
+            let (ready, wake) = &*self.gate;
+            let ready = ready.lock().unwrap();
+            let _ = wake
+                .wait_timeout_while(ready, Duration::from_secs(1), |ready| !*ready)
+                .unwrap();
+            Ok(Some(ServerCredentials {
+                server_url: "https://clumsies.example.test".to_owned(),
+                access_token: "access-token".to_owned(),
+                refresh_token: None,
+            }))
+        }
+
+        fn replace(&self, _credentials: &ServerCredentials) -> Result<(), CredentialStoreError> {
+            Ok(())
+        }
+
+        fn clear(&self) -> Result<(), CredentialStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_continues_when_credential_store_blocks() {
+        let gate = Arc::new((StdMutex::new(false), Condvar::new()));
+        let store = Arc::new(BlockingCredentialStore { gate: gate.clone() });
+
+        let credentials = tokio::time::timeout(
+            Duration::from_millis(250),
+            load_startup_credentials(store, Duration::from_millis(10)),
+        )
+        .await
+        .expect("startup credential fallback must remain bounded");
+
+        assert!(credentials.is_none());
+        let (ready, wake) = &*gate;
+        *ready.lock().unwrap() = true;
+        wake.notify_all();
     }
 }
