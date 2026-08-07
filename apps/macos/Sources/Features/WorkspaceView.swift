@@ -84,16 +84,47 @@ enum SyncToolbarPresentation: Equatable {
     }
 }
 
+enum WorkspaceColumnLayout: Equatable {
+    case sidebarDetail
+    case sidebarContentDetail
+
+    init(section: WorkspaceSection) {
+        self = section == .issues ? .sidebarDetail : .sidebarContentDetail
+    }
+}
+
+struct IssueBoardRoute: Hashable {
+    let issueId: String
+}
+
 struct WorkspaceView: View {
     @ObservedObject var store: WorkspaceStore
     let onOpenSettings: () -> Void
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
+    @StateObject private var issueBoardModel: IssueBoardModel
     @State private var reviewStatusFilter = "open"
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
+    @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
     @State private var confirmsBundleDeletion = false
     @State private var showsSyncIssuePopover = false
+    @State private var showsUnlinkedActivity = false
+    @State private var showsIssueWorkflowHelp = false
+    @State private var issueNavigationPath: [IssueBoardRoute] = []
+
+    init(
+        store: WorkspaceStore,
+        onOpenSettings: @escaping () -> Void,
+        onOpenDiagnostics: @escaping (DiagnosticsDestination) -> Void,
+        onShowLogs: @escaping () -> Void
+    ) {
+        self.store = store
+        self.onOpenSettings = onOpenSettings
+        self.onOpenDiagnostics = onOpenDiagnostics
+        self.onShowLogs = onShowLogs
+        _issueBoardModel = StateObject(wrappedValue: IssueBoardModel(daemon: store.daemon))
+    }
 
     private var showsDocumentTabs: Bool {
         (store.selectedSection == .hub || store.selectedSection == .local)
@@ -108,6 +139,14 @@ struct WorkspaceView: View {
     }
 
     var body: some View {
+        if WorkspaceColumnLayout(section: store.selectedSection) == .sidebarDetail {
+            issuesWorkspace
+        } else {
+            regularWorkspace
+        }
+    }
+
+    private var regularWorkspace: some View {
         NavigationSplitView(columnVisibility: $splitVisibility) {
                 GlobalSidebar(
                     store: store,
@@ -315,6 +354,12 @@ struct WorkspaceView: View {
                     }
                 }
             }
+        .onAppear {
+            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .doubleColumn
+            if splitVisibility != target {
+                splitVisibility = target
+            }
+        }
         .onChange(of: store.searchQuery) { _, query in
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             Task { await store.prepareWorkspaceIndex(includeContent: true) }
@@ -368,6 +413,196 @@ struct WorkspaceView: View {
         }
     }
 
+    private var issuesWorkspace: some View {
+        NavigationSplitView(columnVisibility: $issueSplitVisibility) {
+            GlobalSidebar(
+                store: store,
+                onOpenSettings: onOpenSettings,
+                onOpenDiagnostics: onOpenDiagnostics,
+                onShowLogs: onShowLogs
+            )
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+        } detail: {
+            NavigationStack(path: $issueNavigationPath) {
+                IssueBoardView(
+                    model: issueBoardModel,
+                    projectId: store.activeProjectId,
+                    projectName: store.activeProject?.name,
+                    onOpenDetails: { issue in
+                        issueNavigationPath = [IssueBoardRoute(issueId: issue.id)]
+                    }
+                )
+                .navigationDestination(for: IssueBoardRoute.self) { route in
+                    IssueDetailView(
+                        issueId: route.issueId,
+                        model: issueBoardModel
+                    )
+                }
+            }
+            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar {
+                if issueNavigationPath.isEmpty {
+                    ToolbarItem(placement: .navigation) {
+                        IssueProjectFilter(store: store)
+                    }
+
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Toggle(isOn: $issueBoardModel.showsStaleOnly) {
+                            Label("Stale", systemImage: "clock.badge.exclamationmark")
+                        }
+                        .toggleStyle(.button)
+                        .disabled(issueBoardModel.response == nil)
+                        .help("Show only stale In Progress Issues")
+
+                        IssueExternalReferenceFilterMenu(model: issueBoardModel)
+
+                        if showsUnlinkedActivityButton {
+                            Button {
+                                showsUnlinkedActivity.toggle()
+                            } label: {
+                                Label(
+                                    "\(issueBoardModel.unlinkedRuns.count)",
+                                    systemImage: "bolt.circle"
+                                )
+                                .labelStyle(.titleAndIcon)
+                            }
+                            .help("Unlinked Activity")
+                            .accessibilityLabel("Unlinked Activity")
+                            .accessibilityValue(
+                                "\(issueBoardModel.unlinkedRuns.count) Agent Runs"
+                            )
+                            .popover(isPresented: $showsUnlinkedActivity, arrowEdge: .top) {
+                                IssueUnlinkedActivityPopover(runs: issueBoardModel.unlinkedRuns)
+                            }
+                        }
+
+                        Button {
+                            showsIssueWorkflowHelp.toggle()
+                        } label: {
+                            Image(systemName: "questionmark.circle")
+                        }
+                        .help("How to use Kanban")
+                        .accessibilityLabel("How to use Kanban")
+                        .popover(isPresented: $showsIssueWorkflowHelp, arrowEdge: .top) {
+                            IssueWorkflowHelpPopover()
+                        }
+
+                        if let syncToolbarPresentation {
+                            switch syncToolbarPresentation {
+                            case .syncing:
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 24, height: 24)
+                                    .help(syncToolbarPresentation.label)
+                                    .accessibilityLabel(syncToolbarPresentation.label)
+                            case .failed, .unavailable, .stale:
+                                Button {
+                                    showsSyncIssuePopover.toggle()
+                                } label: {
+                                    Image(systemName: syncToolbarPresentation.symbolName)
+                                        .foregroundStyle(syncToolbarPresentation.tint)
+                                }
+                                .help(syncToolbarPresentation.label)
+                                .accessibilityLabel(syncToolbarPresentation.label)
+                                .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
+                                    SyncIssuePopover(
+                                        presentation: syncToolbarPresentation,
+                                        store: store,
+                                        isPresented: $showsSyncIssuePopover
+                                    )
+                                }
+                            }
+                        }
+
+                        Button {
+                            store.showsGlobalSearch.toggle()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .help("Search")
+                        .accessibilityLabel("Search")
+                        .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
+                            WorkspaceSearchPopover(
+                                store: store,
+                                results: searchResults,
+                                onOpen: open
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            store.showsProjectSettings = false
+            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .detailOnly
+            if issueSplitVisibility != target {
+                issueSplitVisibility = target
+            }
+        }
+        .onChange(of: store.searchQuery) { _, query in
+            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            Task { await store.prepareWorkspaceIndex(includeContent: true) }
+        }
+        .onChange(of: issueSplitVisibility) { _, visibility in
+            let expanded = visibility != .detailOnly
+            if store.sidebarExpanded != expanded {
+                store.sidebarExpanded = expanded
+            }
+        }
+        .onChange(of: store.sidebarExpanded) { _, expanded in
+            let target: NavigationSplitViewVisibility = expanded ? .all : .detailOnly
+            if issueSplitVisibility != target {
+                issueSplitVisibility = target
+            }
+        }
+        .onChange(of: store.activeProjectId) {
+            showsUnlinkedActivity = false
+            issueNavigationPath.removeAll()
+        }
+        .onChange(of: showsUnlinkedActivityButton) { _, isAvailable in
+            if !isAvailable {
+                showsUnlinkedActivity = false
+            }
+        }
+        .onChange(of: syncToolbarPresentation) { _, presentation in
+            if presentation == nil || presentation?.isSyncing == true {
+                showsSyncIssuePopover = false
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await store.refreshSyncStatus()
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
+        }
+        .alert(
+            "Clumsies",
+            isPresented: Binding(
+                get: { store.errorMessage != nil },
+                set: { if !$0 { store.errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { store.errorMessage = nil }
+        } message: {
+            Text(store.errorMessage ?? "")
+        }
+        .sheet(isPresented: $store.showsProjectCreation) {
+            ProjectCreationSheet(store: store)
+        }
+    }
+
+    private var showsUnlinkedActivityButton: Bool {
+        IssueBoardPresentation.showsUnlinkedActivity(
+            activeProjectId: store.activeProjectId,
+            responseProjectId: issueBoardModel.response?.projectId,
+            runCount: issueBoardModel.unlinkedRuns.count
+        )
+    }
+
     @ToolbarContentBuilder
     private var navigationToolbarContent: some ToolbarContent {
         switch store.selectedSection {
@@ -407,6 +642,10 @@ struct WorkspaceView: View {
                 .help("New Bundle")
                 .accessibilityLabel("New Bundle")
             }
+        case .issues:
+            ToolbarItem {
+                EmptyView()
+            }
         case .reviews:
             ToolbarItem {
                 Picker("Status", selection: $reviewStatusFilter) {
@@ -430,6 +669,8 @@ struct WorkspaceView: View {
             MemoryNavigator(store: store)
         case .bundles:
             BundleNavigator(store: store)
+        case .issues:
+            EmptyView()
         case .reviews:
             ReviewNavigator(store: store, statusFilter: $reviewStatusFilter)
         }
@@ -452,6 +693,8 @@ struct WorkspaceView: View {
                 showsResourcePicker: $showsBundleResourcePicker,
                 confirmsDeletion: $confirmsBundleDeletion
             )
+        case .issues:
+            EmptyView()
         case .reviews:
             ReviewDetailPane(store: store, review: selectedReview)
         }
@@ -529,6 +772,50 @@ struct WorkspaceView: View {
         )
     }
 
+}
+
+private struct IssueProjectFilter: View {
+    @ObservedObject var store: WorkspaceStore
+
+    var body: some View {
+        Menu {
+            if store.projects.isEmpty {
+                Button("No Projects") {}
+                    .disabled(true)
+            } else {
+                ForEach(store.projects) { project in
+                    Button {
+                        guard project.id != store.activeProjectId else { return }
+                        Task { await store.selectProject(project.id) }
+                    } label: {
+                        if project.id == store.activeProjectId {
+                            Label(project.name, systemImage: "checkmark")
+                        } else {
+                            Text(project.name)
+                        }
+                    }
+                    .disabled(store.loadingProjectId != nil)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if store.loadingProjectId == nil {
+                    Image(systemName: "line.3.horizontal.decrease")
+                } else {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+                Text(store.activeProject?.name ?? "Select Project")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 180, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: 220, alignment: .leading)
+        .help("Filter Kanban by Project")
+        .accessibilityLabel("Project Filter")
+        .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
+    }
 }
 
 private extension SyncToolbarPresentation {
@@ -764,6 +1051,9 @@ private struct GlobalSidebar: View {
                         }
                     }
                 }
+
+                SidebarDestinationLabel(section: .issues)
+                    .tag(GlobalSidebarDestination.section(.issues))
 
                 SidebarDestinationLabel(section: .bundles)
                     .tag(GlobalSidebarDestination.section(.bundles))

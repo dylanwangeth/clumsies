@@ -106,7 +106,13 @@ pub fn buildAdaptPlan(
         }
 
         if (std.mem.eql(u8, asset.resource_kind, "json_hooks_registry")) {
-            const hooks_result = try json_ops.prepareJsonHooksRegistry(allocator, existing, asset.content);
+            const previous_managed = previousManagedContent(loaded_opt, asset.resource_id);
+            const hooks_result = try json_ops.prepareJsonHooksRegistryWithPrevious(
+                allocator,
+                existing,
+                asset.content,
+                previous_managed,
+            );
             switch (hooks_result) {
                 .conflict => |message| {
                     return .{ .conflict = .{

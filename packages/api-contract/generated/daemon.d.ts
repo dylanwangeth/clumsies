@@ -27,7 +27,7 @@ export interface components {
             error: components["schemas"]["ApiError"] | null;
         };
         /** @enum {string} */
-        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "list_project_bindings" | "replace_project_binding" | "remove_project_binding" | "list_project_agent_adapters" | "install_project_agent_adapter" | "remove_project_agent_adapter" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
+        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "list_project_bindings" | "replace_project_binding" | "remove_project_binding" | "list_project_agent_adapters" | "install_project_agent_adapter" | "remove_project_agent_adapter" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "record_agent_run_event" | "list_issue_board" | "get_issue_detail" | "get_issue" | "create_issue" | "update_issue" | "apply_issue_gate" | "remove_issue" | "start_issue_work" | "request_issue_closure" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
         DaemonBootstrapStatus: {
             label: string;
             mach_service_name: string;
@@ -234,6 +234,192 @@ export interface components {
             path: string;
             content_hash: string;
             content: components["schemas"]["DaemonDraftContent"];
+        };
+        RecordAgentRunEventRequest: {
+            event_id: string;
+            project_id: string;
+            host: components["schemas"]["AgentRunHost"];
+            /** @description Null only for a host-session-wide event such as session_ended. */
+            host_run_key: string | null;
+            event_type: components["schemas"]["AgentRunEventType"];
+            source: components["schemas"]["AgentRunEventSource"];
+            host_session_id: string | null;
+            parent_run_id: string | null;
+            /** @description Host key used to resolve a parent run before its daemon run id is known. */
+            parent_host_run_key: string | null;
+            kind: components["schemas"]["AgentRunKind"] | null;
+            issue_key: string | null;
+            outcome: components["schemas"]["AgentRunOutcome"] | null;
+            display_label: string | null;
+            summary: string | null;
+            /** Format: date-time */
+            occurred_at: string | null;
+        };
+        RecordAgentRunEventResponse: {
+            /** @description Null for a host-session-wide event that affects multiple runs. */
+            run: components["schemas"]["AgentRun"] | null;
+            affected_runs: components["schemas"]["AgentRun"][];
+            duplicate: boolean;
+        };
+        IssueBoardListRequest: {
+            project_id: string;
+        };
+        IssueDetailRequest: {
+            project_id: string;
+            issue_number: number;
+        };
+        GetIssueRequest: {
+            /** @description Globally unique Issue identifier, independent of project scope. */
+            issue_id: string;
+        };
+        IssueDetailResponse: {
+            issue: components["schemas"]["IssueBoardCard"];
+            body: string;
+            acceptance_criteria: string[];
+        };
+        IssueBoardResponse: {
+            project_id: string;
+            effective_hash: string;
+            issues: components["schemas"]["IssueBoardCard"][];
+            unlinked_runs: components["schemas"]["AgentRun"][];
+            diagnostics: components["schemas"]["IssueBoardDiagnostic"][];
+        };
+        IssueExternalReference: {
+            kind: components["schemas"]["IssueExternalReferenceKind"];
+            /**
+             * Format: uri
+             * @description Absolute HTTP(S) URL without embedded credentials.
+             */
+            url: string;
+        };
+        IssueBoardCard: {
+            issue_id: string;
+            project_id: string;
+            issue_number: number;
+            issue_key: string;
+            resource_id: string;
+            path: string;
+            lifecycle: components["schemas"]["IssueLifecycle"];
+            title: string;
+            description: string;
+            external_references: components["schemas"]["IssueExternalReference"][];
+            /** Format: date-time */
+            found_at: string | null;
+            /** Format: date-time */
+            created_at: string | null;
+            /** Format: date-time */
+            started_at: string | null;
+            /** Format: date-time */
+            closed_at: string | null;
+            /** Format: date-time */
+            archived_at: string | null;
+            content_hash: string;
+            source_commit_id: string | null;
+            draft_id: string | null;
+            draft_revision: string | null;
+            board_state: components["schemas"]["IssueBoardState"];
+            state_revision: number;
+            /** Format: date-time */
+            state_updated_at: string | null;
+            closure_summary: string | null;
+            is_stale: boolean;
+            active_runs: components["schemas"]["AgentRun"][];
+            latest_run: components["schemas"]["AgentRun"] | null;
+        };
+        IssueBoardDiagnostic: {
+            resource_id: string;
+            path: string;
+            code: components["schemas"]["IssueBoardDiagnosticCode"];
+            message: string;
+        };
+        AgentRun: {
+            run_id: string;
+            project_id: string;
+            issue_number: number | null;
+            host: components["schemas"]["AgentRunHost"];
+            host_run_key: string;
+            host_session_id: string | null;
+            parent_run_id: string | null;
+            kind: components["schemas"]["AgentRunKind"];
+            phase: components["schemas"]["AgentRunPhase"];
+            outcome: components["schemas"]["AgentRunOutcome"] | null;
+            end_reason: string | null;
+            display_label: string | null;
+            summary: string | null;
+            revision: number;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
+            /** Format: date-time */
+            ended_at: string | null;
+        };
+        CreateIssueRequest: {
+            project_id: string;
+            title: string;
+            description: string;
+            acceptance_criteria?: string[];
+            external_references?: components["schemas"]["IssueExternalReference"][];
+        };
+        UpdateIssueRequest: {
+            project_id: string;
+            issue_key: string;
+            expected_revision: number;
+            title?: string | null;
+            description?: string | null;
+            acceptance_criteria?: string[] | null;
+            external_references?: components["schemas"]["IssueExternalReference"][] | null;
+        };
+        ApplyIssueGateRequest: {
+            project_id: string;
+            issue_number: number;
+            expected_revision: number;
+            action: components["schemas"]["IssueGateAction"];
+        };
+        IssueMutationResponse: {
+            issue_id: string;
+            issue_key: string;
+            board_state: components["schemas"]["IssueBoardState"];
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        RemoveIssueRequest: {
+            project_id: string;
+            issue_number: number;
+            expected_revision: number;
+            action: components["schemas"]["IssueRemovalAction"];
+        };
+        IssueRemovalResponse: {
+            issue_id: string;
+            issue_key: string;
+            action: components["schemas"]["IssueRemovalAction"];
+            /** Format: date-time */
+            removed_at: string;
+        };
+        StartIssueWorkRequest: {
+            project_id: string;
+            run_id: string;
+            issue_key: string;
+            expected_revision: number;
+        };
+        RequestIssueClosureRequest: {
+            project_id: string;
+            run_id: string;
+            /** @description At most 1000 UTF-8 bytes at the daemon boundary. */
+            summary: string | null;
+            expected_revision: number;
+        };
+        IssueWorkflowMutationResponse: {
+            issue_id: string;
+            issue_key: string;
+            board_state: components["schemas"]["IssueBoardState"];
+            state_revision: number;
+            /** Format: date-time */
+            state_updated_at: string;
+            run: components["schemas"]["AgentRun"];
         };
         RetrievalRunListRequest: {
             project_id?: string | null;
@@ -631,6 +817,30 @@ export interface components {
         DaemonProjectStorageMoveState: "preparing" | "materializing" | "verifying" | "switching" | "cleaning" | "completed" | "failed";
         /** @enum {string} */
         ProjectAgentAdapterKind: "codex" | "claude-code";
+        /** @enum {string} */
+        AgentRunHost: "codex" | "claude-code";
+        /** @enum {string} */
+        AgentRunKind: "root" | "subagent";
+        /** @enum {string} */
+        AgentRunPhase: "running" | "ended";
+        /** @enum {string} */
+        AgentRunOutcome: "completed" | "blocked" | "failed" | "cancelled" | "unknown";
+        /** @enum {string} */
+        AgentRunEventType: "started" | "heartbeat" | "ended" | "session_ended";
+        /** @enum {string} */
+        AgentRunEventSource: "hook" | "mcp" | "desktop" | "recovery";
+        /** @enum {string} */
+        IssueLifecycle: "open" | "closed";
+        /** @enum {string} */
+        IssueBoardState: "todo" | "in_progress" | "closure_requested" | "done";
+        /** @enum {string} */
+        IssueExternalReferenceKind: "issue" | "pull_request";
+        /** @enum {string} */
+        IssueGateAction: "approve_closure" | "request_changes" | "reopen";
+        /** @enum {string} */
+        IssueRemovalAction: "archive" | "delete";
+        /** @enum {string} */
+        IssueBoardDiagnosticCode: "malformed_path" | "malformed_title" | "title_number_mismatch" | "duplicate_issue_number";
         /** @enum {string} */
         RetrievalRunStatus: "running" | "succeeded" | "failed";
         /** @enum {string} */

@@ -691,7 +691,7 @@ fn createMissingPromptRound(
             .ws_id = ev.ws_id,
             .session_id = ev.session_id,
             .timestamp = ev.timestamp,
-            .content = "No user_prompt recorded in this session log.",
+            .content = "Prompt content was not captured for this legacy session.",
             .missing_user_prompt = true,
         },
     });
@@ -967,7 +967,7 @@ test "buildRounds exposes session activity without user prompt" {
 
     try std.testing.expectEqual(@as(usize, 1), rounds.len);
     try std.testing.expect(rounds[0].missing_user_prompt);
-    try std.testing.expectEqualStrings("No user_prompt recorded in this session log.", rounds[0].content);
+    try std.testing.expectEqualStrings("Prompt content was not captured for this legacy session.", rounds[0].content);
     try std.testing.expectEqual(@as(u16, 1), rounds[0].load_count);
     try std.testing.expectEqual(@as(u16, 1), rounds[0].refer_count);
     try std.testing.expectEqual(@as(u16, 1), rounds[0].submit_count);

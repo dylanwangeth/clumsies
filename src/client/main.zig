@@ -35,6 +35,7 @@ const cmd_mcp = @import("commands/mcp_cmd.zig");
 const cmd_adapt = @import("commands/adapt_cmd.zig");
 const cmd_workspace_info = @import("commands/workspace_info_cmd.zig");
 const cmd_attestation_append = @import("commands/attestation_append_cmd.zig");
+const cmd_issue_run_event = @import("commands/issue_run_event_cmd.zig");
 const cmd_submit_check = @import("commands/submit_check_cmd.zig");
 const cmd_help = @import("commands/help.zig");
 
@@ -141,6 +142,8 @@ fn run(init: std.process.Init) !void {
             try cmd_workspace_info.run(stdout_writer, stderr_writer, allocator);
         } else if (std.mem.eql(u8, subcmd, "attestation-append")) {
             try cmd_attestation_append.run(stdout_writer, stderr_writer, allocator, cmd_args[1..]);
+        } else if (std.mem.eql(u8, subcmd, "issue-run-event")) {
+            try cmd_issue_run_event.run(stdout_writer, allocator, cmd_args[1..]);
         } else if (std.mem.eql(u8, subcmd, "submit-check")) {
             try cmd_submit_check.run(stdout_writer, stderr_writer, allocator);
         } else {
@@ -273,6 +276,7 @@ test {
     _ = @import("workspace_config.zig");
 
     _ = @import("commands/init_cmd.zig");
+    _ = @import("commands/issue_run_event_cmd.zig");
     _ = @import("commands/login_cmd.zig");
     _ = @import("commands/sync_cmd.zig");
     _ = @import("daemon/ipc.zig");

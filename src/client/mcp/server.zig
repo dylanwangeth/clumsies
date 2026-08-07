@@ -139,7 +139,8 @@ fn buildInitializeResult(allocator: std.mem.Allocator, version: []const u8) ![]u
         "Call " ++ tool_names.activate ++ " once at the start of every substantive user task. It returns ranked memory fragments ready for the current reasoning context. " ++
         "Pass its next_state only while the earlier fragments remain in the model context; omit state after context compaction or when starting fresh. " ++
         "Use " ++ tool_names.load ++ " only to read complete resources by known id or path, and " ++
-        tool_names.store ++ " only when the user explicitly asks to create, update, rename, delete, or discard a local Context, Rule, or Workflow draft. Store queues synchronization and does not publish authority directly.";
+        tool_names.store ++ " only when the user explicitly asks for Context, Rule, or Workflow maintenance. Store queues synchronization and does not publish authority directly. " ++
+        "Use " ++ tool_names.issue ++ " for native Issues: call issue.get when the user supplies a global issue_id, create durable Todo work, update semantic content, call issue.start after deciding the prompt starts or continues an Issue, and call issue.request_closure only after judging its acceptance criteria satisfied. issue.get returns the owning project_id; mutations remain scoped to this MCP workspace. Agents cannot approve closure. AgentRun lifecycle events never advance an Issue.";
     const esc_instructions = try encoding.jsonEscapeAlloc(allocator, instructions);
     defer allocator.free(esc_instructions);
 
@@ -171,6 +172,7 @@ test "processLine: initialize then tools list" {
     try testing.expect(std.mem.indexOf(u8, init_response, "\"protocolVersion\":\"2025-06-18\"") != null);
     try testing.expect(std.mem.indexOf(u8, init_response, "start of every substantive user task") != null);
     try testing.expect(std.mem.indexOf(u8, init_response, "ranked memory fragments") != null);
+    try testing.expect(std.mem.indexOf(u8, init_response, "lifecycle events never advance an Issue") != null);
 
     const initialized_response = try processLine(
         testing.allocator,
@@ -190,6 +192,7 @@ test "processLine: initialize then tools list" {
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"activate\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"load\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"store\"") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_response, "\"issue\"") != null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memsetup\"") == null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memdisc\"") == null);
     try testing.expect(std.mem.indexOf(u8, tools_response, "\"memload\"") == null);

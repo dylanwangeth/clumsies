@@ -21,6 +21,18 @@ const ACTIVATE_SKILL_CLAUDE: &str =
     include_str!("../../../assets/adapters/claude-code/runtime/skills/activate/SKILL.md");
 const NTMD_SKILL_CLAUDE: &str =
     include_str!("../../../assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md");
+const RESOLVE_BINARY_CODEX: &str =
+    include_str!("../../../assets/adapters/codex/runtime/hooks/resolve-binary.sh.tpl");
+const ISSUE_RUN_EVENT_CODEX: &str =
+    include_str!("../../../assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl");
+const RESOLVE_BINARY_CLAUDE: &str =
+    include_str!("../../../assets/adapters/claude-code/runtime/hooks/resolve-binary.sh.tpl");
+const ISSUE_RUN_EVENT_CLAUDE: &str =
+    include_str!("../../../assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl");
+const LEGACY_USER_PROMPT_SUBMIT_CODEX_SHA256: &str =
+    "03bfb5ddbad36dcf53ba3f1e4e07a83cece33d4a98c29298dc0d7e776f63f815";
+const LEGACY_USER_PROMPT_SUBMIT_CLAUDE_SHA256: &str =
+    "6a2daa1dca1e4ae6ee5c7855bf160418fea46a3ca881c47acdd3f7e7f539aa54";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -101,7 +113,9 @@ struct ManagedFile {
 #[serde(rename_all = "snake_case")]
 enum ManagedFileKind {
     CodexConfig,
+    CodexHooks,
     ClaudeMcp,
+    ClaudeSettings,
     Exclusive,
 }
 
@@ -374,48 +388,127 @@ fn install_plan(
 ) -> Result<Vec<PendingChange>, DaemonError> {
     let helper = helper_binary.display().to_string();
     let mut changes = match adapter {
-        ProjectAgentAdapterKind::Codex => vec![
-            PendingChange {
-                path: workspace_root.join(".codex/config.toml"),
-                desired: Some(render_codex_config(
-                    read_optional(&workspace_root.join(".codex/config.toml"))?.as_deref(),
-                    &helper,
-                )?),
-                kind: ManagedFileKind::CodexConfig,
-                mode: 0o644,
-            },
-            exclusive_change(
-                workspace_root.join(".agents/skills/activate/SKILL.md"),
-                ACTIVATE_SKILL_CODEX.as_bytes(),
-                previous_manifest,
-            )?,
-            exclusive_change(
-                workspace_root.join(".agents/skills/ntmd/SKILL.md"),
-                NTMD_SKILL_CODEX.as_bytes(),
-                previous_manifest,
-            )?,
-        ],
-        ProjectAgentAdapterKind::ClaudeCode => vec![
-            PendingChange {
-                path: workspace_root.join(".mcp.json"),
-                desired: Some(render_claude_mcp(
-                    read_optional(&workspace_root.join(".mcp.json"))?.as_deref(),
-                    &helper,
-                )?),
-                kind: ManagedFileKind::ClaudeMcp,
-                mode: 0o644,
-            },
-            exclusive_change(
-                workspace_root.join(".claude/skills/activate/SKILL.md"),
-                ACTIVATE_SKILL_CLAUDE.as_bytes(),
-                previous_manifest,
-            )?,
-            exclusive_change(
-                workspace_root.join(".claude/skills/ntmd/SKILL.md"),
-                NTMD_SKILL_CLAUDE.as_bytes(),
-                previous_manifest,
-            )?,
-        ],
+        ProjectAgentAdapterKind::Codex => {
+            let hooks_path = workspace_root.join(".codex/hooks.json");
+            let hook_script_path = workspace_root.join(".codex/hooks/issue-run-event.sh");
+            let legacy_hook_script_path = workspace_root.join(".codex/hooks/user-prompt-submit.sh");
+            let hook_ownership = HookOwnership {
+                lifecycle: manifest_manages_path(previous_manifest, &hook_script_path),
+                legacy_prompt: legacy_hook_is_proven_managed(
+                    previous_manifest,
+                    &legacy_hook_script_path,
+                    LEGACY_USER_PROMPT_SUBMIT_CODEX_SHA256,
+                )?,
+            };
+            let managed_hook = render_managed_hook_script(ISSUE_RUN_EVENT_CODEX, &helper);
+            vec![
+                PendingChange {
+                    path: workspace_root.join(".codex/config.toml"),
+                    desired: Some(render_codex_config(
+                        read_optional(&workspace_root.join(".codex/config.toml"))?.as_deref(),
+                        &helper,
+                    )?),
+                    kind: ManagedFileKind::CodexConfig,
+                    mode: 0o644,
+                },
+                PendingChange {
+                    path: hooks_path.clone(),
+                    desired: Some(render_hook_registry(
+                        read_optional(&hooks_path)?.as_deref(),
+                        &hook_script_path,
+                        false,
+                        hook_ownership,
+                    )?),
+                    kind: ManagedFileKind::CodexHooks,
+                    mode: 0o644,
+                },
+                exclusive_change(
+                    workspace_root.join(".codex/hooks/resolve-binary.sh"),
+                    RESOLVE_BINARY_CODEX.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+                exclusive_change(
+                    hook_script_path,
+                    managed_hook.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+                exclusive_change(
+                    workspace_root.join(".agents/skills/activate/SKILL.md"),
+                    ACTIVATE_SKILL_CODEX.as_bytes(),
+                    previous_manifest,
+                    0o644,
+                )?,
+                exclusive_change(
+                    workspace_root.join(".agents/skills/ntmd/SKILL.md"),
+                    NTMD_SKILL_CODEX.as_bytes(),
+                    previous_manifest,
+                    0o644,
+                )?,
+            ]
+        }
+        ProjectAgentAdapterKind::ClaudeCode => {
+            let settings_path = workspace_root.join(".claude/settings.json");
+            let hook_script_path = workspace_root.join(".claude/hooks/issue-run-event.sh");
+            let legacy_hook_script_path =
+                workspace_root.join(".claude/hooks/user-prompt-submit.sh");
+            let hook_ownership = HookOwnership {
+                lifecycle: manifest_manages_path(previous_manifest, &hook_script_path),
+                legacy_prompt: legacy_hook_is_proven_managed(
+                    previous_manifest,
+                    &legacy_hook_script_path,
+                    LEGACY_USER_PROMPT_SUBMIT_CLAUDE_SHA256,
+                )?,
+            };
+            let managed_hook = render_managed_hook_script(ISSUE_RUN_EVENT_CLAUDE, &helper);
+            vec![
+                PendingChange {
+                    path: workspace_root.join(".mcp.json"),
+                    desired: Some(render_claude_mcp(
+                        read_optional(&workspace_root.join(".mcp.json"))?.as_deref(),
+                        &helper,
+                    )?),
+                    kind: ManagedFileKind::ClaudeMcp,
+                    mode: 0o644,
+                },
+                PendingChange {
+                    path: settings_path.clone(),
+                    desired: Some(render_hook_registry(
+                        read_optional(&settings_path)?.as_deref(),
+                        &hook_script_path,
+                        true,
+                        hook_ownership,
+                    )?),
+                    kind: ManagedFileKind::ClaudeSettings,
+                    mode: 0o644,
+                },
+                exclusive_change(
+                    workspace_root.join(".claude/hooks/resolve-binary.sh"),
+                    RESOLVE_BINARY_CLAUDE.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+                exclusive_change(
+                    hook_script_path,
+                    managed_hook.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+                exclusive_change(
+                    workspace_root.join(".claude/skills/activate/SKILL.md"),
+                    ACTIVATE_SKILL_CLAUDE.as_bytes(),
+                    previous_manifest,
+                    0o644,
+                )?,
+                exclusive_change(
+                    workspace_root.join(".claude/skills/ntmd/SKILL.md"),
+                    NTMD_SKILL_CLAUDE.as_bytes(),
+                    previous_manifest,
+                    0o644,
+                )?,
+            ]
+        }
     };
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(changes)
@@ -435,9 +528,37 @@ fn remove_plan(manifest: &AdapterManifest) -> Result<Vec<PendingChange>, DaemonE
                     .map(|content| remove_codex_config(content, helper))
                     .transpose()?
                     .flatten(),
+                ManagedFileKind::CodexHooks => current
+                    .as_deref()
+                    .map(|content| {
+                        remove_hook_registry(
+                            content,
+                            &path
+                                .parent()
+                                .unwrap_or(Path::new("."))
+                                .join("hooks/issue-run-event.sh"),
+                            false,
+                        )
+                    })
+                    .transpose()?
+                    .flatten(),
                 ManagedFileKind::ClaudeMcp => current
                     .as_deref()
                     .map(|content| remove_claude_mcp(content, helper))
+                    .transpose()?
+                    .flatten(),
+                ManagedFileKind::ClaudeSettings => current
+                    .as_deref()
+                    .map(|content| {
+                        remove_hook_registry(
+                            content,
+                            &path
+                                .parent()
+                                .unwrap_or(Path::new("."))
+                                .join("hooks/issue-run-event.sh"),
+                            true,
+                        )
+                    })
                     .transpose()?
                     .flatten(),
                 ManagedFileKind::Exclusive => {
@@ -469,6 +590,7 @@ fn exclusive_change(
     path: PathBuf,
     desired: &[u8],
     previous_manifest: Option<&AdapterManifest>,
+    mode: u32,
 ) -> Result<PendingChange, DaemonError> {
     if let Some(current) = read_optional(&path)? {
         let current_hash = sha256(&current);
@@ -494,8 +616,389 @@ fn exclusive_change(
         path,
         desired: Some(desired.to_vec()),
         kind: ManagedFileKind::Exclusive,
-        mode: 0o644,
+        mode,
     })
+}
+
+fn manifest_manages_path(manifest: Option<&AdapterManifest>, path: &Path) -> bool {
+    manifest.is_some_and(|manifest| {
+        manifest
+            .managed_files
+            .iter()
+            .any(|file| Path::new(&file.path) == path)
+    })
+}
+
+fn legacy_hook_is_proven_managed(
+    manifest: Option<&AdapterManifest>,
+    path: &Path,
+    known_hash: &str,
+) -> Result<bool, DaemonError> {
+    let Some(content) = read_optional(path)? else {
+        return Ok(false);
+    };
+    let current_hash = sha256(&content);
+    if current_hash == known_hash {
+        return Ok(true);
+    }
+    Ok(manifest.is_some_and(|manifest| {
+        manifest
+            .managed_files
+            .iter()
+            .any(|file| Path::new(&file.path) == path && file.installed_hash == current_hash)
+    }))
+}
+
+const BASE_AGENT_RUN_HOOKS: [(&str, u64); 5] = [
+    ("UserPromptSubmit", 5),
+    ("Stop", 5),
+    ("SubagentStart", 5),
+    ("SubagentStop", 5),
+    ("SessionEnd", 3),
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HookOwnership {
+    lifecycle: bool,
+    legacy_prompt: bool,
+}
+
+fn render_managed_hook_script(template: &str, helper_binary: &str) -> String {
+    let injected = format!(
+        "export CLUMSIES_ADAPTER_BINARY={}\n",
+        shell_single_quote(helper_binary)
+    );
+    match template.find('\n') {
+        Some(index) => {
+            let mut rendered = String::with_capacity(template.len() + injected.len());
+            rendered.push_str(&template[..=index]);
+            rendered.push_str(&injected);
+            rendered.push_str(&template[index + 1..]);
+            rendered
+        }
+        None => format!("{template}\n{injected}"),
+    }
+}
+
+fn render_hook_registry(
+    existing: Option<&[u8]>,
+    script_path: &Path,
+    include_stop_failure: bool,
+    ownership: HookOwnership,
+) -> Result<Vec<u8>, DaemonError> {
+    let mut root = match existing {
+        Some(content) => serde_json::from_slice::<Value>(content)
+            .map_err(|_| adapter_conflict("The existing hook registry is not valid JSON."))?,
+        None => Value::Object(Map::new()),
+    };
+    let root_object = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The hook registry must be a JSON object."))?;
+    let hooks = root_object
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The hook registry `hooks` value must be an object."))?;
+
+    for &(event, timeout) in &BASE_AGENT_RUN_HOOKS {
+        install_hook_handler(hooks, event, timeout, script_path, ownership)?;
+    }
+    if include_stop_failure {
+        install_hook_handler(hooks, "StopFailure", 5, script_path, ownership)?;
+    }
+
+    render_json(&root)
+}
+
+fn install_hook_handler(
+    hooks: &mut Map<String, Value>,
+    event: &str,
+    timeout: u64,
+    script_path: &Path,
+    ownership: HookOwnership,
+) -> Result<(), DaemonError> {
+    let groups = hooks
+        .entry(event)
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| {
+            adapter_conflict(&format!(
+                "The hook registry `{event}` value must be an array."
+            ))
+        })?;
+    remove_owned_hook_handlers(groups, script_path, timeout, ownership)?;
+    groups.push(json!({
+        "hooks": [{
+            "type": "command",
+            "command": hook_command(script_path),
+            "timeout": timeout
+        }]
+    }));
+    Ok(())
+}
+
+fn remove_hook_registry(
+    content: &[u8],
+    script_path: &Path,
+    include_stop_failure: bool,
+) -> Result<Option<Vec<u8>>, DaemonError> {
+    let mut root = serde_json::from_slice::<Value>(content)
+        .map_err(|_| adapter_conflict("The existing hook registry is not valid JSON."))?;
+    let root_object = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The hook registry must be a JSON object."))?;
+    let Some(hooks) = root_object.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(Some(content.to_vec()));
+    };
+
+    let mut events = BASE_AGENT_RUN_HOOKS
+        .iter()
+        .map(|(event, _)| *event)
+        .collect::<Vec<_>>();
+    if include_stop_failure {
+        events.push("StopFailure");
+    }
+    for event in events {
+        let Some(groups) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        remove_owned_hook_handlers(
+            groups,
+            script_path,
+            timeout_for_event(event),
+            HookOwnership {
+                lifecycle: true,
+                legacy_prompt: false,
+            },
+        )?;
+        if groups.is_empty() {
+            hooks.remove(event);
+        }
+    }
+    if hooks.is_empty() {
+        root_object.remove("hooks");
+    }
+    if root_object.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(render_json(&root)?))
+}
+
+fn timeout_for_event(event: &str) -> u64 {
+    BASE_AGENT_RUN_HOOKS
+        .iter()
+        .find_map(|(candidate, timeout)| (*candidate == event).then_some(*timeout))
+        .unwrap_or(5)
+}
+
+fn remove_owned_hook_handlers(
+    groups: &mut Vec<Value>,
+    script_path: &Path,
+    lifecycle_timeout: u64,
+    ownership: HookOwnership,
+) -> Result<(), DaemonError> {
+    let legacy_path = script_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("user-prompt-submit.sh");
+    let mut lifecycle_exact = Vec::new();
+    let mut lifecycle_drifted = false;
+    let mut legacy_exact = Vec::new();
+    let mut legacy_drifted = false;
+
+    for (index, group) in groups.iter().enumerate() {
+        if group_contains_local_hook_kind(group, script_path, LocalHookScriptKind::Lifecycle) {
+            if is_exact_command_group(group, script_path, lifecycle_timeout) {
+                lifecycle_exact.push(index);
+            } else {
+                lifecycle_drifted = true;
+            }
+        }
+        if group_contains_local_hook_kind(group, script_path, LocalHookScriptKind::LegacyPrompt) {
+            if is_exact_command_group(group, &legacy_path, 5) {
+                legacy_exact.push(index);
+            } else {
+                legacy_drifted = true;
+            }
+        }
+    }
+
+    if (!lifecycle_exact.is_empty() || lifecycle_drifted) && !ownership.lifecycle {
+        return Err(adapter_conflict(
+            "The lifecycle hook path is already registered but is not owned by this Clumsies integration.",
+        ));
+    }
+    if ownership.lifecycle && (lifecycle_drifted || lifecycle_exact.len() > 1) {
+        return Err(adapter_conflict(
+            "The managed lifecycle hook group changed after installation.",
+        ));
+    }
+    if ownership.legacy_prompt && (legacy_drifted || legacy_exact.len() > 1) {
+        return Err(adapter_conflict(
+            "The managed legacy prompt hook group changed after installation.",
+        ));
+    }
+
+    let mut indexes_to_remove = Vec::with_capacity(2);
+    if ownership.lifecycle {
+        indexes_to_remove.extend(lifecycle_exact);
+    }
+    if ownership.legacy_prompt {
+        indexes_to_remove.extend(legacy_exact);
+    }
+    indexes_to_remove.sort_unstable_by(|left, right| right.cmp(left));
+    indexes_to_remove.dedup();
+    for index in indexes_to_remove {
+        groups.remove(index);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalHookScriptKind {
+    Lifecycle,
+    LegacyPrompt,
+}
+
+fn local_hook_script_kind(handler: &Value, script_path: &Path) -> Option<LocalHookScriptKind> {
+    let Some(object) = handler.as_object() else {
+        return None;
+    };
+    if object.get("type").and_then(Value::as_str) != Some("command") {
+        return None;
+    }
+    let Some(command) = object.get("command").and_then(Value::as_str) else {
+        return None;
+    };
+    let command_path = single_bash_script_path(command)?;
+    let candidate = Path::new(&command_path);
+    let expected_hooks_directory = script_path.parent()?;
+    if candidate.parent()? != expected_hooks_directory {
+        return None;
+    }
+    match candidate.file_name().and_then(|name| name.to_str()) {
+        Some("issue-run-event.sh") => Some(LocalHookScriptKind::Lifecycle),
+        Some("user-prompt-submit.sh") => Some(LocalHookScriptKind::LegacyPrompt),
+        _ => None,
+    }
+}
+
+fn group_contains_local_hook_kind(
+    group: &Value,
+    script_path: &Path,
+    expected: LocalHookScriptKind,
+) -> bool {
+    group
+        .as_object()
+        .and_then(|object| object.get("hooks"))
+        .and_then(Value::as_array)
+        .is_some_and(|handlers| {
+            handlers
+                .iter()
+                .any(|handler| local_hook_script_kind(handler, script_path) == Some(expected))
+        })
+}
+
+fn is_exact_command_group(group: &Value, script_path: &Path, timeout: u64) -> bool {
+    let Some(object) = group.as_object() else {
+        return false;
+    };
+    if object.len() != 1 {
+        return false;
+    }
+    let Some(handlers) = object.get("hooks").and_then(Value::as_array) else {
+        return false;
+    };
+    handlers.len() == 1 && is_exact_command_handler(&handlers[0], script_path, timeout)
+}
+
+fn is_exact_command_handler(handler: &Value, script_path: &Path, timeout: u64) -> bool {
+    let Some(object) = handler.as_object() else {
+        return false;
+    };
+    if object.len() != 3
+        || object.get("type").and_then(Value::as_str) != Some("command")
+        || object.get("timeout").and_then(Value::as_u64) != Some(timeout)
+    {
+        return false;
+    }
+    let Some(command) = object.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    single_bash_script_path(command).is_some_and(|path| Path::new(&path) == script_path)
+}
+
+fn single_bash_script_path(command: &str) -> Option<String> {
+    let command = command.trim();
+    let rest = command.strip_prefix("bash")?;
+    if !rest.chars().next().is_some_and(char::is_whitespace) {
+        return None;
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+
+    let mut quote = Quote::None;
+    let mut escaped = false;
+    let mut path = String::new();
+    let mut chars = rest.trim_start().chars();
+    while let Some(character) = chars.next() {
+        if escaped {
+            path.push(character);
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Quote::Single => {
+                if character == '\'' {
+                    quote = Quote::None;
+                } else {
+                    path.push(character);
+                }
+            }
+            Quote::Double => match character {
+                '"' => quote = Quote::None,
+                '\\' => escaped = true,
+                '$' | '`' => return None,
+                _ => path.push(character),
+            },
+            Quote::None => match character {
+                '\'' => quote = Quote::Single,
+                '"' => quote = Quote::Double,
+                '\\' => escaped = true,
+                character if character.is_whitespace() => {
+                    if chars.all(|remaining| remaining.is_whitespace()) {
+                        break;
+                    }
+                    return None;
+                }
+                '$' | '`' | ';' | '|' | '&' | '<' | '>' => return None,
+                _ => path.push(character),
+            },
+        }
+    }
+    (quote == Quote::None && !escaped && !path.is_empty()).then_some(path)
+}
+
+fn hook_command(script_path: &Path) -> String {
+    format!(
+        "bash {}",
+        shell_single_quote(&script_path.display().to_string())
+    )
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn render_json(value: &Value) -> Result<Vec<u8>, DaemonError> {
+    let mut rendered = serde_json::to_vec_pretty(value)?;
+    rendered.push(b'\n');
+    Ok(rendered)
 }
 
 fn render_codex_config(
@@ -899,6 +1402,160 @@ fn state_error(code: &'static str, message: &str) -> DaemonError {
 mod tests {
     use super::*;
 
+    fn hook_commands<'a>(registry: &'a Value, event: &str) -> Vec<&'a str> {
+        registry["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|handler| handler.get("command").and_then(Value::as_str))
+            .collect()
+    }
+
+    fn assert_hook_registry_migration(
+        script: &Path,
+        host_directory: &str,
+        foreign_host_directory: &str,
+        include_stop_failure: bool,
+    ) {
+        let current_command = hook_command(script);
+        let current_legacy = format!(
+            "bash \"{}\"",
+            script
+                .parent()
+                .unwrap()
+                .join("user-prompt-submit.sh")
+                .display()
+        );
+        let foreign_lifecycle =
+            format!("bash \"/old/workspace/{host_directory}/hooks/issue-run-event.sh\"");
+        let foreign_legacy =
+            format!("bash '/old/workspace/{host_directory}/hooks/user-prompt-submit.sh'");
+        let foreign_known =
+            format!("bash \"/old/workspace/{foreign_host_directory}/hooks/user-prompt-submit.sh\"");
+        let foreign_same_host = format!("bash \"/opt/tools/{host_directory}/hooks/custom.sh\"");
+
+        let mut hooks = Map::new();
+        hooks.insert(
+            "UserPromptSubmit".to_owned(),
+            json!([
+                {
+                    "hooks": [
+                        {"type": "command", "command": current_legacy, "timeout": 5}
+                    ]
+                },
+                {
+                    "hooks": [
+                        {"type": "command", "command": foreign_legacy},
+                        {"type": "command", "command": foreign_known},
+                        {"type": "command", "command": foreign_same_host},
+                        {"type": "command", "command": "echo foreign"}
+                    ]
+                }
+            ]),
+        );
+        hooks.insert(
+            "Stop".to_owned(),
+            json!([
+                {"hooks": [{"type": "command", "command": current_command, "timeout": 5}]},
+                {"hooks": [{"type": "command", "command": foreign_lifecycle}]},
+                {"hooks": [{"type": "command", "command": "echo stop foreign"}]}
+            ]),
+        );
+        if include_stop_failure {
+            hooks.insert(
+                "StopFailure".to_owned(),
+                json!([{
+                    "hooks": [
+                        {"type": "command", "command": foreign_lifecycle},
+                        {"type": "command", "command": "echo failure foreign"}
+                    ]
+                }]),
+            );
+        }
+        let existing = render_json(&json!({"theme": "dark", "hooks": hooks})).unwrap();
+
+        let first = render_hook_registry(
+            Some(&existing),
+            script,
+            include_stop_failure,
+            HookOwnership {
+                lifecycle: true,
+                legacy_prompt: true,
+            },
+        )
+        .unwrap();
+        let second = render_hook_registry(
+            Some(&first),
+            script,
+            include_stop_failure,
+            HookOwnership {
+                lifecycle: true,
+                legacy_prompt: false,
+            },
+        )
+        .unwrap();
+        let rendered: Value = serde_json::from_slice(&second).unwrap();
+        for &(event, _) in &BASE_AGENT_RUN_HOOKS {
+            assert_eq!(
+                hook_commands(&rendered, event)
+                    .iter()
+                    .filter(|command| **command == current_command)
+                    .count(),
+                1,
+                "{event} should contain one current lifecycle handler"
+            );
+        }
+        if include_stop_failure {
+            assert_eq!(
+                hook_commands(&rendered, "StopFailure")
+                    .iter()
+                    .filter(|command| **command == current_command)
+                    .count(),
+                1
+            );
+        } else {
+            assert!(rendered["hooks"].get("StopFailure").is_none());
+        }
+        let prompt_commands = hook_commands(&rendered, "UserPromptSubmit");
+        assert!(!prompt_commands.contains(&current_legacy.as_str()));
+        assert!(prompt_commands.contains(&foreign_legacy.as_str()));
+        assert!(prompt_commands.contains(&foreign_known.as_str()));
+        assert!(prompt_commands.contains(&foreign_same_host.as_str()));
+        assert!(prompt_commands.contains(&"echo foreign"));
+        let stop_commands = hook_commands(&rendered, "Stop");
+        assert!(stop_commands.contains(&foreign_lifecycle.as_str()));
+        assert!(stop_commands.contains(&"echo stop foreign"));
+        if include_stop_failure {
+            let failure_commands = hook_commands(&rendered, "StopFailure");
+            assert!(failure_commands.contains(&foreign_lifecycle.as_str()));
+            assert!(failure_commands.contains(&"echo failure foreign"));
+        }
+
+        let removed = remove_hook_registry(&second, script, include_stop_failure)
+            .unwrap()
+            .unwrap();
+        let removed: Value = serde_json::from_slice(&removed).unwrap();
+        assert_eq!(removed["theme"], "dark");
+        let prompt_commands = hook_commands(&removed, "UserPromptSubmit");
+        assert!(!prompt_commands.contains(&current_legacy.as_str()));
+        assert!(prompt_commands.contains(&foreign_legacy.as_str()));
+        assert!(prompt_commands.contains(&foreign_known.as_str()));
+        assert!(prompt_commands.contains(&foreign_same_host.as_str()));
+        assert!(prompt_commands.contains(&"echo foreign"));
+        let stop_commands = hook_commands(&removed, "Stop");
+        assert!(!stop_commands.contains(&current_command.as_str()));
+        assert!(stop_commands.contains(&foreign_lifecycle.as_str()));
+        assert!(stop_commands.contains(&"echo stop foreign"));
+        if include_stop_failure {
+            assert_eq!(
+                hook_commands(&removed, "StopFailure"),
+                vec![foreign_lifecycle.as_str(), "echo failure foreign"]
+            );
+        }
+    }
+
     #[test]
     fn codex_config_preserves_unrelated_tables() {
         let rendered =
@@ -920,5 +1577,165 @@ mod tests {
         let value: Value = serde_json::from_slice(&rendered).unwrap();
         assert_eq!(value["mcpServers"]["other"]["command"], "other");
         assert_eq!(value["mcpServers"]["clumsies"]["command"], "/tmp/clumsies");
+    }
+
+    #[test]
+    fn codex_hooks_retire_proven_legacy_without_touching_foreign_handlers() {
+        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        assert_hook_registry_migration(script, ".codex", ".claude", false);
+    }
+
+    #[test]
+    fn claude_hooks_retire_proven_legacy_without_touching_foreign_handlers() {
+        let script = Path::new("/tmp/workspace/.claude/hooks/issue-run-event.sh");
+        assert_hook_registry_migration(script, ".claude", ".codex", true);
+    }
+
+    #[test]
+    fn managed_hook_script_prefers_the_desktop_helper() {
+        let rendered = render_managed_hook_script(
+            "#!/usr/bin/env bash\nsource resolver.sh\n",
+            "/tmp/Clumsies App/bin/clumsies",
+        );
+        assert!(rendered.starts_with(
+            "#!/usr/bin/env bash\nexport CLUMSIES_ADAPTER_BINARY='/tmp/Clumsies App/bin/clumsies'\n"
+        ));
+    }
+
+    #[test]
+    fn install_plan_includes_lifecycle_assets_for_both_hosts() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/tmp/clumsies-managed/bin/clumsies");
+
+        let codex = install_plan(
+            ProjectAgentAdapterKind::Codex,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        assert!(codex.iter().any(|change| {
+            change.path.ends_with(".codex/hooks.json") && change.kind == ManagedFileKind::CodexHooks
+        }));
+        assert!(codex.iter().any(|change| {
+            change.path.ends_with(".codex/hooks/issue-run-event.sh") && change.mode == 0o755
+        }));
+
+        let claude = install_plan(
+            ProjectAgentAdapterKind::ClaudeCode,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        assert!(claude.iter().any(|change| {
+            change.path.ends_with(".claude/settings.json")
+                && change.kind == ManagedFileKind::ClaudeSettings
+        }));
+        assert!(claude.iter().any(|change| {
+            change.path.ends_with(".claude/hooks/issue-run-event.sh") && change.mode == 0o755
+        }));
+    }
+
+    #[test]
+    fn lifecycle_migration_does_not_claim_or_delete_unowned_legacy_scripts() {
+        let helper = Path::new("/tmp/clumsies-managed/bin/clumsies");
+        for (adapter, legacy_relative_path, registry_relative_path) in [
+            (
+                ProjectAgentAdapterKind::Codex,
+                ".codex/hooks/user-prompt-submit.sh",
+                ".codex/hooks.json",
+            ),
+            (
+                ProjectAgentAdapterKind::ClaudeCode,
+                ".claude/hooks/user-prompt-submit.sh",
+                ".claude/settings.json",
+            ),
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let legacy_path = workspace.path().join(legacy_relative_path);
+            let registry_path = workspace.path().join(registry_relative_path);
+            fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+            fs::write(&legacy_path, b"#!/bin/sh\necho user-owned\n").unwrap();
+            let legacy_command = hook_command(&legacy_path);
+            fs::write(
+                &registry_path,
+                render_json(&json!({
+                    "hooks": {
+                        "UserPromptSubmit": [{
+                            "hooks": [{
+                                "type": "command",
+                                "command": legacy_command,
+                                "timeout": 5
+                            }]
+                        }]
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let changes = install_plan(adapter, workspace.path(), helper, None).unwrap();
+            assert!(changes.iter().all(|change| change.path != legacy_path));
+            apply_changes(&changes).unwrap();
+            assert_eq!(
+                fs::read(&legacy_path).unwrap(),
+                b"#!/bin/sh\necho user-owned\n"
+            );
+            let installed_registry: Value =
+                serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+            assert!(
+                hook_commands(&installed_registry, "UserPromptSubmit")
+                    .contains(&legacy_command.as_str())
+            );
+
+            let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
+            let removals = remove_plan(&manifest).unwrap();
+            assert!(removals.iter().all(|change| change.path != legacy_path));
+            apply_changes(&removals).unwrap();
+            assert_eq!(
+                fs::read(&legacy_path).unwrap(),
+                b"#!/bin/sh\necho user-owned\n"
+            );
+            let removed_registry: Value =
+                serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+            assert!(
+                hook_commands(&removed_registry, "UserPromptSubmit")
+                    .contains(&legacy_command.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn managed_lifecycle_wrapper_drift_conflicts_without_mutating_the_group() {
+        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        let command = hook_command(script);
+        for group in [
+            json!({
+                "matcher": "special",
+                "hooks": [{"type": "command", "command": command, "timeout": 5}]
+            }),
+            json!({
+                "hooks": [
+                    {"type": "command", "command": command, "timeout": 5},
+                    {"type": "command", "command": "echo user-owned"}
+                ]
+            }),
+        ] {
+            let original = group.clone();
+            let mut groups = vec![group];
+            let error = remove_owned_hook_handlers(
+                &mut groups,
+                script,
+                5,
+                HookOwnership {
+                    lifecycle: true,
+                    legacy_prompt: false,
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(error, DaemonError::State { .. }));
+            assert_eq!(groups, vec![original]);
+        }
     }
 }

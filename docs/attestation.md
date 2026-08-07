@@ -3,6 +3,8 @@
 > Legacy capability reference. Attestation and agent observability are not part
 > of the current product direction or MCP memory contract. This page remains
 > only while the old implementation is removed under the history-cleanup stage.
+> Current Codex and Claude Code adapters do not install the legacy full-prompt
+> capture hook; existing `user_prompt` rows and code below describe old logs.
 
 ## What attestation is
 

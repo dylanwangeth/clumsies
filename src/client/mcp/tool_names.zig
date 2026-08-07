@@ -4,3 +4,4 @@
 pub const activate = "activate";
 pub const load = "load";
 pub const store = "store";
+pub const issue = "issue";

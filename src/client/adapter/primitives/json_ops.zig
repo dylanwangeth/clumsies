@@ -36,6 +36,20 @@ pub fn prepareJsonHooksRegistry(
     existing_content_opt: ?[]const u8,
     managed_fragment: []const u8,
 ) !HooksPlanResult {
+    return prepareJsonHooksRegistryWithPrevious(
+        allocator,
+        existing_content_opt,
+        managed_fragment,
+        null,
+    );
+}
+
+pub fn prepareJsonHooksRegistryWithPrevious(
+    allocator: std.mem.Allocator,
+    existing_content_opt: ?[]const u8,
+    managed_fragment: []const u8,
+    previous_managed_fragment: ?[]const u8,
+) !HooksPlanResult {
     const managed_parsed = std.json.parseFromSlice(std.json.Value, allocator, managed_fragment, .{
         .allocate = .alloc_always,
     }) catch return .{ .conflict = conflict_invalid_fragment };
@@ -61,15 +75,43 @@ pub fn prepareJsonHooksRegistry(
     const arena = current_parsed.arena.allocator();
     const hooks_object = ensureHooksObject(current_root, arena) catch return .{ .conflict = conflict_invalid_hooks };
 
-    var did_change = try pruneRetiredClumsiesHookItems(allocator, hooks_object, managed_hooks);
+    var previous_parsed_opt: ?std.json.Parsed(std.json.Value) = if (previous_managed_fragment) |fragment|
+        std.json.parseFromSlice(std.json.Value, allocator, fragment, .{
+            .allocate = .alloc_always,
+        }) catch return .{ .conflict = conflict_invalid_fragment }
+    else
+        null;
+    defer if (previous_parsed_opt) |*parsed| parsed.deinit();
+    const previous_hooks_opt = if (previous_parsed_opt) |*parsed|
+        getHooksObject(parsed.value) orelse return .{ .conflict = conflict_invalid_fragment }
+    else
+        null;
+
+    var did_change = if (previous_hooks_opt) |previous_hooks|
+        try pruneRetiredPreviouslyManagedHookItems(
+            allocator,
+            hooks_object,
+            previous_hooks,
+            managed_hooks,
+        )
+    else
+        false;
 
     var event_it = managed_hooks.iterator();
     while (event_it.next()) |event_entry| {
         const managed_items = asArray(event_entry.value_ptr.*) orelse return .{ .conflict = conflict_invalid_fragment };
         const current_items = ensureEventArray(hooks_object, event_entry.key_ptr.*, arena) catch return .{ .conflict = conflict_invalid_event };
+        const previous_items = if (previous_hooks_opt) |previous_hooks|
+            if (previous_hooks.get(event_entry.key_ptr.*)) |value| asArray(value) else null
+        else
+            null;
 
         for (managed_items.items) |managed_item| {
-            switch (inspectManagedItem(current_items.items, managed_item)) {
+            switch (inspectManagedItemWithPrevious(
+                current_items.items,
+                managed_item,
+                if (previous_items) |items| items.items else null,
+            )) {
                 .exact => {},
                 .replace => |index| {
                     current_items.items[index] = try cloneValue(arena, managed_item);
@@ -317,6 +359,14 @@ const ItemMatch = union(enum) {
 };
 
 fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
+    return inspectManagedItemWithPrevious(items, managed_item, null);
+}
+
+fn inspectManagedItemWithPrevious(
+    items: []const std.json.Value,
+    managed_item: std.json.Value,
+    previous_items: ?[]const std.json.Value,
+) ItemMatch {
     var exact_index: ?usize = null;
     var replace_index: ?usize = null;
     var related_non_exact = false;
@@ -328,8 +378,12 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
             continue;
         }
         if (managedHookItemCanReplace(item, managed_item)) {
-            if (replace_index != null) return .conflict;
-            replace_index = index;
+            if (previous_items != null and valueAppearsIn(item, previous_items.?)) {
+                if (replace_index != null) return .conflict;
+                replace_index = index;
+            } else {
+                related_non_exact = true;
+            }
             continue;
         }
         if (itemsOverlapOnCommand(item, managed_item)) {
@@ -347,27 +401,33 @@ fn inspectManagedItem(items: []const std.json.Value, managed_item: std.json.Valu
     return .absent;
 }
 
-fn pruneRetiredClumsiesHookItems(
+fn pruneRetiredPreviouslyManagedHookItems(
     allocator: std.mem.Allocator,
     current_hooks: *std.json.ObjectMap,
+    previous_hooks: std.json.ObjectMap,
     managed_hooks: std.json.ObjectMap,
 ) !bool {
     var empty_events: std.ArrayList([]const u8) = .empty;
     defer empty_events.deinit(allocator);
 
     var did_change = false;
-    var event_it = current_hooks.iterator();
-    while (event_it.next()) |event_entry| {
-        const current_items = asArrayPtr(event_entry.value_ptr) orelse continue;
-        var index = current_items.items.len;
-        while (index > 0) {
-            index -= 1;
-            if (!isRetiredClumsiesHookItem(current_items.items[index], managed_hooks)) continue;
+    var previous_event_it = previous_hooks.iterator();
+    while (previous_event_it.next()) |previous_event| {
+        const previous_items = asArray(previous_event.value_ptr.*) orelse continue;
+        const current_value = current_hooks.getPtr(previous_event.key_ptr.*) orelse continue;
+        const current_items = asArrayPtr(current_value) orelse continue;
+        for (previous_items.items) |previous_item| {
+            if (managedHooksContainEquivalentItem(
+                managed_hooks,
+                previous_event.key_ptr.*,
+                previous_item,
+            )) continue;
+            const index = indexOfValue(current_items.items, previous_item) orelse continue;
             _ = current_items.orderedRemove(index);
             did_change = true;
         }
         if (current_items.items.len == 0) {
-            try empty_events.append(allocator, event_entry.key_ptr.*);
+            try empty_events.append(allocator, previous_event.key_ptr.*);
         }
     }
 
@@ -377,40 +437,33 @@ fn pruneRetiredClumsiesHookItems(
     return did_change;
 }
 
-fn isRetiredClumsiesHookItem(
-    item: std.json.Value,
+fn managedHooksContainEquivalentItem(
     managed_hooks: std.json.ObjectMap,
+    event_name: []const u8,
+    previous_item: std.json.Value,
 ) bool {
-    const hooks = nestedHooksArray(item) orelse return false;
-    if (hooks.len == 0) return false;
-
-    var found_clumsies_hook = false;
-    for (hooks) |hook| {
-        const command = hookCommand(hook) orelse return false;
-        const kind = clumsiesHookScriptName(command) orelse return false;
-        found_clumsies_hook = true;
-        if (managedHooksContainKind(managed_hooks, kind)) return false;
-    }
-    return found_clumsies_hook;
-}
-
-fn managedHooksContainKind(
-    managed_hooks: std.json.ObjectMap,
-    expected_kind: []const u8,
-) bool {
-    var event_it = managed_hooks.iterator();
-    while (event_it.next()) |event_entry| {
-        const items = asArray(event_entry.value_ptr.*) orelse continue;
-        for (items.items) |item| {
-            const hooks = nestedHooksArray(item) orelse continue;
-            for (hooks) |hook| {
-                const command = hookCommand(hook) orelse continue;
-                const kind = clumsiesHookScriptName(command) orelse continue;
-                if (std.mem.eql(u8, kind, expected_kind)) return true;
-            }
+    const managed_value = managed_hooks.get(event_name) orelse return false;
+    const managed_items = asArray(managed_value) orelse return false;
+    for (managed_items.items) |managed_item| {
+        if (valueEql(previous_item, managed_item) or managedHookItemCanReplace(previous_item, managed_item) or itemsOverlapOnCommand(previous_item, managed_item) or itemsOverlapOnClumsiesHookKind(previous_item, managed_item)) {
+            return true;
         }
     }
     return false;
+}
+
+fn valueAppearsIn(value: std.json.Value, candidates: []const std.json.Value) bool {
+    for (candidates) |candidate| {
+        if (valueEql(value, candidate)) return true;
+    }
+    return false;
+}
+
+fn indexOfValue(values: []const std.json.Value, expected: std.json.Value) ?usize {
+    for (values, 0..) |value, index| {
+        if (valueEql(value, expected)) return index;
+    }
+    return null;
 }
 
 fn inspectManagedNamedHook(items: []const std.json.Value, managed_item: std.json.Value) ItemMatch {
@@ -669,13 +722,15 @@ fn clumsiesHookScriptName(command: []const u8) ?[]const u8 {
         "session-start.sh",
         "stop-refer-check.sh",
         "user-prompt-submit.sh",
+        "issue-run-event.sh",
         "pre-invocation.sh",
     };
     for (names) |name| {
         const name_pos = std.mem.indexOf(u8, command, name) orelse continue;
         const prefix = command[0..name_pos];
         if (std.mem.indexOf(u8, prefix, "/.codex/hooks/") != null or
-            std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null)
+            std.mem.indexOf(u8, prefix, "/.agents/hooks/") != null or
+            std.mem.indexOf(u8, prefix, "/.claude/hooks/") != null)
         {
             return name;
         }
@@ -765,7 +820,6 @@ test "prepareJsonHooksRegistry appends managed entries without dropping foreign 
         \\  }
         \\}
     ;
-
     const result = try prepareJsonHooksRegistry(allocator, existing, managed);
     switch (result) {
         .conflict => |message| {
@@ -846,8 +900,28 @@ test "prepareJsonHooksRegistry removes retired clumsies hooks and keeps foreign 
         \\  }
         \\}
     ;
+    const previous_managed =
+        \\{
+        \\  "hooks": {
+        \\    "SessionStart": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.codex/hooks/session-start.sh\""}]}
+        \\    ],
+        \\    "Stop": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.codex/hooks/stop-refer-check.sh\""}]}
+        \\    ],
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.codex/hooks/user-prompt-submit.sh\""}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
 
-    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    const result = try prepareJsonHooksRegistryWithPrevious(
+        allocator,
+        existing,
+        managed,
+        previous_managed,
+    );
     switch (result) {
         .conflict => |message| {
             std.debug.print("unexpected conflict: {s}\n", .{message});
@@ -863,6 +937,104 @@ test "prepareJsonHooksRegistry removes retired clumsies hooks and keeps foreign 
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "stop-refer-check.sh") == null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
             try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "user-prompt-submit.sh") != null);
+        },
+    }
+}
+
+test "prepareJsonHooksRegistry retires legacy Claude prompt hook for lifecycle hook" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/user-prompt-submit.sh\"", "timeout": 5}]},
+        \\      {"hooks": [{"type": "command", "command": "echo foreign"}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/issue-run-event.sh\"", "timeout": 5}]}
+        \\    ],
+        \\    "Stop": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/issue-run-event.sh\"", "timeout": 5}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const previous_managed =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/user-prompt-submit.sh\"", "timeout": 5}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistryWithPrevious(
+        allocator,
+        existing,
+        managed,
+        previous_managed,
+    );
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "user-prompt-submit.sh") == null);
+            try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, prepared.rendered_content, "issue-run-event.sh"));
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "echo foreign") != null);
+        },
+    }
+}
+
+test "prepareJsonHooksRegistry preserves an unowned same-workspace legacy prompt hook" {
+    const allocator = std.testing.allocator;
+    const existing =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/user-prompt-submit.sh\"", "timeout": 5}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
+    const managed =
+        \\{
+        \\  "hooks": {
+        \\    "UserPromptSubmit": [
+        \\      {"hooks": [{"type": "command", "command": "bash \"/workspace/.claude/hooks/issue-run-event.sh\"", "timeout": 5}]}
+        \\    ]
+        \\  }
+        \\}
+    ;
+
+    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    switch (result) {
+        .conflict => |message| {
+            std.debug.print("unexpected conflict: {s}\n", .{message});
+            return error.UnexpectedConflict;
+        },
+        .prepared => |prepared| {
+            defer {
+                var owned = prepared;
+                owned.deinit(allocator);
+            }
+            try std.testing.expectEqualStrings("update", prepared.action);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "user-prompt-submit.sh") != null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.rendered_content, "issue-run-event.sh") != null);
         },
     }
 }
@@ -904,7 +1076,12 @@ test "prepareJsonHooksRegistry replaces stale clumsies hook paths" {
         \\}
     ;
 
-    const result = try prepareJsonHooksRegistry(allocator, existing, managed);
+    const result = try prepareJsonHooksRegistryWithPrevious(
+        allocator,
+        existing,
+        managed,
+        existing,
+    );
     switch (result) {
         .conflict => |message| {
             std.debug.print("unexpected conflict: {s}\n", .{message});

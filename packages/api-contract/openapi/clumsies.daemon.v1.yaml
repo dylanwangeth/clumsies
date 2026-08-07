@@ -71,6 +71,16 @@ components:
         - project_checkout
         - activate_memory
         - load_memory
+        - record_agent_run_event
+        - list_issue_board
+        - get_issue_detail
+        - get_issue
+        - create_issue
+        - update_issue
+        - apply_issue_gate
+        - remove_issue
+        - start_issue_work
+        - request_issue_closure
         - search_index_status
         - rebuild_search_index
         - list_retrieval_runs
@@ -572,6 +582,488 @@ components:
           type: string
         content:
           $ref: "#/components/schemas/DaemonDraftContent"
+    RecordAgentRunEventRequest:
+      type: object
+      required:
+        - event_id
+        - project_id
+        - host
+        - host_run_key
+        - event_type
+        - source
+        - host_session_id
+        - parent_run_id
+        - parent_host_run_key
+        - kind
+        - issue_key
+        - outcome
+        - display_label
+        - summary
+        - occurred_at
+      properties:
+        event_id:
+          type: string
+        project_id:
+          type: string
+        host:
+          $ref: "#/components/schemas/AgentRunHost"
+        host_run_key:
+          type: [string, "null"]
+          description: Null only for a host-session-wide event such as session_ended.
+        event_type:
+          $ref: "#/components/schemas/AgentRunEventType"
+        source:
+          $ref: "#/components/schemas/AgentRunEventSource"
+        host_session_id:
+          type: [string, "null"]
+        parent_run_id:
+          type: [string, "null"]
+        parent_host_run_key:
+          type: [string, "null"]
+          description: Host key used to resolve a parent run before its daemon run id is known.
+        kind:
+          oneOf:
+            - $ref: "#/components/schemas/AgentRunKind"
+            - type: "null"
+        issue_key:
+          type: [string, "null"]
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        outcome:
+          oneOf:
+            - $ref: "#/components/schemas/AgentRunOutcome"
+            - type: "null"
+        display_label:
+          type: [string, "null"]
+          maxLength: 160
+        summary:
+          type: [string, "null"]
+          maxLength: 1000
+        occurred_at:
+          type: [string, "null"]
+          format: date-time
+    RecordAgentRunEventResponse:
+      type: object
+      required: [run, affected_runs, duplicate]
+      properties:
+        run:
+          description: Null for a host-session-wide event that affects multiple runs.
+          oneOf:
+            - $ref: "#/components/schemas/AgentRun"
+            - type: "null"
+        affected_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRun"
+        duplicate:
+          type: boolean
+    IssueBoardListRequest:
+      type: object
+      required: [project_id]
+      properties:
+        project_id:
+          type: string
+    IssueDetailRequest:
+      type: object
+      required: [project_id, issue_number]
+      properties:
+        project_id:
+          type: string
+        issue_number:
+          type: integer
+          minimum: 1
+          maximum: 999
+    GetIssueRequest:
+      type: object
+      required: [issue_id]
+      properties:
+        issue_id:
+          type: string
+          pattern: "^issue_[0-9a-f]{32}$"
+          description: Globally unique Issue identifier, independent of project scope.
+    IssueDetailResponse:
+      type: object
+      required: [issue, body, acceptance_criteria]
+      properties:
+        issue:
+          $ref: "#/components/schemas/IssueBoardCard"
+        body:
+          type: string
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+    IssueBoardResponse:
+      type: object
+      required: [project_id, effective_hash, issues, unlinked_runs, diagnostics]
+      properties:
+        project_id:
+          type: string
+        effective_hash:
+          type: string
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueBoardCard"
+        unlinked_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRun"
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueBoardDiagnostic"
+    IssueExternalReference:
+      type: object
+      required: [kind, url]
+      properties:
+        kind:
+          $ref: "#/components/schemas/IssueExternalReferenceKind"
+        url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          description: Absolute HTTP(S) URL without embedded credentials.
+    IssueBoardCard:
+      type: object
+      required:
+        - issue_id
+        - project_id
+        - issue_number
+        - issue_key
+        - resource_id
+        - path
+        - lifecycle
+        - title
+        - description
+        - external_references
+        - found_at
+        - created_at
+        - started_at
+        - closed_at
+        - archived_at
+        - content_hash
+        - source_commit_id
+        - draft_id
+        - draft_revision
+        - board_state
+        - state_revision
+        - state_updated_at
+        - closure_summary
+        - is_stale
+        - active_runs
+        - latest_run
+      properties:
+        issue_id:
+          type: string
+          pattern: "^issue_[0-9a-f]{32}$"
+        project_id:
+          type: string
+        issue_number:
+          type: integer
+          minimum: 1
+        issue_key:
+          type: string
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        resource_id:
+          type: string
+        path:
+          type: string
+        lifecycle:
+          $ref: "#/components/schemas/IssueLifecycle"
+        title:
+          type: string
+        description:
+          type: string
+        external_references:
+          type: array
+          maxItems: 16
+          items:
+            $ref: "#/components/schemas/IssueExternalReference"
+        found_at:
+          type: [string, "null"]
+          format: date-time
+        created_at:
+          type: [string, "null"]
+          format: date-time
+        started_at:
+          type: [string, "null"]
+          format: date-time
+        closed_at:
+          type: [string, "null"]
+          format: date-time
+        archived_at:
+          type: [string, "null"]
+          format: date-time
+        content_hash:
+          type: string
+        source_commit_id:
+          type: [string, "null"]
+        draft_id:
+          type: [string, "null"]
+        draft_revision:
+          type: [string, "null"]
+        board_state:
+          $ref: "#/components/schemas/IssueBoardState"
+        state_revision:
+          type: integer
+          minimum: 1
+        state_updated_at:
+          type: [string, "null"]
+          format: date-time
+        closure_summary:
+          type: [string, "null"]
+          maxLength: 1000
+        is_stale:
+          type: boolean
+        active_runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRun"
+        latest_run:
+          oneOf:
+            - $ref: "#/components/schemas/AgentRun"
+            - type: "null"
+    IssueBoardDiagnostic:
+      type: object
+      required: [resource_id, path, code, message]
+      properties:
+        resource_id:
+          type: string
+        path:
+          type: string
+        code:
+          $ref: "#/components/schemas/IssueBoardDiagnosticCode"
+        message:
+          type: string
+    AgentRun:
+      type: object
+      required:
+        - run_id
+        - project_id
+        - issue_number
+        - host
+        - host_run_key
+        - host_session_id
+        - parent_run_id
+        - kind
+        - phase
+        - outcome
+        - end_reason
+        - display_label
+        - summary
+        - revision
+        - started_at
+        - last_seen_at
+        - lease_expires_at
+        - ended_at
+      properties:
+        run_id:
+          type: string
+        project_id:
+          type: string
+        issue_number:
+          type: [integer, "null"]
+          minimum: 1
+        host:
+          $ref: "#/components/schemas/AgentRunHost"
+        host_run_key:
+          type: string
+        host_session_id:
+          type: [string, "null"]
+        parent_run_id:
+          type: [string, "null"]
+        kind:
+          $ref: "#/components/schemas/AgentRunKind"
+        phase:
+          $ref: "#/components/schemas/AgentRunPhase"
+        outcome:
+          oneOf:
+            - $ref: "#/components/schemas/AgentRunOutcome"
+            - type: "null"
+        end_reason:
+          type: [string, "null"]
+        display_label:
+          type: [string, "null"]
+        summary:
+          type: [string, "null"]
+          maxLength: 1000
+        revision:
+          type: integer
+          minimum: 1
+        started_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        lease_expires_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+    CreateIssueRequest:
+      type: object
+      required: [project_id, title, description]
+      properties:
+        project_id:
+          type: string
+        title:
+          type: string
+          minLength: 1
+          maxLength: 240
+        description:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        acceptance_criteria:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+        external_references:
+          type: array
+          maxItems: 16
+          items:
+            $ref: "#/components/schemas/IssueExternalReference"
+    UpdateIssueRequest:
+      type: object
+      required: [project_id, issue_key, expected_revision]
+      properties:
+        project_id:
+          type: string
+        issue_key:
+          type: string
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        expected_revision:
+          type: integer
+          minimum: 1
+        title:
+          type: [string, "null"]
+        description:
+          type: [string, "null"]
+        acceptance_criteria:
+          type: [array, "null"]
+          maxItems: 64
+          items:
+            type: string
+        external_references:
+          type: [array, "null"]
+          maxItems: 16
+          items:
+            $ref: "#/components/schemas/IssueExternalReference"
+    ApplyIssueGateRequest:
+      type: object
+      required: [project_id, issue_number, expected_revision, action]
+      properties:
+        project_id:
+          type: string
+        issue_number:
+          type: integer
+          minimum: 1
+          maximum: 999
+        expected_revision:
+          type: integer
+          minimum: 1
+        action:
+          $ref: "#/components/schemas/IssueGateAction"
+    IssueMutationResponse:
+      type: object
+      required: [issue_id, issue_key, board_state, revision, updated_at]
+      properties:
+        issue_id:
+          type: string
+          pattern: "^issue_[0-9a-f]{32}$"
+        issue_key:
+          type: string
+        board_state:
+          $ref: "#/components/schemas/IssueBoardState"
+        revision:
+          type: integer
+          minimum: 1
+        updated_at:
+          type: string
+          format: date-time
+    RemoveIssueRequest:
+      type: object
+      required: [project_id, issue_number, expected_revision, action]
+      properties:
+        project_id:
+          type: string
+        issue_number:
+          type: integer
+          minimum: 1
+          maximum: 999
+        expected_revision:
+          type: integer
+          minimum: 1
+        action:
+          $ref: "#/components/schemas/IssueRemovalAction"
+    IssueRemovalResponse:
+      type: object
+      required: [issue_id, issue_key, action, removed_at]
+      properties:
+        issue_id:
+          type: string
+          pattern: "^issue_[0-9a-f]{32}$"
+        issue_key:
+          type: string
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        action:
+          $ref: "#/components/schemas/IssueRemovalAction"
+        removed_at:
+          type: string
+          format: date-time
+    StartIssueWorkRequest:
+      type: object
+      required: [project_id, run_id, issue_key, expected_revision]
+      properties:
+        project_id:
+          type: string
+        run_id:
+          type: string
+        issue_key:
+          type: string
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        expected_revision:
+          type: integer
+          minimum: 1
+    RequestIssueClosureRequest:
+      type: object
+      required: [project_id, run_id, summary, expected_revision]
+      properties:
+        project_id:
+          type: string
+        run_id:
+          type: string
+        summary:
+          type: [string, "null"]
+          maxLength: 1000
+          description: At most 1000 UTF-8 bytes at the daemon boundary.
+        expected_revision:
+          type: integer
+          minimum: 1
+    IssueWorkflowMutationResponse:
+      type: object
+      required: [issue_id, issue_key, board_state, state_revision, state_updated_at, run]
+      properties:
+        issue_id:
+          type: string
+          pattern: "^issue_[0-9a-f]{32}$"
+        issue_key:
+          type: string
+          pattern: "^ISSUE-(?!000$)[0-9]{3}$"
+        board_state:
+          $ref: "#/components/schemas/IssueBoardState"
+        state_revision:
+          type: integer
+          minimum: 1
+        state_updated_at:
+          type: string
+          format: date-time
+        run:
+          $ref: "#/components/schemas/AgentRun"
     RetrievalRunListRequest:
       type: object
       properties:
@@ -1544,6 +2036,42 @@ components:
     ProjectAgentAdapterKind:
       type: string
       enum: [codex, claude-code]
+    AgentRunHost:
+      type: string
+      enum: [codex, claude-code]
+    AgentRunKind:
+      type: string
+      enum: [root, subagent]
+    AgentRunPhase:
+      type: string
+      enum: [running, ended]
+    AgentRunOutcome:
+      type: string
+      enum: [completed, blocked, failed, cancelled, unknown]
+    AgentRunEventType:
+      type: string
+      enum: [started, heartbeat, ended, session_ended]
+    AgentRunEventSource:
+      type: string
+      enum: [hook, mcp, desktop, recovery]
+    IssueLifecycle:
+      type: string
+      enum: [open, closed]
+    IssueBoardState:
+      type: string
+      enum: [todo, in_progress, closure_requested, done]
+    IssueExternalReferenceKind:
+      type: string
+      enum: [issue, pull_request]
+    IssueGateAction:
+      type: string
+      enum: [approve_closure, request_changes, reopen]
+    IssueRemovalAction:
+      type: string
+      enum: [archive, delete]
+    IssueBoardDiagnosticCode:
+      type: string
+      enum: [malformed_path, malformed_title, title_number_mismatch, duplicate_issue_number]
     RetrievalRunStatus:
       type: string
       enum: [running, succeeded, failed]

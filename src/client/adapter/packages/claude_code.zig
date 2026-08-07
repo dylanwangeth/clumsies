@@ -64,13 +64,13 @@ pub fn renderRuntimeAssets(
         .content = try renderSessionStartHook(allocator, scope, target_root),
     });
     try assets.append(allocator, .{
-        .resource_id = "claude-code.hooks.user_prompt_submit",
+        .resource_id = "claude-code.hooks.issue_run_event",
         .resource_kind = "plain_file",
-        .relative_path = try scopedRelativePath(allocator, scope, "hooks/user-prompt-submit.sh"),
+        .relative_path = try scopedRelativePath(allocator, scope, "hooks/issue-run-event.sh"),
         .ownership = "exclusive",
-        .label = "Claude Code UserPromptSubmit hook",
+        .label = "Claude Code Issue run lifecycle hook",
         .file_mode = 0o755,
-        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_user_prompt_submit_sh),
+        .content = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_issue_run_event_sh),
     });
     try assets.append(allocator, .{
         .resource_id = "claude-code.skills.activate",
@@ -169,14 +169,14 @@ fn renderSettingsJson(
 ) ![]u8 {
     const session_start_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "session-start.sh");
     defer allocator.free(session_start_cmd_json);
-    const user_prompt_submit_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "user-prompt-submit.sh");
-    defer allocator.free(user_prompt_submit_cmd_json);
+    const issue_run_event_cmd_json = try commandJsonLiteral(allocator, scope, target_root, "issue-run-event.sh");
+    defer allocator.free(issue_run_event_cmd_json);
 
     var rendered = try allocator.dupe(u8, build_options.adapter_claude_code_runtime_settings_json);
     errdefer allocator.free(rendered);
 
     rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_SESSION_START_COMMAND_JSON__", session_start_cmd_json);
-    rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_USER_PROMPT_SUBMIT_COMMAND_JSON__", user_prompt_submit_cmd_json);
+    rendered = try replaceOwned(allocator, rendered, "__CLUMSIES_ISSUE_RUN_EVENT_COMMAND_JSON__", issue_run_event_cmd_json);
     return rendered;
 }
 
@@ -270,6 +270,45 @@ test "renderRuntimeAssets uses workspace-local Claude Code hook paths" {
     defer deinitRenderedAssets(allocator, assets);
 
     try std.testing.expect(std.mem.indexOf(u8, assets[0].content, "/tmp/workspace/.claude/hooks/session-start.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[0].content, "/tmp/workspace/.claude/hooks/issue-run-event.sh") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[0].content, "user-prompt-submit.sh") == null);
+}
+
+test "Claude lifecycle hook covers failure and remains fail open" {
+    const allocator = std.testing.allocator;
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace");
+    defer deinitRenderedAssets(allocator, assets);
+
+    var found_lifecycle = false;
+    for (assets) |asset| {
+        try std.testing.expect(!std.mem.eql(u8, asset.resource_id, "claude-code.hooks.user_prompt_submit"));
+        if (!std.mem.eql(u8, asset.resource_id, "claude-code.hooks.issue_run_event")) continue;
+        found_lifecycle = true;
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "_agent issue-run-event --host claude-code") != null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "|| true") != null);
+        try std.testing.expect(std.mem.indexOf(u8, asset.content, "jq") == null);
+    }
+    try std.testing.expect(found_lifecycle);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, assets[0].content, .{});
+    defer parsed.deinit();
+    const hooks = parsed.value.object.get("hooks").?.object;
+    for ([_][]const u8{ "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionEnd", "StopFailure" }) |event| {
+        const groups = hooks.get(event).?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), groups.len);
+        const handlers = groups[0].object.get("hooks").?.array.items;
+        try std.testing.expectEqual(@as(usize, 1), handlers.len);
+        try std.testing.expect(std.mem.indexOf(u8, handlers[0].object.get("command").?.string, "issue-run-event.sh") != null);
+    }
+}
+
+test "Claude resolver prefers an executable desktop-managed helper" {
+    const allocator = std.testing.allocator;
+    const assets = try renderRuntimeAssets(allocator, .workspace, "/tmp/workspace");
+    defer deinitRenderedAssets(allocator, assets);
+
+    try std.testing.expect(std.mem.indexOf(u8, assets[2].content, "CLUMSIES_ADAPTER_BINARY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, assets[2].content, "[ -x \"$CLUMSIES_ADAPTER_BINARY\" ]") != null);
 }
 
 test "renderSessionStartHook disables workflow import for user scope" {
