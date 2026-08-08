@@ -282,6 +282,10 @@ async fn project_storage_is_local_per_project_and_moves_managed_cache_safely() {
         invalid_authorization.availability,
         daemon::DaemonProjectStorageAvailability::Unavailable
     );
+    assert_eq!(
+        invalid_authorization.issue_code.as_deref(),
+        Some("project_storage_corrupt")
+    );
 
     let refreshed_authorization = state
         .replace_project_storage(DaemonProjectStorageReplaceRequest {
@@ -456,6 +460,153 @@ async fn project_storage_is_local_per_project_and_moves_managed_cache_safely() {
     .await
     .unwrap();
     assert_eq!(central_search_tables, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn stale_bookmark_is_repaired_from_the_selected_path() {
+    let root = tempfile::tempdir().unwrap();
+    let custom = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+    config.project.server_url = "https://storage.example.test".to_owned();
+    config.project.project_id = Some("prj_stale".to_owned());
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+
+    let default = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_stale".to_owned(),
+        })
+        .await
+        .unwrap();
+    let moved = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_stale".to_owned(),
+            selected_root_path: custom.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom.path()),
+            expected_location_revision: default.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_storage_move(&state, &moved.move_id).await.state,
+        DaemonProjectStorageMoveState::Completed
+    );
+
+    // Simulate the workspace migration: the stored bookmark references a file
+    // identity that no longer exists while the selected path stays reachable.
+    let dead_dir = tempfile::tempdir().unwrap();
+    let dead_bookmark = directory_security_bookmark(dead_dir.path());
+    drop(dead_dir);
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE project_storage_locations SET bookmark_data = $1
+         WHERE project_id = 'prj_stale'",
+    )
+    .bind(&dead_bookmark)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let repaired = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_stale".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        repaired.availability,
+        daemon::DaemonProjectStorageAvailability::Ready
+    );
+    let refreshed_bookmark: Option<String> = sqlx::query_scalar(
+        "SELECT bookmark_data FROM project_storage_locations WHERE project_id = 'prj_stale'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(refreshed_bookmark.as_deref(), Some(dead_bookmark.as_str()));
+    let persisted_root: String = sqlx::query_scalar(
+        "SELECT selected_root_path FROM project_storage_locations WHERE project_id = 'prj_stale'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        Path::new(&persisted_root),
+        std::fs::canonicalize(custom.path()).unwrap()
+    );
+
+    // The repaired authorization keeps working on later resolutions.
+    let again = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_stale".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        again.availability,
+        daemon::DaemonProjectStorageAvailability::Ready
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn stale_bookmark_with_unreachable_selected_path_reports_volume_missing() {
+    let root = tempfile::tempdir().unwrap();
+    let custom = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+    config.project.server_url = "https://storage.example.test".to_owned();
+    config.project.project_id = Some("prj_stale_gone".to_owned());
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+
+    let default = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_stale_gone".to_owned(),
+        })
+        .await
+        .unwrap();
+    let moved = state
+        .replace_project_storage(DaemonProjectStorageReplaceRequest {
+            project_id: "prj_stale_gone".to_owned(),
+            selected_root_path: custom.path().display().to_string(),
+            handoff_bookmark_data: directory_handoff_bookmark(custom.path()),
+            expected_location_revision: default.location_revision,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wait_for_storage_move(&state, &moved.move_id).await.state,
+        DaemonProjectStorageMoveState::Completed
+    );
+
+    let dead_dir = tempfile::tempdir().unwrap();
+    let dead_bookmark = directory_security_bookmark(dead_dir.path());
+    drop(dead_dir);
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE project_storage_locations SET bookmark_data = $1
+         WHERE project_id = 'prj_stale_gone'",
+    )
+    .bind(&dead_bookmark)
+    .execute(&pool)
+    .await
+    .unwrap();
+    std::fs::remove_dir_all(custom.path()).unwrap();
+
+    let unavailable = state
+        .project_storage(DaemonProjectStorageRequest {
+            project_id: "prj_stale_gone".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        unavailable.availability,
+        daemon::DaemonProjectStorageAvailability::Unavailable
+    );
+    assert_eq!(unavailable.issue_code.as_deref(), Some("volume_missing"));
 }
 
 #[cfg(target_os = "macos")]

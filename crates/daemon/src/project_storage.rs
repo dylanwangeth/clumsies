@@ -44,6 +44,22 @@ struct ResolvedSelectedRoot {
     _security_scope: SecurityScope,
 }
 
+/// Failure classification for a persisted macOS authorization bookmark.
+enum BookmarkFailure {
+    /// The bookmark cannot be repaired from the selected path; the error is
+    /// reported to the caller as-is.
+    Fatal(DaemonError),
+    /// The bookmark references a file identity that no longer exists; the
+    /// persisted selected path may still be reachable and re-authorizable.
+    Stale(DaemonError),
+}
+
+impl From<DaemonError> for BookmarkFailure {
+    fn from(error: DaemonError) -> Self {
+        BookmarkFailure::Fatal(error)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonProjectStorageMode {
@@ -1246,13 +1262,14 @@ async fn resolve_setting(
         if let Some(refreshed_bookmark) = resolved.bookmark_to_persist {
             sqlx::query(
                 "UPDATE project_storage_locations
-                 SET bookmark_data = $3,
+                 SET selected_root_path = $4, bookmark_data = $3,
                      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE authority_key = $1 AND project_id = $2",
             )
             .bind(authority_key)
             .bind(project_id)
             .bind(refreshed_bookmark)
+            .bind(resolved.path.display().to_string())
             .execute(&state.inner.pool)
             .await?;
         }
@@ -1410,7 +1427,8 @@ async fn load_setting(
     project_id: &str,
 ) -> Result<Option<StorageSetting>, DaemonError> {
     let row = sqlx::query(
-        "SELECT mode, selected_root_path, bookmark_data, location_revision
+        "SELECT mode, selected_root_path,
+                CAST(bookmark_data AS TEXT) AS bookmark_data, location_revision
          FROM project_storage_locations
          WHERE authority_key = $1 AND project_id = $2",
     )
@@ -1523,10 +1541,12 @@ async fn load_move_view(
 async fn load_move_row(pool: &SqlitePool, move_id: &str) -> Result<StorageMoveRow, DaemonError> {
     let row = sqlx::query(
         "SELECT move_id, authority_key, project_id,
-                source_mode, source_selected_root_path, source_bookmark_data,
+                source_mode, source_selected_root_path,
+                CAST(source_bookmark_data AS TEXT) AS source_bookmark_data,
                 source_managed_root_path, source_location_revision,
                 destination_mode, destination_selected_root_path,
-                destination_bookmark_data, destination_managed_root_path, state
+                CAST(destination_bookmark_data AS TEXT) AS destination_bookmark_data,
+                destination_managed_root_path, state
          FROM project_storage_moves WHERE move_id = $1",
     )
     .bind(move_id)
@@ -1557,7 +1577,11 @@ fn resolve_selected_root(
 ) -> Result<ResolvedSelectedRoot, DaemonError> {
     let supplied = requested_selected_root(selected_root_path)?;
     let resolved = match bookmark_data {
-        Some(bookmark) if !bookmark.trim().is_empty() => resolve_bookmark(bookmark)?,
+        Some(bookmark) if !bookmark.trim().is_empty() => match resolve_bookmark(bookmark) {
+            Ok(resolved) => resolved,
+            Err(BookmarkFailure::Fatal(error)) => return Err(error),
+            Err(BookmarkFailure::Stale(error)) => repair_stale_bookmark(supplied.clone(), error)?,
+        },
         _ if bookmark_required => {
             return Err(storage_error(
                 "permission_required",
@@ -1937,17 +1961,17 @@ fn ensure_local_volume(_path: &Path) -> Result<(), DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, DaemonError> {
+fn resolve_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, BookmarkFailure> {
     use objc2::runtime::Bool;
     use objc2_foundation::{
         NSData, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
     };
 
-    let bytes = STANDARD.decode(bookmark).map_err(|error| {
-        storage_error(
-            "permission_required",
+    let bytes = STANDARD.decode(bookmark.trim()).map_err(|error| {
+        BookmarkFailure::Fatal(storage_error(
+            "project_storage_corrupt",
             format!("Project storage bookmark is not valid Base64: {error}"),
-        )
+        ))
     })?;
     let data = NSData::with_bytes(&bytes);
     let mut stale = Bool::NO;
@@ -1960,17 +1984,12 @@ fn resolve_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, DaemonError>
             &data, options, None, &mut stale,
         )
     }
-    .map_err(|error| {
-        storage_error(
-            "permission_required",
-            format!("Project storage bookmark cannot be resolved: {error}"),
-        )
-    })?;
+    .map_err(|error| classify_stale_bookmark(&data, error))?;
     if !unsafe { url.startAccessingSecurityScopedResource() } {
-        return Err(storage_error(
+        return Err(BookmarkFailure::Fatal(storage_error(
             "permission_required",
             "macOS denied access to the selected Project storage directory",
-        ));
+        )));
     }
     let access = Arc::new(SecurityScopedAccess { url });
     let path = access.url.path().ok_or_else(|| {
@@ -2045,19 +2064,144 @@ fn resolve_handoff_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, Daem
             )
         })?;
     let daemon_bookmark = STANDARD.encode(daemon_bookmark.to_vec());
-    let mut resolved = resolve_bookmark(&daemon_bookmark)?;
+    let mut resolved = match resolve_bookmark(&daemon_bookmark) {
+        Ok(resolved) => resolved,
+        Err(BookmarkFailure::Fatal(error) | BookmarkFailure::Stale(error)) => return Err(error),
+    };
     resolved.bookmark_to_persist = Some(daemon_bookmark);
     Ok(resolved)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn resolve_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, DaemonError> {
-    STANDARD.decode(bookmark).map_err(|error| {
+/// Classify a failed security-scoped bookmark resolution. A bookmark whose
+/// referenced file identity no longer exists is stale and may be repaired from
+/// the persisted selected path; undecodable or structurally invalid data is
+/// corrupt and requires re-selecting the directory.
+#[cfg(target_os = "macos")]
+fn classify_stale_bookmark(
+    data: &objc2_foundation::NSData,
+    scoped_error: objc2::rc::Retained<objc2_foundation::NSError>,
+) -> BookmarkFailure {
+    use objc2::runtime::Bool;
+    use objc2_foundation::{NSCocoaErrorDomain, NSURL, NSURLBookmarkResolutionOptions};
+
+    let mut stale = Bool::NO;
+    let plain_options = NSURLBookmarkResolutionOptions::WithoutUI
+        | NSURLBookmarkResolutionOptions::WithoutMounting
+        | NSURLBookmarkResolutionOptions::WithoutImplicitStartAccessing;
+    let plain = unsafe {
+        NSURL::URLByResolvingBookmarkData_options_relativeToURL_bookmarkDataIsStale_error(
+            data,
+            plain_options,
+            None,
+            &mut stale,
+        )
+    };
+    let message = format!("Project storage bookmark cannot be resolved: {scoped_error}");
+    let plain_error_is_missing_file = plain.as_ref().err().is_some_and(|error| {
+        let cocoa_domain = unsafe { NSCocoaErrorDomain };
+        error.domain().to_string() == cocoa_domain.to_string() && error.code() == 4
+    });
+    match plain {
+        // The bookmark still resolves by path; only its security scope is stale.
+        Ok(_) => BookmarkFailure::Stale(storage_error("permission_required", message)),
+        // The referenced file identity no longer exists anywhere.
+        Err(_) if plain_error_is_missing_file => {
+            BookmarkFailure::Stale(storage_error("permission_required", message))
+        }
+        Err(_) => BookmarkFailure::Fatal(storage_error("project_storage_corrupt", message)),
+    }
+}
+
+/// Re-authorize a stale bookmark from the persisted selected path. The path is
+/// the trust anchor: it is persisted together with the bookmark during
+/// `replace_project_storage`, and the caller validates the result is a local,
+/// writable directory before it is used.
+#[cfg(target_os = "macos")]
+fn repair_stale_bookmark(
+    supplied: PathBuf,
+    stale_error: DaemonError,
+) -> Result<ResolvedSelectedRoot, DaemonError> {
+    let canonical = fs::canonicalize(&supplied).map_err(|error| {
         storage_error(
-            "permission_required",
-            format!("Project storage bookmark is not valid Base64: {error}"),
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "volume_missing"
+            } else {
+                "permission_required"
+            },
+            format!(
+                "Project storage bookmark is stale ({stale_error}) and its selected directory {} cannot be resolved: {error}",
+                supplied.display()
+            ),
         )
     })?;
+    if !canonical.is_dir() {
+        return Err(DaemonError::InvalidRequest(format!(
+            "Project storage path {} is not a directory",
+            canonical.display()
+        )));
+    }
+    tracing::warn!(
+        "Project storage bookmark is stale ({stale_error}); re-authorizing selected directory {}",
+        canonical.display()
+    );
+    create_scoped_bookmark(&canonical)
+}
+
+/// Create a fresh security-scoped bookmark for a canonical directory path.
+#[cfg(target_os = "macos")]
+fn create_scoped_bookmark(canonical: &Path) -> Result<ResolvedSelectedRoot, DaemonError> {
+    use objc2_foundation::{NSString, NSURL, NSURLBookmarkCreationOptions};
+
+    let path = NSString::from_str(&canonical.display().to_string());
+    let url = NSURL::fileURLWithPath_isDirectory(&path, true);
+    let bookmark = url
+        .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+            NSURLBookmarkCreationOptions::WithSecurityScope,
+            None,
+            None,
+        )
+        .map_err(|error| {
+            storage_error(
+                "permission_required",
+                format!(
+                    "Project storage authorization cannot be created for {}: {error}",
+                    canonical.display()
+                ),
+            )
+        })?;
+    let access = Arc::new(SecurityScopedAccess { url });
+    if !unsafe { access.url.startAccessingSecurityScopedResource() } {
+        return Err(storage_error(
+            "permission_required",
+            "macOS denied access to the re-authorized Project storage directory",
+        ));
+    }
+    Ok(ResolvedSelectedRoot {
+        path: canonical.to_path_buf(),
+        bookmark_to_persist: Some(STANDARD.encode(bookmark.to_vec())),
+        _security_scope: Some(access),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_bookmark(bookmark: &str) -> Result<ResolvedSelectedRoot, BookmarkFailure> {
+    STANDARD.decode(bookmark).map_err(|error| {
+        BookmarkFailure::Fatal(storage_error(
+            "project_storage_corrupt",
+            format!("Project storage bookmark is not valid Base64: {error}"),
+        ))
+    })?;
+    Err(BookmarkFailure::Fatal(storage_error(
+        "permission_required",
+        "Directory authorization bookmarks are only supported by the macOS daemon",
+    )))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn repair_stale_bookmark(
+    _supplied: PathBuf,
+    _stale_error: DaemonError,
+) -> Result<ResolvedSelectedRoot, DaemonError> {
     Err(storage_error(
         "permission_required",
         "Directory authorization bookmarks are only supported by the macOS daemon",
