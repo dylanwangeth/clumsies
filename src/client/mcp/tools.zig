@@ -53,14 +53,14 @@ const issue_external_reference_definition =
     "},\"required\":[\"kind\",\"url\"],\"additionalProperties\":false}";
 
 const issue_schema =
-    "{\"name\":\"" ++ tool_names.issue ++ "\",\"title\":\"Issue\",\"description\":\"Get by global Issue ID, create, update, list, or make an explicit semantic transition on native project Issues. Create and update accept typed external_references; list and get return them with each Issue. Create Todo for durable follow-up work; call start only when the current prompt begins or continues that Issue; request_closure only after judging its acceptance criteria satisfied. User approval is intentionally unavailable to Agents. AgentRun lifecycle events never make these decisions. Pass exactly one tagged operation.\"," ++
+    "{\"name\":\"" ++ tool_names.kanban ++ "\",\"title\":\"Kanban\",\"description\":\"Manage the native project Kanban (distinct from remote GitHub Issues): get by global Issue ID, create, update, list, or make an explicit semantic transition on native project Issues. Create and update accept typed external_references; list and get return them with each Issue. Create Todo for durable follow-up work; call begin_work only when the current prompt begins or continues that Issue; request_closure only after judging its acceptance criteria satisfied. User approval is intentionally unavailable to Agents. AgentRun lifecycle events never make these decisions. Pass exactly one tagged operation.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
     "\"list\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}," ++
     "\"get\":{\"type\":\"object\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"}},\"required\":[\"issue_id\"],\"additionalProperties\":false}," ++
     "\"create\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
     "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
-    "\"start\":{\"type\":\"object\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"run_id\",\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
+    "\"begin_work\":{\"type\":\"object\",\"description\":\"Bind the current AgentRun to this Issue and enter In Progress; requires run_id and the current revision.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"run_id\",\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
     "\"request_closure\":{\"type\":\"object\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"run_id\",\"expected_revision\"],\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ "}}}";
@@ -98,7 +98,7 @@ pub fn handleCall(
     if (std.mem.eql(u8, name, tool_names.store)) {
         return handleStore(allocator, session, args) catch |err| daemonToolError(allocator, err, "store the Draft operation");
     }
-    if (std.mem.eql(u8, name, tool_names.issue)) {
+    if (std.mem.eql(u8, name, tool_names.kanban)) {
         return handleIssue(allocator, session, args) catch |err| daemonToolError(allocator, err, "apply the Issue operation");
     }
     return try tool_result.buildErrorResult(allocator, "Unknown tool");
@@ -236,7 +236,7 @@ fn handleStore(
     return try buildDaemonOperationResult(allocator, operation);
 }
 
-const IssueOp = enum { list, get, create, update, start, request_closure };
+const IssueOp = enum { list, get, create, update, begin_work, request_closure };
 
 fn handleIssue(
     allocator: std.mem.Allocator,
@@ -251,7 +251,7 @@ fn handleIssue(
         else => return try tool_result.buildErrorResult(allocator, "op must be a JSON object"),
     };
     const op = parseIssueOp(tagged) orelse
-        return try tool_result.buildErrorResult(allocator, "op must contain exactly one of list, get, create, update, start, or request_closure");
+        return try tool_result.buildErrorResult(allocator, "op must contain exactly one of list, get, create, update, begin_work, or request_closure");
     const op_args = switch (tagged.get(issueOpName(op)).?) {
         .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "operation details must be a JSON object"),
@@ -289,8 +289,8 @@ fn handleIssue(
                 op_args,
             );
         },
-        .start => blk: {
-            if (try validateIssueStart(allocator, op_args)) |result| return result;
+        .begin_work => blk: {
+            if (try validateIssueBeginWork(allocator, op_args)) |result| return result;
             break :blk try daemon_ipc.startIssueWorkOperation(
                 allocator,
                 session.project_id,
@@ -316,7 +316,7 @@ fn handleIssue(
 
 fn parseIssueOp(object: std.json.ObjectMap) ?IssueOp {
     if (object.count() != 1) return null;
-    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.start, IssueOp.request_closure }) |op| {
+    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.begin_work, IssueOp.request_closure }) |op| {
         if (object.get(issueOpName(op)) != null) return op;
     }
     return null;
@@ -328,7 +328,7 @@ fn issueOpName(op: IssueOp) []const u8 {
         .get => "get",
         .create => "create",
         .update => "update",
-        .start => "start",
+        .begin_work => "begin_work",
         .request_closure => "request_closure",
     };
 }
@@ -461,11 +461,11 @@ fn validateOptionalIssueString(
     return null;
 }
 
-fn validateIssueStart(
+fn validateIssueBeginWork(
     allocator: std.mem.Allocator,
     args: std.json.ObjectMap,
 ) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision" }, "start")) |result| {
+    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision" }, "begin_work")) |result| {
         return result;
     }
     const run_id = requiredString(args, "run_id") orelse
@@ -761,13 +761,13 @@ test "buildListResult exposes memory and explicit Issue workflow tools without o
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"activate\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"load\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"store\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"issue\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"kanban\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"list\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"get\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "global Issue ID") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"create\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"update\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "\"start\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "\"begin_work\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "\"request_closure\"") != null);
     try testing.expect(std.mem.indexOf(u8, result, "TaskCreated") == null);
     try testing.expect(std.mem.indexOf(u8, result, "\"name\":\"retrieve\"") == null);
@@ -789,7 +789,7 @@ test "issue schema exposes bounded typed external references" {
     const tools = parsed.value.object.get("tools").?.array.items;
     const issue_tool = for (tools) |tool| {
         const object = tool.object;
-        if (std.mem.eql(u8, object.get("name").?.string, tool_names.issue)) break object;
+        if (std.mem.eql(u8, object.get("name").?.string, tool_names.kanban)) break object;
     } else unreachable;
     const input_schema = issue_tool.get("inputSchema").?.object;
     const operations = input_schema.get("properties").?.object.get("op").?.object.get("properties").?.object;
@@ -940,7 +940,7 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer start.deinit();
-    try testing.expect((try validateIssueStart(testing.allocator, start.value.object)) == null);
+    try testing.expect((try validateIssueBeginWork(testing.allocator, start.value.object)) == null);
 
     const zero_revision = try std.json.parseFromSlice(
         std.json.Value,
@@ -950,7 +950,7 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer zero_revision.deinit();
-    const revision_error = (try validateIssueStart(testing.allocator, zero_revision.value.object)).?;
+    const revision_error = (try validateIssueBeginWork(testing.allocator, zero_revision.value.object)).?;
     defer testing.allocator.free(revision_error);
     try testing.expect(std.mem.indexOf(u8, revision_error, "positive integer") != null);
 
@@ -962,7 +962,7 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer github_number.deinit();
-    const issue_error = (try validateIssueStart(testing.allocator, github_number.value.object)).?;
+    const issue_error = (try validateIssueBeginWork(testing.allocator, github_number.value.object)).?;
     defer testing.allocator.free(issue_error);
     try testing.expect(std.mem.indexOf(u8, issue_error, "ISSUE-NNN") != null);
 
@@ -974,7 +974,7 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer zero_issue.deinit();
-    const zero_issue_error = (try validateIssueStart(testing.allocator, zero_issue.value.object)).?;
+    const zero_issue_error = (try validateIssueBeginWork(testing.allocator, zero_issue.value.object)).?;
     defer testing.allocator.free(zero_issue_error);
     try testing.expect(std.mem.indexOf(u8, zero_issue_error, "ISSUE-NNN") != null);
 
@@ -986,7 +986,7 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer wide_issue.deinit();
-    const wide_issue_error = (try validateIssueStart(testing.allocator, wide_issue.value.object)).?;
+    const wide_issue_error = (try validateIssueBeginWork(testing.allocator, wide_issue.value.object)).?;
     defer testing.allocator.free(wide_issue_error);
     try testing.expect(std.mem.indexOf(u8, wide_issue_error, "ISSUE-NNN") != null);
 
@@ -1017,7 +1017,7 @@ test "issue rejects multiple tags without calling daemon" {
     const parsed = try std.json.parseFromSlice(
         std.json.Value,
         testing.allocator,
-        \\{"name":"issue","arguments":{"op":{"list":{},"start":{"run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":1}}}}
+        \\{"name":"kanban","arguments":{"op":{"list":{},"begin_work":{"run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":1}}}}
     ,
         .{},
     );

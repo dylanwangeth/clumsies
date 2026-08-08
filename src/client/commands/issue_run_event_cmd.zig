@@ -222,7 +222,7 @@ fn hookContextJsonAlloc(
         return try additionalContextJsonAlloc(
             allocator,
             hook_event_name,
-            "Before ending, make an explicit semantic Issue decision. If the current root task is linked to an In Progress Issue and its acceptance criteria are satisfied, call issue.request_closure with the current run_id and revision. Otherwise leave it In Progress. Stop itself never completes or advances an Issue.",
+            "Before ending, make an explicit semantic Issue decision. If the current root task is linked to an In Progress Issue and its acceptance criteria are satisfied, call kanban.request_closure with the current run_id and revision. Otherwise leave it In Progress. Stop itself never completes or advances an Issue.",
         );
     }
 
@@ -247,13 +247,13 @@ fn hookContextJsonAlloc(
     const context = if (std.mem.eql(u8, hook_event_name, "UserPromptSubmit"))
         try std.fmt.allocPrint(
             allocator,
-            "Clumsies current root AgentRun: run_id={s}, revision={d}. Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use issue.list to inspect existing Issues and issue.create to capture a new one. Call issue.start with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with issue.create but do not call issue.start, so it remains Todo. Before finishing, call issue.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
+            "Clumsies current root AgentRun: run_id={s}, revision={d}. Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with kanban.create but do not call kanban.begin_work, so it remains Todo. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
             .{ current_run.run_id, current_run.revision },
         )
     else
         try std.fmt.allocPrint(
             allocator,
-            "Clumsies current subagent AgentRun: run_id={s}, revision={d}. Call issue.start only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent. AgentRun Stop never advances or closes an Issue.",
+            "Clumsies current subagent AgentRun: run_id={s}, revision={d}. Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent. AgentRun Stop never advances or closes an Issue.",
             .{ current_run.run_id, current_run.revision },
         );
     defer allocator.free(context);
@@ -287,7 +287,7 @@ fn claudeStopDecisionJsonAlloc(allocator: std.mem.Allocator) ![]u8 {
     };
     return try std.json.Stringify.valueAlloc(allocator, StopOutput{
         .decision = "block",
-        .reason = "Before stopping, make the explicit semantic Issue decision now. If the current root task is linked to an In Progress Issue and its acceptance criteria are satisfied, call issue.request_closure with the current run_id and revision. If it is not satisfied, leave it In Progress. If you already made the appropriate decision, stop again without another mutation. Stop itself never completes or advances an Issue.",
+        .reason = "Before stopping, make the explicit semantic Issue decision now. If the current root task is linked to an In Progress Issue and its acceptance criteria are satisfied, call kanban.request_closure with the current run_id and revision. If it is not satisfied, leave it In Progress. If you already made the appropriate decision, stop again without another mutation. Stop itself never completes or advances an Issue.",
     }, .{});
 }
 
@@ -515,8 +515,8 @@ test "start hook context exposes only the current run identity and revision" {
     const context = specific.get("additionalContext").?.string;
     try std.testing.expect(std.mem.indexOf(u8, context, "arun_0123456789abcdef0123456789abcdef") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "revision=7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, context, "issue.start") != null);
-    try std.testing.expect(std.mem.indexOf(u8, context, "issue.request_closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, context, "kanban.begin_work") != null);
+    try std.testing.expect(std.mem.indexOf(u8, context, "kanban.request_closure") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "Decide semantically") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-project") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-turn") == null);
@@ -546,7 +546,7 @@ test "subagent start receives run context and Codex Stop receives semantic remin
         response,
     )).?;
     defer std.testing.allocator.free(stop_output);
-    try std.testing.expect(std.mem.indexOf(u8, stop_output, "issue.request_closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stop_output, "kanban.request_closure") != null);
     try std.testing.expect((try hookContextJsonAlloc(std.testing.allocator, .codex, "UserPromptSubmit", "started",
         \\{"run":{"run_id":"not-a-daemon-run","revision":1}}
     )) == null);
@@ -559,7 +559,7 @@ test "Claude Stop decision blocks once and explains semantic closure" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings("block", parsed.value.object.get("decision").?.string);
     const reason = parsed.value.object.get("reason").?.string;
-    try std.testing.expect(std.mem.indexOf(u8, reason, "issue.request_closure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, reason, "kanban.request_closure") != null);
     try std.testing.expect(std.mem.indexOf(u8, reason, "Stop itself never") != null);
 }
 
