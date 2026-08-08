@@ -12,7 +12,7 @@ The Issue experience follows the same responsibility split as a coding agent:
 
 - The user describes needs and gives feedback in natural language.
 - The Agent interprets that language and creates or updates structured Issues
-  through the `issue` MCP tool.
+  through the `kanban` MCP tool.
 - The board is a read-and-gate surface, not an authoring surface.
 - The user only performs small, explicit gate decisions such as approving a
   closure request, requesting more work, or reopening a completed Issue.
@@ -61,19 +61,19 @@ The board has exactly four columns:
 
 | State | Meaning | Authority |
 |---|---|---|
-| Todo | Captured durable work that no Agent is currently pursuing. | Agent `issue.create`, or user Reopen gate. |
-| In Progress | An Agent explicitly started or resumed the Issue. | Agent `issue.start`; user Request Changes gate. |
-| Closure Requested | The root Agent judged the acceptance criteria satisfied and proposed completion. | Root Agent `issue.request_closure`. |
+| Todo | Captured durable work that no Agent is currently pursuing. | Agent `kanban.create`, or user Reopen gate. |
+| In Progress | An Agent explicitly started or resumed the Issue. | Agent `kanban.begin_work`; user Request Changes gate. |
+| Closure Requested | The root Agent judged the acceptance criteria satisfied and proposed completion. | Root Agent `kanban.request_closure`. |
 | Done | The user accepted the closure proposal. | User Approve gate only. |
 
 Valid transitions are:
 
 ```text
 create ------------------------------------------> Todo
-Todo ---------------- issue.start --------------> In Progress
-In Progress ---------- issue.start -------------> In Progress
-Closure Requested ---- issue.start -------------> In Progress
-In Progress ---------- issue.request_closure ---> Closure Requested
+Todo ---------------- kanban.begin_work --------------> In Progress
+In Progress ---------- kanban.begin_work -------------> In Progress
+Closure Requested ---- kanban.begin_work -------------> In Progress
+In Progress ---------- kanban.request_closure ---> Closure Requested
 Closure Requested ---- user Request Changes ----> In Progress
 Closure Requested ---- user Approve ------------> Done
 Done ----------------- user Reopen -------------> Todo
@@ -94,14 +94,14 @@ the request:
 2. creates a new durable Issue;
 3. is transient work that should not become an Issue.
 
-For (1), call `issue.start`. For (2), call `issue.create`, then call
-`issue.start` only when the Issue is the active line of work. If an unrelated
-problem is discovered while doing other work, call `issue.create` without
+For (1), call `kanban.begin_work`. For (2), call `kanban.create`, then call
+`kanban.begin_work` only when the Issue is the active line of work. If an unrelated
+problem is discovered while doing other work, call `kanban.create` without
 `start`; this is the primary source of Todo cards.
 
 ### Before stopping
 
-The root Agent calls `issue.request_closure` only after it judges every
+The root Agent calls `kanban.request_closure` only after it judges every
 acceptance criterion satisfied. Otherwise it makes no lifecycle mutation.
 Hooks create this decision point but never make the decision themselves.
 
@@ -110,7 +110,7 @@ cannot request closure.
 
 ## 6. MCP requirements
 
-Expose one agent-facing `issue` tool with tagged operations:
+Expose one agent-facing `kanban` tool with tagged operations:
 
 - `list`: inspect native Issues and current revisions;
 - `get`: load one Issue by its globally unique `issue_id`, including its owning
@@ -179,7 +179,7 @@ Progress, has no live unexpired AgentRun, and has no activity for 24 hours.
   external reference when present.
 - Done icons are green in the board column.
 - There is no New Issue button: the user asks an Agent in natural language and
-  the Agent calls `issue.create`.
+  the Agent calls `kanban.create`.
 - Project, Stale, external-reference filters, unlinked activity, and concise
   workflow guidance may remain toolbar controls. Automatic polling has no
   persistent toolbar indicator; manual retry appears only when a refresh
@@ -189,9 +189,9 @@ Progress, has no live unexpired AgentRun, and has no activity for 24 hours.
 
 - Native Issues continue to exist and change independently of Context files.
 - An Agent can create/update/list an Issue through MCP without using `store`.
-- An Agent can resolve a copied global Issue ID through `issue.get` and discover
+- An Agent can resolve a copied global Issue ID through `kanban.get` and discover
   the owning Project.
-- `issue.start` enters In Progress; Stop has no Issue transition.
+- `kanban.begin_work` enters In Progress; Stop has no Issue transition.
 - A root Agent can request closure but cannot approve its own request.
 - Only the desktop Approve gate moves Closure Requested to Done.
 - Request Changes and Reopen are explicit, validated, revision-safe gates.

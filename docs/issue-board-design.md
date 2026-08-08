@@ -119,7 +119,7 @@ active_runs = linked runs whose phase/lease projects as running
 latest_run  = newest linked run activity
 is_stale    = status == in_progress
               && active_runs.is_empty
-              && max(issue.updated_at, latest_run.activity) <= now - 24h
+              && max(kanban.updated_at, latest_run.activity) <= now - 24h
 ```
 
 The response includes a board revision derived from the newest native Issue
@@ -143,7 +143,7 @@ There is no MCP approval operation and no generic status setter.
 
 UserPromptSubmit records/upserts the root AgentRun and injects its exact identity
 plus instructions to choose existing/new/no Issue. The instruction names
-`issue.create`; it never tells the Agent to create a Context document.
+`kanban.create`; it never tells the Agent to create a Context document.
 
 Before root Stop, the host-specific hook reminds the Agent to request closure
 only after a semantic acceptance-criteria check. Normal Stop ends telemetry

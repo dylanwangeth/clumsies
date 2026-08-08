@@ -7,7 +7,7 @@ Clumsies exposes four agent-facing tools:
 | `activate` | Retrieve ranked, directly usable memory fragments for the current task. |
 | `load` | Read complete resources by a known stable ID or exact path. |
 | `store` | Persist an explicitly requested Context, Rule, or Workflow Draft. |
-| `issue` | Create, update, list, or semantically transition native Issues. |
+| `kanban` | Create, update, list, or semantically transition native Issues. |
 
 The Zig MCP server is a protocol adapter. Effective Memory construction,
 indexing, retrieval, exact loading, Draft persistence, and AgentRun projection
@@ -108,7 +108,7 @@ Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 
 Call `store` only when the user explicitly asks to create, update, rename,
 delete, or discard managed memory. Issues are native objects managed by
-`issue`; do not model them as Context documents.
+`kanban`; do not model them as Context documents.
 
 Top-level input:
 
@@ -188,7 +188,7 @@ authority Ref moved.
 
 ## Issue
 
-`issue` manages durable native Issues and connects them to installation-local
+`kanban` manages durable native Issues and connects them to installation-local
 AgentRun observations without deriving semantic state from execution telemetry. An
 AgentRun records one root turn or subagent execution; its Stop does not advance
 an Issue.
@@ -259,16 +259,16 @@ tagged input and forwards the operation.
 | `activate_memory` | MCP `activate` |
 | `load_memory` | MCP `load` |
 | `store_draft_operation` | MCP `store`, Desktop, and other clients |
-| `list_issue_board` | MCP `issue.list` and Desktop |
+| `list_issue_board` | MCP `kanban.list` and Desktop |
 | `get_issue_detail` | Native Issue detail lookup for local clients |
-| `get_issue` | MCP `issue.get` global Issue lookup |
-| `start_issue_work` | MCP `issue.start` |
-| `request_issue_closure` | MCP `issue.request_closure` |
+| `get_issue` | MCP `kanban.get` global Issue lookup |
+| `start_issue_work` | MCP `kanban.begin_work` |
+| `request_issue_closure` | MCP `kanban.request_closure` |
 | `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
 | `search_index_status` | Desktop diagnostics and tests |
 | `rebuild_search_index` | Recovery, tests, and development tooling |
 
-Lifecycle hooks do not call the agent-facing `issue` tool. Adapter-managed
+Lifecycle hooks do not call the agent-facing `kanban` tool. Adapter-managed
 scripts pipe the host event to the private command
 `clumsies _agent issue-run-event --host codex|claude-code`. The command resolves
 the repository's daemon Project binding, reduces the host payload to bounded
@@ -281,7 +281,7 @@ failures remain fail-open.
 
 The private bridge does not persist raw hook JSON, prompts, transcripts, tool
 payloads, or assistant messages. `record_agent_run_event` is not exposed as an
-MCP tool; agents use `issue.start` and `issue.request_closure` for explicit
+MCP tool; agents use `kanban.begin_work` and `kanban.request_closure` for explicit
 semantic updates. Prompt text is not matched to an Issue automatically, and a
 normal Stop records no semantic outcome.
 

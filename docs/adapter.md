@@ -81,8 +81,8 @@ Both adapters register the same core AgentRun lifecycle events:
 
 | Host event | Normalized observation |
 | --- | --- |
-| `UserPromptSubmit` | start or upsert a root AgentRun and prompt the Agent to decide whether to call `issue.start` |
-| `Stop` | prompt the root Agent to decide whether to call `issue.request_closure`, then end the AgentRun without an inferred outcome |
+| `UserPromptSubmit` | start or upsert a root AgentRun and prompt the Agent to decide whether to call `kanban.begin_work` |
+| `Stop` | prompt the root Agent to decide whether to call `kanban.request_closure`, then end the AgentRun without an inferred outcome |
 | `SubagentStart` | start or upsert a child AgentRun and retain its parent host key |
 | `SubagentStop` | end the child AgentRun without inferring Issue state or an outcome |
 | `SessionEnd` | end remaining runs for the host session with an `unknown` outcome |
@@ -119,7 +119,7 @@ recorded and not blocked. Codex receives Stop additional context on a fail-open
 basis.
 
 Hooks observe execution. They do not close or reopen Issues. The agent-facing
-MCP `issue` tool provides explicit `list`, `start`, and `request_closure`
+MCP `kanban` tool provides explicit `list`, `start`, and `request_closure`
 operations. Done continues to come only from the Effective Memory path.
 
 ## Equivalent installation paths
