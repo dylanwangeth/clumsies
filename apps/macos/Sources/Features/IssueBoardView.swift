@@ -707,6 +707,9 @@ private struct IssueBoardColumn: View {
             .accessibilityLabel {
             values.append(references)
         }
+        if issue.blocked {
+            values.append("blocked by unresolved dependencies or conditions")
+        }
         return values.joined(separator: ", ")
     }
 }
@@ -738,6 +741,12 @@ private struct IssueCard: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                         .help("No active AgentRun and no activity for more than 24 hours")
+                }
+                if issue.blocked {
+                    Label("Blocked", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .help(blockingReasonHelpText(issue))
                 }
             }
 
@@ -804,6 +813,20 @@ private struct IssueCard: View {
             return Color.accentColor.opacity(0.45)
         }
         return Color(nsColor: .separatorColor)
+    }
+
+    private func blockingReasonHelpText(_ issue: IssueBoardCard) -> String {
+        let reasons = issue.blockingReasons.map { reason in
+            switch reason.kind {
+            case .dependency:
+                "depends on \(reason.issueKey ?? "another Issue") (\(reason.boardState?.title ?? "unknown"))"
+            case .fact:
+                reason.description ?? "an external condition is unsatisfied"
+            }
+        }
+        return reasons.isEmpty
+            ? "Blocked by unresolved dependencies or conditions"
+            : reasons.joined(separator: "; ")
     }
 
 }

@@ -10,6 +10,11 @@ const tool_result = @import("tool_result.zig");
 
 const MAX_ISSUE_EXTERNAL_REFERENCES: usize = 16;
 const MAX_ISSUE_EXTERNAL_REFERENCE_URL_BYTES: usize = 2_048;
+const MAX_ISSUE_DEPENDENCIES: usize = 16;
+const MAX_ISSUE_BLOCKING_FACTS: usize = 16;
+const MAX_ISSUE_FACT_ID_BYTES: usize = 128;
+const MAX_ISSUE_FACT_DESCRIPTION_BYTES: usize = 1_000;
+const MAX_ISSUE_FACT_VALUE_BYTES: usize = 256;
 
 const activate_schema =
     "{\"name\":\"" ++ tool_names.activate ++ "\",\"title\":\"Activate\",\"description\":\"Activate the memory fragments most useful for the current task. Call once at the start of each substantive task. The daemon performs BM25 and vector recall, RRF fusion, reranking, budget control, and fragment delta calculation. Pass state only while fragments from the preceding activation remain in the model context.\"," ++
@@ -52,18 +57,33 @@ const issue_external_reference_definition =
     "\"url\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_EXTERNAL_REFERENCE_URL_BYTES}) ++ ",\"format\":\"uri\",\"description\":\"Absolute HTTP(S) URL with a non-empty host and no embedded credentials.\"}" ++
     "},\"required\":[\"kind\",\"url\"],\"additionalProperties\":false}";
 
+const issue_dependencies_schema =
+    "{\"type\":\"array\",\"maxItems\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_DEPENDENCIES}) ++ ",\"description\":\"Issue keys this Issue depends on; each dependency must be Done before this Issue can start. On create, omission defaults to an empty list. On update, omission leaves the list unchanged and an explicit empty list clears it.\",\"items\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"}}";
+
+const issue_blocking_facts_schema =
+    "{\"type\":\"array\",\"maxItems\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_BLOCKING_FACTS}) ++ ",\"description\":\"External facts or predicates that block this Issue (for example a missing host capability). A fact with satisfied=false keeps the Issue blocked until the condition changes. On create, omission defaults to an empty list. On update, omission leaves the list unchanged and an explicit empty list clears it.\",\"items\":{\"$ref\":\"#/$defs/blockingFact\"}}";
+
+const issue_blocking_fact_definition =
+    "{\"type\":\"object\",\"properties\":{" ++
+    "\"fact_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_FACT_ID_BYTES}) ++ ",\"description\":\"Stable predicate identifier, e.g. host:zed-hooks.\"}," ++
+    "\"kind\":{\"type\":\"string\",\"enum\":[\"host_capability\",\"external\"],\"description\":\"host_capability models a checkable host capability predicate; external covers any other condition.\"}," ++
+    "\"value\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_FACT_VALUE_BYTES}) ++ ",\"description\":\"Optional condition value, e.g. the capability name.\"}," ++
+    "\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":" ++ std.fmt.comptimePrint("{d}", .{MAX_ISSUE_FACT_DESCRIPTION_BYTES}) ++ ",\"description\":\"Human-readable reason this Issue is blocked.\"}," ++
+    "\"satisfied\":{\"type\":\"boolean\",\"description\":\"Whether the condition is currently satisfied; unsatisfied facts block. Defaults to false.\"}" ++
+    "},\"required\":[\"fact_id\",\"kind\",\"description\"],\"additionalProperties\":false}";
+
 const issue_schema =
-    "{\"name\":\"" ++ tool_names.kanban ++ "\",\"title\":\"Kanban\",\"description\":\"Manage the native project Kanban (distinct from remote GitHub Issues): get by global Issue ID, create, update, list, or make an explicit semantic transition on native project Issues. Create and update accept typed external_references; list and get return them with each Issue. Create Todo for durable follow-up work; call begin_work only when the current prompt begins or continues that Issue; request_closure only after judging its acceptance criteria satisfied. User approval is intentionally unavailable to Agents. AgentRun lifecycle events never make these decisions. Pass exactly one tagged operation.\"," ++
+    "{\"name\":\"" ++ tool_names.kanban ++ "\",\"title\":\"Kanban\",\"description\":\"Manage the native project Kanban (distinct from remote GitHub Issues): get by global Issue ID, create, update, list, or make an explicit semantic transition on native project Issues. Create and update accept typed external_references, dependencies (Issue keys that must be Done before this Issue can start) and blocking_facts (checkable external predicates); list and get return them with each Issue. A blocked Issue reports blocked=true plus blocking_reasons so an Agent can judge whether a Todo is actionable now. Create Todo for durable follow-up work; call begin_work only when the current prompt begins or continues that Issue; request_closure only after judging its acceptance criteria satisfied. User approval is intentionally unavailable to Agents. AgentRun lifecycle events never make these decisions. Pass exactly one tagged operation.\"," ++
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
     "\"list\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}," ++
     "\"get\":{\"type\":\"object\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"}},\"required\":[\"issue_id\"],\"additionalProperties\":false}," ++
-    "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
-    "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
+    "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
+    "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
     "\"begin_work\":{\"type\":\"object\",\"description\":\"Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
     "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. With run_id, expected_revision is required. Without run_id, issue_key is required and the daemon verifies no active AgentRun holds the Issue before issuing a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
-    "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ "}}}";
+    "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ ",\"blockingFact\":" ++ issue_blocking_fact_definition ++ "}}}";
 
 pub fn buildListResult(allocator: std.mem.Allocator) ![]u8 {
     return try allocator.dupe(
@@ -335,7 +355,7 @@ fn issueOpName(op: IssueOp) []const u8 {
 }
 
 fn validateIssueCreate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "title", "description", "acceptance_criteria", "external_references" }, "create")) |result| return result;
+    if (try rejectUnexpectedFields(allocator, args, &.{ "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts" }, "create")) |result| return result;
     const title = requiredString(args, "title") orelse
         return try tool_result.buildErrorResult(allocator, "title is required and must be a string");
     const description = requiredString(args, "description") orelse
@@ -344,11 +364,13 @@ fn validateIssueCreate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !
     if (description.len == 0 or description.len > 65536) return try tool_result.buildErrorResult(allocator, "description must contain 1 to 65536 bytes");
     if (try validateIssueStringArray(allocator, args.get("acceptance_criteria"), 64, 2000, "acceptance_criteria")) |result| return result;
     if (try validateIssueExternalReferences(allocator, args.get("external_references"))) |result| return result;
+    if (try validateIssueDependencies(allocator, args.get("dependencies"))) |result| return result;
+    if (try validateIssueBlockingFacts(allocator, args.get("blocking_facts"))) |result| return result;
     return null;
 }
 
 fn validateIssueUpdate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "issue_key", "expected_revision", "title", "description", "acceptance_criteria", "external_references" }, "update")) |result| return result;
+    if (try rejectUnexpectedFields(allocator, args, &.{ "issue_key", "expected_revision", "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts" }, "update")) |result| return result;
     const issue_key = requiredString(args, "issue_key") orelse
         return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
     if (!isIssueKey(issue_key)) return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
@@ -358,6 +380,8 @@ fn validateIssueUpdate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !
     if (try validateOptionalIssueString(allocator, args.get("description"), 65536, "description", false)) |result| return result;
     if (try validateIssueStringArray(allocator, args.get("acceptance_criteria"), 64, 2000, "acceptance_criteria")) |result| return result;
     if (try validateIssueExternalReferences(allocator, args.get("external_references"))) |result| return result;
+    if (try validateIssueDependencies(allocator, args.get("dependencies"))) |result| return result;
+    if (try validateIssueBlockingFacts(allocator, args.get("blocking_facts"))) |result| return result;
     return null;
 }
 
@@ -458,6 +482,73 @@ fn validateOptionalIssueString(
         const message = try std.fmt.allocPrint(allocator, "{s} has an invalid length", .{name});
         defer allocator.free(message);
         return try tool_result.buildErrorResult(allocator, message);
+    }
+    return null;
+}
+
+fn validateIssueDependencies(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) !?[]u8 {
+    const dependencies = switch (value orelse return null) {
+        .array => |array| array.items,
+        else => return try tool_result.buildErrorResult(allocator, "dependencies must be an array"),
+    };
+    if (dependencies.len > MAX_ISSUE_DEPENDENCIES) {
+        return try tool_result.buildErrorResult(allocator, "dependencies must contain at most 16 items");
+    }
+    for (dependencies) |dependency| {
+        const key = switch (dependency) {
+            .string => |string| string,
+            else => return try tool_result.buildErrorResult(allocator, "each dependency must be an ISSUE-NNN key"),
+        };
+        if (!isIssueKey(key)) {
+            return try tool_result.buildErrorResult(allocator, "each dependency must use the ISSUE-NNN form");
+        }
+    }
+    return null;
+}
+
+fn validateIssueBlockingFacts(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) !?[]u8 {
+    const facts = switch (value orelse return null) {
+        .array => |array| array.items,
+        else => return try tool_result.buildErrorResult(allocator, "blocking_facts must be an array"),
+    };
+    if (facts.len > MAX_ISSUE_BLOCKING_FACTS) {
+        return try tool_result.buildErrorResult(allocator, "blocking_facts must contain at most 16 items");
+    }
+    for (facts) |fact| {
+        const object = switch (fact) {
+            .object => |object| object,
+            else => return try tool_result.buildErrorResult(allocator, "each blocking fact must be a JSON object"),
+        };
+        if (try rejectUnexpectedFields(allocator, object, &.{ "fact_id", "kind", "value", "description", "satisfied" }, "blocking fact")) |result| {
+            return result;
+        }
+        const fact_id = requiredString(object, "fact_id") orelse
+            return try tool_result.buildErrorResult(allocator, "blocking fact fact_id is required and must be a string");
+        if (fact_id.len == 0 or fact_id.len > MAX_ISSUE_FACT_ID_BYTES) {
+            return try tool_result.buildErrorResult(allocator, "blocking fact fact_id must contain 1 to 128 bytes");
+        }
+        const kind = requiredString(object, "kind") orelse
+            return try tool_result.buildErrorResult(allocator, "blocking fact kind is required and must be a string");
+        if (!std.mem.eql(u8, kind, "host_capability") and !std.mem.eql(u8, kind, "external")) {
+            return try tool_result.buildErrorResult(allocator, "blocking fact kind must be 'host_capability' or 'external'");
+        }
+        if (try validateOptionalIssueString(allocator, object.get("value"), MAX_ISSUE_FACT_VALUE_BYTES, "blocking fact value", false)) |result| return result;
+        const description = requiredString(object, "description") orelse
+            return try tool_result.buildErrorResult(allocator, "blocking fact description is required and must be a string");
+        if (description.len == 0 or description.len > MAX_ISSUE_FACT_DESCRIPTION_BYTES) {
+            return try tool_result.buildErrorResult(allocator, "blocking fact description must contain 1 to 1000 bytes");
+        }
+        if (object.get("satisfied")) |satisfied| {
+            if (satisfied != .bool) {
+                return try tool_result.buildErrorResult(allocator, "blocking fact satisfied must be a boolean");
+            }
+        }
     }
     return null;
 }
@@ -832,6 +923,39 @@ test "issue schema exposes bounded typed external references" {
     try testing.expectEqual(@as(i64, MAX_ISSUE_EXTERNAL_REFERENCE_URL_BYTES), properties.get("url").?.object.get("maxLength").?.integer);
 }
 
+test "issue schema exposes bounded dependencies and blocking facts" {
+    const result = try buildListResult(testing.allocator);
+    defer testing.allocator.free(result);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, result, .{});
+    defer parsed.deinit();
+
+    const tools = parsed.value.object.get("tools").?.array.items;
+    const issue_tool = for (tools) |tool| {
+        const object = tool.object;
+        if (std.mem.eql(u8, object.get("name").?.string, tool_names.kanban)) break object;
+    } else unreachable;
+    const input_schema = issue_tool.get("inputSchema").?.object;
+    const operations = input_schema.get("properties").?.object.get("op").?.object.get("properties").?.object;
+    inline for (.{ "create", "update" }) |operation_name| {
+        const properties = operations.get(operation_name).?.object.get("properties").?.object;
+        const dependencies = properties.get("dependencies").?.object;
+        try testing.expectEqual(@as(i64, MAX_ISSUE_DEPENDENCIES), dependencies.get("maxItems").?.integer);
+        try testing.expectEqualStrings("^ISSUE-(?!000$)[0-9]{3}$", dependencies.get("items").?.object.get("pattern").?.string);
+        const blocking_facts = properties.get("blocking_facts").?.object;
+        try testing.expectEqual(@as(i64, MAX_ISSUE_BLOCKING_FACTS), blocking_facts.get("maxItems").?.integer);
+        try testing.expectEqualStrings("#/$defs/blockingFact", blocking_facts.get("items").?.object.get("$ref").?.string);
+    }
+    const definition = input_schema.get("$defs").?.object.get("blockingFact").?.object;
+    try testing.expectEqual(false, definition.get("additionalProperties").?.bool);
+    const fact_properties = definition.get("properties").?.object;
+    const kinds = fact_properties.get("kind").?.object.get("enum").?.array.items;
+    try testing.expectEqual(@as(usize, 2), kinds.len);
+    try testing.expectEqualStrings("host_capability", kinds[0].string);
+    try testing.expectEqualStrings("external", kinds[1].string);
+    try testing.expectEqual(@as(i64, MAX_ISSUE_FACT_ID_BYTES), fact_properties.get("fact_id").?.object.get("maxLength").?.integer);
+    try testing.expectEqual(@as(i64, MAX_ISSUE_FACT_DESCRIPTION_BYTES), fact_properties.get("description").?.object.get("maxLength").?.integer);
+}
+
 test "issue accepts only canonical global Issue IDs for get" {
     try testing.expect(isIssueId("issue_0123456789abcdef0123456789abcdef"));
     try testing.expect(!isIssueId("ISSUE-007"));
@@ -928,6 +1052,72 @@ test "issue rejects malformed external references before daemon IPC" {
     )).?;
     defer testing.allocator.free(limit_error);
     try testing.expect(std.mem.indexOf(u8, limit_error, "at most 16 items") != null);
+}
+
+test "issue rejects malformed dependencies and blocking facts before daemon IPC" {
+    const invalid_cases = [_]struct {
+        json: []const u8,
+        expected_error: []const u8,
+    }{
+        .{
+            .json =
+            \\{"title":"Depends","description":"Bad key.","dependencies":["ISSUE-12"]}
+            ,
+            .expected_error = "ISSUE-NNN form",
+        },
+        .{
+            .json =
+            \\{"title":"Depends","description":"Bad kind.","blocking_facts":[{"fact_id":"host:a","kind":"capability","description":"Blocked"}]}
+            ,
+            .expected_error = "kind must be 'host_capability' or 'external'",
+        },
+        .{
+            .json =
+            \\{"title":"Depends","description":"Missing description.","blocking_facts":[{"fact_id":"host:a","kind":"external"}]}
+            ,
+            .expected_error = "description is required",
+        },
+        .{
+            .json =
+            \\{"title":"Depends","description":"Bad satisfied.","blocking_facts":[{"fact_id":"host:a","kind":"external","description":"Blocked","satisfied":"yes"}]}
+            ,
+            .expected_error = "satisfied must be a boolean",
+        },
+        .{
+            .json =
+            \\{"title":"Depends","description":"Extra field.","blocking_facts":[{"fact_id":"host:a","kind":"external","description":"Blocked","when":"now"}]}
+            ,
+            .expected_error = "unsupported field 'when'",
+        },
+    };
+
+    for (invalid_cases) |invalid| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, invalid.json, .{});
+        defer parsed.deinit();
+        const result = (try validateIssueCreate(testing.allocator, parsed.value.object)).?;
+        defer testing.allocator.free(result);
+        try testing.expect(std.mem.indexOf(u8, result, invalid.expected_error) != null);
+    }
+
+    const valid = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"title":"Depends","description":"Valid.","dependencies":["ISSUE-003"],"blocking_facts":[{"fact_id":"host:zed-hooks","kind":"host_capability","value":"hooks","description":"Zed lacks hooks","satisfied":false}]}
+    ,
+        .{},
+    );
+    defer valid.deinit();
+    try testing.expect((try validateIssueCreate(testing.allocator, valid.value.object)) == null);
+
+    const valid_update = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"issue_key":"ISSUE-007","expected_revision":3,"dependencies":[]}
+    ,
+        .{},
+    );
+    defer valid_update.deinit();
+    try testing.expect((try validateIssueUpdate(testing.allocator, valid_update.value.object)) == null);
 }
 
 test "issue forwards external references in list and get daemon payloads" {

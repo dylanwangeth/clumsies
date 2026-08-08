@@ -31,6 +31,7 @@ final class IssueBoardModel: ObservableObject {
     @Published private(set) var detailErrorByIssueId: [String: String] = [:]
     @Published private(set) var loadingDetailIssueIds: Set<String> = []
     @Published var showsStaleOnly = false
+    @Published var showsBlockedOnly = false
     @Published var showsExternalIssuesOnly = false
     @Published var showsPullRequestsOnly = false
 
@@ -84,6 +85,7 @@ final class IssueBoardModel: ObservableObject {
         issues.filter { issue in
             issue.boardState == state
                 && (!showsStaleOnly || issue.isStale)
+                && (!showsBlockedOnly || issue.blocked)
                 && (!showsExternalIssuesOnly || issue.hasExternalReference(kind: .issue))
                 && (!showsPullRequestsOnly || issue.hasExternalReference(kind: .pullRequest))
         }

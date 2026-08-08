@@ -85,7 +85,7 @@ Run at least the suites covering the changed layer before `kanban.request_closur
 
 Worktree creation and cleanup will eventually be driven from the kanban itself:
 - `kanban.begin_work` ↔ worktree creation;
-- issue dependencies (ISSUE-024) will tell an agent which worktrees can be
-  created now;
+- issue dependencies (ISSUE-024) tell an agent which worktrees can be
+  created now (`kanban.list` reports `blocked` and `blocking_reasons`);
 - manual runs (ISSUE-026) already let non-hook hosts (Zed) claim issues, so
   the loop above works for every agent type.

@@ -32,6 +32,8 @@ A native Issue contains at least:
 - Agent-authored title and Markdown description;
 - structured acceptance criteria;
 - an optional, typed collection of external Issue and Pull Request links;
+- an optional collection of dependency Issue keys and checkable blocking
+  predicates (external conditions such as a missing host capability);
 - one of four board states and an optimistic-concurrency revision;
 - creation/update timestamps and optional closure proposal summary.
 
@@ -138,9 +140,15 @@ all mutations remain scoped to the MCP-bound Project. Create allocates the next
 available Issue number atomically. Mutations reject stale revisions. A run can
 link to at most one Issue, and retries are idempotent.
 
-`create` and `update` accept optional `external_references`. `list` and `get`
-return the normalized references so an Agent can understand linked remote work
-without scraping the Issue description.
+`create` and `update` accept optional `external_references`, `dependencies`
+(ISSUE-NNN keys that must be Done before this Issue can start), and
+`blocking_facts` (checkable predicates with a kind, optional value, description
+and satisfied flag). `list` and `get`
+return the normalized references, the resolved dependency states, the blocking
+facts, and a `blocked` flag with concrete `blocking_reasons` so an Agent can
+decide whether a Todo is actionable now without scraping the Issue description.
+Dependency cycles, self-references, duplicates, and missing targets are
+rejected.
 
 ## 7. AgentRun and attention
 

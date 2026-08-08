@@ -198,9 +198,9 @@ The input contains exactly one tagged operation under `op`:
 | Operation | Fields | Result |
 |---|---|---|
 | `list` | none | The bound Project's native Issue board and recent unlinked runs. |
-| `get` | global `issue_id` | The complete Issue, acceptance criteria, external references, state, revision, and owning `project_id`. |
-| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references` | A new Todo Issue with an atomically allocated key. |
-| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references` | Updated Issue content without a status transition. |
+| `get` | global `issue_id` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, state, revision, and owning `project_id`. |
+| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts` | A new Todo Issue with an atomically allocated key. |
+| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts` | Updated Issue content without a status transition. |
 | `start` | `run_id`, `issue_key`, `expected_revision` | In Progress state plus the linked AgentRun. |
 | `request_closure` | `run_id`, `expected_revision`; optional `summary` | Closure Requested state plus the linked AgentRun. |
 
@@ -216,6 +216,16 @@ the lifecycle hook.
 `pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
 empty list; omitting it on update preserves the current list; passing `[]`
 clears it. `list` and `get` return the normalized list.
+
+`dependencies` is a bounded array of `ISSUE-NNN` keys in the same Project that
+must be Done before this Issue can start. `blocking_facts` is a bounded array of
+checkable predicates: `fact_id` (stable identifier), `kind`
+(`host_capability` or `external`), optional `value`, `description`, and
+`satisfied`. Both follow the same patch semantics as `external_references`:
+omission preserves, `[]` clears. Dependency cycles, self-references,
+duplicates, and missing targets are rejected. `list` and `get` return each
+Issue's resolved dependency states, blocking facts, `blocked`, and concrete
+`blocking_reasons`, so an Agent can judge whether a Todo is actionable now.
 
 On a successful root or subagent start, the lifecycle hook adds a short context
 message containing that agent's current `run_id` and revision. Use those exact

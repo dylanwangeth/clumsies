@@ -105,6 +105,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_27_to_28(pool).await?;
         existing_schema_version = 28;
     }
+    if existing_schema_version == 28 {
+        migrate_local_schema_28_to_29(pool).await?;
+        existing_schema_version = 29;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -468,6 +472,10 @@ pub(crate) async fn migrate_local_schema_26_to_27(pool: &SqlitePool) -> Result<(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_28_to_29(pool: &SqlitePool) -> Result<(), DaemonError> {
+    work_tracking::migrate(pool).await
 }
 
 pub(crate) async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(), DaemonError> {

@@ -454,6 +454,13 @@ struct WorkspaceView: View {
                         .disabled(issueBoardModel.response == nil)
                         .help("Show only stale In Progress Issues")
 
+                        Toggle(isOn: $issueBoardModel.showsBlockedOnly) {
+                            Label("Blocked", systemImage: "exclamationmark.triangle.fill")
+                        }
+                        .toggleStyle(.button)
+                        .disabled(issueBoardModel.response == nil)
+                        .help("Show only Issues blocked by unresolved dependencies or conditions")
+
                         IssueExternalReferenceFilterMenu(model: issueBoardModel)
 
                         if showsUnlinkedActivityButton {

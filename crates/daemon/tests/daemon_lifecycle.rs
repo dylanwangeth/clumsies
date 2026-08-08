@@ -32,6 +32,7 @@ use daemon::{
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use tokio::sync::Notify;
 
 const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1596,6 +1597,66 @@ async fn schema_26_migration_adds_empty_external_references_without_losing_issue
             .await
             .unwrap();
     assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+}
+
+#[tokio::test]
+async fn schema_28_migration_adds_issue_dependencies_and_blocking_facts() {
+    let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("local.db");
+    std::fs::File::create(&database_path).unwrap();
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("CREATE TABLE daemon_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '28')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let _state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        common::TestCredentialStore::default(),
+    )
+    .await;
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    let schema_version: String =
+        sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(schema_version, CURRENT_LOCAL_SCHEMA_VERSION.to_string());
+    for table in ["issue_dependencies", "issue_blocking_facts"] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = $1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "expected {table} to be created by the migration");
+    }
+    let dependency_columns: Vec<String> = sqlx::query("PRAGMA table_info(issue_dependencies)")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    assert!(dependency_columns.contains(&"depends_on_number".to_owned()));
+    let fact_columns: Vec<String> = sqlx::query("PRAGMA table_info(issue_blocking_facts)")
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect();
+    for column in ["fact_id", "kind", "satisfied", "description"] {
+        assert!(fact_columns.contains(&column.to_owned()));
+    }
 }
 
 #[tokio::test]

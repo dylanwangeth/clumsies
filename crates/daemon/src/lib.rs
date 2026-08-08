@@ -112,11 +112,12 @@ use util::{
 };
 pub use work_tracking::{
     AgentRun, AgentRunEventSource, AgentRunEventType, AgentRunHost, AgentRunKind, AgentRunOutcome,
-    AgentRunPhase, ApplyIssueGateRequest, CreateIssueRequest, GetIssueRequest, IssueBoardCard,
+    AgentRunPhase, ApplyIssueGateRequest, CreateIssueRequest, GetIssueRequest, IssueBlockingFact,
+    IssueBlockingFactKind, IssueBlockingReason, IssueBlockingReasonKind, IssueBoardCard,
     IssueBoardDiagnostic, IssueBoardDiagnosticCode, IssueBoardListRequest, IssueBoardResponse,
-    IssueBoardState, IssueDetailRequest, IssueDetailResponse, IssueExternalReference,
-    IssueExternalReferenceKind, IssueGateAction, IssueLifecycle, IssueMutationResponse,
-    IssueRemovalAction, IssueRemovalResponse, IssueWorkflowMutationResponse,
+    IssueBoardState, IssueDependencyState, IssueDetailRequest, IssueDetailResponse,
+    IssueExternalReference, IssueExternalReferenceKind, IssueGateAction, IssueLifecycle,
+    IssueMutationResponse, IssueRemovalAction, IssueRemovalResponse, IssueWorkflowMutationResponse,
     RecordAgentRunEventRequest, RecordAgentRunEventResponse, RemoveIssueRequest,
     RequestIssueClosureRequest, StartIssueWorkRequest, UpdateIssueRequest,
 };

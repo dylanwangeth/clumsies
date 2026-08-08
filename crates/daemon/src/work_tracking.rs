@@ -25,6 +25,11 @@ const MAX_ISSUE_CRITERION_BYTES: usize = 2_000;
 const MAX_ISSUE_CRITERIA: usize = 64;
 const MAX_ISSUE_EXTERNAL_REFERENCES: usize = 16;
 const MAX_ISSUE_EXTERNAL_REFERENCE_URL_BYTES: usize = 2_048;
+const MAX_ISSUE_DEPENDENCIES: usize = 16;
+const MAX_ISSUE_BLOCKING_FACTS: usize = 16;
+const MAX_ISSUE_FACT_ID_BYTES: usize = 128;
+const MAX_ISSUE_FACT_DESCRIPTION_BYTES: usize = 1_000;
+const MAX_ISSUE_FACT_VALUE_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +75,83 @@ pub enum IssueExternalReferenceKind {
 pub struct IssueExternalReference {
     pub kind: IssueExternalReferenceKind,
     pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueBlockingFactKind {
+    HostCapability,
+    External,
+}
+
+impl IssueBlockingFactKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HostCapability => "host_capability",
+            Self::External => "external",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, DaemonError> {
+        match value {
+            "host_capability" => Ok(Self::HostCapability),
+            "external" => Ok(Self::External),
+            value => Err(corrupt_run(format!(
+                "unknown Issue blocking fact kind {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueBlockingFact {
+    pub fact_id: String,
+    pub kind: IssueBlockingFactKind,
+    /// Optional condition value, e.g. the capability name for `host_capability`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub description: String,
+    /// Whether the condition is currently satisfied; unsatisfied facts block.
+    #[serde(default = "default_false")]
+    pub satisfied: bool,
+}
+
+fn default_false() -> bool {
+    false
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueBlockingReasonKind {
+    Dependency,
+    Fact,
+}
+
+/// One concrete reason why an Issue is currently blocked. `Dependency` carries
+/// the unresolved prerequisite Issue; `Fact` carries the unsatisfied predicate.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueBlockingReason {
+    pub kind: IssueBlockingReasonKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_state: Option<IssueBoardState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The resolved state of one declared dependency, so an Agent can see whether
+/// each prerequisite is already Done without another lookup.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct IssueDependencyState {
+    pub issue_key: String,
+    pub title: String,
+    pub board_state: IssueBoardState,
 }
 
 impl IssueBoardState {
@@ -337,6 +419,10 @@ pub struct CreateIssueRequest {
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub external_references: Vec<IssueExternalReference>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub blocking_facts: Vec<IssueBlockingFact>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -348,6 +434,8 @@ pub struct UpdateIssueRequest {
     pub description: Option<String>,
     pub acceptance_criteria: Option<Vec<String>>,
     pub external_references: Option<Vec<IssueExternalReference>>,
+    pub dependencies: Option<Vec<String>>,
+    pub blocking_facts: Option<Vec<IssueBlockingFact>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -449,6 +537,8 @@ pub(crate) struct NativeIssue {
     pub(crate) description: String,
     pub(crate) acceptance_criteria: Vec<String>,
     pub(crate) external_references: Vec<IssueExternalReference>,
+    pub(crate) dependencies: Vec<i64>,
+    pub(crate) blocking_facts: Vec<IssueBlockingFact>,
     pub(crate) board_state: IssueBoardState,
     pub(crate) revision: i64,
     pub(crate) changed_by_run_id: Option<String>,
@@ -486,6 +576,10 @@ pub struct IssueBoardCard {
     pub state_updated_at: Option<String>,
     pub closure_summary: Option<String>,
     pub is_stale: bool,
+    pub blocked: bool,
+    pub blocking_reasons: Vec<IssueBlockingReason>,
+    pub dependencies: Vec<IssueDependencyState>,
+    pub blocking_facts: Vec<IssueBlockingFact>,
     pub active_runs: Vec<AgentRun>,
     pub latest_run: Option<AgentRun>,
 }
@@ -628,6 +722,33 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             project_id TEXT PRIMARY KEY,
             imported_at TEXT NOT NULL
         )",
+        "CREATE TABLE IF NOT EXISTS issue_dependencies (
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            depends_on_number BIGINT NOT NULL CHECK (depends_on_number BETWEEN 1 AND 999),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, issue_number, depends_on_number),
+            CHECK (issue_number <> depends_on_number),
+            FOREIGN KEY (project_id, issue_number) REFERENCES native_issues(project_id, issue_number) ON DELETE CASCADE,
+            FOREIGN KEY (project_id, depends_on_number) REFERENCES native_issues(project_id, issue_number) ON DELETE CASCADE
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_issue_dependencies_depends_on
+         ON issue_dependencies (project_id, depends_on_number, issue_number)",
+        "CREATE TABLE IF NOT EXISTS issue_blocking_facts (
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            fact_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('host_capability', 'external')),
+            value TEXT,
+            description TEXT NOT NULL,
+            satisfied INTEGER NOT NULL CHECK (satisfied IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, issue_number, fact_id),
+            FOREIGN KEY (project_id, issue_number) REFERENCES native_issues(project_id, issue_number) ON DELETE CASCADE
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_issue_blocking_facts_issue
+         ON issue_blocking_facts (project_id, issue_number)",
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
@@ -940,8 +1061,14 @@ pub(crate) async fn start_issue_work(
             run
         }
         None => {
-            create_manual_run_tx(&mut tx, &request.project_id, issue_number, &now, &lease_expires_at)
-                .await?
+            create_manual_run_tx(
+                &mut tx,
+                &request.project_id,
+                issue_number,
+                &now,
+                &lease_expires_at,
+            )
+            .await?
         }
     };
     let current_issue = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
@@ -1153,6 +1280,8 @@ pub(crate) async fn create_issue(
 ) -> Result<IssueMutationResponse, DaemonError> {
     validate_issue_create(&request)?;
     let external_references = normalize_issue_external_references(&request.external_references)?;
+    let dependencies = parse_dependencies(&request.project_id, &request.dependencies)?;
+    let blocking_facts = normalize_issue_blocking_facts(&request.blocking_facts)?;
     let mut tx = pool.begin().await?;
     let next_number: Option<i64> = sqlx::query_scalar(
         "WITH RECURSIVE candidates(issue_number) AS (
@@ -1196,6 +1325,40 @@ pub(crate) async fn create_issue(
     .bind(&now)
     .execute(&mut *tx)
     .await?;
+    validate_dependencies_exist_tx(
+        &mut tx,
+        &request.project_id,
+        &dependencies,
+        Some(next_number),
+    )
+    .await?;
+    if !dependencies.is_empty() {
+        assert_dependency_graph_acyclic_tx(
+            &mut tx,
+            &request.project_id,
+            next_number,
+            &dependencies,
+        )
+        .await?;
+        insert_dependencies_tx(
+            &mut tx,
+            &request.project_id,
+            next_number,
+            &dependencies,
+            &now,
+        )
+        .await?;
+    }
+    if !blocking_facts.is_empty() {
+        insert_blocking_facts_tx(
+            &mut tx,
+            &request.project_id,
+            next_number,
+            &blocking_facts,
+            &now,
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(IssueMutationResponse {
         issue_id,
@@ -1215,6 +1378,16 @@ pub(crate) async fn update_issue(
         .external_references
         .as_deref()
         .map(normalize_issue_external_references)
+        .transpose()?;
+    let dependencies = request
+        .dependencies
+        .as_deref()
+        .map(|keys| parse_dependencies(&request.project_id, keys))
+        .transpose()?;
+    let blocking_facts = request
+        .blocking_facts
+        .as_deref()
+        .map(normalize_issue_blocking_facts)
         .transpose()?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
     let mut tx = pool.begin().await?;
@@ -1239,6 +1412,8 @@ pub(crate) async fn update_issue(
     let external_references = normalized_external_references
         .as_ref()
         .unwrap_or(&current.external_references);
+    let dependencies = dependencies.unwrap_or_else(|| current.dependencies.clone());
+    let blocking_facts = blocking_facts.unwrap_or_else(|| current.blocking_facts.clone());
     let criteria_json = serde_json::to_string(criteria)?;
     let external_references_json = serde_json::to_string(external_references)?;
     let (now, _) = db_clock(&mut tx).await?;
@@ -1259,6 +1434,56 @@ pub(crate) async fn update_issue(
     .bind(&now)
     .execute(&mut *tx)
     .await?;
+    if request.dependencies.is_some() {
+        validate_dependencies_exist_tx(
+            &mut tx,
+            &request.project_id,
+            &dependencies,
+            Some(issue_number),
+        )
+        .await?;
+        assert_dependency_graph_acyclic_tx(
+            &mut tx,
+            &request.project_id,
+            issue_number,
+            &dependencies,
+        )
+        .await?;
+        sqlx::query(
+            "DELETE FROM issue_dependencies
+             WHERE project_id = $1 AND issue_number = $2",
+        )
+        .bind(&request.project_id)
+        .bind(issue_number)
+        .execute(&mut *tx)
+        .await?;
+        insert_dependencies_tx(
+            &mut tx,
+            &request.project_id,
+            issue_number,
+            &dependencies,
+            &now,
+        )
+        .await?;
+    }
+    if request.blocking_facts.is_some() {
+        sqlx::query(
+            "DELETE FROM issue_blocking_facts
+             WHERE project_id = $1 AND issue_number = $2",
+        )
+        .bind(&request.project_id)
+        .bind(issue_number)
+        .execute(&mut *tx)
+        .await?;
+        insert_blocking_facts_tx(
+            &mut tx,
+            &request.project_id,
+            issue_number,
+            &blocking_facts,
+            &now,
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(IssueMutationResponse {
         issue_id: current.issue_id,
@@ -1387,6 +1612,30 @@ pub(crate) async fn remove_issue(
             .bind(request.issue_number)
             .execute(&mut *tx)
             .await?;
+            sqlx::query(
+                "DELETE FROM issue_dependencies
+                 WHERE project_id = $1 AND issue_number = $2",
+            )
+            .bind(&request.project_id)
+            .bind(request.issue_number)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM issue_dependencies
+                 WHERE project_id = $1 AND depends_on_number = $2",
+            )
+            .bind(&request.project_id)
+            .bind(request.issue_number)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "DELETE FROM issue_blocking_facts
+                 WHERE project_id = $1 AND issue_number = $2",
+            )
+            .bind(&request.project_id)
+            .bind(request.issue_number)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query("DELETE FROM native_issues WHERE project_id = $1 AND issue_number = $2")
                 .bind(&request.project_id)
                 .bind(request.issue_number)
@@ -1489,6 +1738,7 @@ pub(crate) async fn project_native_issue_board(
     stale_before: &str,
 ) -> Result<Vec<IssueBoardCard>, DaemonError> {
     let issues = load_native_issues(pool, project_id).await?;
+    let states = load_native_issue_states(pool, project_id).await?;
     let mut cards = Vec::with_capacity(issues.len());
     for issue in issues {
         let issue_runs = runs
@@ -1499,7 +1749,7 @@ pub(crate) async fn project_native_issue_board(
             .cloned()
             .collect::<Vec<_>>();
         let projection = project_runs(&issue_runs, now);
-        cards.push(native_issue_card(issue, projection, stale_before));
+        cards.push(native_issue_card(issue, projection, stale_before, &states));
     }
     Ok(cards)
 }
@@ -1523,10 +1773,11 @@ pub(crate) async fn load_native_issue_detail(
         .cloned()
         .collect::<Vec<_>>();
     let projection = project_runs(&issue_runs, now);
+    let states = load_native_issue_states(pool, project_id).await?;
     let body = issue.description.clone();
     let acceptance_criteria = issue.acceptance_criteria.clone();
     Ok(IssueDetailResponse {
-        issue: native_issue_card(issue, projection, stale_before),
+        issue: native_issue_card(issue, projection, stale_before, &states),
         body,
         acceptance_criteria,
     })
@@ -1560,6 +1811,7 @@ fn native_issue_card(
     issue: NativeIssue,
     projection: IssueRunProjection,
     stale_before: &str,
+    states: &BTreeMap<i64, (String, IssueBoardState)>,
 ) -> IssueBoardCard {
     let latest_activity = projection
         .latest_run
@@ -1569,6 +1821,46 @@ fn native_issue_card(
     let is_stale = issue.board_state == IssueBoardState::InProgress
         && projection.active_runs.is_empty()
         && latest_activity <= stale_before;
+    let dependencies = issue
+        .dependencies
+        .iter()
+        .map(|depends_on_number| match states.get(depends_on_number) {
+            Some((title, board_state)) => IssueDependencyState {
+                issue_key: format!("ISSUE-{depends_on_number:03}"),
+                title: title.clone(),
+                board_state: *board_state,
+            },
+            None => IssueDependencyState {
+                issue_key: format!("ISSUE-{depends_on_number:03}"),
+                title: "(missing)".to_owned(),
+                board_state: IssueBoardState::Todo,
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut blocking_reasons = Vec::new();
+    for dependency in &dependencies {
+        if dependency.board_state != IssueBoardState::Done {
+            blocking_reasons.push(IssueBlockingReason {
+                kind: IssueBlockingReasonKind::Dependency,
+                issue_key: Some(dependency.issue_key.clone()),
+                title: Some(dependency.title.clone()),
+                board_state: Some(dependency.board_state),
+                fact_id: None,
+                description: None,
+            });
+        }
+    }
+    for fact in issue.blocking_facts.iter().filter(|fact| !fact.satisfied) {
+        blocking_reasons.push(IssueBlockingReason {
+            kind: IssueBlockingReasonKind::Fact,
+            issue_key: None,
+            title: None,
+            board_state: None,
+            fact_id: Some(fact.fact_id.clone()),
+            description: Some(fact.description.clone()),
+        });
+    }
+    let blocked = !blocking_reasons.is_empty();
     IssueBoardCard {
         issue_id: issue.issue_id.clone(),
         project_id: issue.project_id,
@@ -1598,6 +1890,10 @@ fn native_issue_card(
         state_updated_at: Some(issue.updated_at),
         closure_summary: issue.closure_summary,
         is_stale,
+        blocked,
+        blocking_reasons,
+        dependencies,
+        blocking_facts: issue.blocking_facts,
         active_runs: projection.active_runs,
         latest_run: projection.latest_run,
     }
@@ -1619,7 +1915,99 @@ async fn load_native_issues(
     .bind(project_id)
     .fetch_all(pool)
     .await?;
-    rows.iter().map(native_issue_from_row).collect()
+    let dependencies = load_project_dependencies(pool, project_id).await?;
+    let blocking_facts = load_project_blocking_facts(pool, project_id).await?;
+    rows.iter()
+        .map(|row| {
+            native_issue_from_row(row).map(|mut issue| {
+                issue.dependencies = dependencies
+                    .get(&issue.issue_number)
+                    .cloned()
+                    .unwrap_or_default();
+                issue.blocking_facts = blocking_facts
+                    .get(&issue.issue_number)
+                    .cloned()
+                    .unwrap_or_default();
+                issue
+            })
+        })
+        .collect()
+}
+
+/// All native Issue numbers, titles, and board states for a Project, including
+/// archived Issues, so dependency resolution does not depend on board visibility.
+async fn load_native_issue_states(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<BTreeMap<i64, (String, IssueBoardState)>, DaemonError> {
+    let rows =
+        sqlx::query("SELECT issue_number, title, status FROM native_issues WHERE project_id = $1")
+            .bind(project_id)
+            .fetch_all(pool)
+            .await?;
+    let mut states = BTreeMap::new();
+    for row in rows {
+        let issue_number: i64 = row.try_get("issue_number")?;
+        let title: String = row.try_get("title")?;
+        let status: String = row.try_get("status")?;
+        states.insert(issue_number, (title, IssueBoardState::from_db(&status)?));
+    }
+    Ok(states)
+}
+
+async fn load_project_dependencies(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<BTreeMap<i64, Vec<i64>>, DaemonError> {
+    let rows = sqlx::query(
+        "SELECT issue_number, depends_on_number
+         FROM issue_dependencies WHERE project_id = $1 ORDER BY depends_on_number",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut dependencies = BTreeMap::<i64, Vec<i64>>::new();
+    for row in rows {
+        let issue_number: i64 = row.try_get("issue_number")?;
+        let depends_on_number: i64 = row.try_get("depends_on_number")?;
+        dependencies
+            .entry(issue_number)
+            .or_default()
+            .push(depends_on_number);
+    }
+    Ok(dependencies)
+}
+
+async fn load_project_blocking_facts(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<BTreeMap<i64, Vec<IssueBlockingFact>>, DaemonError> {
+    let rows = sqlx::query(
+        "SELECT issue_number, fact_id, kind, value, description, satisfied
+         FROM issue_blocking_facts
+         WHERE project_id = $1 ORDER BY fact_id",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut facts = BTreeMap::<i64, Vec<IssueBlockingFact>>::new();
+    for row in rows {
+        let issue_number: i64 = row.try_get("issue_number")?;
+        let fact = blocking_fact_from_row(&row)?;
+        facts.entry(issue_number).or_default().push(fact);
+    }
+    Ok(facts)
+}
+
+fn blocking_fact_from_row(row: &SqliteRow) -> Result<IssueBlockingFact, DaemonError> {
+    let kind: String = row.try_get("kind")?;
+    Ok(IssueBlockingFact {
+        fact_id: row.try_get("fact_id")?,
+        kind: IssueBlockingFactKind::from_db(&kind)?,
+        value: row.try_get("value")?,
+        description: row.try_get("description")?,
+        satisfied: row.try_get::<i64, _>("satisfied")? != 0,
+    })
 }
 
 async fn load_native_issue_tx(
@@ -1638,7 +2026,36 @@ async fn load_native_issue_tx(
     .bind(issue_number)
     .fetch_optional(&mut **tx)
     .await?;
-    row.as_ref().map(native_issue_from_row).transpose()
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut issue = native_issue_from_row(&row)?;
+    let dependency_rows = sqlx::query(
+        "SELECT depends_on_number FROM issue_dependencies
+         WHERE project_id = $1 AND issue_number = $2 ORDER BY depends_on_number",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_all(&mut **tx)
+    .await?;
+    issue.dependencies = dependency_rows
+        .into_iter()
+        .map(|row| row.try_get::<i64, _>("depends_on_number"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fact_rows = sqlx::query(
+        "SELECT fact_id, kind, value, description, satisfied
+         FROM issue_blocking_facts
+         WHERE project_id = $1 AND issue_number = $2 ORDER BY fact_id",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_all(&mut **tx)
+    .await?;
+    issue.blocking_facts = fact_rows
+        .iter()
+        .map(blocking_fact_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(issue))
 }
 
 fn native_issue_from_row(row: &SqliteRow) -> Result<NativeIssue, DaemonError> {
@@ -1655,6 +2072,8 @@ fn native_issue_from_row(row: &SqliteRow) -> Result<NativeIssue, DaemonError> {
             .map_err(|error| corrupt_run(format!("invalid Issue acceptance criteria: {error}")))?,
         external_references: serde_json::from_str(&external_references_json)
             .map_err(|error| corrupt_run(format!("invalid Issue external references: {error}")))?,
+        dependencies: Vec::new(),
+        blocking_facts: Vec::new(),
         board_state: IssueBoardState::from_db(&status)?,
         revision: row.try_get("revision")?,
         changed_by_run_id: row.try_get("changed_by_run_id")?,
@@ -1724,7 +2143,9 @@ fn validate_issue_create(request: &CreateIssueRequest) -> Result<(), DaemonError
         &request.description,
         MAX_ISSUE_DESCRIPTION_BYTES,
     )?;
-    validate_issue_criteria(&request.acceptance_criteria)
+    validate_issue_criteria(&request.acceptance_criteria)?;
+    validate_dependency_keys(&request.dependencies)?;
+    validate_blocking_facts(&request.blocking_facts)
 }
 
 fn validate_issue_update(request: &UpdateIssueRequest) -> Result<(), DaemonError> {
@@ -1735,18 +2156,20 @@ fn validate_issue_update(request: &UpdateIssueRequest) -> Result<(), DaemonError
         && request.description.is_none()
         && request.acceptance_criteria.is_none()
         && request.external_references.is_none()
+        && request.dependencies.is_none()
+        && request.blocking_facts.is_none()
     {
         return Err(DaemonError::InvalidRequest(
             "update must provide at least one semantic field".to_owned(),
         ));
     }
-    if let Some(title) = &request.title {
-        validate_required("title", title, MAX_ISSUE_TITLE_BYTES)?;
+    if let Some(dependencies) = &request.dependencies {
+        validate_dependency_keys(dependencies)?;
     }
-    if let Some(description) = &request.description {
-        validate_required("description", description, MAX_ISSUE_DESCRIPTION_BYTES)?;
+    if let Some(blocking_facts) = &request.blocking_facts {
+        validate_blocking_facts(blocking_facts)?;
     }
-    validate_issue_criteria(request.acceptance_criteria.as_deref().unwrap_or(&[]))
+    Ok(())
 }
 
 fn validate_issue_criteria(criteria: &[String]) -> Result<(), DaemonError> {
@@ -1817,6 +2240,240 @@ fn normalize_issue_external_references(
         }
     }
     Ok(normalized)
+}
+
+fn validate_dependency_keys(keys: &[String]) -> Result<(), DaemonError> {
+    if keys.len() > MAX_ISSUE_DEPENDENCIES {
+        return Err(DaemonError::InvalidRequest(format!(
+            "dependencies must contain at most {MAX_ISSUE_DEPENDENCIES} items"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for key in keys {
+        let number = parse_issue_reference(key)?;
+        if !seen.insert(number) {
+            return Err(DaemonError::InvalidRequest(format!(
+                "duplicate dependency {key}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_dependencies(project_id: &str, keys: &[String]) -> Result<Vec<i64>, DaemonError> {
+    validate_required("project_id", project_id, MAX_IDENTIFIER_BYTES)?;
+    validate_dependency_keys(keys)?;
+    keys.iter().map(|key| parse_issue_reference(key)).collect()
+}
+
+fn validate_blocking_facts(facts: &[IssueBlockingFact]) -> Result<(), DaemonError> {
+    if facts.len() > MAX_ISSUE_BLOCKING_FACTS {
+        return Err(DaemonError::InvalidRequest(format!(
+            "blocking_facts must contain at most {MAX_ISSUE_BLOCKING_FACTS} items"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for fact in facts {
+        if fact.fact_id.trim().is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "blocking fact fact_id must not be empty".to_owned(),
+            ));
+        }
+        if fact.fact_id.len() > MAX_ISSUE_FACT_ID_BYTES {
+            return Err(DaemonError::InvalidRequest(format!(
+                "blocking fact fact_id must not exceed {MAX_ISSUE_FACT_ID_BYTES} UTF-8 bytes"
+            )));
+        }
+        if fact.description.trim().is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "blocking fact description must not be empty".to_owned(),
+            ));
+        }
+        if fact.description.len() > MAX_ISSUE_FACT_DESCRIPTION_BYTES {
+            return Err(DaemonError::InvalidRequest(format!(
+                "blocking fact description must not exceed {MAX_ISSUE_FACT_DESCRIPTION_BYTES} UTF-8 bytes"
+            )));
+        }
+        if let Some(value) = &fact.value
+            && value.len() > MAX_ISSUE_FACT_VALUE_BYTES
+        {
+            return Err(DaemonError::InvalidRequest(format!(
+                "blocking fact value must not exceed {MAX_ISSUE_FACT_VALUE_BYTES} UTF-8 bytes"
+            )));
+        }
+        if !seen.insert(fact.fact_id.trim()) {
+            return Err(DaemonError::InvalidRequest(format!(
+                "duplicate blocking fact {}",
+                fact.fact_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_issue_blocking_facts(
+    facts: &[IssueBlockingFact],
+) -> Result<Vec<IssueBlockingFact>, DaemonError> {
+    validate_blocking_facts(facts)?;
+    Ok(facts
+        .iter()
+        .map(|fact| IssueBlockingFact {
+            fact_id: fact.fact_id.trim().to_owned(),
+            kind: fact.kind,
+            value: fact.value.as_deref().map(str::trim).map(str::to_owned),
+            description: fact.description.trim().to_owned(),
+            satisfied: fact.satisfied,
+        })
+        .collect())
+}
+
+async fn validate_dependencies_exist_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    dependencies: &[i64],
+    subject_issue_number: Option<i64>,
+) -> Result<(), DaemonError> {
+    for &depends_on_number in dependencies {
+        if subject_issue_number == Some(depends_on_number) {
+            return Err(DaemonError::InvalidRequest(format!(
+                "ISSUE-{depends_on_number:03} cannot depend on itself"
+            )));
+        }
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT issue_number FROM native_issues
+             WHERE project_id = $1 AND issue_number = $2 AND archived_at IS NULL",
+        )
+        .bind(project_id)
+        .bind(depends_on_number)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if exists.is_none() {
+            return Err(DaemonError::NotFound(format!(
+                "dependency ISSUE-{depends_on_number:03}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that adding `new_dependencies` for `subject_issue_number` keeps the
+/// whole Project dependency graph acyclic using Kahn's topological sort: a
+/// cycle exists iff some node never reaches indegree zero.
+async fn assert_dependency_graph_acyclic_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    subject_issue_number: i64,
+    new_dependencies: &[i64],
+) -> Result<(), DaemonError> {
+    let rows = sqlx::query(
+        "SELECT issue_number, depends_on_number
+         FROM issue_dependencies WHERE project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut adjacency = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for row in rows {
+        let issue_number: i64 = row.try_get("issue_number")?;
+        let depends_on_number: i64 = row.try_get("depends_on_number")?;
+        adjacency
+            .entry(issue_number)
+            .or_default()
+            .insert(depends_on_number);
+    }
+    adjacency
+        .entry(subject_issue_number)
+        .or_default()
+        .extend(new_dependencies.iter().copied());
+
+    let mut indegrees = BTreeMap::<i64, usize>::new();
+    for (&node, successors) in &adjacency {
+        indegrees.entry(node).or_default();
+        for successor in successors {
+            *indegrees.entry(*successor).or_default() += 1;
+        }
+    }
+    let mut queue = indegrees
+        .iter()
+        .filter(|(_, indegree)| **indegree == 0)
+        .map(|(node, _)| *node)
+        .collect::<std::collections::VecDeque<_>>();
+    let mut visited = 0usize;
+    while let Some(node) = queue.pop_front() {
+        visited += 1;
+        if let Some(successors) = adjacency.get(&node) {
+            for successor in successors {
+                let indegree = indegrees
+                    .get_mut(successor)
+                    .expect("successor has indegree");
+                *indegree -= 1;
+                if *indegree == 0 {
+                    queue.push_back(*successor);
+                }
+            }
+        }
+    }
+    if visited != indegrees.len() {
+        let stuck = indegrees
+            .iter()
+            .find(|(_, indegree)| **indegree > 0)
+            .map(|(node, _)| *node)
+            .unwrap_or(subject_issue_number);
+        return Err(DaemonError::InvalidRequest(format!(
+            "dependencies would create a cycle involving ISSUE-{stuck:03}"
+        )));
+    }
+    Ok(())
+}
+
+async fn insert_dependencies_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    issue_number: i64,
+    dependencies: &[i64],
+    now: &str,
+) -> Result<(), DaemonError> {
+    for &depends_on_number in dependencies {
+        sqlx::query(
+            "INSERT INTO issue_dependencies (project_id, issue_number, depends_on_number, created_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(project_id)
+        .bind(issue_number)
+        .bind(depends_on_number)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_blocking_facts_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    issue_number: i64,
+    facts: &[IssueBlockingFact],
+    now: &str,
+) -> Result<(), DaemonError> {
+    for fact in facts {
+        sqlx::query(
+            "INSERT INTO issue_blocking_facts (
+                project_id, issue_number, fact_id, kind, value,
+                description, satisfied, created_at, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+        )
+        .bind(project_id)
+        .bind(issue_number)
+        .bind(&fact.fact_id)
+        .bind(fact.kind.as_str())
+        .bind(&fact.value)
+        .bind(&fact.description)
+        .bind(fact.satisfied)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 fn parse_legacy_issue_content(content: &str) -> (String, Vec<String>) {
@@ -2937,6 +3594,10 @@ impl ParsedIssue {
             state_updated_at: None,
             closure_summary: None,
             is_stale: false,
+            blocked: false,
+            blocking_reasons: Vec::new(),
+            dependencies: Vec::new(),
+            blocking_facts: Vec::new(),
             active_runs: projection.active_runs,
             latest_run: projection.latest_run,
         }
@@ -3645,6 +4306,8 @@ mod tests {
                 description: "Provide an explicit export operation.".to_owned(),
                 acceptance_criteria: vec!["Export preserves stable Issue keys".to_owned()],
                 external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
             },
         )
         .await
@@ -3669,6 +4332,8 @@ mod tests {
                 description: None,
                 acceptance_criteria: None,
                 external_references: None,
+                dependencies: None,
+                blocking_facts: None,
             },
         )
         .await
@@ -3715,6 +4380,8 @@ mod tests {
                     external_reference(IssueExternalReferenceKind::Issue, issue_url),
                     external_reference(IssueExternalReferenceKind::PullRequest, pull_request_url),
                 ],
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
             },
         )
         .await
@@ -3761,6 +4428,8 @@ mod tests {
                 description: None,
                 acceptance_criteria: None,
                 external_references: None,
+                dependencies: None,
+                blocking_facts: None,
             },
         )
         .await
@@ -3790,6 +4459,8 @@ mod tests {
                 description: None,
                 acceptance_criteria: None,
                 external_references: Some(Vec::new()),
+                dependencies: None,
+                blocking_facts: None,
             },
         )
         .await
@@ -3836,6 +4507,439 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(normalize_issue_external_references(&too_many).is_err());
+    }
+
+    fn blocking_fact(
+        fact_id: &str,
+        kind: IssueBlockingFactKind,
+        description: &str,
+        satisfied: bool,
+    ) -> IssueBlockingFact {
+        IssueBlockingFact {
+            fact_id: fact_id.to_owned(),
+            kind,
+            value: None,
+            description: description.to_owned(),
+            satisfied,
+        }
+    }
+
+    async fn approve_done(pool: &SqlitePool, project_id: &str, issue_number: i64, revision: i64) {
+        let mut tx = pool.begin().await.unwrap();
+        set_native_issue_state_tx(
+            &mut tx,
+            project_id,
+            issue_number,
+            IssueBoardState::Done,
+            None,
+            None,
+            "2026-08-06T00:30:00.000Z",
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(revision, 1);
+    }
+
+    #[tokio::test]
+    async fn issue_dependencies_resolve_blocked_state_and_clear_after_done() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        native_issue(&pool, "project-1", 4).await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Dependent work".to_owned(),
+                description: "Depends on two issues.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: vec!["ISSUE-003".to_owned(), "ISSUE-004".to_owned()],
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.issue_key, "ISSUE-001");
+
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        let dependent = board
+            .iter()
+            .find(|card| card.issue_key == "ISSUE-001")
+            .unwrap();
+        assert!(dependent.blocked);
+        assert_eq!(dependent.dependencies.len(), 2);
+        assert!(
+            dependent
+                .dependencies
+                .iter()
+                .all(|dependency| { dependency.board_state != IssueBoardState::Done })
+        );
+        assert_eq!(dependent.blocking_reasons.len(), 2);
+        assert!(
+            dependent
+                .blocking_reasons
+                .iter()
+                .all(|reason| reason.kind == IssueBlockingReasonKind::Dependency)
+        );
+        assert!(
+            board
+                .iter()
+                .all(|card| !card.blocked || card.issue_key == "ISSUE-001")
+        );
+
+        approve_done(&pool, "project-1", 3, 1).await;
+        approve_done(&pool, "project-1", 4, 1).await;
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        let dependent = board
+            .iter()
+            .find(|card| card.issue_key == "ISSUE-001")
+            .unwrap();
+        assert!(!dependent.blocked);
+        assert!(dependent.blocking_reasons.is_empty());
+        assert!(
+            dependent
+                .dependencies
+                .iter()
+                .all(|dependency| { dependency.board_state == IssueBoardState::Done })
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_dependencies_reject_self_missing_duplicate_and_cycles() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        native_issue(&pool, "project-1", 4).await;
+
+        let missing = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Missing dependency".to_owned(),
+                description: "Dependency does not exist.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: vec!["ISSUE-007".to_owned()],
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(missing, DaemonError::NotFound(_)));
+
+        let duplicate = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Duplicate dependency".to_owned(),
+                description: "Repeats a dependency.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: vec!["ISSUE-003".to_owned(), "ISSUE-003".to_owned()],
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(duplicate, DaemonError::InvalidRequest(_)));
+
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "First".to_owned(),
+                description: "First issue.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: vec!["ISSUE-003".to_owned()],
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.issue_key, "ISSUE-001");
+
+        let self_dependency = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-001".to_owned(),
+                expected_revision: created.revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: Some(vec!["ISSUE-001".to_owned()]),
+                blocking_facts: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(self_dependency, DaemonError::InvalidRequest(_)));
+
+        let cycle = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-004".to_owned(),
+                expected_revision: 1,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: Some(vec!["ISSUE-001".to_owned()]),
+                blocking_facts: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(cycle.board_state, IssueBoardState::Todo);
+
+        let cycle = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-001".to_owned(),
+                expected_revision: created.revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: Some(vec!["ISSUE-003".to_owned(), "ISSUE-004".to_owned()]),
+                blocking_facts: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(cycle, DaemonError::InvalidRequest(_)));
+        assert!(cycle.to_string().contains("cycle"));
+
+        // The rejected cycle must not have been committed: ISSUE-001 still
+        // depends only on ISSUE-003.
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        let dependent = board
+            .iter()
+            .find(|card| card.issue_key == "ISSUE-001")
+            .unwrap();
+        assert_eq!(dependent.dependencies.len(), 1);
+        assert_eq!(dependent.dependencies[0].issue_key, "ISSUE-003");
+    }
+
+    #[tokio::test]
+    async fn issue_blocking_facts_round_trip_and_satisfied_facts_stop_blocking() {
+        let pool = run_pool().await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Zed integration".to_owned(),
+                description: "Depends on a host capability.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: vec![blocking_fact(
+                    "host:zed-hooks",
+                    IssueBlockingFactKind::HostCapability,
+                    "Zed does not provide lifecycle hooks yet",
+                    false,
+                )],
+            },
+        )
+        .await
+        .unwrap();
+
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        let card = &board[0];
+        assert!(card.blocked);
+        assert_eq!(card.blocking_facts.len(), 1);
+        assert_eq!(card.blocking_reasons.len(), 1);
+        assert_eq!(card.blocking_reasons[0].kind, IssueBlockingReasonKind::Fact);
+        assert_eq!(
+            card.blocking_reasons[0].fact_id.as_deref(),
+            Some("host:zed-hooks")
+        );
+
+        let satisfied = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: created.issue_key.clone(),
+                expected_revision: created.revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: None,
+                blocking_facts: Some(vec![blocking_fact(
+                    "host:zed-hooks",
+                    IssueBlockingFactKind::HostCapability,
+                    "Zed now provides lifecycle hooks",
+                    true,
+                )]),
+            },
+        )
+        .await
+        .unwrap();
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        let card = &board[0];
+        assert!(!card.blocked);
+        assert!(card.blocking_reasons.is_empty());
+        assert!(card.blocking_facts[0].satisfied);
+
+        let cleared = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: created.issue_key,
+                expected_revision: satisfied.revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: None,
+                blocking_facts: Some(Vec::new()),
+            },
+        )
+        .await
+        .unwrap();
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T03:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert!(board[0].blocking_facts.is_empty());
+        assert_eq!(cleared.revision, 3);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_issue_removes_its_dependency_edges_in_both_directions() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Depends on 3".to_owned(),
+                description: "Dependency on ISSUE-003.".to_owned(),
+                acceptance_criteria: Vec::new(),
+                external_references: Vec::new(),
+                dependencies: vec!["ISSUE-003".to_owned()],
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        remove_issue(
+            &pool,
+            RemoveIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_number: 3,
+                expected_revision: 1,
+                action: IssueRemovalAction::Delete,
+            },
+        )
+        .await
+        .unwrap();
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(board.len(), 1);
+        assert_eq!(board[0].issue_key, created.issue_key);
+        assert!(board[0].dependencies.is_empty());
+        assert!(!board[0].blocked);
+    }
+
+    #[test]
+    fn issue_blocking_fact_validation_rejects_unsafe_or_oversized_values() {
+        let empty_fact_id = blocking_fact(" ", IssueBlockingFactKind::External, "Empty id", false);
+        assert!(normalize_issue_blocking_facts(&[empty_fact_id]).is_err());
+        let empty_description = blocking_fact(
+            "host:zed-hooks",
+            IssueBlockingFactKind::External,
+            " ",
+            false,
+        );
+        assert!(normalize_issue_blocking_facts(&[empty_description]).is_err());
+        let oversized_id = blocking_fact(
+            &"a".repeat(MAX_ISSUE_FACT_ID_BYTES + 1),
+            IssueBlockingFactKind::External,
+            "Oversized fact id",
+            false,
+        );
+        assert!(normalize_issue_blocking_facts(&[oversized_id]).is_err());
+        let oversized_description = blocking_fact(
+            "host:zed-hooks",
+            IssueBlockingFactKind::External,
+            &"a".repeat(MAX_ISSUE_FACT_DESCRIPTION_BYTES + 1),
+            false,
+        );
+        assert!(normalize_issue_blocking_facts(&[oversized_description]).is_err());
+        let duplicate = vec![
+            blocking_fact("host:a", IssueBlockingFactKind::External, "First", false),
+            blocking_fact("host:a", IssueBlockingFactKind::External, "Second", true),
+        ];
+        assert!(normalize_issue_blocking_facts(&duplicate).is_err());
+        let too_many = (0..=MAX_ISSUE_BLOCKING_FACTS)
+            .map(|index| {
+                blocking_fact(
+                    &format!("fact:{index}"),
+                    IssueBlockingFactKind::External,
+                    "Too many",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(normalize_issue_blocking_facts(&too_many).is_err());
     }
 
     #[tokio::test]

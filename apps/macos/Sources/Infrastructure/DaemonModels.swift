@@ -584,6 +584,39 @@ struct IssueExternalReference: Codable, Equatable, Hashable, Sendable {
     let url: String
 }
 
+enum IssueBlockingFactKind: String, Codable, Hashable, Sendable {
+    case hostCapability = "host_capability"
+    case external
+}
+
+struct IssueBlockingFact: Codable, Equatable, Hashable, Sendable {
+    let factId: String
+    let kind: IssueBlockingFactKind
+    let value: String?
+    let description: String
+    let satisfied: Bool
+}
+
+enum IssueBlockingReasonKind: String, Codable, Hashable, Sendable {
+    case dependency
+    case fact
+}
+
+struct IssueBlockingReason: Codable, Equatable, Hashable, Sendable {
+    let kind: IssueBlockingReasonKind
+    let issueKey: String?
+    let title: String?
+    let boardState: IssueBoardState?
+    let factId: String?
+    let description: String?
+}
+
+struct IssueDependencyState: Codable, Equatable, Hashable, Sendable {
+    let issueKey: String
+    let title: String
+    let boardState: IssueBoardState
+}
+
 enum AgentRunHost: String, Codable, Hashable, Sendable {
     case codex
     case claudeCode = "claude-code"
@@ -695,6 +728,10 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let stateUpdatedAt: String?
     let closureSummary: String?
     let isStale: Bool
+    let blocked: Bool
+    let blockingReasons: [IssueBlockingReason]
+    let dependencies: [IssueDependencyState]
+    let blockingFacts: [IssueBlockingFact]
     let activeRuns: [AgentRun]
     let latestRun: AgentRun?
 }
@@ -725,6 +762,10 @@ extension IssueBoardCard {
         case stateUpdatedAt
         case closureSummary
         case isStale
+        case blocked
+        case blockingReasons
+        case dependencies
+        case blockingFacts
         case activeRuns
         case latestRun
     }
@@ -758,6 +799,19 @@ extension IssueBoardCard {
         stateUpdatedAt = try container.decodeIfPresent(String.self, forKey: .stateUpdatedAt)
         closureSummary = try container.decodeIfPresent(String.self, forKey: .closureSummary)
         isStale = try container.decode(Bool.self, forKey: .isStale)
+        blocked = try container.decodeIfPresent(Bool.self, forKey: .blocked) ?? false
+        blockingReasons = try container.decodeIfPresent(
+            [IssueBlockingReason].self,
+            forKey: .blockingReasons
+        ) ?? []
+        dependencies = try container.decodeIfPresent(
+            [IssueDependencyState].self,
+            forKey: .dependencies
+        ) ?? []
+        blockingFacts = try container.decodeIfPresent(
+            [IssueBlockingFact].self,
+            forKey: .blockingFacts
+        ) ?? []
         activeRuns = try container.decode([AgentRun].self, forKey: .activeRuns)
         latestRun = try container.decodeIfPresent(AgentRun.self, forKey: .latestRun)
     }

@@ -268,6 +268,82 @@ final class IssueBoardContractTests: XCTestCase {
 
         XCTAssertEqual(issue.externalReferences, [])
     }
+
+    func testIssueBoardCardDecodesBlockedDependenciesAndBlockingFacts() throws {
+        let json = """
+        {
+          "issue_id": "issue_0123456789abcdef0123456789abcdef",
+          "project_id": "project-1",
+          "issue_number": 7,
+          "issue_key": "ISSUE-007",
+          "resource_id": "issue_0123456789abcdef0123456789abcdef",
+          "path": "",
+          "lifecycle": "open",
+          "title": "Depends on ISSUE-003",
+          "description": "Waiting for a prerequisite.",
+          "found_at": "2026-08-05T23:00:00Z",
+          "created_at": "2026-08-05T23:00:00Z",
+          "started_at": null,
+          "closed_at": null,
+          "archived_at": null,
+          "content_hash": "native:1",
+          "source_commit_id": null,
+          "draft_id": null,
+          "draft_revision": null,
+          "board_state": "todo",
+          "state_revision": 1,
+          "state_updated_at": "2026-08-05T23:00:00Z",
+          "closure_summary": null,
+          "is_stale": false,
+          "blocked": true,
+          "blocking_reasons": [
+            {
+              "kind": "dependency",
+              "issue_key": "ISSUE-003",
+              "title": "Prerequisite",
+              "board_state": "in_progress"
+            },
+            {
+              "kind": "fact",
+              "fact_id": "host:zed-hooks",
+              "description": "Zed does not provide lifecycle hooks yet"
+            }
+          ],
+          "dependencies": [
+            {
+              "issue_key": "ISSUE-003",
+              "title": "Prerequisite",
+              "board_state": "in_progress"
+            }
+          ],
+          "blocking_facts": [
+            {
+              "fact_id": "host:zed-hooks",
+              "kind": "host_capability",
+              "value": "hooks",
+              "description": "Zed does not provide lifecycle hooks yet",
+              "satisfied": false
+            }
+          ],
+          "active_runs": [],
+          "latest_run": null
+        }
+        """
+
+        let issue = try JSONCoding.decoder().decode(
+            IssueBoardCard.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertTrue(issue.blocked)
+        XCTAssertEqual(issue.dependencies.map(\.issueKey), ["ISSUE-003"])
+        XCTAssertEqual(issue.blockingReasons.count, 2)
+        XCTAssertEqual(issue.blockingReasons[0].kind, .dependency)
+        XCTAssertEqual(issue.blockingReasons[1].kind, .fact)
+        XCTAssertEqual(issue.blockingFacts[0].factId, "host:zed-hooks")
+        XCTAssertEqual(issue.blockingFacts[0].kind, .hostCapability)
+        XCTAssertFalse(issue.blockingFacts[0].satisfied)
+    }
 }
 
 @MainActor
@@ -371,6 +447,81 @@ final class IssueBoardModelTests: XCTestCase {
         model.showsStaleOnly = true
         XCTAssertEqual(model.issues(in: .inProgress).count, 1)
         XCTAssertTrue(model.issues(in: .todo).isEmpty)
+    }
+
+    func testBlockedFilterShowsOnlyIssuesWithUnresolvedDependenciesOrFacts() async {
+        let blockedIssue = makeIssue(
+            projectId: "project-1",
+            issueNumber: 1
+        )
+        let unblockedIssue = makeIssue(
+            projectId: "project-1",
+            issueNumber: 2
+        )
+        let response = IssueBoardResponse(
+            projectId: "project-1",
+            effectiveHash: "sha256:effective",
+            issues: [
+                IssueBoardCard(
+                    issueId: blockedIssue.issueId,
+                    projectId: blockedIssue.projectId,
+                    issueNumber: blockedIssue.issueNumber,
+                    issueKey: blockedIssue.issueKey,
+                    resourceId: blockedIssue.resourceId,
+                    path: blockedIssue.path,
+                    lifecycle: blockedIssue.lifecycle,
+                    title: blockedIssue.title,
+                    description: blockedIssue.description,
+                    externalReferences: [],
+                    foundAt: blockedIssue.foundAt,
+                    createdAt: blockedIssue.createdAt,
+                    startedAt: blockedIssue.startedAt,
+                    closedAt: blockedIssue.closedAt,
+                    archivedAt: blockedIssue.archivedAt,
+                    contentHash: blockedIssue.contentHash,
+                    sourceCommitId: blockedIssue.sourceCommitId,
+                    draftId: blockedIssue.draftId,
+                    draftRevision: blockedIssue.draftRevision,
+                    boardState: .todo,
+                    stateRevision: blockedIssue.stateRevision,
+                    stateUpdatedAt: blockedIssue.stateUpdatedAt,
+                    closureSummary: blockedIssue.closureSummary,
+                    isStale: false,
+                    blocked: true,
+                    blockingReasons: [
+                        IssueBlockingReason(
+                            kind: .dependency,
+                            issueKey: "ISSUE-003",
+                            title: "Prerequisite",
+                            boardState: .inProgress,
+                            factId: nil,
+                            description: nil
+                        ),
+                    ],
+                    dependencies: [
+                        IssueDependencyState(
+                            issueKey: "ISSUE-003",
+                            title: "Prerequisite",
+                            boardState: .inProgress
+                        ),
+                    ],
+                    blockingFacts: [],
+                    activeRuns: [],
+                    latestRun: nil
+                ),
+                unblockedIssue,
+            ],
+            unlinkedRuns: [],
+            diagnostics: []
+        )
+        let model = IssueBoardModel { _ in response }
+        await model.loadOnce(projectId: "project-1")
+
+        XCTAssertEqual(model.issues(in: .todo).map(\.issueNumber), [1])
+        XCTAssertEqual(model.issues(in: .inProgress).map(\.issueNumber), [2])
+        model.showsBlockedOnly = true
+        XCTAssertEqual(model.issues(in: .todo).map(\.issueNumber), [1])
+        XCTAssertTrue(model.issues(in: .inProgress).isEmpty)
     }
 
     func testExternalReferenceFiltersComposeAndIgnoreEmptyReferences() async {
@@ -569,6 +720,10 @@ final class IssueBoardModelTests: XCTestCase {
             stateUpdatedAt: "2026-08-06T00:00:00Z",
             closureSummary: nil,
             isStale: isStale,
+            blocked: false,
+            blockingReasons: [],
+            dependencies: [],
+            blockingFacts: [],
             activeRuns: [run],
             latestRun: run
         )
@@ -641,11 +796,13 @@ final class IssueBoardLayoutTests: XCTestCase {
                 items: [
                     IssueExternalReferenceCardItem(
                         kind: .issue,
-                        title: "Issue · clumsies/clumsies#11"
+                        title: "Issue · clumsies/clumsies#11",
+                        reference: references[0]
                     ),
                     IssueExternalReferenceCardItem(
                         kind: .pullRequest,
-                        title: "PR · clumsies/clumsies#13"
+                        title: "PR · clumsies/clumsies#13",
+                        reference: references[1]
                     ),
                 ],
                 remainingCount: 1
@@ -725,12 +882,16 @@ final class IssueBoardLayoutTests: XCTestCase {
             IssueExternalReferencePresentation.menuLabel(for: fragmentB)
         )
         XCTAssertEqual(
-            IssueExternalReferencePresentation.cardPresentation(for: [queryA]),
+            IssueExternalReferencePresentation.cardPresentation(for: [queryA])
+                .items.map(\.title),
             IssueExternalReferencePresentation.cardPresentation(for: [queryB])
+                .items.map(\.title)
         )
         XCTAssertEqual(
-            IssueExternalReferencePresentation.cardPresentation(for: [fragmentA]),
+            IssueExternalReferencePresentation.cardPresentation(for: [fragmentA])
+                .items.map(\.title),
             IssueExternalReferencePresentation.cardPresentation(for: [fragmentB])
+                .items.map(\.title)
         )
     }
 

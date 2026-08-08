@@ -38,6 +38,35 @@ archived_at?
 UNIQUE(project_id, issue_number)
 ```
 
+Dependencies and blocking predicates live in two Project-scoped child tables:
+
+```text
+issue_dependencies(project_id, issue_number, depends_on_number, created_at)
+  issue_number       the dependent Issue
+  depends_on_number  the prerequisite Issue, same Project, not the Issue itself
+  PK (project_id, issue_number, depends_on_number)
+
+issue_blocking_facts(project_id, issue_number, fact_id, kind, value?,
+                     description, satisfied, created_at, updated_at)
+  fact_id            stable predicate identifier, e.g. host:zed-hooks
+  kind               host_capability | external
+  value?             optional condition value, e.g. the capability name
+  satisfied          whether the condition currently holds (block lifted)
+  PK (project_id, issue_number, fact_id)
+```
+
+A blocking predicate is a checkable condition, not a free-form note: `kind`
+selects a controlled vocabulary (host capabilities are detectable predicates;
+`external` covers conditions without a daemon-side evaluator yet) and
+`satisfied` records whether the condition currently holds. Unsatisfied facts
+keep the Issue blocked until the Agent updates the fact.
+
+Both child tables are updated only through the Issue update path, never by
+AgentRun events. Dependencies are validated on write: keys must exist in the
+same Project, must not repeat or self-reference, and the whole Project graph
+must stay acyclic (Kahn topological sort). Deleting an Issue removes its
+dependency edges in both directions and its blocking facts.
+
 `agent_runs.issue_number` links execution to the aggregate. AgentRun lifecycle
 events never mutate `native_issues.status`.
 
@@ -73,6 +102,18 @@ number in `001...999` inside one transaction, and inserts Todo at revision 1.
 
 `update_issue` requires the current revision and updates only supplied semantic
 fields. It does not change status.
+
+`dependencies` (on create and update) is a replace-whole-list field like
+`external_references`: omission leaves the list unchanged, an explicit empty
+list clears it. `blocking_facts` follows the same patch semantics.
+
+An Issue is **blocked** while any dependency is not Done or any blocking fact
+has `satisfied = false`. `blocked`, `blocking_reasons`, the resolved dependency
+states, and the blocking facts are computed on read from the two child tables,
+so closing a dependency automatically unblocks every Issue that depends on it
+with no stored state to recompute. Blocking is orthogonal to `stale` and to
+In Progress: a blocked Todo simply reports why it cannot start yet, and the
+board/Agent decide whether to act.
 
 `external_references_json` stores at most 16 `{kind, url}` objects. `kind` is
 `issue` or `pull_request`; URL normalization accepts only absolute HTTP(S) URLs
@@ -120,6 +161,9 @@ latest_run  = newest linked run activity
 is_stale    = status == in_progress
               && active_runs.is_empty
               && max(kanban.updated_at, latest_run.activity) <= now - 24h
+blocked     = any dependency board_state != done
+              || any blocking fact satisfied = false
+blocking_reasons = unresolved dependency keys/states plus unsatisfied facts
 ```
 
 The response includes a board revision derived from the newest native Issue
@@ -131,8 +175,8 @@ Issue revision.
 ```json
 {"op":{"list":{}}}
 {"op":{"get":{"issue_id":"issue_0123456789abcdef0123456789abcdef"}}}
-{"op":{"create":{"title":"Export Issues as Markdown","description":"...","acceptance_criteria":["..."],"external_references":[{"kind":"issue","url":"https://github.com/org/repo/issues/7"}]}}}
-{"op":{"update":{"issue_key":"ISSUE-007","expected_revision":1,"external_references":[{"kind":"pull_request","url":"https://github.com/org/repo/pull/42"}]}}}
+{"op":{"create":{"title":"Export Issues as Markdown","description":"...","acceptance_criteria":["..."],"external_references":[{"kind":"issue","url":"https://github.com/org/repo/issues/7"}],"dependencies":["ISSUE-003"],"blocking_facts":[{"fact_id":"host:zed-hooks","kind":"host_capability","value":"hooks","description":"Zed lacks lifecycle hooks","satisfied":false}]}}}
+{"op":{"update":{"issue_key":"ISSUE-007","expected_revision":1,"external_references":[{"kind":"pull_request","url":"https://github.com/org/repo/pull/42"}],"blocking_facts":[]}}}
 {"op":{"start":{"run_id":"arun_...","issue_key":"ISSUE-007","expected_revision":4}}}
 {"op":{"request_closure":{"run_id":"arun_...","summary":"Criteria satisfied","expected_revision":5}}}
 ```
@@ -185,7 +229,11 @@ successful response and rejects late cross-project results.
 Local schema 23 to 24 adds `native_issues` and `native_issue_imports`. Local
 schema 24 to 25 adds nullable `native_issues.started_at` without synthesizing
 values for existing rows. Local schema 25 to 26 removes unused type, priority,
-and components columns and adds nullable `archived_at`. The first
+and components columns and adds nullable `archived_at`. Local schema 26 to 27
+adds `external_references_json`. Local schema 27 to 28 expands AgentRun hosts
+with `zed` and `manual` (manual run binding). Local schema 28 to 29 adds
+`issue_dependencies` and `issue_blocking_facts` (Issue dependency and blocking
+predicate support). The first
 board access per Project may parse legacy Context Issue files once and insert
 copies using their numbers and last known board states. The import marker is
 written in the same transaction, including when no legacy Issues exist.
