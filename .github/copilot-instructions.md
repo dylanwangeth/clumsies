@@ -1,5 +1,7 @@
 # Code Review Instructions
 
+> Development workflow (worktrees + kanban) is documented in `docs/guides/development-workflow.md`; reviews should flag commits that violate the one-issue-one-worktree split.
+
 ## Review Priorities
 
 **CRITICAL (Block merge)**
