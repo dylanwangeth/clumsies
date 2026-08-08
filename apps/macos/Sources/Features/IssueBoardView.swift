@@ -67,6 +67,7 @@ enum IssueTiming {
 struct IssueExternalReferenceCardItem: Equatable {
     let kind: IssueExternalReferenceKind
     let title: String
+    let reference: IssueExternalReference
 }
 
 struct IssueExternalReferenceCardPresentation: Equatable {
@@ -97,7 +98,8 @@ enum IssueExternalReferencePresentation {
             )
             return IssueExternalReferenceCardItem(
                 kind: reference.kind,
-                title: "\(reference.kind.shortTitle) · \(target)"
+                title: "\(reference.kind.shortTitle) · \(target)",
+                reference: reference
             )
         }
         return IssueExternalReferenceCardPresentation(
@@ -713,6 +715,7 @@ private struct IssueCard: View {
     let issue: IssueBoardCard
     let isSelected: Bool
     let isMutating: Bool
+    @State private var isHovering = false
 
     var body: some View {
         let externalReferences = IssueExternalReferencePresentation.cardPresentation(
@@ -784,10 +787,23 @@ private struct IssueCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(
-                    isSelected ? Color.accentColor.opacity(0.75) : Color(nsColor: .separatorColor),
+                    borderColor,
                     lineWidth: isSelected ? 2 : 1
                 )
         }
+        .onHover { hovering in
+            isHovering = hovering
+        }
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.75)
+        }
+        if isHovering {
+            return Color.accentColor.opacity(0.45)
+        }
+        return Color(nsColor: .separatorColor)
     }
 
 }
@@ -798,9 +814,18 @@ private struct IssueExternalReferencesSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(presentation.items.enumerated()), id: \.offset) { _, item in
-                Label(item.title, systemImage: item.kind.symbolName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if let url = IssueExternalReferencePresentation.destinationURL(for: item.reference) {
+                    ExternalLinkText(
+                        url: url,
+                        title: item.title,
+                        systemImage: item.kind.symbolName
+                    )
+                    .font(.caption2)
+                } else {
+                    Label(item.title, systemImage: item.kind.symbolName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
             if presentation.remainingCount > 0 {
@@ -951,11 +976,11 @@ struct IssueWorkflowHelpPopover: View {
 
                 GroupBox("Agents via MCP") {
                     VStack(alignment: .leading, spacing: 8) {
-                        workflowStep("issue.list", detail: "Read this Project’s titles and descriptions before choosing an Issue.")
-                        workflowStep("issue.create", detail: "Capture durable work as a native Todo Issue.")
-                        workflowStep("issue.update", detail: "Maintain structured Issue meaning from user feedback.")
-                        workflowStep("issue.start", detail: "Link the hook-provided run_id to an Issue after a semantic decision.")
-                        workflowStep("issue.request_closure", detail: "Ask for closure only after judging the acceptance criteria satisfied.")
+                        workflowStep("kanban.list", detail: "Read this Project’s titles and descriptions before choosing an Issue.")
+                        workflowStep("kanban.create", detail: "Capture durable work as a native Todo Issue.")
+                        workflowStep("kanban.update", detail: "Maintain structured Issue meaning from user feedback.")
+                        workflowStep("kanban.begin_work", detail: "Link the hook-provided run_id to an Issue after a semantic decision.")
+                        workflowStep("kanban.request_closure", detail: "Ask for closure only after judging the acceptance criteria satisfied.")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
