@@ -60,8 +60,8 @@ const issue_schema =
     "\"get\":{\"type\":\"object\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"}},\"required\":[\"issue_id\"],\"additionalProperties\":false}," ++
     "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
     "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
-    "\"begin_work\":{\"type\":\"object\",\"description\":\"Bind the current AgentRun to this Issue and enter In Progress; requires run_id and the current revision.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"run_id\",\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
-    "\"request_closure\":{\"type\":\"object\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"run_id\",\"expected_revision\"],\"additionalProperties\":false}" ++
+    "\"begin_work\":{\"type\":\"object\",\"description\":\"Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
+    "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. With run_id, expected_revision is required. Without run_id, issue_key is required and the daemon verifies no active AgentRun holds the Issue before issuing a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1}},\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ "}}}";
 
@@ -294,9 +294,9 @@ fn handleIssue(
             break :blk try daemon_ipc.startIssueWorkOperation(
                 allocator,
                 session.project_id,
-                requiredString(op_args, "run_id").?,
+                optionalString(op_args, "run_id"),
                 requiredString(op_args, "issue_key").?,
-                requiredRevision(op_args, "expected_revision").?,
+                optionalRevision(op_args, "expected_revision"),
             );
         },
         .request_closure => blk: {
@@ -304,9 +304,10 @@ fn handleIssue(
             break :blk try daemon_ipc.requestIssueClosureOperation(
                 allocator,
                 session.project_id,
-                requiredString(op_args, "run_id").?,
+                optionalString(op_args, "run_id"),
+                optionalString(op_args, "issue_key"),
                 optionalString(op_args, "summary"),
-                requiredRevision(op_args, "expected_revision").?,
+                optionalRevision(op_args, "expected_revision"),
             );
         },
     };
@@ -468,18 +469,19 @@ fn validateIssueBeginWork(
     if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision" }, "begin_work")) |result| {
         return result;
     }
-    const run_id = requiredString(args, "run_id") orelse
-        return try tool_result.buildErrorResult(allocator, "run_id is required and must be a string");
-    if (run_id.len == 0 or run_id.len > 256) {
-        return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
-    }
     const issue_key = requiredString(args, "issue_key") orelse
         return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
     if (!isIssueKey(issue_key)) {
         return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
     }
-    if (requiredRevision(args, "expected_revision") == null) {
-        return try tool_result.buildErrorResult(allocator, "expected_revision is required and must be a positive integer");
+    const run_id = optionalString(args, "run_id");
+    if (run_id) |value| {
+        if (value.len == 0 or value.len > 256) {
+            return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+        }
+        if (optionalRevision(args, "expected_revision") == null) {
+            return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
+        }
     }
     return null;
 }
@@ -488,13 +490,17 @@ fn validateIssueClosureRequest(
     allocator: std.mem.Allocator,
     args: std.json.ObjectMap,
 ) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "summary", "expected_revision" }, "request_closure")) |result| {
+    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "summary", "expected_revision" }, "request_closure")) |result| {
         return result;
     }
-    const run_id = requiredString(args, "run_id") orelse
-        return try tool_result.buildErrorResult(allocator, "run_id is required and must be a string");
-    if (run_id.len == 0 or run_id.len > 256) {
-        return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+    if (args.get("issue_key")) |value| {
+        const issue_key = switch (value) {
+            .string => |string| string,
+            else => return try tool_result.buildErrorResult(allocator, "issue_key must be a string"),
+        };
+        if (!isIssueKey(issue_key)) {
+            return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
+        }
     }
     if (args.get("summary")) |value| {
         const summary = switch (value) {
@@ -505,8 +511,16 @@ fn validateIssueClosureRequest(
             return try tool_result.buildErrorResult(allocator, "summary must not exceed 1000 UTF-8 bytes");
         }
     }
-    if (requiredRevision(args, "expected_revision") == null) {
-        return try tool_result.buildErrorResult(allocator, "expected_revision is required and must be a positive integer");
+    const run_id = optionalString(args, "run_id");
+    if (run_id) |value| {
+        if (value.len == 0 or value.len > 256) {
+            return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+        }
+        if (optionalRevision(args, "expected_revision") == null) {
+            return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
+        }
+    } else if (args.get("issue_key") == null) {
+        return try tool_result.buildErrorResult(allocator, "issue_key is required when run_id is omitted");
     }
     return null;
 }
@@ -702,6 +716,13 @@ fn requiredString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn optionalString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return switch (object.get(key) orelse return null) {
         .string => |string| string,
+        else => null,
+    };
+}
+
+fn optionalRevision(object: std.json.ObjectMap, key: []const u8) ?i64 {
+    return switch (object.get(key) orelse return null) {
+        .integer => |value| if (value > 0) value else null,
         else => null,
     };
 }
@@ -952,7 +973,17 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
     defer zero_revision.deinit();
     const revision_error = (try validateIssueBeginWork(testing.allocator, zero_revision.value.object)).?;
     defer testing.allocator.free(revision_error);
-    try testing.expect(std.mem.indexOf(u8, revision_error, "positive integer") != null);
+    try testing.expect(std.mem.indexOf(u8, revision_error, "expected_revision is required when run_id is provided") != null);
+
+    const without_run = try std.json.parseFromSlice(
+        std.json.Value,
+        testing.allocator,
+        \\{"issue_key":"ISSUE-003"}
+    ,
+        .{},
+    );
+    defer without_run.deinit();
+    try testing.expect((try validateIssueBeginWork(testing.allocator, without_run.value.object)) == null);
 
     const github_number = try std.json.parseFromSlice(
         std.json.Value,

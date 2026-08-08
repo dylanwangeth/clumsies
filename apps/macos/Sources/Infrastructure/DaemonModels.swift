@@ -587,6 +587,8 @@ struct IssueExternalReference: Codable, Equatable, Hashable, Sendable {
 enum AgentRunHost: String, Codable, Hashable, Sendable {
     case codex
     case claudeCode = "claude-code"
+    case manual
+    case zed
 }
 
 enum AgentRunKind: String, Codable, Hashable, Sendable {

@@ -1071,6 +1071,8 @@ private extension AgentRunHost {
         switch self {
         case .codex: "Codex"
         case .claudeCode: "Claude Code"
+        case .manual: "Manual"
+        case .zed: "Zed"
         }
     }
 }

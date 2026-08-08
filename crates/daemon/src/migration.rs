@@ -101,6 +101,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_26_to_27(pool).await?;
         existing_schema_version = 27;
     }
+    if existing_schema_version == 27 {
+        migrate_local_schema_27_to_28(pool).await?;
+        existing_schema_version = 28;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -333,6 +337,105 @@ pub(crate) async fn migrate_local_schema_25_to_26(pool: &SqlitePool) -> Result<(
     )
     .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_27_to_28(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    let table_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if table_sql
+        .as_deref()
+        .is_some_and(|sql| sql.contains("'manual'"))
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
+    if table_sql.is_none() {
+        // A library that never ran the schema-25 migration has no agent_runs
+        // table at all; create the v28 shape directly instead of rebuilding.
+        for statement in [
+            "CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+                host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual')),
+                host_run_key TEXT NOT NULL,
+                host_session_id TEXT,
+                parent_run_id TEXT REFERENCES agent_runs(run_id),
+                kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+                phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+                outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+                end_reason TEXT,
+                display_label TEXT,
+                summary TEXT,
+                revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+                start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+                started_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                lease_expires_at TEXT NOT NULL,
+                ended_at TEXT,
+                UNIQUE (project_id, host, host_run_key)
+            )",
+            "CREATE INDEX idx_agent_runs_project_issue_latest
+             ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
+            "CREATE INDEX idx_agent_runs_running_lease
+             ON agent_runs (phase, lease_expires_at)",
+            "CREATE INDEX idx_agent_runs_project_session
+             ON agent_runs (project_id, host, host_session_id, phase)",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        return Ok(());
+    }
+    for statement in [
+        "CREATE TABLE agent_runs_v28 (
+            run_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual')),
+            host_run_key TEXT NOT NULL,
+            host_session_id TEXT,
+            parent_run_id TEXT REFERENCES agent_runs(run_id),
+            kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+            phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+            outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+            end_reason TEXT,
+            display_label TEXT,
+            summary TEXT,
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            ended_at TEXT,
+            UNIQUE (project_id, host, host_run_key)
+        )",
+        "INSERT INTO agent_runs_v28 (
+            run_id, project_id, issue_number, host, host_run_key, host_session_id,
+            parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+            revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+         )
+         SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+         FROM agent_runs",
+        "DROP TABLE agent_runs",
+        "ALTER TABLE agent_runs_v28 RENAME TO agent_runs",
+        "CREATE INDEX idx_agent_runs_project_issue_latest
+         ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
+        "CREATE INDEX idx_agent_runs_running_lease
+         ON agent_runs (phase, lease_expires_at)",
+        "CREATE INDEX idx_agent_runs_project_session
+         ON agent_runs (project_id, host, host_session_id, phase)",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(())
 }

@@ -784,13 +784,15 @@ impl DaemonState {
         &self,
         request: StartIssueWorkRequest,
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        work_tracking::load_agent_run_for_project(
-            &self.inner.pool,
-            &request.project_id,
-            &request.run_id,
-        )
-        .await?
-        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
+        if let Some(run_id) = &request.run_id {
+            work_tracking::load_agent_run_for_project(
+                &self.inner.pool,
+                &request.project_id,
+                run_id,
+            )
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+        }
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
         let _guard = self.inner.agent_run_lock.lock().await;
@@ -801,13 +803,15 @@ impl DaemonState {
         &self,
         request: RequestIssueClosureRequest,
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        work_tracking::load_agent_run_for_project(
-            &self.inner.pool,
-            &request.project_id,
-            &request.run_id,
-        )
-        .await?
-        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
+        if let Some(run_id) = &request.run_id {
+            work_tracking::load_agent_run_for_project(
+                &self.inner.pool,
+                &request.project_id,
+                run_id,
+            )
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+        }
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
         let _guard = self.inner.agent_run_lock.lock().await;

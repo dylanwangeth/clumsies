@@ -313,9 +313,9 @@ pub fn issueOperationRequestJsonAlloc(
 pub fn startIssueWorkOperation(
     allocator: std.mem.Allocator,
     project_id: []const u8,
-    run_id: []const u8,
+    run_id: ?[]const u8,
     issue_key: []const u8,
-    expected_revision: i64,
+    expected_revision: ?i64,
 ) !OperationResult {
     const request_json = try startIssueWorkRequestJsonAlloc(
         allocator,
@@ -333,9 +333,9 @@ pub fn startIssueWorkOperation(
 pub fn startIssueWorkRequestJsonAlloc(
     allocator: std.mem.Allocator,
     project_id: []const u8,
-    run_id: []const u8,
+    run_id: ?[]const u8,
     issue_key: []const u8,
-    expected_revision: i64,
+    expected_revision: ?i64,
 ) ![]u8 {
     return requestWithPayloadJsonAlloc(allocator, "start_issue_work", .{
         .project_id = project_id,
@@ -348,14 +348,16 @@ pub fn startIssueWorkRequestJsonAlloc(
 pub fn requestIssueClosureOperation(
     allocator: std.mem.Allocator,
     project_id: []const u8,
-    run_id: []const u8,
+    run_id: ?[]const u8,
+    issue_key: ?[]const u8,
     summary: ?[]const u8,
-    expected_revision: i64,
+    expected_revision: ?i64,
 ) !OperationResult {
     const request_json = try requestIssueClosureRequestJsonAlloc(
         allocator,
         project_id,
         run_id,
+        issue_key,
         summary,
         expected_revision,
     );
@@ -368,13 +370,15 @@ pub fn requestIssueClosureOperation(
 pub fn requestIssueClosureRequestJsonAlloc(
     allocator: std.mem.Allocator,
     project_id: []const u8,
-    run_id: []const u8,
+    run_id: ?[]const u8,
+    issue_key: ?[]const u8,
     summary: ?[]const u8,
-    expected_revision: i64,
+    expected_revision: ?i64,
 ) ![]u8 {
     return requestWithPayloadJsonAlloc(allocator, "request_issue_closure", .{
         .project_id = project_id,
         .run_id = run_id,
+        .issue_key = issue_key,
         .summary = summary,
         .expected_revision = expected_revision,
     });
@@ -766,10 +770,16 @@ test "agent run request builders preserve the daemon wire contract" {
         \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":4}}
     , start);
 
-    const request_closure = try requestIssueClosureRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", "Acceptance criteria are satisfied", 5);
+    const start_without_run = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", null, "ISSUE-003", null);
+    defer std.testing.allocator.free(start_without_run);
+    try std.testing.expectEqualStrings(
+        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":null,"issue_key":"ISSUE-003","expected_revision":null}}
+    , start_without_run);
+
+    const request_closure = try requestIssueClosureRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", null, "Acceptance criteria are satisfied", 5);
     defer std.testing.allocator.free(request_closure);
     try std.testing.expectEqualStrings(
-        \\{"method":"request_issue_closure","payload":{"project_id":"prj_test","run_id":"arun_1","summary":"Acceptance criteria are satisfied","expected_revision":5}}
+        \\{"method":"request_issue_closure","payload":{"project_id":"prj_test","run_id":"arun_1","issue_key":null,"summary":"Acceptance criteria are satisfied","expected_revision":5}}
     , request_closure);
 }
 
