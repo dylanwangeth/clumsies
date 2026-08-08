@@ -261,7 +261,7 @@ fn hookContextJsonAlloc(
     const context = if (std.mem.eql(u8, hook_event_name, "UserPromptSubmit"))
         try std.fmt.allocPrint(
             allocator,
-            "Clumsies current root AgentRun: run_id={s}, revision={d}. {s}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with kanban.create but do not call kanban.begin_work, so it remains Todo. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
+            "Clumsies current root AgentRun: run_id={s}, revision={d}. {s}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Before calling kanban.begin_work, check the Issue's active_runs via kanban.get: another AgentRun may already hold it, so claim only the Issue this run is actually working. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with kanban.create but do not call kanban.begin_work, so it remains Todo. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
             .{ current_run.run_id, current_run.revision, prefix },
         )
     else
@@ -574,6 +574,7 @@ test "start hook context exposes only the current run identity and revision" {
     try std.testing.expect(std.mem.indexOf(u8, context, "kanban.begin_work") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "kanban.request_closure") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "Decide semantically") != null);
+    try std.testing.expect(std.mem.indexOf(u8, context, "check the Issue's active_runs via kanban.get") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "This run is not bound to any Issue yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-project") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-turn") == null);
