@@ -272,6 +272,29 @@ pub fn getIssueRequestJsonAlloc(
     });
 }
 
+pub fn getIssueDetailOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    issue_number: i64,
+) !OperationResult {
+    const request_json = try getIssueDetailRequestJsonAlloc(allocator, project_id, issue_number);
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn getIssueDetailRequestJsonAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    issue_number: i64,
+) ![]u8 {
+    return requestWithPayloadJsonAlloc(allocator, "get_issue_detail", .{
+        .project_id = project_id,
+        .issue_number = issue_number,
+    });
+}
+
 pub fn issueOperation(
     allocator: std.mem.Allocator,
     method: []const u8,

@@ -118,6 +118,7 @@ pub fn run(
         host,
         event.hook_event_name,
         event.event_type,
+        binding.project_id,
         operation.structured_json,
     ) catch return;
     if (hook_output) |output| {
@@ -213,6 +214,7 @@ fn hookContextJsonAlloc(
     host: Host,
     hook_event_name: []const u8,
     event_type: []const u8,
+    project_id: []const u8,
     response_json: []const u8,
 ) !?[]u8 {
     if (host == .codex and
@@ -234,6 +236,7 @@ fn hookContextJsonAlloc(
         run: ?struct {
             run_id: []const u8,
             revision: i64,
+            issue_number: ?i64 = null,
         },
     };
     const parsed = try std.json.parseFromSlice(StartResponse, allocator, response_json, .{
@@ -244,21 +247,73 @@ fn hookContextJsonAlloc(
     const current_run = parsed.value.run orelse return null;
     if (!isSafeRunId(current_run.run_id) or current_run.revision < 1) return null;
 
+    // Best-effort bound-Issue context: the daemon lookup is fail-open so a
+    // missing daemon or an unbound run still yields a usable instruction.
+    var bound_prefix: ?[]u8 = null;
+    defer if (bound_prefix) |prefix| allocator.free(prefix);
+    if (current_run.issue_number) |issue_number| {
+        bound_prefix = boundIssuePrefixAlloc(allocator, project_id, issue_number) catch null;
+    }
+    const prefix = bound_prefix orelse
+        try allocator.dupe(u8, "This run is not bound to any Issue yet. ");
+    defer allocator.free(prefix);
+
     const context = if (std.mem.eql(u8, hook_event_name, "UserPromptSubmit"))
         try std.fmt.allocPrint(
             allocator,
-            "Clumsies current root AgentRun: run_id={s}, revision={d}. Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with kanban.create but do not call kanban.begin_work, so it remains Todo. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
-            .{ current_run.run_id, current_run.revision },
+            "Clumsies current root AgentRun: run_id={s}, revision={d}. {s}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Capture unrelated follow-up work with kanban.create but do not call kanban.begin_work, so it remains Todo. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
+            .{ current_run.run_id, current_run.revision, prefix },
         )
     else
         try std.fmt.allocPrint(
             allocator,
-            "Clumsies current subagent AgentRun: run_id={s}, revision={d}. Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent. AgentRun Stop never advances or closes an Issue.",
-            .{ current_run.run_id, current_run.revision },
+            "Clumsies current subagent AgentRun: run_id={s}, revision={d}. {s}Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent. AgentRun Stop never advances or closes an Issue.",
+            .{ current_run.run_id, current_run.revision, prefix },
         );
     defer allocator.free(context);
 
     return try additionalContextJsonAlloc(allocator, hook_event_name, context);
+}
+
+/// Resolves the Issue bound to this run (fail-open) and renders a short
+/// prefix describing the binding for the injected context.
+fn boundIssuePrefixAlloc(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    issue_number: i64,
+) !?[]u8 {
+    var operation = daemon_ipc.getIssueDetailOperation(allocator, project_id, issue_number) catch return null;
+    defer operation.deinit(allocator);
+    if (operation.isError()) return null;
+    return issueBoundPrefixFromDetail(allocator, operation.structured_json) catch null;
+}
+
+/// Pure parser for the get_issue_detail response; testable without a daemon.
+fn issueBoundPrefixFromDetail(allocator: std.mem.Allocator, detail_json: []const u8) !?[]u8 {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, detail_json, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+    const issue = parsed.value.object.get("issue") orelse return null;
+    const issue_key = switch (issue.object.get("issue_key") orelse return null) {
+        .string => |string| string,
+        else => return null,
+    };
+    const board_state = switch (issue.object.get("board_state") orelse return null) {
+        .string => |string| string,
+        else => return null,
+    };
+    const readable = if (std.mem.eql(u8, board_state, "todo"))
+        "Todo"
+    else if (std.mem.eql(u8, board_state, "in_progress"))
+        "In Progress"
+    else if (std.mem.eql(u8, board_state, "closure_requested"))
+        "Closure Requested"
+    else if (std.mem.eql(u8, board_state, "done"))
+        "Done"
+    else
+        board_state;
+    return try std.fmt.allocPrint(allocator, "This run is bound to {s} ({s}). ", .{ issue_key, readable });
 }
 
 fn additionalContextJsonAlloc(
@@ -501,6 +556,7 @@ test "start hook context exposes only the current run identity and revision" {
         .codex,
         "UserPromptSubmit",
         "started",
+        "test-project",
         response,
     )).?;
     defer std.testing.allocator.free(output);
@@ -518,9 +574,38 @@ test "start hook context exposes only the current run identity and revision" {
     try std.testing.expect(std.mem.indexOf(u8, context, "kanban.begin_work") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "kanban.request_closure") != null);
     try std.testing.expect(std.mem.indexOf(u8, context, "Decide semantically") != null);
+    try std.testing.expect(std.mem.indexOf(u8, context, "This run is not bound to any Issue yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-project") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-turn") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "secret-summary") == null);
+}
+
+test "bound run context renders the linked Issue prefix from detail" {
+    const bound = (try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-026","board_state":"in_progress"}}
+    )).?;
+    defer std.testing.allocator.free(bound);
+    try std.testing.expectEqualStrings("This run is bound to ISSUE-026 (In Progress). ", bound);
+
+    const todo = (try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-012","board_state":"todo"}}
+    )).?;
+    defer std.testing.allocator.free(todo);
+    try std.testing.expectEqualStrings("This run is bound to ISSUE-012 (Todo). ", todo);
+
+    const done = (try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-007","board_state":"done"}}
+    )).?;
+    defer std.testing.allocator.free(done);
+    try std.testing.expectEqualStrings("This run is bound to ISSUE-007 (Done). ", done);
+}
+
+test "bound prefix is null for unparseable or unbinding detail" {
+    try std.testing.expectError(error.SyntaxError, issueBoundPrefixFromDetail(std.testing.allocator, "not-json"));
+    try std.testing.expect((try issueBoundPrefixFromDetail(std.testing.allocator, "{}")) == null);
+    try std.testing.expect((try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-001"}}
+    )) == null);
 }
 
 test "subagent start receives run context and Codex Stop receives semantic reminder" {
@@ -532,6 +617,7 @@ test "subagent start receives run context and Codex Stop receives semantic remin
         .codex,
         "SubagentStart",
         "started",
+        "test-project",
         response,
     )).?;
     defer std.testing.allocator.free(output);
@@ -543,11 +629,12 @@ test "subagent start receives run context and Codex Stop receives semantic remin
         .codex,
         "Stop",
         "ended",
+        "test-project",
         response,
     )).?;
     defer std.testing.allocator.free(stop_output);
     try std.testing.expect(std.mem.indexOf(u8, stop_output, "kanban.request_closure") != null);
-    try std.testing.expect((try hookContextJsonAlloc(std.testing.allocator, .codex, "UserPromptSubmit", "started",
+    try std.testing.expect((try hookContextJsonAlloc(std.testing.allocator, .codex, "UserPromptSubmit", "started", "test-project",
         \\{"run":{"run_id":"not-a-daemon-run","revision":1}}
     )) == null);
 }
