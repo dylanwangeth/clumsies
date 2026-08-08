@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::*;
 
-const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(2);
+const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct DaemonState {
@@ -203,8 +203,11 @@ impl DaemonState {
         let mut best: Option<(usize, DaemonProjectBinding)> = None;
         for row in rows {
             let binding = project_binding_from_row(&row)?;
-            let root = Path::new(&binding.workspace_root);
-            if !workspace_path.starts_with(root) {
+            // Stored roots were canonicalized at insert time; re-canonicalize
+            // them now so a later workspace move or symlink change (e.g. a
+            // repository migrated to an external volume) still matches.
+            let root = canonical_binding_root(&binding.workspace_root);
+            if !workspace_path.starts_with(&root) {
                 continue;
             }
             let specificity = root.components().count();
@@ -1752,5 +1755,16 @@ mod tests {
         let (ready, wake) = &*gate;
         *ready.lock().unwrap() = true;
         wake.notify_all();
+    }
+
+    #[test]
+    fn startup_credential_load_timeout_tolerates_slow_keychain_reads() {
+        // A Keychain read right after unlock was measured at ~3.7 s; the
+        // timeout must stay well above that so a slow-but-valid read does
+        // not silently drop the session at startup.
+        assert!(
+            STARTUP_CREDENTIAL_LOAD_TIMEOUT >= Duration::from_secs(5),
+            "startup credential load timeout must tolerate slow Keychain reads"
+        );
     }
 }

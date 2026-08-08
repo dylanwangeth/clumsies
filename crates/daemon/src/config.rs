@@ -209,6 +209,8 @@ impl LaunchAgentConfig {
     <string>{log_dir}</string>
     <key>CLUMSIES_DAEMON_BINARY_SHA256</key>
     <string>{binary_sha256}</string>
+    <key>RUST_LOG</key>
+    <string>info</string>
   </dict>
   <key>StandardOutPath</key>
   <string>{stdout}</string>

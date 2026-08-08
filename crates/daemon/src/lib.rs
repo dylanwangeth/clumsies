@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 mod agent_adapter;
 mod commit_sync;
@@ -107,8 +107,8 @@ pub use types::{
 };
 pub(crate) use util::is_normalized_relative_path;
 use util::{
-    apply_exact_text_replacements, canonical_server_url, canonical_workspace_directory,
-    memory_kind_matches_resource, non_empty_string,
+    apply_exact_text_replacements, canonical_binding_root, canonical_server_url,
+    canonical_workspace_directory, memory_kind_matches_resource, non_empty_string,
 };
 pub use work_tracking::{
     AgentRun, AgentRunEventSource, AgentRunEventType, AgentRunHost, AgentRunKind, AgentRunOutcome,

@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::DaemonDraftResourceKind;
 use crate::DaemonError;
@@ -46,6 +46,14 @@ pub(crate) fn canonical_workspace_directory(path: &str) -> Result<PathBuf, Daemo
         )));
     }
     Ok(canonical)
+}
+
+/// Canonicalizes a stored binding root so a later workspace move or symlink
+/// change (e.g. a repository migrated to an external volume) still matches a
+/// canonical request path. Falls back to the raw path when the directory no
+/// longer exists so stale bindings keep resolving.
+pub(crate) fn canonical_binding_root(root: &str) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| Path::new(root).to_path_buf())
 }
 
 pub(crate) fn parse_bool_env(name: &str) -> Result<Option<bool>, DaemonError> {
@@ -124,6 +132,41 @@ pub(crate) fn validate_draft_resource_path(
             DaemonError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
         ),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_binding_root;
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_binding_root_follows_a_replaced_workspace_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("clumsies-canonical-root-{}", std::process::id()));
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &link).unwrap();
+
+        let canonical = canonical_binding_root(link.to_str().unwrap());
+        assert_eq!(
+            std::fs::canonicalize(&canonical).unwrap(),
+            std::fs::canonicalize(&real).unwrap()
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn canonical_binding_root_falls_back_to_the_raw_path_when_missing() {
+        let missing = std::env::temp_dir().join("clumsies-canonical-root-missing");
+        let _ = std::fs::remove_dir_all(&missing);
+
+        let canonical = canonical_binding_root(missing.to_str().unwrap());
+        assert_eq!(canonical, missing);
     }
 }
 
