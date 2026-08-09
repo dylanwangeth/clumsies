@@ -31,6 +31,7 @@ pub(crate) struct DaemonInner {
     pub(crate) token_refresh: Mutex<()>,
     pub(crate) search_models: Arc<dyn search::models::SearchModels>,
     pub(crate) search_lock: Mutex<()>,
+    pub(crate) search_index_lock: Mutex<()>,
     pub(crate) retrieval_history_lock: Mutex<()>,
     pub(crate) draft_mutation_lock: Mutex<()>,
     pub(crate) local_setup_lock: Mutex<()>,
@@ -89,6 +90,7 @@ impl DaemonState {
                 token_refresh: Mutex::new(()),
                 search_models,
                 search_lock: Mutex::new(()),
+                search_index_lock: Mutex::new(()),
                 retrieval_history_lock: Mutex::new(()),
                 draft_mutation_lock: Mutex::new(()),
                 local_setup_lock: Mutex::new(()),
@@ -619,7 +621,18 @@ impl DaemonState {
         &self,
         request: ActivateMemoryRequest,
     ) -> Result<ActivateMemoryResponse, DaemonError> {
-        search::activate_memory(self, request).await
+        const ACTIVATION_DEADLINE: Duration = Duration::from_secs(60);
+        match tokio::time::timeout(ACTIVATION_DEADLINE, search::activate_memory(self, request))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DaemonError::Search {
+                code: "activation_deadline".to_owned(),
+                message: format!(
+                    "activate exceeded the {ACTIVATION_DEADLINE:?} budget; a stage timed out and the remaining stages were skipped"
+                ),
+            }),
+        }
     }
 
     pub async fn load_memory(
