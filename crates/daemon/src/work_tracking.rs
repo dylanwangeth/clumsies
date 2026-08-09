@@ -782,13 +782,13 @@ pub(crate) async fn record_agent_run_event(
     let event_fingerprint = canonical_json_fingerprint(&request)?;
     let mut tx = pool.begin().await?;
     let existing_event = load_existing_event(&mut tx, &request.event_id).await?;
-    if let Some(existing_event) = &existing_event {
-        if existing_event.event_fingerprint != event_fingerprint {
-            return Err(run_conflict(format!(
-                "event_id {} was already used for a different request",
-                request.event_id
-            )));
-        }
+    if let Some(existing_event) = &existing_event
+        && existing_event.event_fingerprint != event_fingerprint
+    {
+        return Err(run_conflict(format!(
+            "event_id {} was already used for a different request",
+            request.event_id
+        )));
     }
     if request.event_type != AgentRunEventType::SessionEnded
         && let Some(existing_event) = &existing_event
@@ -868,13 +868,13 @@ pub(crate) async fn record_agent_run_event(
         .kind
         .or(existing.as_ref().map(|run| run.kind))
         .unwrap_or(AgentRunKind::Root);
-    if let Some(existing) = &existing {
-        if existing.kind != kind {
-            return Err(run_conflict(format!(
-                "AgentRun {} is already recorded as {:?}",
-                existing.run_id, existing.kind
-            )));
-        }
+    if let Some(existing) = &existing
+        && existing.kind != kind
+    {
+        return Err(run_conflict(format!(
+            "AgentRun {} is already recorded as {:?}",
+            existing.run_id, existing.kind
+        )));
     }
     let parent = resolve_parent_run(&mut tx, &request, kind).await?;
     let explicit_issue_number = request
@@ -886,13 +886,13 @@ pub(crate) async fn record_agent_run_event(
     let requested_issue_number = explicit_issue_number.or(inherited_issue_number);
 
     let run = if let Some(mut run) = existing {
-        if let (Some(current), Some(requested)) = (run.issue_number, requested_issue_number) {
-            if current != requested {
-                return Err(run_conflict(format!(
-                    "AgentRun {} is already bound to ISSUE-{current:03}",
-                    run.run_id
-                )));
-            }
+        if let (Some(current), Some(requested)) = (run.issue_number, requested_issue_number)
+            && current != requested
+        {
+            return Err(run_conflict(format!(
+                "AgentRun {} is already bound to ISSUE-{current:03}",
+                run.run_id
+            )));
         }
         if run.host_session_id.is_none() {
             run.host_session_id = request.host_session_id.clone();
@@ -1055,13 +1055,13 @@ pub(crate) async fn start_issue_work(
             let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, run_id)
                 .await?
                 .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
-            if let Some(current) = run.issue_number {
-                if current != issue_number {
-                    return Err(run_conflict(format!(
-                        "AgentRun {} is already bound to ISSUE-{current:03}",
-                        run.run_id
-                    )));
-                }
+            if let Some(current) = run.issue_number
+                && current != issue_number
+            {
+                return Err(run_conflict(format!(
+                    "AgentRun {} is already bound to ISSUE-{current:03}",
+                    run.run_id
+                )));
             }
             run
         }
@@ -3190,12 +3190,12 @@ async fn resolve_parent_run(
     } else {
         None
     };
-    if let (Some(by_id), Some(by_host_key)) = (&by_id, &by_host_key) {
-        if by_id.run_id != by_host_key.run_id {
-            return Err(run_conflict(
-                "parent_run_id and parent_host_run_key resolve to different runs".to_owned(),
-            ));
-        }
+    if let (Some(by_id), Some(by_host_key)) = (&by_id, &by_host_key)
+        && by_id.run_id != by_host_key.run_id
+    {
+        return Err(run_conflict(
+            "parent_run_id and parent_host_run_key resolve to different runs".to_owned(),
+        ));
     }
     let parent = by_id.or(by_host_key);
     if let Some(parent) = &parent {
@@ -3640,17 +3640,17 @@ fn parse_issue(
             (fallback_title(resource, &issue_key), None)
         }
     };
-    if let Some(title_number) = title_number {
-        if title_number != issue_number {
-            diagnostics.push(IssueBoardDiagnostic {
-                resource_id: resource.resource_id.clone(),
-                path: resource.path.clone(),
-                code: IssueBoardDiagnosticCode::TitleNumberMismatch,
-                message: format!(
-                    "Issue title declares ISSUE-{title_number:03}, but the path declares {issue_key}"
-                ),
-            });
-        }
+    if let Some(title_number) = title_number
+        && title_number != issue_number
+    {
+        diagnostics.push(IssueBoardDiagnostic {
+            resource_id: resource.resource_id.clone(),
+            path: resource.path.clone(),
+            code: IssueBoardDiagnosticCode::TitleNumberMismatch,
+            message: format!(
+                "Issue title declares ISSUE-{title_number:03}, but the path declares {issue_key}"
+            ),
+        });
     }
     let metadata = parse_metadata(&resource.content);
     Ok((
