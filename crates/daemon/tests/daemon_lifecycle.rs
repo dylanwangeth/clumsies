@@ -3198,26 +3198,32 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
         .await
         .unwrap();
     assert_eq!(installed.revision, 1);
-    assert!(installed
-        .managed_files
-        .iter()
-        .any(|file| file.ends_with("opencode.json")));
-    assert!(installed
-        .managed_files
-        .iter()
-        .any(|file| file.ends_with(".opencode/plugins/clumsies.ts")));
+    assert!(
+        installed
+            .managed_files
+            .iter()
+            .any(|file| file.ends_with("opencode.json"))
+    );
+    assert!(
+        installed
+            .managed_files
+            .iter()
+            .any(|file| file.ends_with(".opencode/plugins/clumsies.ts"))
+    );
 
     let rendered: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     assert_eq!(rendered["model"], "deepseek/deepseek-chat");
     assert_eq!(rendered["$schema"], "https://opencode.ai/config.json");
     assert_eq!(rendered["mcp"]["clumsies"]["type"], "local");
-    assert!(rendered["plugin"]
-        .as_array()
-        .unwrap()
-        .contains(&serde_json::Value::String(
-            "./.opencode/plugins/clumsies.ts".to_owned()
-        )));
+    assert!(
+        rendered["plugin"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::String(
+                "./.opencode/plugins/clumsies.ts".to_owned()
+            ))
+    );
     assert!(
         repository_root
             .path()
