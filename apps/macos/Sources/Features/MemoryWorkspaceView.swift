@@ -1001,6 +1001,7 @@ struct DraftReconciliationView: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+                .textSelection(.enabled)
         }
     }
 
@@ -1229,6 +1230,7 @@ private struct ReviewRequestSheet: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+                .textSelection(.enabled)
         }
     }
 

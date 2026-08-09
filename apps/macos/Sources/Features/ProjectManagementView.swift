@@ -118,6 +118,7 @@ struct ProjectCreationSheet: View {
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
+                            .textSelection(.enabled)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -276,6 +277,7 @@ struct ProjectSettingsView: View {
 
                 if let errorMessage {
                     Text(errorMessage)
+                        .textSelection(.enabled)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -423,6 +425,7 @@ private struct ProjectLocalSetupSettings: View {
 
             if let errorMessage {
                 Text(errorMessage)
+                    .textSelection(.enabled)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }

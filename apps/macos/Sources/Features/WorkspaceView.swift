@@ -407,6 +407,7 @@ struct WorkspaceView: View {
             Button("OK") { store.errorMessage = nil }
         } message: {
             Text(store.errorMessage ?? "")
+                .textSelection(.enabled)
         }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
@@ -596,6 +597,7 @@ struct WorkspaceView: View {
             Button("OK") { store.errorMessage = nil }
         } message: {
             Text(store.errorMessage ?? "")
+                .textSelection(.enabled)
         }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
