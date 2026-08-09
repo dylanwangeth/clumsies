@@ -656,6 +656,7 @@ pub struct IssueBoardCard {
     pub blocking_facts: Vec<IssueBlockingFact>,
     pub active_runs: Vec<AgentRun>,
     pub latest_run: Option<AgentRun>,
+    pub changed_by_run_id: Option<String>,
     pub verification_level: VerificationLevel,
     pub verification_steps: Vec<String>,
 }
@@ -2202,6 +2203,7 @@ fn native_issue_card(
         blocking_facts: issue.blocking_facts,
         active_runs: projection.active_runs,
         latest_run: projection.latest_run,
+        changed_by_run_id: issue.changed_by_run_id.clone(),
         verification_level: issue.verification_level,
         verification_steps: issue.verification_steps,
     }
@@ -3918,6 +3920,7 @@ impl ParsedIssue {
             blocking_facts: Vec::new(),
             active_runs: projection.active_runs,
             latest_run: projection.latest_run,
+            changed_by_run_id: None,
             verification_level: VerificationLevel::AgentSelf,
             verification_steps: Vec::new(),
         }
@@ -5022,6 +5025,34 @@ mod tests {
         assert_eq!(cards[0].description_excerpt, "首段摘要内容。");
         assert!(cards[0].description.contains("## 背景"));
         assert!(created.issue_id == cards[0].issue_id);
+        assert!(cards[0].changed_by_run_id.is_none());
+
+        // After a run starts work, the board exposes who changed it.
+        let started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                issue_key: created.issue_key.clone(),
+                expected_revision: None,
+                session_id: Some("session-excerpt".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+        let cards = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cards[0].changed_by_run_id.as_deref(),
+            Some(started.run.run_id.as_str())
+        );
     }
 
     #[tokio::test]

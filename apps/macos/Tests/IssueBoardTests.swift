@@ -509,6 +509,7 @@ final class IssueBoardModelTests: XCTestCase {
                     blockingFacts: [],
                     activeRuns: [],
                     latestRun: nil,
+                    changedByRunId: nil,
                     verificationLevel: .agentSelf,
                     verificationSteps: []
                 ),
@@ -730,6 +731,7 @@ final class IssueBoardModelTests: XCTestCase {
             blockingFacts: [],
             activeRuns: [run],
             latestRun: run,
+            changedByRunId: run.runId,
             verificationLevel: .agentSelf,
             verificationSteps: []
         )

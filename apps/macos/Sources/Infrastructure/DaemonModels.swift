@@ -739,6 +739,7 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let blockingFacts: [IssueBlockingFact]
     let activeRuns: [AgentRun]
     let latestRun: AgentRun?
+    let changedByRunId: String?
     let verificationLevel: VerificationLevel
     let verificationSteps: [String]
 }
@@ -782,6 +783,7 @@ extension IssueBoardCard {
         case blockingFacts
         case activeRuns
         case latestRun
+        case changedByRunId
         case verificationLevel
         case verificationSteps
     }
@@ -834,6 +836,7 @@ extension IssueBoardCard {
         ) ?? []
         activeRuns = try container.decode([AgentRun].self, forKey: .activeRuns)
         latestRun = try container.decodeIfPresent(AgentRun.self, forKey: .latestRun)
+        changedByRunId = try container.decodeIfPresent(String.self, forKey: .changedByRunId)
         verificationLevel = try container.decodeIfPresent(
             VerificationLevel.self,
             forKey: .verificationLevel
