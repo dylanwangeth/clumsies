@@ -28,8 +28,8 @@ detect_platform() {
     esac
 
     case "$OS" in
-        darwin|linux) ;;
-        *) error "Unsupported OS: $OS" ;;
+        darwin) ;;
+        *) error "Unsupported OS: $OS (clumsies releases are macOS-only)" ;;
     esac
 
     echo "${OS}-${ARCH}"
