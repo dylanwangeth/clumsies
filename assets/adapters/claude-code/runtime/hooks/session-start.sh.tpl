@@ -24,8 +24,11 @@ if [ -n "$WS_INFO" ]; then
 fi
 
 WORKFLOW_SKILLS_DIR="__CLUMSIES_WORKFLOW_SKILLS_DIR__"
-if [ -n "$WORKFLOW_SKILLS_DIR" ] && [ -d "$CACHE_DIR/workflow" ]; then
-  WORKFLOW_DIR="$CACHE_DIR/workflow"
+# Workflow rules are synced under cache/rule/workflow (the rule namespace);
+# scanning that directory keeps the session-start sync consistent with
+# `clumsies sync` and with workflow_skills.zig at install time.
+if [ -n "$WORKFLOW_SKILLS_DIR" ] && [ -d "$CACHE_DIR/rule/workflow" ]; then
+  WORKFLOW_DIR="$CACHE_DIR/rule/workflow"
   find "$WORKFLOW_DIR" -name '*.md' -type f | while read -r filepath; do
     filename="$(basename "$filepath")"
     slug="$(echo "$filename" | sed 's/^[0-9]*_//; s/\.md$//; s/_/-/g' | tr '[:upper:]' '[:lower:]')"
