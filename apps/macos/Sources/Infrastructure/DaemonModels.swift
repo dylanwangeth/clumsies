@@ -624,6 +624,7 @@ enum AgentRunHost: String, Codable, Hashable, Sendable {
     case claudeCode = "claude-code"
     case manual
     case zed
+    case opencode
 }
 
 enum AgentRunKind: String, Codable, Hashable, Sendable {
