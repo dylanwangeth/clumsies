@@ -29,6 +29,7 @@ const RESOLVE_BINARY_CLAUDE: &str =
     include_str!("../../../assets/adapters/claude-code/runtime/hooks/resolve-binary.sh.tpl");
 const ISSUE_RUN_EVENT_CLAUDE: &str =
     include_str!("../../../assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl");
+const OPENCODE_PLUGIN: &str = include_str!("../../../assets/adapters/opencode/runtime/plugin.ts");
 const LEGACY_USER_PROMPT_SUBMIT_CODEX_SHA256: &str =
     "03bfb5ddbad36dcf53ba3f1e4e07a83cece33d4a98c29298dc0d7e776f63f815";
 const LEGACY_USER_PROMPT_SUBMIT_CLAUDE_SHA256: &str =
@@ -39,6 +40,7 @@ const LEGACY_USER_PROMPT_SUBMIT_CLAUDE_SHA256: &str =
 pub enum ProjectAgentAdapterKind {
     Codex,
     ClaudeCode,
+    Opencode,
 }
 
 impl ProjectAgentAdapterKind {
@@ -46,6 +48,7 @@ impl ProjectAgentAdapterKind {
         match self {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
+            Self::Opencode => "opencode",
         }
     }
 }
@@ -116,6 +119,7 @@ enum ManagedFileKind {
     CodexHooks,
     ClaudeMcp,
     ClaudeSettings,
+    OpencodeConfig,
     Exclusive,
 }
 
@@ -138,7 +142,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             server_url TEXT NOT NULL,
             workspace_root TEXT NOT NULL,
             project_id TEXT NOT NULL,
-            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code')),
+            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode')),
             revision BIGINT NOT NULL CHECK (revision > 0),
             manifest_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -509,6 +513,27 @@ fn install_plan(
                 )?,
             ]
         }
+        ProjectAgentAdapterKind::Opencode => {
+            let config_path = workspace_root.join("opencode.json");
+            let plugin_path = workspace_root.join(".opencode/plugins/clumsies.ts");
+            vec![
+                PendingChange {
+                    path: config_path.clone(),
+                    desired: Some(render_opencode_config(
+                        read_optional(&config_path)?.as_deref(),
+                        &helper,
+                    )?),
+                    kind: ManagedFileKind::OpencodeConfig,
+                    mode: 0o644,
+                },
+                exclusive_change(
+                    plugin_path,
+                    render_opencode_plugin(&helper).as_bytes(),
+                    previous_manifest,
+                    0o644,
+                )?,
+            ]
+        }
     };
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(changes)
@@ -559,6 +584,11 @@ fn remove_plan(manifest: &AdapterManifest) -> Result<Vec<PendingChange>, DaemonE
                             true,
                         )
                     })
+                    .transpose()?
+                    .flatten(),
+                ManagedFileKind::OpencodeConfig => current
+                    .as_deref()
+                    .map(|content| remove_opencode_config(content, helper))
                     .transpose()?
                     .flatten(),
                 ManagedFileKind::Exclusive => {
@@ -1096,6 +1126,105 @@ fn render_claude_mcp(existing: Option<&[u8]>, helper_binary: &str) -> Result<Vec
     Ok(rendered)
 }
 
+/// opencode.json merge: register the clumsies MCP server under `mcp` and
+/// append the clumsies plugin to the `plugin` array. User-owned keys and
+/// other servers/plugins are preserved.
+fn render_opencode_config(
+    existing: Option<&[u8]>,
+    helper_binary: &str,
+) -> Result<Vec<u8>, DaemonError> {
+    let mut root = match existing {
+        Some(content) => serde_json::from_slice::<Value>(content).map_err(|_| {
+            adapter_conflict("The existing opencode config is not valid JSON.")
+        })?,
+        None => Value::Object(Map::new()),
+    };
+    let root = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The opencode config must be a JSON object."))?;
+
+    let mcp = root
+        .entry("mcp")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("opencode `mcp` must be a JSON object."))?;
+    mcp.insert(
+        "clumsies".to_owned(),
+        json!({
+            "type": "local",
+            "command": [helper_binary, "mcp", "serve"],
+            "enabled": true
+        }),
+    );
+
+    const PLUGIN_SPEC: &str = "./.opencode/plugins/clumsies.ts";
+    let plugins = root
+        .entry("plugin")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| adapter_conflict("opencode `plugin` must be an array."))?;
+    if !plugins
+        .iter()
+        .any(|item| item.as_str() == Some(PLUGIN_SPEC))
+    {
+        plugins.push(Value::String(PLUGIN_SPEC.to_owned()));
+    }
+
+    let mut rendered = serde_json::to_vec_pretty(&Value::Object(root.clone()))?;
+    rendered.push(b'\n');
+    Ok(rendered)
+}
+
+fn remove_opencode_config(
+    content: &[u8],
+    helper_binary: &str,
+) -> Result<Option<Vec<u8>>, DaemonError> {
+    let mut root = serde_json::from_slice::<Value>(content)
+        .map_err(|_| adapter_conflict("The existing opencode config is not valid JSON."))?;
+    let root = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The opencode config must be a JSON object."))?;
+
+    if let Some(mcp) = root.get_mut("mcp").and_then(Value::as_object_mut) {
+        if let Some(current) = mcp.get("clumsies") {
+            let expected = json!({
+                "type": "local",
+                "command": [helper_binary, "mcp", "serve"],
+                "enabled": true
+            });
+            if current != &expected {
+                return Err(adapter_conflict(
+                    "The opencode `mcp.clumsies` entry changed after installation.",
+                ));
+            }
+            mcp.remove("clumsies");
+        }
+        if mcp.is_empty() {
+            root.remove("mcp");
+        }
+    }
+
+    if let Some(plugins) = root.get_mut("plugin").and_then(Value::as_array_mut) {
+        plugins.retain(|item| item.as_str() != Some("./.opencode/plugins/clumsies.ts"));
+        if plugins.is_empty() {
+            root.remove("plugin");
+        }
+    }
+
+    if root.is_empty() {
+        return Ok(None);
+    }
+    let mut rendered = serde_json::to_vec_pretty(&Value::Object(root.clone()))?;
+    rendered.push(b'\n');
+    Ok(Some(rendered))
+}
+
+/// Injects the managed helper binary path into the plugin template so the
+/// plugin can reach the daemon bridge without relying on PATH.
+fn render_opencode_plugin(helper_binary: &str) -> String {
+    OPENCODE_PLUGIN.replace("__CLUMSIES_HELPER_BINARY__", helper_binary)
+}
+
 fn remove_claude_mcp(content: &[u8], helper_binary: &str) -> Result<Option<Vec<u8>>, DaemonError> {
     let mut root = serde_json::from_slice::<Value>(content)
         .map_err(|_| adapter_conflict("The existing Claude Code MCP config is not valid JSON."))?;
@@ -1350,6 +1479,7 @@ fn adapter_record_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AdapterRecor
     let adapter = match raw_adapter.as_str() {
         "codex" => ProjectAgentAdapterKind::Codex,
         "claude-code" => ProjectAgentAdapterKind::ClaudeCode,
+        "opencode" => ProjectAgentAdapterKind::Opencode,
         _ => {
             return Err(DaemonError::InvalidConfig(format!(
                 "unknown persisted Coding Agent adapter {raw_adapter}"
@@ -1737,5 +1867,127 @@ mod tests {
             assert!(matches!(error, DaemonError::State { .. }));
             assert_eq!(groups, vec![original]);
         }
+    }
+
+    #[test]
+    fn opencode_config_preserves_unrelated_keys_and_servers() {
+        let rendered = render_opencode_config(
+            Some(
+                br#"{"model":"deepseek/deepseek-chat","mcp":{"other":{"type":"remote","url":"https://x"}}}"#,
+            ),
+            "/tmp/clumsies",
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&rendered).unwrap();
+        assert_eq!(value["model"], "deepseek/deepseek-chat");
+        assert_eq!(value["mcp"]["other"]["url"], "https://x");
+        assert_eq!(value["mcp"]["clumsies"]["type"], "local");
+        assert_eq!(value["mcp"]["clumsies"]["command"][0], "/tmp/clumsies");
+        assert_eq!(value["mcp"]["clumsies"]["command"][1], "mcp");
+        assert_eq!(value["mcp"]["clumsies"]["enabled"], true);
+        assert!(value["plugin"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned())));
+    }
+
+    #[test]
+    fn opencode_config_render_is_idempotent() {
+        let first = render_opencode_config(None, "/tmp/clumsies").unwrap();
+        let second = render_opencode_config(Some(&first), "/tmp/clumsies").unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn opencode_config_remove_restores_user_content() {
+        let rendered = render_opencode_config(
+            Some(br#"{"model":"deepseek/deepseek-chat"}"#),
+            "/tmp/clumsies",
+        )
+        .unwrap();
+        let removed = remove_opencode_config(&rendered, "/tmp/clumsies")
+            .unwrap()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&removed).unwrap();
+        assert_eq!(value["model"], "deepseek/deepseek-chat");
+        assert!(value.get("mcp").is_none());
+        assert!(value.get("plugin").is_none());
+    }
+
+    #[test]
+    fn opencode_remove_rejects_drifted_clumsies_entry() {
+        let rendered = render_opencode_config(None, "/tmp/clumsies").unwrap();
+        let mutated = render_opencode_config(
+            Some(&rendered),
+            "/tmp/some-other-helper",
+        )
+        .unwrap();
+        let error = remove_opencode_config(&mutated, "/tmp/clumsies").unwrap_err();
+        assert!(matches!(error, DaemonError::State { .. }));
+    }
+
+    #[test]
+    fn opencode_plugin_template_injects_helper_binary() {
+        let rendered = render_opencode_plugin("/tmp/Clumsies App/bin/clumsies");
+        assert!(rendered.contains(
+            "return process.env.CLUMSIES_BINARY || \"/tmp/Clumsies App/bin/clumsies\""
+        ));
+    }
+
+    #[test]
+    fn install_plan_includes_opencode_assets() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/tmp/clumsies-managed/bin/clumsies");
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Opencode,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        assert!(changes.iter().any(|change| {
+            change.path.ends_with("opencode.json")
+                && change.kind == ManagedFileKind::OpencodeConfig
+        }));
+        assert!(changes.iter().any(|change| {
+            change.path.ends_with(".opencode/plugins/clumsies.ts")
+                && change.kind == ManagedFileKind::Exclusive
+        }));
+    }
+
+    #[test]
+    fn opencode_install_remove_round_trip() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/tmp/clumsies-managed/bin/clumsies");
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Opencode,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&changes).unwrap();
+
+        let config_path = workspace.path().join("opencode.json");
+        let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(config["mcp"]["clumsies"]["command"][0], "/tmp/clumsies-managed/bin/clumsies");
+        assert!(config["plugin"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned())));
+        assert!(
+            workspace
+                .path()
+                .join(".opencode/plugins/clumsies.ts")
+                .exists()
+        );
+
+        let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
+        let removals = remove_plan(&manifest).unwrap();
+        apply_changes(&removals).unwrap();
+        assert!(!config_path.exists());
+        assert!(!workspace.path().join(".opencode/plugins/clumsies.ts").exists());
     }
 }

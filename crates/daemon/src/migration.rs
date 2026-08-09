@@ -113,6 +113,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_29_to_30(pool).await?;
         existing_schema_version = 30;
     }
+    if existing_schema_version == 30 {
+        migrate_local_schema_30_to_31(pool).await?;
+        existing_schema_version = 31;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -560,6 +564,64 @@ pub(crate) async fn migrate_local_schema_29_to_30(pool: &SqlitePool) -> Result<(
     sqlx::query("PRAGMA foreign_keys = ON")
         .execute(&mut *connection)
         .await?;
+    Ok(())
+}
+
+/// Widen the project_agent_adapters adapter CHECK constraint to accept the
+/// opencode plugin-hook integration. SQLite cannot alter a CHECK constraint
+/// in place, so the table is rebuilt. The table is a child of project_bindings
+/// and is referenced by nothing else, so the rebuild is FK-safe on a single
+/// transaction.
+pub(crate) async fn migrate_local_schema_30_to_31(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    let table_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_agent_adapters'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if table_sql
+        .as_deref()
+        .is_some_and(|sql| sql.contains("'opencode'"))
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
+    if table_sql.is_none() {
+        // A library that never ran schema 20 has no project_agent_adapters
+        // table; agent_adapter::migrate creates the widened shape.
+        tx.commit().await?;
+        return Ok(());
+    }
+    for statement in [
+        "CREATE TABLE project_agent_adapters_v31 (
+            server_url TEXT NOT NULL,
+            workspace_root TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode')),
+            revision BIGINT NOT NULL CHECK (revision > 0),
+            manifest_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (server_url, workspace_root, adapter),
+            FOREIGN KEY (server_url, workspace_root)
+                REFERENCES project_bindings(server_url, workspace_root)
+                ON DELETE CASCADE
+        )",
+        "INSERT INTO project_agent_adapters_v31 (
+            server_url, workspace_root, project_id, adapter, revision,
+            manifest_json, created_at, updated_at
+         )
+         SELECT server_url, workspace_root, project_id, adapter, revision,
+                manifest_json, created_at, updated_at
+         FROM project_agent_adapters",
+        "DROP TABLE project_agent_adapters",
+        "ALTER TABLE project_agent_adapters_v31 RENAME TO project_agent_adapters",
+        "CREATE INDEX idx_project_agent_adapters_project
+         ON project_agent_adapters (server_url, project_id)",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

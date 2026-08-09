@@ -35,7 +35,7 @@ function sessionState(sessionID: string): SessionState {
 }
 
 function clumsiesBinary(): string {
-  return process.env.CLUMSIES_BINARY || "clumsies"
+  return process.env.CLUMSIES_BINARY || "__CLUMSIES_HELPER_BINARY__"
 }
 
 /**

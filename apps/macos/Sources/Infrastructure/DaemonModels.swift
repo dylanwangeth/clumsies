@@ -58,6 +58,7 @@ struct DaemonProjectBindingListResponse: Codable, Sendable {
 enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifiable, Sendable {
     case codex
     case claudeCode = "claude-code"
+    case opencode
 
     var id: String { rawValue }
 
@@ -65,6 +66,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
         switch self {
         case .codex: "Codex"
         case .claudeCode: "Claude Code"
+        case .opencode: "opencode"
         }
     }
 }
