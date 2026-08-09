@@ -545,6 +545,21 @@ struct IssueDetailView: View {
                     if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
                         VerificationProtocolSection(issue: issue)
                     }
+
+                    if let changedBy = issue.changedByRunId,
+                       let run = issue.activeRuns.first(where: { $0.runId == changedBy })
+                           ?? issue.latestRun
+                    {
+                        HStack(spacing: 6) {
+                            Image(systemName: "pencil.circle")
+                                .foregroundStyle(.secondary)
+                            Text("Last changed by \(run.host.title) · \(run.runId)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .frame(
                     maxWidth: DocumentContentMetrics.maximumWidth,
