@@ -204,10 +204,10 @@ impl DaemonState {
         // A git worktree belongs to the same repository as its main checkout,
         // so it should resolve to the same Project. Fall back to the main
         // repository root when the worktree path itself is not bound.
-        if let Some(main_root) = git_worktree_main_root(&workspace_path) {
-            if main_root != workspace_path {
-                candidates.push(main_root);
-            }
+        if let Some(main_root) = git_worktree_main_root(&workspace_path)
+            && main_root != workspace_path
+        {
+            candidates.push(main_root);
         }
 
         let mut best: Option<(usize, DaemonProjectBinding)> = None;

@@ -214,13 +214,13 @@ pub(crate) async fn install(
         .as_ref()
         .map(adapter_record_from_row)
         .transpose()?;
-    if let Some(expected_revision) = request.expected_revision {
-        if existing.as_ref().map(|record| record.status.revision) != Some(expected_revision) {
-            return Err(state_error(
-                "project_agent_adapter_changed",
-                "The Coding Agent integration changed from the expected revision.",
-            ));
-        }
+    if let Some(expected_revision) = request.expected_revision
+        && existing.as_ref().map(|record| record.status.revision) != Some(expected_revision)
+    {
+        return Err(state_error(
+            "project_agent_adapter_changed",
+            "The Coding Agent integration changed from the expected revision.",
+        ));
     }
 
     let source_binary = canonical_helper_binary(&request.helper_binary_path)?;
@@ -592,8 +592,8 @@ fn remove_plan(manifest: &AdapterManifest) -> Result<Vec<PendingChange>, DaemonE
                     .transpose()?
                     .flatten(),
                 ManagedFileKind::Exclusive => {
-                    if let Some(content) = &current {
-                        if sha256(content) != file.installed_hash {
+                    if let Some(content) = &current
+                        && sha256(content) != file.installed_hash {
                             return Err(state_error(
                                 "project_agent_adapter_conflict",
                                 &format!(
@@ -602,7 +602,6 @@ fn remove_plan(manifest: &AdapterManifest) -> Result<Vec<PendingChange>, DaemonE
                                 ),
                             ));
                         }
-                    }
                     None
                 }
             };
@@ -891,15 +890,11 @@ enum LocalHookScriptKind {
 }
 
 fn local_hook_script_kind(handler: &Value, script_path: &Path) -> Option<LocalHookScriptKind> {
-    let Some(object) = handler.as_object() else {
-        return None;
-    };
+    let object = handler.as_object()?;
     if object.get("type").and_then(Value::as_str) != Some("command") {
         return None;
     }
-    let Some(command) = object.get("command").and_then(Value::as_str) else {
-        return None;
-    };
+    let command = object.get("command").and_then(Value::as_str)?;
     let command_path = single_bash_script_path(command)?;
     let candidate = Path::new(&command_path);
     let expected_hooks_directory = script_path.parent()?;
