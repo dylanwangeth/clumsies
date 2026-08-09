@@ -14,11 +14,13 @@ const MAX_DISPLAY_LABEL_BYTES = 160;
 const Host = enum {
     codex,
     claude_code,
+    opencode,
 
     fn wireName(self: Host) []const u8 {
         return switch (self) {
             .codex => "codex",
             .claude_code => "claude-code",
+            .opencode => "opencode",
         };
     }
 };
@@ -39,7 +41,7 @@ const NormalizedHookEvent = struct {
     stop_hook_active: bool,
 };
 
-/// `clumsies _agent issue-run-event --host codex|claude-code`
+/// `clumsies _agent issue-run-event --host codex|claude-code|opencode`
 ///
 /// This command emits host hook context only after a successful start event.
 /// Every parse, binding, IPC, daemon, and output failure remains a no-op so
@@ -131,6 +133,7 @@ fn parseHost(args: []const []const u8) ?Host {
     if (args.len != 2 or !std.mem.eql(u8, args[0], "--host")) return null;
     if (std.mem.eql(u8, args[1], "codex")) return .codex;
     if (std.mem.eql(u8, args[1], "claude-code")) return .claude_code;
+    if (std.mem.eql(u8, args[1], "opencode")) return .opencode;
     return null;
 }
 
@@ -161,7 +164,9 @@ fn normalizeHookEvent(
         event_type = "ended";
         kind = "root";
         host_run_key = try rootRunKeyAlloc(allocator, host, object);
-    } else if (std.mem.eql(u8, hook_event_name, "StopFailure") and host == .claude_code) {
+    } else if (std.mem.eql(u8, hook_event_name, "StopFailure") and
+        (host == .claude_code or host == .opencode))
+    {
         event_type = "ended";
         kind = "root";
         outcome = "failed";
@@ -365,6 +370,7 @@ fn rootRunKeyAlloc(
     const host_id = switch (host) {
         .codex => stringField(object, "turn_id"),
         .claude_code => stringField(object, "prompt_id"),
+        .opencode => stringField(object, "message_id"),
     } orelse return error.InvalidHookPayload;
     if (host_id.len == 0) return error.InvalidHookPayload;
     const bounded_id = try boundedIdentifierAlloc(allocator, host_id);
@@ -379,6 +385,7 @@ fn explicitRootRunKeyAlloc(
     const host_id = switch (host) {
         .codex => stringField(object, "turn_id"),
         .claude_code => stringField(object, "prompt_id"),
+        .opencode => stringField(object, "message_id"),
     } orelse return null;
     if (host_id.len == 0) return null;
     const bounded_id = try boundedIdentifierAlloc(allocator, host_id);
@@ -651,9 +658,64 @@ test "Claude Stop decision blocks once and explains semantic closure" {
     try std.testing.expect(std.mem.indexOf(u8, reason, "Stop itself never") != null);
 }
 
-test "private command accepts only the two documented host flags" {
+test "private command accepts only the documented host flags" {
     try std.testing.expectEqual(Host.codex, parseHost(&.{ "--host", "codex" }).?);
     try std.testing.expectEqual(Host.claude_code, parseHost(&.{ "--host", "claude-code" }).?);
+    try std.testing.expectEqual(Host.opencode, parseHost(&.{ "--host", "opencode" }).?);
     try std.testing.expect(parseHost(&.{ "--host", "claude_code" }) == null);
     try std.testing.expect(parseHost(&.{"codex"}) == null);
+}
+
+test "normalizes opencode message lifecycle without fabricating events" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const started = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","message_id":"msg_9","cwd":"/tmp/workspace","hook_event_name":"UserPromptSubmit"}
+    );
+    try std.testing.expectEqualStrings("opencode", started.host);
+    try std.testing.expectEqualStrings("root:msg_9", started.host_run_key.?);
+    try std.testing.expectEqualStrings("started", started.event_type);
+    try std.testing.expectEqualStrings("root", started.kind.?);
+    try std.testing.expect(started.issue_key == null);
+    try std.testing.expect(started.outcome == null);
+
+    const stopped = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","message_id":"msg_9","cwd":"/tmp/workspace","hook_event_name":"Stop"}
+    );
+    try std.testing.expectEqualStrings("ended", stopped.event_type);
+    try std.testing.expectEqualStrings("root:msg_9", stopped.host_run_key.?);
+
+    const failed = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","message_id":"msg_9","hook_event_name":"StopFailure","error":"rate_limit"}
+    );
+    try std.testing.expectEqualStrings("ended", failed.event_type);
+    try std.testing.expectEqualStrings("failed", failed.outcome.?);
+
+    const subagent = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","message_id":"msg_9","agent_id":"prt_2","agent_type":"explore","hook_event_name":"SubagentStart"}
+    );
+    try std.testing.expectEqualStrings("started", subagent.event_type);
+    try std.testing.expectEqualStrings("subagent", subagent.kind.?);
+    try std.testing.expectEqualStrings("root:msg_9", subagent.parent_host_run_key.?);
+    try std.testing.expectEqualStrings("explore", subagent.display_label.?);
+
+    const ended = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","hook_event_name":"SessionEnd"}
+    );
+    try std.testing.expectEqualStrings("session_ended", ended.event_type);
+    try std.testing.expect(ended.host_run_key == null);
+    try std.testing.expectEqualStrings("unknown", ended.outcome.?);
+}
+
+test "opencode subagent run key is part scoped to the session" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const subagent = try normalizeForTest(allocator, .opencode,
+        \\{"session_id":"ses_1","message_id":"msg_9","agent_id":"prt_2","hook_event_name":"SubagentStart"}
+    );
+    try std.testing.expectEqualStrings("subagent:ses_1:prt_2", subagent.host_run_key.?);
 }

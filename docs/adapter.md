@@ -169,12 +169,13 @@ That is what turns host integration into a trustworthy product feature instead o
 
 ## Current support and future targets
 
-The current implementation ships two built-in adapter packages:
+The current implementation ships two built-in adapter packages and one plugin-based host integration:
 
-| Adapter ID | Display name | Status |
-| --- | --- | --- |
-| `codex` | `Codex` | supported now |
-| `claude-code` | `Claude Code` | supported now |
+| Adapter ID | Display name | Status | Integration kind |
+| --- | --- | --- | --- |
+| `codex` | `Codex` | supported now | `clumsies adapt` installable package (hooks + skills) |
+| `claude-code` | `Claude Code` | supported now | `clumsies adapt` installable package (hooks + skills) |
+| `opencode` | `opencode` | supported now | plugin-hook integration (event plugin + daemon bridge), no adapt package |
 
 Future targets will likely include more coding-agent CLIs and agentic editors. When those land, the docs should use the official product names. Examples of current external brand names include:
 
@@ -185,6 +186,41 @@ Future targets will likely include more coding-agent CLIs and agentic editors. W
 - `GitHub Copilot coding agent`
 
 Those are examples of host surfaces the project may care about. They are not current built-in adapters.
+
+## opencode integration (plugin-hook)
+
+opencode has no config-file-level hook surface: its config schema has no `hook` key and there is no `hooks.json`. Lifecycle observation lives in the plugin event bus. The integration therefore ships a thin TypeScript plugin instead of shell hooks, and the install/remove machinery of `clumsies adapt` is intentionally not the delivery vehicle (project focus moved to the GUI).
+
+### What is installed
+
+| Resource | Location | Role |
+| --- | --- | --- |
+| `plugin.ts` | `.opencode/plugins/` (workspace) or `~/.config/opencode/plugins/` (global) | subscribe to session/message events, forward lifecycle to the daemon bridge, inject run context into the system prompt |
+| MCP entry | `opencode.json` → `mcp.clumsies` | register the clumsies MCP server (`type: local`) |
+| skills | `.agents/skills/` (already installed by other adapters) | discovered natively by opencode, no proxy layer needed |
+
+### Event mapping
+
+opencode emits message/session events rather than prompt lifecycle events. The plugin forwards only what opencode actually emits:
+
+| opencode event | Forwarded as | Normalized observation |
+| --- | --- | --- |
+| `chat.message` (user message received) | `UserPromptSubmit` (`message_id` = root run key) | root run started |
+| `message.updated` (assistant, `time.completed` present) | `Stop` | root run ended |
+| `message.updated` (assistant, error present) | `StopFailure` | root run failed |
+| `session.deleted` | `SessionEnd` | session ended |
+
+Subagent boundaries are **not** synthesized: opencode exposes `agent`/`subtask` message parts but has no reliable part stop event, so a start-only Subagent event would leave a dangling run. Root-level started/ended pairing is complete.
+
+### Run context injection
+
+The bridge prints `hookSpecificOutput.additionalContext` (run_id, revision, semantic instructions) after a successful start event. The plugin captures that text and injects it into the system prompt via `experimental.chat.system.transform` before each LLM call — the opencode analogue of the Codex hook stdout injection.
+
+### Parity
+
+- **Lifecycle parity**: root started/ended/failed and session ended. No subagent events (not synthesized).
+- **Run context injection**: yes, via system-prompt transform.
+- **Install/update/remove lifecycle**: not a `clumsies adapt` package; the plugin is a plain file the GUI (or a user) places in the opencode plugin directory. Shared config (`opencode.json`) merge semantics are documented; the plugin itself never rewrites user configuration.
 
 ## The technical design in the current implementation
 
