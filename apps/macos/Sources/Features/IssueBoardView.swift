@@ -761,8 +761,8 @@ private struct IssueCard: View {
                 .multilineTextAlignment(.leading)
                 .help(issue.title)
 
-            if !issue.description.isEmpty {
-                Text(issue.description)
+            if !issue.descriptionExcerpt.isEmpty {
+                Text(issue.descriptionExcerpt)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
