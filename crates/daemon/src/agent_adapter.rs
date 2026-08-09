@@ -1134,9 +1134,8 @@ fn render_opencode_config(
     helper_binary: &str,
 ) -> Result<Vec<u8>, DaemonError> {
     let mut root = match existing {
-        Some(content) => serde_json::from_slice::<Value>(content).map_err(|_| {
-            adapter_conflict("The existing opencode config is not valid JSON.")
-        })?,
+        Some(content) => serde_json::from_slice::<Value>(content)
+            .map_err(|_| adapter_conflict("The existing opencode config is not valid JSON."))?,
         None => Value::Object(Map::new()),
     };
     let root = root
@@ -1885,10 +1884,12 @@ mod tests {
         assert_eq!(value["mcp"]["clumsies"]["command"][0], "/tmp/clumsies");
         assert_eq!(value["mcp"]["clumsies"]["command"][1], "mcp");
         assert_eq!(value["mcp"]["clumsies"]["enabled"], true);
-        assert!(value["plugin"]
-            .as_array()
-            .unwrap()
-            .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned())));
+        assert!(
+            value["plugin"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned()))
+        );
     }
 
     #[test]
@@ -1917,11 +1918,7 @@ mod tests {
     #[test]
     fn opencode_remove_rejects_drifted_clumsies_entry() {
         let rendered = render_opencode_config(None, "/tmp/clumsies").unwrap();
-        let mutated = render_opencode_config(
-            Some(&rendered),
-            "/tmp/some-other-helper",
-        )
-        .unwrap();
+        let mutated = render_opencode_config(Some(&rendered), "/tmp/some-other-helper").unwrap();
         let error = remove_opencode_config(&mutated, "/tmp/clumsies").unwrap_err();
         assert!(matches!(error, DaemonError::State { .. }));
     }
@@ -1929,9 +1926,11 @@ mod tests {
     #[test]
     fn opencode_plugin_template_injects_helper_binary() {
         let rendered = render_opencode_plugin("/tmp/Clumsies App/bin/clumsies");
-        assert!(rendered.contains(
-            "return process.env.CLUMSIES_BINARY || \"/tmp/Clumsies App/bin/clumsies\""
-        ));
+        assert!(
+            rendered.contains(
+                "return process.env.CLUMSIES_BINARY || \"/tmp/Clumsies App/bin/clumsies\""
+            )
+        );
     }
 
     #[test]
@@ -1947,8 +1946,7 @@ mod tests {
         )
         .unwrap();
         assert!(changes.iter().any(|change| {
-            change.path.ends_with("opencode.json")
-                && change.kind == ManagedFileKind::OpencodeConfig
+            change.path.ends_with("opencode.json") && change.kind == ManagedFileKind::OpencodeConfig
         }));
         assert!(changes.iter().any(|change| {
             change.path.ends_with(".opencode/plugins/clumsies.ts")
@@ -1972,11 +1970,16 @@ mod tests {
 
         let config_path = workspace.path().join("opencode.json");
         let config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-        assert_eq!(config["mcp"]["clumsies"]["command"][0], "/tmp/clumsies-managed/bin/clumsies");
-        assert!(config["plugin"]
-            .as_array()
-            .unwrap()
-            .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned())));
+        assert_eq!(
+            config["mcp"]["clumsies"]["command"][0],
+            "/tmp/clumsies-managed/bin/clumsies"
+        );
+        assert!(
+            config["plugin"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("./.opencode/plugins/clumsies.ts".to_owned()))
+        );
         assert!(
             workspace
                 .path()
@@ -1988,6 +1991,11 @@ mod tests {
         let removals = remove_plan(&manifest).unwrap();
         apply_changes(&removals).unwrap();
         assert!(!config_path.exists());
-        assert!(!workspace.path().join(".opencode/plugins/clumsies.ts").exists());
+        assert!(
+            !workspace
+                .path()
+                .join(".opencode/plugins/clumsies.ts")
+                .exists()
+        );
     }
 }
