@@ -99,14 +99,15 @@ export const ClumsiesOpencode: Plugin = async (input) => {
      * LLM call. This is our UserPromptSubmit equivalent: it both records the
      * root run start and captures the run context for injection.
      */
-    "chat.message": async (chatInput) => {
-      if (!chatInput.messageID) return
+    "chat.message": async (chatInput, output) => {
+      const messageID = chatInput.messageID ?? output.message?.id
+      if (!messageID) return
       const state = sessionState(chatInput.sessionID)
-      state.roles.set(chatInput.messageID, "user")
+      state.roles.set(messageID, "user")
       const stdout = await forward(input.$, cwd, {
         hook_event_name: "UserPromptSubmit",
         session_id: chatInput.sessionID,
-        message_id: chatInput.messageID,
+        message_id: messageID,
       })
       state.systemContext = extractAdditionalContext(stdout ?? "")
     },
