@@ -514,6 +514,9 @@ struct IssueDetailView: View {
         Group {
             if let issue {
                 issueContent(issue)
+                    .task(id: issueId) {
+                        await model.loadDetail(issue)
+                    }
             } else {
                 ContentUnavailableView {
                     Label("Issue Unavailable", systemImage: "doc.text.magnifyingglass")
@@ -560,6 +563,8 @@ struct IssueDetailView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
+
+                    DetailMetadataSection(issue: issue, detail: model.detail(for: issue))
                 }
                 .frame(
                     maxWidth: DocumentContentMetrics.maximumWidth,
@@ -1236,5 +1241,60 @@ private struct VerificationProtocolSection: View {
         case .humanRequired: "A human must verify before closure."
         case .mixed: "Agent and human verification required."
         }
+    }
+}
+
+private struct DetailMetadataSection: View {
+    let issue: IssueBoardCard
+    let detail: IssueDetailResponse?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(issue.boardState.iconColor)
+                Text(issue.issueKey)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+            }
+
+            let acceptanceCriteria = detail?.acceptanceCriteria ?? []
+            if !acceptanceCriteria.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Acceptance Criteria")
+                        .font(.subheadline.weight(.semibold))
+                    ForEach(Array(acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
+                        Label(criteria, systemImage: "checkmark.square")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            IssueTimingSummary(issue: issue)
+
+            let externalReferences = IssueExternalReferencePresentation.cardPresentation(
+                for: issue.externalReferences
+            )
+            if !externalReferences.items.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("References")
+                        .font(.subheadline.weight(.semibold))
+                    IssueExternalReferencesSummary(presentation: externalReferences)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
     }
 }
