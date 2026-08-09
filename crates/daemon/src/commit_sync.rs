@@ -1333,7 +1333,7 @@ fn ensure_generation(
 
     match std::fs::rename(&temporary_root, &final_root) {
         Ok(()) => Ok(final_root),
-        Err(error) if final_root.exists() => {
+        Err(_error) if final_root.exists() => {
             let _ = std::fs::remove_dir_all(&temporary_root);
             verify_generation_marker(&final_root, marker)?;
             Ok(final_root)
