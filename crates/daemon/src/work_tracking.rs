@@ -415,7 +415,37 @@ pub struct RequestIssueClosureRequest {
     pub expected_revision: Option<i64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationLevel {
+    #[default]
+    AgentSelf,
+    HumanRequired,
+    Mixed,
+}
+
+impl VerificationLevel {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentSelf => "agent_self",
+            Self::HumanRequired => "human_required",
+            Self::Mixed => "mixed",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, DaemonError> {
+        match value {
+            "agent_self" => Ok(Self::AgentSelf),
+            "human_required" => Ok(Self::HumanRequired),
+            "mixed" => Ok(Self::Mixed),
+            _ => Err(DaemonError::InvalidConfig(format!(
+                "unknown Issue verification level {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CreateIssueRequest {
     pub project_id: String,
     pub title: String,
@@ -428,9 +458,13 @@ pub struct CreateIssueRequest {
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub blocking_facts: Vec<IssueBlockingFact>,
+    #[serde(default)]
+    pub verification_level: VerificationLevel,
+    #[serde(default)]
+    pub verification_steps: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct UpdateIssueRequest {
     pub project_id: String,
     pub issue_key: String,
@@ -441,6 +475,8 @@ pub struct UpdateIssueRequest {
     pub external_references: Option<Vec<IssueExternalReference>>,
     pub dependencies: Option<Vec<String>>,
     pub blocking_facts: Option<Vec<IssueBlockingFact>>,
+    pub verification_level: Option<VerificationLevel>,
+    pub verification_steps: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -558,6 +594,8 @@ pub(crate) struct NativeIssue {
     pub(crate) updated_at: String,
     pub(crate) closed_at: Option<String>,
     pub(crate) archived_at: Option<String>,
+    pub(crate) verification_level: VerificationLevel,
+    pub(crate) verification_steps: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -592,6 +630,8 @@ pub struct IssueBoardCard {
     pub blocking_facts: Vec<IssueBlockingFact>,
     pub active_runs: Vec<AgentRun>,
     pub latest_run: Option<AgentRun>,
+    pub verification_level: VerificationLevel,
+    pub verification_steps: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -719,6 +759,8 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
             changed_by_run_id TEXT REFERENCES agent_runs(run_id),
             closure_summary TEXT,
+            verification_level TEXT NOT NULL DEFAULT 'agent_self' CHECK (verification_level IN ('agent_self', 'human_required', 'mixed')),
+            verification_steps_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             started_at TEXT,
             updated_at TEXT NOT NULL,
@@ -1316,14 +1358,17 @@ pub(crate) async fn create_issue(
     let issue_id = format!("issue_{}", Uuid::new_v4().simple());
     let criteria_json = serde_json::to_string(&request.acceptance_criteria)?;
     let external_references_json = serde_json::to_string(&external_references)?;
+    let verification_steps_json = serde_json::to_string(&request.verification_steps)?;
     sqlx::query(
         "INSERT INTO native_issues (
             issue_id, project_id, issue_number, title, description,
             acceptance_criteria_json, external_references_json,
             status, revision, changed_by_run_id, closure_summary,
+            verification_level, verification_steps_json,
             created_at, started_at, updated_at, closed_at, archived_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7,
-                   'todo', 1, NULL, NULL, $8, NULL, $8, NULL, NULL)",
+                   'todo', 1, NULL, NULL, $8, $9,
+                   $10, NULL, $10, NULL, NULL)",
     )
     .bind(&issue_id)
     .bind(&request.project_id)
@@ -1332,6 +1377,8 @@ pub(crate) async fn create_issue(
     .bind(request.description.trim())
     .bind(criteria_json)
     .bind(external_references_json)
+    .bind(request.verification_level.as_str())
+    .bind(verification_steps_json)
     .bind(&now)
     .execute(&mut *tx)
     .await?;
@@ -1424,14 +1471,23 @@ pub(crate) async fn update_issue(
         .unwrap_or(&current.external_references);
     let dependencies = dependencies.unwrap_or_else(|| current.dependencies.clone());
     let blocking_facts = blocking_facts.unwrap_or_else(|| current.blocking_facts.clone());
+    let verification_level = request
+        .verification_level
+        .unwrap_or(current.verification_level);
+    let verification_steps = request
+        .verification_steps
+        .as_ref()
+        .unwrap_or(&current.verification_steps);
     let criteria_json = serde_json::to_string(criteria)?;
     let external_references_json = serde_json::to_string(external_references)?;
+    let verification_steps_json = serde_json::to_string(verification_steps)?;
     let (now, _) = db_clock(&mut tx).await?;
     let revision = current.revision + 1;
     sqlx::query(
         "UPDATE native_issues
          SET title = $3, description = $4, acceptance_criteria_json = $5,
-             external_references_json = $6, revision = $7, updated_at = $8
+             external_references_json = $6, revision = $7, updated_at = $8,
+             verification_level = $9, verification_steps_json = $10
          WHERE project_id = $1 AND issue_number = $2",
     )
     .bind(&request.project_id)
@@ -1442,6 +1498,8 @@ pub(crate) async fn update_issue(
     .bind(external_references_json)
     .bind(revision)
     .bind(&now)
+    .bind(verification_level.as_str())
+    .bind(verification_steps_json)
     .execute(&mut *tx)
     .await?;
     if request.dependencies.is_some() {
@@ -1924,6 +1982,8 @@ fn native_issue_card(
         blocking_facts: issue.blocking_facts,
         active_runs: projection.active_runs,
         latest_run: projection.latest_run,
+        verification_level: issue.verification_level,
+        verification_steps: issue.verification_steps,
     }
 }
 
@@ -1935,6 +1995,7 @@ async fn load_native_issues(
         "SELECT issue_id, project_id, issue_number, title, description,
                 acceptance_criteria_json, external_references_json,
                 status, revision, changed_by_run_id, closure_summary,
+                verification_level, verification_steps_json,
                 created_at, started_at, updated_at, closed_at, archived_at
          FROM native_issues
          WHERE project_id = $1 AND archived_at IS NULL
@@ -2047,6 +2108,7 @@ async fn load_native_issue_tx(
         "SELECT issue_id, project_id, issue_number, title, description,
                 acceptance_criteria_json, external_references_json,
                 status, revision, changed_by_run_id, closure_summary,
+                verification_level, verification_steps_json,
                 created_at, started_at, updated_at, closed_at, archived_at
          FROM native_issues WHERE project_id = $1 AND issue_number = $2",
     )
@@ -2090,6 +2152,8 @@ fn native_issue_from_row(row: &SqliteRow) -> Result<NativeIssue, DaemonError> {
     let criteria_json: String = row.try_get("acceptance_criteria_json")?;
     let external_references_json: String = row.try_get("external_references_json")?;
     let status: String = row.try_get("status")?;
+    let verification_level: String = row.try_get("verification_level")?;
+    let verification_steps_json: String = row.try_get("verification_steps_json")?;
     Ok(NativeIssue {
         issue_id: row.try_get("issue_id")?,
         project_id: row.try_get("project_id")?,
@@ -2111,6 +2175,9 @@ fn native_issue_from_row(row: &SqliteRow) -> Result<NativeIssue, DaemonError> {
         updated_at: row.try_get("updated_at")?,
         closed_at: row.try_get("closed_at")?,
         archived_at: row.try_get("archived_at")?,
+        verification_level: VerificationLevel::from_db(&verification_level)?,
+        verification_steps: serde_json::from_str(&verification_steps_json)
+            .map_err(|error| corrupt_run(format!("invalid Issue verification steps: {error}")))?,
     })
 }
 
@@ -2186,6 +2253,8 @@ fn validate_issue_update(request: &UpdateIssueRequest) -> Result<(), DaemonError
         && request.external_references.is_none()
         && request.dependencies.is_none()
         && request.blocking_facts.is_none()
+        && request.verification_level.is_none()
+        && request.verification_steps.is_none()
     {
         return Err(DaemonError::InvalidRequest(
             "update must provide at least one semantic field".to_owned(),
@@ -3628,6 +3697,8 @@ impl ParsedIssue {
             blocking_facts: Vec::new(),
             active_runs: projection.active_runs,
             latest_run: projection.latest_run,
+            verification_level: VerificationLevel::AgentSelf,
+            verification_steps: Vec::new(),
         }
     }
 }
@@ -4337,6 +4408,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: Vec::new(),
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4363,6 +4436,8 @@ mod tests {
                 external_references: None,
                 dependencies: None,
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4402,6 +4477,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: Vec::new(),
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4433,6 +4510,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issue_verification_level_and_steps_round_trip() {
+        let pool = run_pool().await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Verification protocol".to_owned(),
+                description: "Needs human verification.".to_owned(),
+                acceptance_criteria: vec![],
+                external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::HumanRequired,
+                verification_steps: vec![
+                    "Open Settings > Coding Agents".to_owned(),
+                    "Toggle opencode and confirm install".to_owned(),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+
+        let card = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(card[0].verification_level, VerificationLevel::HumanRequired);
+        assert_eq!(card[0].verification_steps.len(), 2);
+
+        let updated = update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: created.issue_key,
+                expected_revision: created.revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: None,
+                blocking_facts: None,
+                verification_level: Some(VerificationLevel::AgentSelf),
+                verification_steps: Some(vec![]),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.board_state, IssueBoardState::Todo);
+
+        let card = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(card[0].verification_level, VerificationLevel::AgentSelf);
+        assert!(card[0].verification_steps.is_empty());
+    }
+
+    #[tokio::test]
     async fn native_issue_external_references_round_trip_normalize_and_clear() {
         let pool = run_pool().await;
         let issue_url = "https://github.com/acme/widgets/issues/17?view=full#discussion";
@@ -4454,6 +4599,8 @@ mod tests {
                 ],
                 dependencies: Vec::new(),
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4502,6 +4649,8 @@ mod tests {
                 external_references: None,
                 dependencies: None,
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4533,6 +4682,8 @@ mod tests {
                 external_references: Some(Vec::new()),
                 dependencies: None,
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4628,6 +4779,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: vec!["ISSUE-003".to_owned(), "ISSUE-004".to_owned()],
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4709,6 +4862,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: vec!["ISSUE-007".to_owned()],
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4725,6 +4880,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: vec!["ISSUE-003".to_owned(), "ISSUE-003".to_owned()],
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4741,6 +4898,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: vec!["ISSUE-003".to_owned()],
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4759,6 +4918,8 @@ mod tests {
                 external_references: None,
                 dependencies: Some(vec!["ISSUE-001".to_owned()]),
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4777,6 +4938,8 @@ mod tests {
                 external_references: None,
                 dependencies: Some(vec!["ISSUE-001".to_owned()]),
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4795,6 +4958,8 @@ mod tests {
                 external_references: None,
                 dependencies: Some(vec!["ISSUE-003".to_owned(), "ISSUE-004".to_owned()]),
                 blocking_facts: None,
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4839,6 +5004,8 @@ mod tests {
                     "Zed does not provide lifecycle hooks yet",
                     false,
                 )],
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await
@@ -4880,6 +5047,8 @@ mod tests {
                     "Zed now provides lifecycle hooks",
                     true,
                 )]),
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4910,6 +5079,8 @@ mod tests {
                 external_references: None,
                 dependencies: None,
                 blocking_facts: Some(Vec::new()),
+                verification_level: None,
+                verification_steps: None,
             },
         )
         .await
@@ -4941,6 +5112,8 @@ mod tests {
                 external_references: Vec::new(),
                 dependencies: vec!["ISSUE-003".to_owned()],
                 blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
             },
         )
         .await

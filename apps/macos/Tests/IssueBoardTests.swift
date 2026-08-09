@@ -507,7 +507,9 @@ final class IssueBoardModelTests: XCTestCase {
                     ],
                     blockingFacts: [],
                     activeRuns: [],
-                    latestRun: nil
+                    latestRun: nil,
+                    verificationLevel: .agentSelf,
+                    verificationSteps: []
                 ),
                 unblockedIssue,
             ],
@@ -725,7 +727,9 @@ final class IssueBoardModelTests: XCTestCase {
             dependencies: [],
             blockingFacts: [],
             activeRuns: [run],
-            latestRun: run
+            latestRun: run,
+            verificationLevel: .agentSelf,
+            verificationSteps: []
         )
     }
 }

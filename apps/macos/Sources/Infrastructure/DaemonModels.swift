@@ -737,6 +737,14 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let blockingFacts: [IssueBlockingFact]
     let activeRuns: [AgentRun]
     let latestRun: AgentRun?
+    let verificationLevel: VerificationLevel
+    let verificationSteps: [String]
+}
+
+enum VerificationLevel: String, Codable, Hashable, Sendable {
+    case agentSelf = "agent_self"
+    case humanRequired = "human_required"
+    case mixed
 }
 
 extension IssueBoardCard {
@@ -771,6 +779,8 @@ extension IssueBoardCard {
         case blockingFacts
         case activeRuns
         case latestRun
+        case verificationLevel
+        case verificationSteps
     }
 
     init(from decoder: Decoder) throws {
@@ -817,6 +827,14 @@ extension IssueBoardCard {
         ) ?? []
         activeRuns = try container.decode([AgentRun].self, forKey: .activeRuns)
         latestRun = try container.decodeIfPresent(AgentRun.self, forKey: .latestRun)
+        verificationLevel = try container.decodeIfPresent(
+            VerificationLevel.self,
+            forKey: .verificationLevel
+        ) ?? .agentSelf
+        verificationSteps = try container.decodeIfPresent(
+            [String].self,
+            forKey: .verificationSteps
+        ) ?? []
     }
 }
 
