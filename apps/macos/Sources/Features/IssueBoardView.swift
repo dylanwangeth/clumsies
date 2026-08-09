@@ -541,6 +541,10 @@ struct IssueDetailView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+
+                    if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
+                        VerificationProtocolSection(issue: issue)
+                    }
                 }
                 .frame(
                     maxWidth: DocumentContentMetrics.maximumWidth,
@@ -1158,5 +1162,61 @@ private extension AgentRun {
             details.append("Parent: \(parentRunId)")
         }
         return details.joined(separator: " · ")
+    }
+}
+
+private struct VerificationProtocolSection: View {
+    let issue: IssueBoardCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text("Verification")
+                    .font(.subheadline.weight(.semibold))
+            } icon: {
+                Image(systemName: verificationSymbol)
+                    .foregroundStyle(verificationColor)
+            }
+
+            Text(verificationTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !issue.verificationSteps.isEmpty {
+                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
+                    Text("\(index + 1). \(step)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var verificationSymbol: String {
+        switch issue.verificationLevel {
+        case .agentSelf: "checkmark.circle"
+        case .humanRequired: "person.crop.circle.badge.exclamationmark"
+        case .mixed: "checkmark.circle.badge.person.crop"
+        }
+    }
+
+    private var verificationColor: Color {
+        switch issue.verificationLevel {
+        case .agentSelf: .green
+        case .humanRequired: .orange
+        case .mixed: .blue
+        }
+    }
+
+    private var verificationTitle: String {
+        switch issue.verificationLevel {
+        case .agentSelf: "Agent verification is sufficient."
+        case .humanRequired: "A human must verify before closure."
+        case .mixed: "Agent and human verification required."
+        }
     }
 }

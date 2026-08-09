@@ -78,8 +78,8 @@ const issue_schema =
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
     "\"list\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}," ++
     "\"get\":{\"type\":\"object\",\"description\":\"Fetch a single Issue by exactly one of: issue_id (globally unique, copied from Kanban) or issue_key (stable per-project number, e.g. ISSUE-038).\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\",\"description\":\"Stable per-project Issue number, e.g. ISSUE-038.\"}},\"oneOf\":[{\"required\":[\"issue_id\"]},{\"required\":[\"issue_key\"]}],\"additionalProperties\":false}," ++
-    "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
-    "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
+    "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"verification_level\":{\"type\":\"string\",\"enum\":[\"agent_self\",\"human_required\",\"mixed\"],\"description\":\"How this Issue should be verified: agent_self (agent tests are enough), human_required (a human must verify per the steps), mixed (both).\"},\"verification_steps\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000},\"description\":\"Human verification protocol: concrete steps a human follows to accept or reject this Issue at closure.\"},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
+    "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"verification_level\":{\"type\":\"string\",\"enum\":[\"agent_self\",\"human_required\",\"mixed\"]},\"verification_steps\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
     "\"begin_work\":{\"type\":\"object\",\"description\":\"Call this first before starting work on any Issue. Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision (the AgentRun revision) are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision, not the Issue state revision. With a hook-issued run use the run context revision; omit for a manual run.\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
     "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. With run_id, expected_revision (the AgentRun revision from begin_work, not the Issue state revision) is required. Without run_id, issue_key is required and the daemon verifies no active AgentRun holds the Issue before issuing a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision (run.revision from the begin_work response), not the Issue state revision.\"}},\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
@@ -373,7 +373,7 @@ fn issueOpName(op: IssueOp) []const u8 {
 }
 
 fn validateIssueCreate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts" }, "create")) |result| return result;
+    if (try rejectUnexpectedFields(allocator, args, &.{ "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts", "verification_level", "verification_steps" }, "create")) |result| return result;
     const title = requiredString(args, "title") orelse
         return try tool_result.buildErrorResult(allocator, "title is required and must be a string");
     const description = requiredString(args, "description") orelse
@@ -384,11 +384,13 @@ fn validateIssueCreate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !
     if (try validateIssueExternalReferences(allocator, args.get("external_references"))) |result| return result;
     if (try validateIssueDependencies(allocator, args.get("dependencies"))) |result| return result;
     if (try validateIssueBlockingFacts(allocator, args.get("blocking_facts"))) |result| return result;
+    if (try validateVerificationLevel(allocator, args.get("verification_level"))) |result| return result;
+    if (try validateIssueStringArray(allocator, args.get("verification_steps"), 64, 2000, "verification_steps")) |result| return result;
     return null;
 }
 
 fn validateIssueUpdate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "issue_key", "expected_revision", "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts" }, "update")) |result| return result;
+    if (try rejectUnexpectedFields(allocator, args, &.{ "issue_key", "expected_revision", "title", "description", "acceptance_criteria", "external_references", "dependencies", "blocking_facts", "verification_level", "verification_steps" }, "update")) |result| return result;
     const issue_key = requiredString(args, "issue_key") orelse
         return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
     if (!isIssueKey(issue_key)) return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
@@ -400,6 +402,25 @@ fn validateIssueUpdate(allocator: std.mem.Allocator, args: std.json.ObjectMap) !
     if (try validateIssueExternalReferences(allocator, args.get("external_references"))) |result| return result;
     if (try validateIssueDependencies(allocator, args.get("dependencies"))) |result| return result;
     if (try validateIssueBlockingFacts(allocator, args.get("blocking_facts"))) |result| return result;
+    if (try validateVerificationLevel(allocator, args.get("verification_level"))) |result| return result;
+    if (try validateIssueStringArray(allocator, args.get("verification_steps"), 64, 2000, "verification_steps")) |result| return result;
+    return null;
+}
+
+fn validateVerificationLevel(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) !?[]u8 {
+    const level = switch (value orelse return null) {
+        .string => |string| string,
+        else => return try tool_result.buildErrorResult(allocator, "verification_level must be a string"),
+    };
+    if (!std.mem.eql(u8, level, "agent_self") and
+        !std.mem.eql(u8, level, "human_required") and
+        !std.mem.eql(u8, level, "mixed"))
+    {
+        return try tool_result.buildErrorResult(allocator, "verification_level must be 'agent_self', 'human_required', or 'mixed'");
+    }
     return null;
 }
 

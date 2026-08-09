@@ -117,6 +117,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_30_to_31(pool).await?;
         existing_schema_version = 31;
     }
+    if existing_schema_version == 31 {
+        migrate_local_schema_31_to_32(pool).await?;
+        existing_schema_version = 32;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -622,6 +626,38 @@ pub(crate) async fn migrate_local_schema_30_to_31(pool: &SqlitePool) -> Result<(
         sqlx::query(statement).execute(&mut *tx).await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// Add the Issue verification protocol columns to native_issues.
+pub(crate) async fn migrate_local_schema_31_to_32(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    let columns = sqlx::query("PRAGMA table_info(native_issues)")
+        .fetch_all(&mut *connection)
+        .await?;
+    let has_verification_level = columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "verification_level");
+    let has_verification_steps = columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "verification_steps_json");
+    if !has_verification_level {
+        sqlx::query(
+            "ALTER TABLE native_issues
+             ADD COLUMN verification_level TEXT NOT NULL DEFAULT 'agent_self'
+             CHECK (verification_level IN ('agent_self', 'human_required', 'mixed'))",
+        )
+        .execute(&mut *connection)
+        .await?;
+    }
+    if !has_verification_steps {
+        sqlx::query(
+            "ALTER TABLE native_issues
+             ADD COLUMN verification_steps_json TEXT NOT NULL DEFAULT '[]'",
+        )
+        .execute(&mut *connection)
+        .await?;
+    }
     Ok(())
 }
 
