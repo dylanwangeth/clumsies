@@ -667,7 +667,7 @@ private struct IssueBoardColumn: View {
                             Divider()
 
                             switch issue.boardState {
-                            case .todo, .inProgress:
+                            case .todo, .inProgress, .paused:
                                 deleteButton(issue)
                             case .closureRequested:
                                 Button("Approve Closure", systemImage: "checkmark.circle") {
@@ -889,7 +889,7 @@ private struct IssueTimingSummary: View {
         switch issue.boardState {
         case .todo:
             values = [(issue.createdAt, "Created", "calendar.badge.plus")]
-        case .inProgress, .closureRequested:
+        case .inProgress, .paused, .closureRequested:
             values = [(issue.startedAt, "Opened", "play.circle")]
         case .done:
             values = [
@@ -1070,6 +1070,7 @@ extension IssueBoardState {
         switch self {
         case .todo: "Todo"
         case .inProgress: "In Progress"
+        case .paused: "Paused"
         case .closureRequested: "Closure Requested"
         case .done: "Done"
         }
@@ -1079,6 +1080,7 @@ extension IssueBoardState {
         switch self {
         case .todo: "circle"
         case .inProgress: "bolt.circle"
+        case .paused: "pause.circle"
         case .closureRequested: "checkmark.circle"
         case .done: "checkmark.circle.fill"
         }
@@ -1087,6 +1089,7 @@ extension IssueBoardState {
     var iconColor: Color {
         switch self {
         case .inProgress: .accentColor
+        case .paused: .orange
         case .done: .green
         case .todo, .closureRequested: .secondary
         }

@@ -362,6 +362,7 @@ pub fn startIssueWorkOperation(
     run_id: ?[]const u8,
     issue_key: []const u8,
     expected_revision: ?i64,
+    session_id: ?[]const u8,
 ) !OperationResult {
     const request_json = try startIssueWorkRequestJsonAlloc(
         allocator,
@@ -369,6 +370,7 @@ pub fn startIssueWorkOperation(
         run_id,
         issue_key,
         expected_revision,
+        session_id,
     );
     defer allocator.free(request_json);
     const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
@@ -382,12 +384,14 @@ pub fn startIssueWorkRequestJsonAlloc(
     run_id: ?[]const u8,
     issue_key: []const u8,
     expected_revision: ?i64,
+    session_id: ?[]const u8,
 ) ![]u8 {
     return requestWithPayloadJsonAlloc(allocator, "start_issue_work", .{
         .project_id = project_id,
         .run_id = run_id,
         .issue_key = issue_key,
         .expected_revision = expected_revision,
+        .session_id = session_id,
     });
 }
 
@@ -428,6 +432,42 @@ pub fn requestIssueClosureRequestJsonAlloc(
         .summary = summary,
         .expected_revision = expected_revision,
     });
+}
+
+pub fn pauseIssueOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    issue_key: []const u8,
+) !OperationResult {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "pause_issue", .{
+        .project_id = project_id,
+        .run_id = run_id,
+        .issue_key = issue_key,
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
+pub fn resumeIssueOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    run_id: []const u8,
+    issue_key: []const u8,
+    takeover: bool,
+) !OperationResult {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "resume_issue", .{
+        .project_id = project_id,
+        .run_id = run_id,
+        .issue_key = issue_key,
+        .takeover = takeover,
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
 }
 
 pub fn callEmpty(allocator: std.mem.Allocator, service_name: []const u8, method: []const u8) ![]u8 {
@@ -810,16 +850,16 @@ test "agent run request builders preserve the daemon wire contract" {
         \\{"method":"get_issue","payload":{"issue_id":"issue_0123456789abcdef0123456789abcdef"}}
     , get);
 
-    const start = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", "ISSUE-003", 4);
+    const start = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", "ISSUE-003", 4, null);
     defer std.testing.allocator.free(start);
     try std.testing.expectEqualStrings(
-        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":4}}
+        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":"arun_1","issue_key":"ISSUE-003","expected_revision":4,"session_id":null}}
     , start);
 
-    const start_without_run = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", null, "ISSUE-003", null);
+    const start_without_run = try startIssueWorkRequestJsonAlloc(std.testing.allocator, "prj_test", null, "ISSUE-003", null, null);
     defer std.testing.allocator.free(start_without_run);
     try std.testing.expectEqualStrings(
-        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":null,"issue_key":"ISSUE-003","expected_revision":null}}
+        \\{"method":"start_issue_work","payload":{"project_id":"prj_test","run_id":null,"issue_key":"ISSUE-003","expected_revision":null,"session_id":null}}
     , start_without_run);
 
     const request_closure = try requestIssueClosureRequestJsonAlloc(std.testing.allocator, "prj_test", "arun_1", null, "Acceptance criteria are satisfied", 5);

@@ -121,6 +121,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_31_to_32(pool).await?;
         existing_schema_version = 32;
     }
+    if existing_schema_version == 32 {
+        migrate_local_schema_32_to_33(pool).await?;
+        existing_schema_version = 33;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -658,6 +662,85 @@ pub(crate) async fn migrate_local_schema_31_to_32(pool: &SqlitePool) -> Result<(
         .execute(&mut *connection)
         .await?;
     }
+    Ok(())
+}
+
+/// Add the paused board state to the native_issues.status and
+/// issue_workflow_states.open_state CHECK constraints. SQLite cannot alter a
+/// CHECK in place, so both tables are rebuilt in a single FK-safe
+/// transaction. project_bindings rows are preserved; native_issues is a
+/// child of agent_runs via changed_by_run_id (FK kept, rows copied).
+pub(crate) async fn migrate_local_schema_32_to_33(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    for statement in [
+        // Rebuild native_issues with the widened status CHECK.
+        "CREATE TABLE native_issues_v33 (
+            issue_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+            external_references_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK (status IN (
+                'todo', 'in_progress', 'paused', 'closure_requested', 'done'
+            )),
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
+            closure_summary TEXT,
+            verification_level TEXT NOT NULL DEFAULT 'agent_self' CHECK (verification_level IN ('agent_self', 'human_required', 'mixed')),
+            verification_steps_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            archived_at TEXT,
+            UNIQUE (project_id, issue_number)
+        )",
+        "INSERT INTO native_issues_v33 (
+            issue_id, project_id, issue_number, title, description,
+            acceptance_criteria_json, external_references_json, status, revision,
+            changed_by_run_id, closure_summary, verification_level, verification_steps_json,
+            created_at, started_at, updated_at, closed_at, archived_at
+         )
+         SELECT issue_id, project_id, issue_number, title, description,
+                acceptance_criteria_json, external_references_json, status, revision,
+                changed_by_run_id, closure_summary, verification_level, verification_steps_json,
+                created_at, started_at, updated_at, closed_at, archived_at
+         FROM native_issues",
+        "DROP TABLE native_issues",
+        "ALTER TABLE native_issues_v33 RENAME TO native_issues",
+        "CREATE INDEX idx_native_issues_project_status
+         ON native_issues (project_id, status, issue_number)",
+        // Rebuild issue_workflow_states with the widened open_state CHECK.
+        "CREATE TABLE issue_workflow_states_v33 (
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number > 0),
+            open_state TEXT NOT NULL CHECK (open_state IN (
+                'todo', 'in_progress', 'paused', 'closure_requested'
+            )),
+            observed_lifecycle TEXT NOT NULL CHECK (observed_lifecycle IN ('open', 'closed')),
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
+            summary TEXT,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (project_id, issue_number)
+        )",
+        "INSERT INTO issue_workflow_states_v33 (
+            project_id, issue_number, open_state, observed_lifecycle, revision,
+            changed_by_run_id, summary, updated_at
+         )
+         SELECT project_id, issue_number, open_state, observed_lifecycle, revision,
+                changed_by_run_id, summary, updated_at
+         FROM issue_workflow_states",
+        "DROP TABLE issue_workflow_states",
+        "ALTER TABLE issue_workflow_states_v33 RENAME TO issue_workflow_states",
+        "CREATE INDEX idx_issue_workflow_states_project_state
+         ON issue_workflow_states (project_id, open_state, updated_at DESC)",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

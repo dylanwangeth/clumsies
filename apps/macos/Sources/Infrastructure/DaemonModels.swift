@@ -561,6 +561,7 @@ enum IssueLifecycle: String, Codable, CaseIterable, Hashable, Sendable {
 enum IssueBoardState: String, Codable, CaseIterable, Hashable, Sendable {
     case todo
     case inProgress = "in_progress"
+    case paused
     case closureRequested = "closure_requested"
     case done
 }

@@ -857,6 +857,26 @@ impl DaemonState {
         work_tracking::request_issue_closure(&self.inner.pool, request).await
     }
 
+    pub async fn pause_issue_work(
+        &self,
+        request: PauseIssueRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::pause_issue_work(&self.inner.pool, request).await
+    }
+
+    pub async fn resume_issue_work(
+        &self,
+        request: ResumeIssueRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::resume_issue_work(&self.inner.pool, request).await
+    }
+
     async fn ensure_native_issues_imported(&self, project_id: &str) -> Result<(), DaemonError> {
         if work_tracking::native_issue_import_completed(&self.inner.pool, project_id).await? {
             return Ok(());
@@ -1539,6 +1559,20 @@ impl DaemonIpcService {
         self.state.request_issue_closure(request).await
     }
 
+    pub async fn pause_issue_work(
+        &self,
+        request: PauseIssueRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.state.pause_issue_work(request).await
+    }
+
+    pub async fn resume_issue_work(
+        &self,
+        request: ResumeIssueRequest,
+    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
+        self.state.resume_issue_work(request).await
+    }
+
     pub async fn search_index_status(
         &self,
         request: SearchIndexProjectRequest,
@@ -1693,6 +1727,12 @@ impl DaemonIpcService {
             }
             "request_issue_closure" => {
                 dispatch_async!(self, request.payload, request_issue_closure)
+            }
+            "pause_issue" => {
+                dispatch_async!(self, request.payload, pause_issue_work)
+            }
+            "resume_issue" => {
+                dispatch_async!(self, request.payload, resume_issue_work)
             }
             "search_index_status" => {
                 dispatch_async!(self, request.payload, search_index_status)
