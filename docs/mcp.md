@@ -198,11 +198,14 @@ The input contains exactly one tagged operation under `op`:
 | Operation | Fields | Result |
 |---|---|---|
 | `list` | none | The bound Project's native Issue board and recent unlinked runs. |
-| `get` | global `issue_id` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, state, revision, and owning `project_id`. |
-| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts` | A new Todo Issue with an atomically allocated key. |
-| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts` | Updated Issue content without a status transition. |
-| `start` | `run_id`, `issue_key`, `expected_revision` | In Progress state plus the linked AgentRun. |
+| `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, state, revision, and owning `project_id`. |
+| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | A new Todo Issue with an atomically allocated key. |
+| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | Updated Issue content without a status transition. |
+| `begin_work` | `issue_key`; `run_id`, `expected_revision` for a hook-issued run, optional `session_id` for a manual run | In Progress state plus the linked AgentRun. One session holds at most one In Progress Issue. |
+| `pause_issue` | `run_id`, `issue_key` | Paused state; the pausing run may later resume. |
+| `resume_issue` | `run_id`, `issue_key`; optional `takeover` | Back to In Progress. Non-owner resume requires `takeover`. |
 | `request_closure` | `run_id`, `expected_revision`; optional `summary` | Closure Requested state plus the linked AgentRun. |
+| `export` | `issue_key` | A deterministic, portable Markdown snapshot of the Issue. |
 
 `issue_id` uses `issue_` followed by 32 lowercase hexadecimal characters and is
 globally unique. This is the value copied from Kanban and passed to `get`.
@@ -211,6 +214,9 @@ digits, with `ISSUE-000` reserved as invalid. Repeating the same start is
 idempotent; changing an existing run association to another Issue is a
 conflict. `expected_revision` is the exact positive run revision injected by
 the lifecycle hook.
+
+`verification_level` is `agent_self`, `human_required`, or `mixed`, with
+`verification_steps` listing the human verification protocol for closure.
 
 `external_references` is a bounded array of objects with `kind` (`issue` or
 `pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
@@ -271,8 +277,11 @@ tagged input and forwards the operation.
 | `store_draft_operation` | MCP `store`, Desktop, and other clients |
 | `list_issue_board` | MCP `kanban.list` and Desktop |
 | `get_issue_detail` | Native Issue detail lookup for local clients |
-| `get_issue` | MCP `kanban.get` global Issue lookup |
+| `get_issue` | MCP `kanban.get` (by `issue_id` or `issue_key`) |
+| `export_issue` | MCP `kanban.export` |
 | `start_issue_work` | MCP `kanban.begin_work` |
+| `pause_issue` | MCP `kanban.pause_issue` |
+| `resume_issue` | MCP `kanban.resume_issue` |
 | `request_issue_closure` | MCP `kanban.request_closure` |
 | `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
 | `search_index_status` | Desktop diagnostics and tests |

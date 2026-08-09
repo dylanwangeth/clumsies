@@ -12,6 +12,10 @@ export default withMermaid(
     appearance: "dark",
     cleanUrls: true,
     lastUpdated: true,
+    locales: {
+      "/": { label: "English", lang: "en-US" },
+      "/zh/": { label: "中文", lang: "zh-CN" },
+    },
     markdown: {
       config(md) {
         md.use(footnote);
