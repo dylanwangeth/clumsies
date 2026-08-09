@@ -615,16 +615,20 @@ struct WorkspaceView: View {
         switch store.selectedSection {
         case .hub, .local:
             ToolbarItem {
-                Picker("Memory Type", selection: $store.selectedKind) {
-                    ForEach(MemoryKind.allCases) { kind in
-                        Text(kind.title)
-                            .tag(kind)
+                HStack(spacing: 4) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .foregroundStyle(.secondary)
+                    Picker("Memory Type", selection: $store.selectedKind) {
+                        ForEach(MemoryKind.allCases) { kind in
+                            Label(kind.title, systemImage: kind.symbol)
+                                .tag(kind)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .help("Memory Type: \(store.selectedKind.title)")
+                    .accessibilityLabel("Memory Type")
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .help("Memory Type: \(store.selectedKind.title)")
-                .accessibilityLabel("Memory Type")
             }
 
             if store.selectedSection == .local {
