@@ -331,4 +331,9 @@ test "renderSessionStartHook generates workflow proxies for the load contract" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "ids: [\"workflow/$filename\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "retrieve") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "_agent setup") == null);
+    // Workflow rules are synced under the rule namespace; the hook must scan
+    // cache/rule/workflow, not the dead cache/workflow path.
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "CACHE_DIR/rule/workflow") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"$CACHE_DIR/workflow\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "CACHE_DIR/workflow\"") == null);
 }
