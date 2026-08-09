@@ -210,6 +210,9 @@ pub enum AgentRunHost {
     /// Reserved for a future Zed MCP-session run (no lifecycle hook surface).
     #[serde(rename = "zed")]
     Zed,
+    /// opencode plugin-hook integration (event plugin + daemon bridge).
+    #[serde(rename = "opencode")]
+    Opencode,
 }
 
 impl AgentRunHost {
@@ -219,6 +222,7 @@ impl AgentRunHost {
             Self::ClaudeCode => "claude-code",
             Self::Manual => "manual",
             Self::Zed => "zed",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -228,6 +232,7 @@ impl AgentRunHost {
             "claude-code" => Ok(Self::ClaudeCode),
             "manual" => Ok(Self::Manual),
             "zed" => Ok(Self::Zed),
+            "opencode" => Ok(Self::Opencode),
             value => Err(corrupt_run(format!("unknown AgentRun host {value}"))),
         }
     }
@@ -637,7 +642,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             run_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
             issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
-            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual')),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode')),
             host_run_key TEXT NOT NULL,
             host_session_id TEXT,
             parent_run_id TEXT REFERENCES agent_runs(run_id),

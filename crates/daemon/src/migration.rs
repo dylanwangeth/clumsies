@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Connection, Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::config::{CURRENT_LOCAL_SCHEMA_VERSION, META_MEMORY_CACHE_RESET_REQUIRED};
@@ -108,6 +108,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
     if existing_schema_version == 28 {
         migrate_local_schema_28_to_29(pool).await?;
         existing_schema_version = 29;
+    }
+    if existing_schema_version == 29 {
+        migrate_local_schema_29_to_30(pool).await?;
+        existing_schema_version = 30;
     }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
@@ -476,6 +480,87 @@ pub(crate) async fn migrate_local_schema_26_to_27(pool: &SqlitePool) -> Result<(
 
 pub(crate) async fn migrate_local_schema_28_to_29(pool: &SqlitePool) -> Result<(), DaemonError> {
     work_tracking::migrate(pool).await
+}
+
+/// Widen the agent_runs host CHECK constraint to accept the opencode plugin
+/// integration host. SQLite cannot alter a CHECK constraint in place, so the
+/// table is rebuilt following the same pattern as schema 27 to 28.
+///
+/// The rebuild drops agent_runs, which issue_workflow_states references via
+/// changed_by_run_id. sqlx enables foreign key enforcement by default, so the
+/// drop would fail; foreign keys are disabled for this connection during the
+/// rebuild only. A single dedicated connection is used because the PRAGMA is
+/// per-connection.
+pub(crate) async fn migrate_local_schema_29_to_30(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    let table_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    if table_sql
+        .as_deref()
+        .is_some_and(|sql| sql.contains("'opencode'"))
+    {
+        return Ok(());
+    }
+    if table_sql.is_none() {
+        // A library that never ran schema 28 has no agent_runs table at all;
+        // the work_tracking::migrate path already creates the widened shape.
+        return Ok(());
+    }
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let mut tx = connection.begin().await?;
+    for statement in [
+        "CREATE TABLE agent_runs_v30 (
+            run_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode')),
+            host_run_key TEXT NOT NULL,
+            host_session_id TEXT,
+            parent_run_id TEXT REFERENCES agent_runs(run_id),
+            kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+            phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+            outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+            end_reason TEXT,
+            display_label TEXT,
+            summary TEXT,
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            ended_at TEXT,
+            UNIQUE (project_id, host, host_run_key)
+        )",
+        "INSERT INTO agent_runs_v30 (
+            run_id, project_id, issue_number, host, host_run_key, host_session_id,
+            parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+            revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+         )
+         SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+         FROM agent_runs",
+        "DROP TABLE agent_runs",
+        "ALTER TABLE agent_runs_v30 RENAME TO agent_runs",
+        "CREATE INDEX idx_agent_runs_project_issue_latest
+         ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
+        "CREATE INDEX idx_agent_runs_running_lease
+         ON agent_runs (phase, lease_expires_at)",
+        "CREATE INDEX idx_agent_runs_project_session
+         ON agent_runs (project_id, host, host_session_id, phase)",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
 }
 
 pub(crate) async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(), DaemonError> {
