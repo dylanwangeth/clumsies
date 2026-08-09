@@ -915,14 +915,15 @@ final class IssueBoardLayoutTests: XCTestCase {
         )
     }
 
-    func testBoardUsesTheRequiredFourColumnOrder() {
+    func testBoardUsesTheRequiredFiveColumnOrder() {
         XCTAssertEqual(
             IssueBoardState.allCases,
-            [.todo, .inProgress, .closureRequested, .done]
+            [.todo, .inProgress, .paused, .closureRequested, .done]
         )
         XCTAssertEqual(IssueBoardState.allCases.map(\.title), [
             "Todo",
             "In Progress",
+            "Paused",
             "Closure Requested",
             "Done",
         ])

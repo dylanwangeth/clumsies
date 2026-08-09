@@ -119,6 +119,6 @@ pub use work_tracking::{
     IssueBoardState, IssueDependencyState, IssueDetailRequest, IssueDetailResponse,
     IssueExternalReference, IssueExternalReferenceKind, IssueGateAction, IssueLifecycle,
     IssueMutationResponse, IssueRemovalAction, IssueRemovalResponse, IssueWorkflowMutationResponse,
-    RecordAgentRunEventRequest, RecordAgentRunEventResponse, RemoveIssueRequest,
-    RequestIssueClosureRequest, StartIssueWorkRequest, UpdateIssueRequest,
+    PauseIssueRequest, RecordAgentRunEventRequest, RecordAgentRunEventResponse, RemoveIssueRequest,
+    RequestIssueClosureRequest, ResumeIssueRequest, StartIssueWorkRequest, UpdateIssueRequest,
 };
