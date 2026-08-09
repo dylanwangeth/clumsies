@@ -200,24 +200,36 @@ impl DaemonState {
         .fetch_all(&self.inner.pool)
         .await?;
 
+        let mut candidates = vec![workspace_path.clone()];
+        // A git worktree belongs to the same repository as its main checkout,
+        // so it should resolve to the same Project. Fall back to the main
+        // repository root when the worktree path itself is not bound.
+        if let Some(main_root) = git_worktree_main_root(&workspace_path) {
+            if main_root != workspace_path {
+                candidates.push(main_root);
+            }
+        }
+
         let mut best: Option<(usize, DaemonProjectBinding)> = None;
-        for row in rows {
-            let binding = project_binding_from_row(&row)?;
-            // Stored roots were canonicalized at insert time; re-canonicalize
-            // them now so a later workspace move or symlink change (e.g. a
-            // repository migrated to an external volume) still matches.
-            let root = canonical_binding_root(&binding.workspace_root);
-            if !workspace_path.starts_with(&root) {
-                continue;
+        for candidate in &candidates {
+            for row in &rows {
+                let binding = project_binding_from_row(row)?;
+                // Stored roots were canonicalized at insert time; re-canonicalize
+                // them now so a later workspace move or symlink change (e.g. a
+                // repository migrated to an external volume) still matches.
+                let root = canonical_binding_root(&binding.workspace_root);
+                if !candidate.starts_with(&root) {
+                    continue;
+                }
+                let specificity = root.components().count();
+                if best
+                    .as_ref()
+                    .is_some_and(|(best_specificity, _)| *best_specificity >= specificity)
+                {
+                    continue;
+                }
+                best = Some((specificity, binding));
             }
-            let specificity = root.components().count();
-            if best
-                .as_ref()
-                .is_some_and(|(best_specificity, _)| *best_specificity >= specificity)
-            {
-                continue;
-            }
-            best = Some((specificity, binding));
         }
 
         best.map(|(_, binding)| binding)
