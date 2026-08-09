@@ -74,6 +74,7 @@ struct ProjectMemoryCacheSettings: View {
                     }
                     if let errorMessage {
                         Text(errorMessage)
+                            .textSelection(.enabled)
                             .foregroundStyle(.red)
                     }
 
@@ -90,6 +91,7 @@ struct ProjectMemoryCacheSettings: View {
                     ProgressView()
                 } else {
                     Text(errorMessage ?? "Storage status is unavailable.")
+                        .textSelection(.enabled)
                         .foregroundStyle(.secondary)
                 }
             } else {
