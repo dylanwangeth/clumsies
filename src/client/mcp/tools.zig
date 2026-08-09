@@ -77,7 +77,7 @@ const issue_schema =
     "\"inputSchema\":{\"type\":\"object\",\"properties\":{" ++
     "\"op\":{\"type\":\"object\",\"minProperties\":1,\"maxProperties\":1,\"properties\":{" ++
     "\"list\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}," ++
-    "\"get\":{\"type\":\"object\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"}},\"required\":[\"issue_id\"],\"additionalProperties\":false}," ++
+    "\"get\":{\"type\":\"object\",\"description\":\"Fetch a single Issue by exactly one of: issue_id (globally unique, copied from Kanban) or issue_key (stable per-project number, e.g. ISSUE-038).\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\",\"description\":\"Stable per-project Issue number, e.g. ISSUE-038.\"}},\"oneOf\":[{\"required\":[\"issue_id\"]},{\"required\":[\"issue_key\"]}],\"additionalProperties\":false}," ++
     "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
     "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
     "\"begin_work\":{\"type\":\"object\",\"description\":\"Call this first before starting work on any Issue. Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision (the AgentRun revision) are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision, not the Issue state revision. With a hook-issued run use the run context revision; omit for a manual run.\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
@@ -283,13 +283,31 @@ fn handleIssue(
             break :blk try daemon_ipc.listIssueBoardOperation(allocator, session.project_id);
         },
         .get => blk: {
-            if (try rejectUnexpectedFields(allocator, op_args, &.{"issue_id"}, "get")) |result| return result;
-            const issue_id = requiredString(op_args, "issue_id") orelse
-                return try tool_result.buildErrorResult(allocator, "issue_id is required and must be a string");
-            if (!isIssueId(issue_id)) {
-                return try tool_result.buildErrorResult(allocator, "issue_id must match issue_<32 lowercase hexadecimal characters>");
+            if (try rejectUnexpectedFields(allocator, op_args, &.{ "issue_id", "issue_key" }, "get")) |result| return result;
+            const issue_id = if (op_args.get("issue_id")) |value| switch (value) {
+                .string => |string| string,
+                else => return try tool_result.buildErrorResult(allocator, "issue_id must be a string"),
+            } else null;
+            const issue_key = if (op_args.get("issue_key")) |value| switch (value) {
+                .string => |string| string,
+                else => return try tool_result.buildErrorResult(allocator, "issue_key must be a string"),
+            } else null;
+            if (issue_id != null and issue_key != null) {
+                return try tool_result.buildErrorResult(allocator, "provide exactly one of issue_id or issue_key");
             }
-            break :blk try daemon_ipc.getIssueOperation(allocator, issue_id);
+            if (issue_id) |id| {
+                if (!isIssueId(id)) {
+                    return try tool_result.buildErrorResult(allocator, "issue_id must match issue_<32 lowercase hexadecimal characters>");
+                }
+                break :blk try daemon_ipc.getIssueOperation(allocator, id);
+            }
+            if (issue_key) |key| {
+                if (!isIssueKey(key)) {
+                    return try tool_result.buildErrorResult(allocator, "issue_key must match ISSUE-<three digits>");
+                }
+                break :blk try daemon_ipc.getIssueByKeyOperation(allocator, session.project_id, key);
+            }
+            return try tool_result.buildErrorResult(allocator, "provide exactly one of issue_id or issue_key");
         },
         .create => blk: {
             if (try validateIssueCreate(allocator, op_args)) |result| return result;
