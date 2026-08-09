@@ -3675,10 +3675,9 @@ fn parse_issue_path(path: &str) -> Option<(IssueLifecycle, &str)> {
     let rest = path.strip_prefix("issues/")?;
     let (lifecycle, filename) = if let Some(filename) = rest.strip_prefix("open/") {
         (IssueLifecycle::Open, filename)
-    } else if let Some(filename) = rest.strip_prefix("closed/") {
-        (IssueLifecycle::Closed, filename)
     } else {
-        return None;
+        let filename = rest.strip_prefix("closed/")?;
+        (IssueLifecycle::Closed, filename)
     };
     if filename.contains('/') || !filename.ends_with(".md") {
         return None;
