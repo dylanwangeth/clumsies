@@ -69,7 +69,7 @@ pub(crate) async fn execute_authenticated_server_request(
     body: Option<Vec<u8>>,
 ) -> Result<reqwest::Response, DaemonError> {
     validate_server_proxy_path(path)?;
-    let config = state.project_config();
+    let config = state.project_config_with_credentials().await;
     let access_token = config.access_token.clone().ok_or_else(|| {
         DaemonError::InvalidConfig("access_token is required for Server requests".to_owned())
     })?;

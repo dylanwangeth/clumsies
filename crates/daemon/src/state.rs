@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
@@ -12,6 +12,13 @@ use uuid::Uuid;
 use super::*;
 
 const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(10);
+const LAZY_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
+const CREDENTIAL_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+pub(crate) struct CredentialRecovery {
+    last_attempt: Option<Instant>,
+}
 
 #[derive(Clone)]
 pub struct DaemonState {
@@ -29,6 +36,7 @@ pub(crate) struct DaemonInner {
     pub(crate) sync_lock: Mutex<()>,
     pub(crate) commit_sync_running: AtomicBool,
     pub(crate) token_refresh: Mutex<()>,
+    pub(crate) credential_recovery: Mutex<CredentialRecovery>,
     pub(crate) search_models: Arc<dyn search::models::SearchModels>,
     pub(crate) search_lock: Mutex<()>,
     pub(crate) search_index_lock: Mutex<()>,
@@ -88,6 +96,7 @@ impl DaemonState {
                 sync_lock: Mutex::new(()),
                 commit_sync_running: AtomicBool::new(false),
                 token_refresh: Mutex::new(()),
+                credential_recovery: Mutex::new(CredentialRecovery::default()),
                 search_models,
                 search_lock: Mutex::new(()),
                 search_index_lock: Mutex::new(()),
@@ -120,6 +129,44 @@ impl DaemonState {
             .read()
             .expect("project config rwlock poisoned")
             .clone()
+    }
+
+    pub(crate) async fn project_config_with_credentials(&self) -> RuntimeProjectConfig {
+        let config = self.project_config();
+        if config.access_token.is_some() {
+            return config;
+        }
+        {
+            let mut recovery = self.inner.credential_recovery.lock().await;
+            if recovery
+                .last_attempt
+                .is_some_and(|attempt| attempt.elapsed() < CREDENTIAL_RECOVERY_COOLDOWN)
+            {
+                return config;
+            }
+            recovery.last_attempt = Some(Instant::now());
+        }
+        let loaded = tokio::time::timeout(
+            LAZY_CREDENTIAL_LOAD_TIMEOUT,
+            load_server_credentials(self.inner.credential_store.clone()),
+        )
+        .await;
+        let Ok(Ok(Some(credentials))) = loaded else {
+            return config;
+        };
+        if credentials.server_url != config.server_url {
+            return config;
+        }
+        let mut recovered = config;
+        recovered.access_token = Some(credentials.access_token);
+        recovered.refresh_token = credentials.refresh_token;
+        *self
+            .inner
+            .project_config
+            .write()
+            .expect("project config rwlock poisoned") = recovered.clone();
+        tracing::info!("recovered Server session from the credential store");
+        recovered
     }
 
     pub async fn replace_project_config(
@@ -1872,9 +1919,12 @@ impl DaemonIpcService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Condvar, Mutex as StdMutex};
 
     use super::*;
+    use crate::search::SearchFailure;
+    use crate::search::models::{SearchModelRuntimeStatus, SearchModels};
 
     struct BlockingCredentialStore {
         gate: Arc<(StdMutex<bool>, Condvar)>,
@@ -1930,5 +1980,166 @@ mod tests {
             STARTUP_CREDENTIAL_LOAD_TIMEOUT >= Duration::from_secs(5),
             "startup credential load timeout must tolerate slow Keychain reads"
         );
+    }
+
+    struct DeferredCredentialStore {
+        credentials: Arc<StdMutex<Option<ServerCredentials>>>,
+        load_count: Arc<AtomicUsize>,
+    }
+
+    impl DeferredCredentialStore {
+        fn new() -> Self {
+            Self {
+                credentials: Arc::new(StdMutex::new(None)),
+                load_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn set(&self, credentials: ServerCredentials) {
+            *self.credentials.lock().unwrap() = Some(credentials);
+        }
+
+        fn load_count(&self) -> usize {
+            self.load_count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CredentialStore for DeferredCredentialStore {
+        fn load(&self) -> Result<Option<ServerCredentials>, CredentialStoreError> {
+            self.load_count.fetch_add(1, Ordering::SeqCst);
+            Ok(self.credentials.lock().unwrap().clone())
+        }
+
+        fn replace(&self, _credentials: &ServerCredentials) -> Result<(), CredentialStoreError> {
+            Ok(())
+        }
+
+        fn clear(&self) -> Result<(), CredentialStoreError> {
+            *self.credentials.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    struct StubSearchModels;
+
+    impl SearchModels for StubSearchModels {
+        fn revision(&self) -> Result<String, SearchFailure> {
+            Ok("stub-models.v1".to_owned())
+        }
+
+        fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
+            Ok(text
+                .char_indices()
+                .map(|(start, character)| (start, start + character.len_utf8()))
+                .collect())
+        }
+
+        fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0]).collect())
+        }
+
+        fn embed_query(&self, _query: &str) -> Result<Vec<f32>, SearchFailure> {
+            Ok(vec![1.0, 0.0, 0.0])
+        }
+
+        fn rerank(&self, _query: &str, documents: &[String]) -> Result<Vec<f32>, SearchFailure> {
+            Ok(vec![1.0; documents.len()])
+        }
+
+        fn dimensions(&self) -> usize {
+            3
+        }
+
+        fn status(&self) -> SearchModelRuntimeStatus {
+            SearchModelRuntimeStatus::Ready
+        }
+    }
+
+    async fn unauthenticated_test_state(
+        store: Arc<DeferredCredentialStore>,
+    ) -> (tempfile::TempDir, DaemonState) {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_root(root.path().join("daemon"));
+        config.project.server_url = "https://clumsies.example.test".to_owned();
+        config.project.project_id = Some("prj_test".to_owned());
+        let state = DaemonState::initialize_with_credential_store_and_search_models(
+            config,
+            store,
+            Arc::new(StubSearchModels),
+        )
+        .await
+        .unwrap();
+        assert!(state.project_config().access_token.is_none());
+        (root, state)
+    }
+
+    #[tokio::test]
+    async fn lazy_recovery_restores_session_when_store_becomes_available() {
+        let store = Arc::new(DeferredCredentialStore::new());
+        let (_root, state) = unauthenticated_test_state(store.clone()).await;
+
+        store.set(ServerCredentials {
+            server_url: "https://clumsies.example.test".to_owned(),
+            access_token: "lazy-access".to_owned(),
+            refresh_token: Some("lazy-refresh".to_owned()),
+        });
+
+        let config = state.project_config_with_credentials().await;
+        assert_eq!(config.access_token.as_deref(), Some("lazy-access"));
+        assert_eq!(config.refresh_token.as_deref(), Some("lazy-refresh"));
+        assert_eq!(
+            state.project_config().access_token.as_deref(),
+            Some("lazy-access")
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_recovery_ignores_credentials_for_another_server() {
+        let store = Arc::new(DeferredCredentialStore::new());
+        let (_root, state) = unauthenticated_test_state(store.clone()).await;
+
+        store.set(ServerCredentials {
+            server_url: "https://other.example.test".to_owned(),
+            access_token: "foreign-access".to_owned(),
+            refresh_token: None,
+        });
+
+        let config = state.project_config_with_credentials().await;
+        assert!(config.access_token.is_none());
+        assert!(state.project_config().access_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn lazy_recovery_skips_credential_store_when_session_is_present() {
+        let store = Arc::new(DeferredCredentialStore::new());
+        let (_root, state) = unauthenticated_test_state(store.clone()).await;
+        state
+            .replace_project_config(DaemonProjectConfigUpdateRequest {
+                server_url: "https://clumsies.example.test".to_owned(),
+                project_id: Some("prj_test".to_owned()),
+                access_token: Some("existing-access".to_owned()),
+                refresh_token: Some("existing-refresh".to_owned()),
+            })
+            .await
+            .unwrap();
+        let loads_before = store.load_count();
+
+        let config = state.project_config_with_credentials().await;
+
+        assert_eq!(config.access_token.as_deref(), Some("existing-access"));
+        assert_eq!(store.load_count(), loads_before);
+    }
+
+    #[tokio::test]
+    async fn lazy_recovery_is_rate_limited_after_failed_attempt() {
+        let store = Arc::new(DeferredCredentialStore::new());
+        let (_root, state) = unauthenticated_test_state(store.clone()).await;
+
+        let first = state.project_config_with_credentials().await;
+        let second = state.project_config_with_credentials().await;
+
+        assert!(first.access_token.is_none());
+        assert!(second.access_token.is_none());
+        assert_eq!(store.load_count(), 2);
     }
 }
