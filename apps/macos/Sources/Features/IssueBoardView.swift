@@ -1096,6 +1096,7 @@ private extension AgentRunHost {
         case .claudeCode: "Claude Code"
         case .manual: "Manual"
         case .zed: "Zed"
+        case .opencode: "opencode"
         }
     }
 }
