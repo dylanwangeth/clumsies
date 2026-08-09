@@ -3152,6 +3152,137 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
 }
 
 #[tokio::test]
+async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user_config() {
+    let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let repository_root = tempfile::tempdir().unwrap();
+    let config_path = repository_root.path().join("opencode.json");
+    std::fs::write(
+        &config_path,
+        r#"{"$schema":"https://opencode.ai/config.json","model":"deepseek/deepseek-chat"}"#,
+    )
+    .unwrap();
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}");
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: config.project.server_url.clone(),
+        access_token: "test-token".to_owned(),
+        refresh_token: None,
+    }));
+    let state = common::initialize_daemon(config, credential_store).await;
+    let service = DaemonIpcService::new(state);
+    let binding = service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            project_id: "prj_opencode".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    let helper = signed_helper_binary(daemon_root.path());
+    let installed = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_opencode".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Opencode,
+            helper_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(installed.revision, 1);
+    assert!(installed
+        .managed_files
+        .iter()
+        .any(|file| file.ends_with("opencode.json")));
+    assert!(installed
+        .managed_files
+        .iter()
+        .any(|file| file.ends_with(".opencode/plugins/clumsies.ts")));
+
+    let rendered: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(rendered["model"], "deepseek/deepseek-chat");
+    assert_eq!(rendered["$schema"], "https://opencode.ai/config.json");
+    assert_eq!(rendered["mcp"]["clumsies"]["type"], "local");
+    assert!(rendered["plugin"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::Value::String(
+            "./.opencode/plugins/clumsies.ts".to_owned()
+        )));
+    assert!(
+        repository_root
+            .path()
+            .join(".opencode/plugins/clumsies.ts")
+            .is_file()
+    );
+
+    let idempotent = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_opencode".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Opencode,
+            helper_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(idempotent.revision, 1);
+    let adapters = service
+        .list_project_agent_adapters(DaemonProjectAgentAdapterListRequest {
+            project_id: "prj_opencode".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(adapters.items, vec![idempotent.clone()]);
+
+    service
+        .remove_project_agent_adapter(DaemonProjectAgentAdapterRemoveRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Opencode,
+            expected_revision: installed.revision,
+        })
+        .await
+        .unwrap();
+    let restored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(restored["model"], "deepseek/deepseek-chat");
+    assert_eq!(restored["$schema"], "https://opencode.ai/config.json");
+    assert!(restored.get("mcp").is_none());
+    assert!(restored.get("plugin").is_none());
+    assert!(
+        !repository_root
+            .path()
+            .join(".opencode/plugins/clumsies.ts")
+            .exists()
+    );
+
+    let removed = service
+        .remove_project_binding(DaemonProjectBindingRemoveRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            expected_revision: binding.revision,
+        })
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    let bindings = service
+        .list_project_bindings(DaemonProjectBindingListRequest {
+            project_id: "prj_opencode".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(bindings.items.is_empty());
+}
+
+#[tokio::test]
 async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("unbound");
