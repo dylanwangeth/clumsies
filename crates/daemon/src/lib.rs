@@ -108,7 +108,8 @@ pub use types::{
 pub(crate) use util::is_normalized_relative_path;
 use util::{
     apply_exact_text_replacements, canonical_binding_root, canonical_server_url,
-    canonical_workspace_directory, memory_kind_matches_resource, non_empty_string,
+    canonical_workspace_directory, git_worktree_main_root, memory_kind_matches_resource,
+    non_empty_string,
 };
 pub use work_tracking::{
     AgentRun, AgentRunEventSource, AgentRunEventType, AgentRunHost, AgentRunKind, AgentRunOutcome,

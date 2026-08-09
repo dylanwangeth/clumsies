@@ -138,6 +138,50 @@ pub(crate) fn validate_draft_resource_path(
 #[cfg(test)]
 mod tests {
     use super::canonical_binding_root;
+    use super::git_worktree_main_root;
+
+    #[test]
+    fn git_worktree_main_root_resolves_worktree_gitdir_reference() {
+        let root =
+            std::env::temp_dir().join(format!("clumsies-worktree-root-{}", std::process::id()));
+        let main = root.join("repo");
+        let worktrees = root.join("worktrees");
+        let wt = worktrees.join("feature");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        // Simulate a git worktree: .git is a file pointing at the main gitdir.
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}/.git/worktrees/feature\n", main.display()),
+        )
+        .unwrap();
+
+        let resolved = git_worktree_main_root(&wt).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&main).unwrap()
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn git_worktree_main_root_returns_none_without_git_file() {
+        let dir =
+            std::env::temp_dir().join(format!("clumsies-worktree-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(git_worktree_main_root(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_worktree_main_root_ignores_directory_git_entry() {
+        let dir =
+            std::env::temp_dir().join(format!("clumsies-worktree-dirgit-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        assert!(git_worktree_main_root(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
@@ -168,6 +212,44 @@ mod tests {
         let canonical = canonical_binding_root(missing.to_str().unwrap());
         assert_eq!(canonical, missing);
     }
+}
+
+/// If `path` is a git worktree (its `.git` is a file pointing at the main
+/// repository gitdir), return the main repository root. `None` when `path`
+/// has no `.git` entry, the entry is not a file, or the gitdir reference
+/// cannot be resolved to a sibling root.
+pub(crate) fn git_worktree_main_root(path: &Path) -> Option<PathBuf> {
+    let git_entry = path.join(".git");
+    let Ok(metadata) = std::fs::metadata(&git_entry) else {
+        return None;
+    };
+    if !metadata.is_file() {
+        return None;
+    }
+    let Ok(content) = std::fs::read_to_string(&git_entry) else {
+        return None;
+    };
+    let gitdir = content.trim().strip_prefix("gitdir: ")?.trim();
+    let gitdir_path = PathBuf::from(gitdir);
+    // gitdir forms:
+    //   /main/repo/.git/worktrees/<name>   -> main root = gitdir parent's parent
+    //   /main/repo/.git                    -> main root = gitdir parent
+    let root = if gitdir_path.ends_with(".git") {
+        gitdir_path.parent()?
+    } else if gitdir_path.components().count() >= 3
+        && gitdir_path.file_name().is_some_and(|name| name != ".git")
+    {
+        // .git/worktrees/<name>: parent is worktrees/, grandparent is .git/
+        let parent = gitdir_path.parent()?;
+        if parent.file_name().is_some_and(|name| name == "worktrees") {
+            parent.parent()?.parent()?
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    std::fs::canonicalize(root).ok()
 }
 
 pub(crate) fn memory_kind_matches_resource(
