@@ -509,7 +509,6 @@ pub(crate) async fn activate_memory(
 
     let result = async {
         let previous_state = activation::decode_activation_state(request.state.as_deref())?;
-        let _guard = state.inner.search_lock.lock().await;
 
         failure_stage = "effective_memory";
         let started = Instant::now();
@@ -522,30 +521,43 @@ pub(crate) async fn activate_memory(
             .map(retrieval_corpus_resource)
             .collect();
 
+        // Index ensure and search-head publication are serialized across
+        // Projects by search_index_lock, but run OUTSIDE search_lock so a
+        // slow first-time index build does not block other activates that
+        // only need to query an already-published index.
         failure_stage = "index_ensure";
         let started = Instant::now();
         let (pool, storage) = active_project_index(state, &project_id).await?;
-        let revision_id = match index::ensure_index(state, &pool, &effective).await {
-            Ok(revision_id) => revision_id,
-            Err(error) => {
-                pool.close().await;
-                return Err(error);
+        let revision_id = {
+            let _index_guard = state.inner.search_index_lock.lock().await;
+            match index::ensure_index(state, &pool, &effective).await {
+                Ok(revision_id) => revision_id,
+                Err(error) => {
+                    pool.close().await;
+                    return Err(error);
+                }
             }
         };
         completion.latencies.index_ensure_us = elapsed_us(started);
         completion.index_revision = Some(revision_id.clone());
-        publish_search_head(state, &pool, &project_id, storage.location_revision).await?;
+        {
+            let _index_guard = state.inner.search_index_lock.lock().await;
+            publish_search_head(state, &pool, &project_id, storage.location_revision).await?;
+        }
 
-        let response = query::query_index(
-            state,
-            &pool,
-            &revision_id,
-            &query,
-            previous_state,
-            &mut completion,
-            &mut failure_stage,
-        )
-        .await;
+        let response = {
+            let _guard = state.inner.search_lock.lock().await;
+            query::query_index(
+                state,
+                &pool,
+                &revision_id,
+                &query,
+                previous_state,
+                &mut completion,
+                &mut failure_stage,
+            )
+            .await
+        };
         pool.close().await;
         response
     }
@@ -2475,5 +2487,23 @@ mod tests {
         };
         let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&duplicate).unwrap());
         assert!(activation::decode_activation_state(Some(&encoded)).is_err());
+    }
+
+    #[test]
+    fn retrieval_error_maps_deadline_and_search_codes_to_stable_error_strings() {
+        let (code, _) = retrieval_error(&DaemonError::Search {
+            code: "activation_deadline".to_owned(),
+            message: "exceeded budget".to_owned(),
+        });
+        assert_eq!(code, "activation_deadline");
+
+        let (code, _) = retrieval_error(&DaemonError::Search {
+            code: "search_model_preparing".to_owned(),
+            message: "models preparing".to_owned(),
+        });
+        assert_eq!(code, "search_model_preparing");
+
+        let (code, _) = retrieval_error(&DaemonError::InvalidRequest("bad".to_owned()));
+        assert_eq!(code, "invalid_request");
     }
 }
