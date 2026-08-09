@@ -779,6 +779,39 @@ impl DaemonState {
         .await
     }
 
+    pub async fn export_issue(
+        &self,
+        request: ExportIssueRequest,
+    ) -> Result<ExportIssueResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let runs = work_tracking::load_project_runs(&self.inner.pool, &request.project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        let detail = work_tracking::load_native_issue_detail(
+            &self.inner.pool,
+            &request.project_id,
+            issue_number,
+            &runs,
+            &now,
+            &stale_before,
+        )
+        .await?;
+        Ok(ExportIssueResponse {
+            issue_key: detail.issue.issue_key.clone(),
+            filename: work_tracking::issue_export_filename(issue_number),
+            markdown: work_tracking::render_issue_markdown(
+                &detail.issue,
+                &detail.body,
+                &detail.acceptance_criteria,
+            ),
+        })
+    }
     pub async fn create_issue(
         &self,
         request: CreateIssueRequest,
@@ -1517,6 +1550,13 @@ impl DaemonIpcService {
         self.state.get_issue(request).await
     }
 
+    pub async fn export_issue(
+        &self,
+        request: ExportIssueRequest,
+    ) -> Result<ExportIssueResponse, DaemonError> {
+        self.state.export_issue(request).await
+    }
+
     pub async fn create_issue(
         &self,
         request: CreateIssueRequest,
@@ -1718,6 +1758,7 @@ impl DaemonIpcService {
             "list_issue_board" => dispatch_async!(self, request.payload, list_issue_board),
             "get_issue_detail" => dispatch_async!(self, request.payload, get_issue_detail),
             "get_issue" => dispatch_async!(self, request.payload, get_issue),
+            "export_issue" => dispatch_async!(self, request.payload, export_issue),
             "create_issue" => dispatch_async!(self, request.payload, create_issue),
             "update_issue" => dispatch_async!(self, request.payload, update_issue),
             "apply_issue_gate" => dispatch_async!(self, request.payload, apply_issue_gate),

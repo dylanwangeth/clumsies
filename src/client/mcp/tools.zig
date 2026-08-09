@@ -83,6 +83,7 @@ const issue_schema =
     "\"begin_work\":{\"type\":\"object\",\"description\":\"Call this first before starting work on any Issue. Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision (the AgentRun revision) are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run. One session holds at most one In Progress Issue: provide session_id for manual runs so the daemon can enforce it.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision, not the Issue state revision. With a hook-issued run use the run context revision; omit for a manual run.\"},\"session_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256,\"description\":\"Session identity for a manual run (hook-issued runs carry host_session_id already). Enables the one-session-one-In-Progress-issue rule.\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
     "\"pause_issue\":{\"type\":\"object\",\"description\":\"Pause an In Progress Issue held by the given run, moving it to Paused so the session can start another Issue. Only the run that holds the Issue may pause it.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"}},\"required\":[\"run_id\",\"issue_key\"],\"additionalProperties\":false}," ++
     "\"resume_issue\":{\"type\":\"object\",\"description\":\"Resume a Paused Issue to In Progress. The pausing run resumes it, or pass takeover=true to explicitly take it over with another run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"takeover\":{\"type\":\"boolean\",\"description\":\"Explicitly take over an Issue paused by another run.\"}},\"required\":[\"run_id\",\"issue_key\"],\"additionalProperties\":false}," ++
+    "\"export\":{\"type\":\"object\",\"description\":\"Export a single Issue as a stable, portable Markdown snapshot (key, status, body, acceptance criteria, closure summary, timeline). Deterministic for a given Issue state; does not create Context Drafts or live document mapping.\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
     "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. With run_id, expected_revision (the AgentRun revision from begin_work, not the Issue state revision) is required. Without run_id, issue_key is required and the daemon verifies no active AgentRun holds the Issue before issuing a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision (run.revision from the begin_work response), not the Issue state revision.\"}},\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ ",\"blockingFact\":" ++ issue_blocking_fact_definition ++ "}}}";
@@ -258,7 +259,7 @@ fn handleStore(
     return try buildDaemonOperationResult(allocator, operation);
 }
 
-const IssueOp = enum { list, get, create, update, begin_work, pause_issue, resume_issue, request_closure };
+const IssueOp = enum { list, get, create, update, begin_work, pause_issue, resume_issue, request_closure, export_issue };
 
 fn handleIssue(
     allocator: std.mem.Allocator,
@@ -273,7 +274,7 @@ fn handleIssue(
         else => return try tool_result.buildErrorResult(allocator, "op must be a JSON object"),
     };
     const op = parseIssueOp(tagged) orelse
-        return try tool_result.buildErrorResult(allocator, "op must contain exactly one of list, get, create, update, begin_work, or request_closure");
+        return try tool_result.buildErrorResult(allocator, "op must contain exactly one of list, get, create, update, begin_work, pause_issue, resume_issue, request_closure, or export");
     const op_args = switch (tagged.get(issueOpName(op)).?) {
         .object => |object| object,
         else => return try tool_result.buildErrorResult(allocator, "operation details must be a JSON object"),
@@ -370,6 +371,17 @@ fn handleIssue(
                 optionalBool(op_args, "takeover") orelse false,
             );
         },
+        .export_issue => blk: {
+            if (try rejectUnexpectedFields(allocator, op_args, &.{"issue_key"}, "export")) |result| return result;
+            const issue_key = requiredString(op_args, "issue_key") orelse
+                return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
+            if (!isIssueKey(issue_key)) return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
+            break :blk try daemon_ipc.exportIssueOperation(
+                allocator,
+                session.project_id,
+                issue_key,
+            );
+        },
     };
     defer operation.deinit(allocator);
     return try buildDaemonOperationResult(allocator, operation);
@@ -377,7 +389,7 @@ fn handleIssue(
 
 fn parseIssueOp(object: std.json.ObjectMap) ?IssueOp {
     if (object.count() != 1) return null;
-    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.begin_work, IssueOp.pause_issue, IssueOp.resume_issue, IssueOp.request_closure }) |op| {
+    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.begin_work, IssueOp.pause_issue, IssueOp.resume_issue, IssueOp.request_closure, IssueOp.export_issue }) |op| {
         if (object.get(issueOpName(op)) != null) return op;
     }
     return null;
@@ -393,6 +405,7 @@ fn issueOpName(op: IssueOp) []const u8 {
         .pause_issue => "pause_issue",
         .resume_issue => "resume_issue",
         .request_closure => "request_closure",
+        .export_issue => "export",
     };
 }
 
