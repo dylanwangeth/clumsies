@@ -634,6 +634,7 @@ pub struct IssueBoardCard {
     pub lifecycle: IssueLifecycle,
     pub title: String,
     pub description: String,
+    pub description_excerpt: String,
     pub external_references: Vec<IssueExternalReference>,
     pub found_at: Option<String>,
     pub created_at: Option<String>,
@@ -2067,12 +2068,56 @@ pub(crate) fn native_board_hash(cards: &[IssueBoardCard]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Builds a short readable excerpt from an Issue description: takes the first
+/// non-empty paragraph, strips Markdown heading/list markers, and caps the
+/// length at a few hundred characters.
+fn issue_description_excerpt(description: &str) -> String {
+    const MAX_EXCERPT_BYTES: usize = 240;
+
+    let first_paragraph = description
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let without_marker = trimmed
+                .strip_prefix('-')
+                .or_else(|| trimmed.strip_prefix('*'))
+                .or_else(|| trimmed.strip_prefix('>'))
+                .unwrap_or(trimmed);
+            let cleaned = without_marker.trim();
+            (!cleaned.is_empty()).then_some(cleaned)
+        })
+        .next()
+        .unwrap_or("");
+
+    if first_paragraph.is_empty() {
+        return String::new();
+    }
+    if first_paragraph.len() <= MAX_EXCERPT_BYTES {
+        return first_paragraph.to_owned();
+    }
+    // Ellipsis is 3 UTF-8 bytes; leave room so the result stays within budget.
+    let mut end = MAX_EXCERPT_BYTES - 4;
+    let max_prefix = 64;
+    while end > max_prefix && !first_paragraph.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut excerpt = first_paragraph[..end].trim_end().to_owned();
+    if excerpt.len() < first_paragraph.len() {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
 fn native_issue_card(
     issue: NativeIssue,
     projection: IssueRunProjection,
     stale_before: &str,
     states: &BTreeMap<i64, (String, IssueBoardState)>,
 ) -> IssueBoardCard {
+    let description_excerpt = issue_description_excerpt(&issue.description);
     let latest_activity = projection
         .latest_run
         .as_ref()
@@ -2135,6 +2180,7 @@ fn native_issue_card(
         },
         title: issue.title,
         description: issue.description,
+        description_excerpt,
         external_references: issue.external_references,
         found_at: Some(issue.created_at.clone()),
         created_at: Some(issue.created_at),
@@ -3846,6 +3892,7 @@ impl ParsedIssue {
             lifecycle: self.lifecycle,
             title: self.title,
             description: String::new(),
+            description_excerpt: String::new(),
             external_references: Vec::new(),
             created_at: self.found_at.clone(),
             found_at: self.found_at,
@@ -4923,6 +4970,58 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(pause_todo, DaemonError::State { .. }));
+    }
+
+    #[test]
+    fn issue_description_excerpt_picks_first_paragraph_and_strips_markdown() {
+        assert_eq!(
+            issue_description_excerpt("## 背景\n\n这是第一段真实描述。\n\n## 期望\n第二段。"),
+            "这是第一段真实描述。"
+        );
+        assert_eq!(issue_description_excerpt("- 列表项描述"), "列表项描述");
+        assert_eq!(issue_description_excerpt("> 引用内容"), "引用内容");
+        assert_eq!(issue_description_excerpt(""), "");
+        assert_eq!(issue_description_excerpt("   \n\n  "), "");
+
+        // Long description truncates with an ellipsis.
+        let long = "a".repeat(300);
+        let excerpt = issue_description_excerpt(&long);
+        assert!(excerpt.len() <= 241);
+        assert!(excerpt.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn issue_board_card_exposes_description_excerpt() {
+        let pool = run_pool().await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Excerpted".to_owned(),
+                description: "## 背景\n\n首段摘要内容。".to_owned(),
+                acceptance_criteria: vec![],
+                external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::AgentSelf,
+                verification_steps: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let cards = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(cards[0].description_excerpt, "首段摘要内容。");
+        assert!(cards[0].description.contains("## 背景"));
+        assert!(created.issue_id == cards[0].issue_id);
     }
 
     #[tokio::test]
