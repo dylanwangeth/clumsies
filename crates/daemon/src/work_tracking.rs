@@ -514,7 +514,12 @@ pub struct IssueDetailRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GetIssueRequest {
-    pub issue_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1800,6 +1805,24 @@ pub(crate) async fn resolve_native_issue_identity(
         .map_err(Into::into)
 }
 
+/// Confirms an Issue with the given number exists in the given project.
+/// Returns the issue_number when found, or None when the project has no such Issue.
+pub(crate) async fn ensure_native_issue_in_project(
+    pool: &SqlitePool,
+    project_id: &str,
+    issue_number: i64,
+) -> Result<Option<i64>, DaemonError> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT issue_number FROM native_issues
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found)
+}
+
 pub(crate) fn native_board_hash(cards: &[IssueBoardCard]) -> String {
     let mut hasher = Sha256::new();
     for card in cards {
@@ -3023,7 +3046,7 @@ fn ensure_revision(run: &AgentRun, expected_revision: i64) -> Result<(), DaemonE
     Ok(())
 }
 
-fn parse_issue_reference(issue_key: &str) -> Result<i64, DaemonError> {
+pub(crate) fn parse_issue_reference(issue_key: &str) -> Result<i64, DaemonError> {
     let digits = issue_key.strip_prefix("ISSUE-").ok_or_else(|| {
         DaemonError::InvalidRequest("issue_key must use the ISSUE-NNN form".to_owned())
     })?;
@@ -3978,7 +4001,9 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(GetIssueRequest {
-                issue_id: "issue_0123456789abcdef0123456789abcdef".to_owned(),
+                issue_id: Some("issue_0123456789abcdef0123456789abcdef".to_owned()),
+                issue_key: None,
+                project_id: None,
             })
             .unwrap(),
             serde_json::json!({
@@ -4362,6 +4387,49 @@ mod tests {
         assert_eq!(cards[0].issue_id, created.issue_id);
         assert!(cards[0].path.is_empty());
         assert!(cards[0].draft_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_native_issue_in_project_confirms_existence_and_missing() {
+        let pool = run_pool().await;
+        let created = create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Issue for key lookup".to_owned(),
+                description: "body".to_owned(),
+                acceptance_criteria: vec![],
+                external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.issue_key, "ISSUE-001");
+
+        assert_eq!(
+            ensure_native_issue_in_project(&pool, "project-1", 1)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            ensure_native_issue_in_project(&pool, "project-1", 999)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            ensure_native_issue_in_project(&pool, "other-project", 1)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(parse_issue_reference("ISSUE-001").unwrap(), 1);
+        assert_eq!(parse_issue_reference("ISSUE-026").unwrap(), 26);
+        assert!(parse_issue_reference("ISSUE-000").is_err());
+        assert!(parse_issue_reference("issue-001").is_err());
     }
 
     #[tokio::test]

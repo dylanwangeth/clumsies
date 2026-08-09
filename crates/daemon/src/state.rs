@@ -729,11 +729,38 @@ impl DaemonState {
         &self,
         request: GetIssueRequest,
     ) -> Result<IssueDetailResponse, DaemonError> {
-        let issue_id = request.issue_id.trim();
         let (project_id, issue_number) =
-            work_tracking::resolve_native_issue_identity(&self.inner.pool, issue_id)
-                .await?
-                .ok_or_else(|| DaemonError::NotFound(format!("Issue {issue_id}")))?;
+            match (request.issue_id.as_deref(), request.issue_key.as_deref()) {
+                (Some(issue_id), None) => {
+                    work_tracking::resolve_native_issue_identity(&self.inner.pool, issue_id)
+                        .await?
+                        .ok_or_else(|| DaemonError::NotFound(format!("Issue {issue_id}")))?
+                }
+                (None, Some(issue_key)) => {
+                    let project_id = request.project_id.as_deref().ok_or_else(|| {
+                        DaemonError::InvalidRequest(
+                            "project_id is required when resolving by issue_key".to_owned(),
+                        )
+                    })?;
+                    let issue_number = work_tracking::parse_issue_reference(issue_key)?;
+                    let project_id = project_id.trim();
+                    work_tracking::ensure_native_issue_in_project(
+                        &self.inner.pool,
+                        project_id,
+                        issue_number,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        DaemonError::NotFound(format!("{issue_key} in project {project_id}"))
+                    })?;
+                    (project_id.to_owned(), issue_number)
+                }
+                _ => {
+                    return Err(DaemonError::InvalidRequest(
+                        "get_issue requires exactly one of issue_id or issue_key".to_owned(),
+                    ));
+                }
+            };
         let runs = work_tracking::load_project_runs(&self.inner.pool, &project_id).await?;
         let (now, stale_before): (String, String) = sqlx::query_as(
             "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
