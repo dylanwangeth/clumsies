@@ -591,6 +591,66 @@ pub struct IssueDetailResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ExportIssueRequest {
+    pub project_id: String,
+    pub issue_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ExportIssueResponse {
+    pub issue_key: String,
+    pub filename: String,
+    pub markdown: String,
+}
+
+/// Renders a structured Issue as a stable, portable Markdown snapshot.
+/// The output is deterministic for a given Issue state, so repeated exports
+/// produce the same document (suitable for version control).
+pub fn render_issue_markdown(
+    issue: &IssueBoardCard,
+    body: &str,
+    acceptance_criteria: &[String],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", issue.title));
+    out.push_str(&format!("- **Issue**: {}\n", issue.issue_key));
+    out.push_str(&format!("- **Status**: {}\n", issue.board_state.as_str()));
+    if let Some(closure_summary) = &issue.closure_summary {
+        out.push_str(&format!("- **Closure**: {}\n", closure_summary));
+    }
+    if let Some(created_at) = &issue.created_at {
+        out.push_str(&format!("- **Created**: {}\n", created_at));
+    }
+    if let Some(started_at) = &issue.started_at {
+        out.push_str(&format!("- **Started**: {}\n", started_at));
+    }
+    if let Some(closed_at) = &issue.closed_at {
+        out.push_str(&format!("- **Closed**: {}\n", closed_at));
+    }
+    out.push('\n');
+    let body = body.trim();
+    if !body.is_empty() {
+        out.push_str("## 描述\n\n");
+        out.push_str(body);
+        out.push_str("\n\n");
+    }
+    if !acceptance_criteria.is_empty() {
+        out.push_str("## 验收标准\n\n");
+        for criteria in acceptance_criteria {
+            out.push_str(&format!("- [ ] {}\n", criteria));
+        }
+        out.push('\n');
+    }
+    out.push_str("---\n");
+    out
+}
+
+/// Stable filename for an exported Issue: ISSUE-<NNN>.md
+pub fn issue_export_filename(issue_number: i64) -> String {
+    format!("ISSUE-{issue_number:03}.md")
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IssueBoardResponse {
     pub project_id: String,
     pub effective_hash: String,
@@ -5053,6 +5113,61 @@ mod tests {
             cards[0].changed_by_run_id.as_deref(),
             Some(started.run.run_id.as_str())
         );
+    }
+
+    #[test]
+    fn render_issue_markdown_is_deterministic_and_complete() {
+        let issue = IssueBoardCard {
+            issue_id: "issue_0123456789abcdef0123456789abcdef".to_owned(),
+            project_id: "project-1".to_owned(),
+            issue_number: 7,
+            issue_key: "ISSUE-007".to_owned(),
+            resource_id: "issue_0123456789abcdef0123456789abcdef".to_owned(),
+            path: String::new(),
+            lifecycle: IssueLifecycle::Open,
+            title: "Export native Issues".to_owned(),
+            description: "body".to_owned(),
+            description_excerpt: "body".to_owned(),
+            external_references: Vec::new(),
+            found_at: Some("2026-08-07T03:00:00Z".to_owned()),
+            created_at: Some("2026-08-07T03:00:00Z".to_owned()),
+            started_at: Some("2026-08-08T03:00:00Z".to_owned()),
+            closed_at: None,
+            archived_at: None,
+            content_hash: "native:1".to_owned(),
+            source_commit_id: None,
+            draft_id: None,
+            draft_revision: None,
+            board_state: IssueBoardState::InProgress,
+            state_revision: 1,
+            state_updated_at: Some("2026-08-08T03:00:00Z".to_owned()),
+            closure_summary: None,
+            is_stale: false,
+            blocked: false,
+            blocking_reasons: Vec::new(),
+            dependencies: Vec::new(),
+            blocking_facts: Vec::new(),
+            active_runs: Vec::new(),
+            latest_run: None,
+            changed_by_run_id: None,
+            verification_level: VerificationLevel::AgentSelf,
+            verification_steps: Vec::new(),
+        };
+        let criteria = vec![
+            "Preserve stable keys".to_owned(),
+            "Deterministic output".to_owned(),
+        ];
+        let first = render_issue_markdown(&issue, "## 背景\n\n正文。", &criteria);
+        let second = render_issue_markdown(&issue, "## 背景\n\n正文。", &criteria);
+        assert_eq!(first, second);
+        assert!(first.contains("# Export native Issues"));
+        assert!(first.contains("- **Issue**: ISSUE-007"));
+        assert!(first.contains("- **Status**: in_progress"));
+        assert!(first.contains("## 背景"));
+        assert!(first.contains("## 验收标准"));
+        assert!(first.contains("- [ ] Preserve stable keys"));
+        assert!(first.contains("- [ ] Deterministic output"));
+        assert_eq!(issue_export_filename(7), "ISSUE-007.md");
     }
 
     #[tokio::test]

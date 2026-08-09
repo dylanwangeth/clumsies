@@ -470,6 +470,21 @@ pub fn resumeIssueOperation(
     return try operationResultFromResponse(allocator, response_json);
 }
 
+pub fn exportIssueOperation(
+    allocator: std.mem.Allocator,
+    project_id: []const u8,
+    issue_key: []const u8,
+) !OperationResult {
+    const request_json = try requestWithPayloadJsonAlloc(allocator, "export_issue", .{
+        .project_id = project_id,
+        .issue_key = issue_key,
+    });
+    defer allocator.free(request_json);
+    const response_json = try callJson(allocator, MACH_SERVICE_NAME, request_json);
+    defer allocator.free(response_json);
+    return try operationResultFromResponse(allocator, response_json);
+}
+
 pub fn callEmpty(allocator: std.mem.Allocator, service_name: []const u8, method: []const u8) ![]u8 {
     const request_json = try requestJsonAlloc(allocator, method);
     defer allocator.free(request_json);
