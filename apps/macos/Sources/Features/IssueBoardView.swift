@@ -530,57 +530,198 @@ struct IssueDetailView: View {
     }
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {
-        GeometryReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    Text(issue.title)
-                        .font(.largeTitle.weight(.semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-
-                    if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Markdown(issue.description)
-                            .markdownTheme(.basic)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
-                        VerificationProtocolSection(issue: issue)
-                    }
-
-                    if let changedBy = issue.changedByRunId,
-                       let run = issue.activeRuns.first(where: { $0.runId == changedBy })
-                           ?? issue.latestRun
-                    {
-                        HStack(spacing: 6) {
-                            Image(systemName: "pencil.circle")
-                                .foregroundStyle(.secondary)
-                            Text("Last changed by \(run.host.title) · \(run.runId)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    DetailMetadataSection(issue: issue, detail: model.detail(for: issue))
-                }
-                .frame(
-                    maxWidth: DocumentContentMetrics.maximumWidth,
-                    alignment: .topLeading
-                )
-                .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
-                .padding(.vertical, 36)
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: proxy.size.height,
-                    alignment: .top
-                )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                documentArea(issue)
+                metadataArea(issue)
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(issue.issueKey) details")
+    }
+
+    private func documentArea(_ issue: IssueBoardCard) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 10) {
+                Text(issue.issueKey)
+                    .font(.caption.monospaced().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                statusBadge(issue)
+            }
+            .padding(.top, 8)
+
+            Text(issue.title)
+                .font(.title.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Markdown(issue.description)
+                    .markdownTheme(.basic)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let detail = model.detail(for: issue),
+               !detail.acceptanceCriteria.isEmpty
+            {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Acceptance Criteria")
+                        .font(.headline)
+                    ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "circle")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 2)
+                            Text(criteria)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: 680, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metadataArea(_ issue: IssueBoardCard) -> some View {
+        Form {
+            if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
+                Section("Verification") {
+                    LabeledContent("Level") {
+                        Label(verificationLabel(issue.verificationLevel), systemImage: verificationSymbol(issue.verificationLevel))
+                            .foregroundStyle(verificationColor(issue.verificationLevel))
+                    }
+                    if !issue.verificationSteps.isEmpty {
+                        ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
+                            Text("\(index + 1). \(step)")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+
+            if let changedBy = issue.changedByRunId,
+               let run = issue.activeRuns.first(where: { $0.runId == changedBy })
+                ?? issue.latestRun
+            {
+                Section("Activity") {
+                    LabeledContent("Last changed") {
+                        Text("\(run.host.title) · \(run.runId)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if !issue.activeRuns.isEmpty {
+                        ForEach(Array(issue.activeRuns.prefix(5))) { activeRun in
+                            AgentRunRow(run: activeRun)
+                        }
+                        if issue.activeRuns.count > 5 {
+                            Text("+\(issue.activeRuns.count - 5) more active runs")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+
+            Section("Timeline") {
+                ForEach(Array(timelineEntries(issue).enumerated()), id: \.offset) { _, entry in
+                    LabeledContent(entry.label) {
+                        Text(entry.absolute)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .help(entry.help)
+                    }
+                }
+            }
+
+            let externalReferences = IssueExternalReferencePresentation.cardPresentation(
+                for: issue.externalReferences
+            )
+            if !externalReferences.items.isEmpty {
+                Section("References") {
+                    ForEach(Array(externalReferences.items.enumerated()), id: \.offset) { _, item in
+                        if let url = IssueExternalReferencePresentation.destinationURL(for: item.reference) {
+                            ExternalLinkText(
+                                url: url,
+                                title: item.title,
+                                systemImage: item.kind.symbolName
+                            )
+                        } else {
+                            Label(item.title, systemImage: item.kind.symbolName)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func statusBadge(_ issue: IssueBoardCard) -> some View {
+        Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(issue.boardState.iconColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(issue.boardState.iconColor.opacity(0.12), in: Capsule())
+    }
+
+    private struct TimelineEntry {
+        let label: String
+        let absolute: String
+        let help: String
+    }
+
+    private func timelineEntries(_ issue: IssueBoardCard) -> [TimelineEntry] {
+        var entries: [TimelineEntry] = []
+        if let created = issue.createdAt {
+            entries.append(TimelineEntry(label: "Created", absolute: IssueTiming.absoluteText(created) ?? "—", help: created))
+        }
+        if let started = issue.startedAt {
+            entries.append(TimelineEntry(label: "Started", absolute: IssueTiming.absoluteText(started) ?? "—", help: started))
+        }
+        if let closed = issue.closedAt {
+            entries.append(TimelineEntry(label: "Closed", absolute: IssueTiming.absoluteText(closed) ?? "—", help: closed))
+        }
+        return entries
+    }
+
+    private func verificationLabel(_ level: VerificationLevel) -> String {
+        switch level {
+        case .agentSelf: "Agent self"
+        case .humanRequired: "Human required"
+        case .mixed: "Mixed"
+        }
+    }
+
+    private func verificationSymbol(_ level: VerificationLevel) -> String {
+        switch level {
+        case .agentSelf: "checkmark.circle"
+        case .humanRequired: "person.crop.circle.badge.exclamationmark"
+        case .mixed: "checkmark.circle.badge.person.crop"
+        }
+    }
+
+    private func verificationColor(_ level: VerificationLevel) -> Color {
+        switch level {
+        case .agentSelf: .green
+        case .humanRequired: .orange
+        case .mixed: .blue
+        }
     }
 }
 
@@ -1188,113 +1329,3 @@ private extension AgentRun {
     }
 }
 
-private struct VerificationProtocolSection: View {
-    let issue: IssueBoardCard
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label {
-                Text("Verification")
-                    .font(.subheadline.weight(.semibold))
-            } icon: {
-                Image(systemName: verificationSymbol)
-                    .foregroundStyle(verificationColor)
-            }
-
-            Text(verificationTitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if !issue.verificationSteps.isEmpty {
-                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                    Text("\(index + 1). \(step)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var verificationSymbol: String {
-        switch issue.verificationLevel {
-        case .agentSelf: "checkmark.circle"
-        case .humanRequired: "person.crop.circle.badge.exclamationmark"
-        case .mixed: "checkmark.circle.badge.person.crop"
-        }
-    }
-
-    private var verificationColor: Color {
-        switch issue.verificationLevel {
-        case .agentSelf: .green
-        case .humanRequired: .orange
-        case .mixed: .blue
-        }
-    }
-
-    private var verificationTitle: String {
-        switch issue.verificationLevel {
-        case .agentSelf: "Agent verification is sufficient."
-        case .humanRequired: "A human must verify before closure."
-        case .mixed: "Agent and human verification required."
-        }
-    }
-}
-
-private struct DetailMetadataSection: View {
-    let issue: IssueBoardCard
-    let detail: IssueDetailResponse?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(issue.boardState.iconColor)
-                Text(issue.issueKey)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
-            }
-
-            let acceptanceCriteria = detail?.acceptanceCriteria ?? []
-            if !acceptanceCriteria.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Acceptance Criteria")
-                        .font(.subheadline.weight(.semibold))
-                    ForEach(Array(acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
-                        Label(criteria, systemImage: "checkmark.square")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-
-            IssueTimingSummary(issue: issue)
-
-            let externalReferences = IssueExternalReferencePresentation.cardPresentation(
-                for: issue.externalReferences
-            )
-            if !externalReferences.items.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("References")
-                        .font(.subheadline.weight(.semibold))
-                    IssueExternalReferencesSummary(presentation: externalReferences)
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 8)
-        )
-    }
-}

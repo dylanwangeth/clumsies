@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "clumsies": {
+      "command": [
+        "/Users/weiwang/Library/Application Support/ai.clumsies/bin/clumsies",
+        "mcp",
+        "serve"
+      ],
+      "enabled": true,
+      "type": "local"
+    }
+  },
+  "plugin": [
+    "./.opencode/plugins/clumsies.ts"
+  ]
+}
