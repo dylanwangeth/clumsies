@@ -1003,6 +1003,13 @@ private struct AgentRunRow: View {
                     .lineLimit(2)
                     .help(summary)
             }
+            if let endedAt = run.endedAt,
+               let relative = IssueTiming.relativeText(endedAt, relativeTo: .now)
+            {
+                Text("ended \(relative)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .help(run.helpText)
     }
@@ -1023,6 +1030,11 @@ private struct UnlinkedAgentRunRow: View {
                 Text(run.host.title)
                 if run.kind == .subagent {
                     Text("· Subagent")
+                }
+                if let endedAt = run.endedAt,
+                   let relative = IssueTiming.relativeText(endedAt, relativeTo: .now)
+                {
+                    Text("· ended \(relative)")
                 }
             }
             .font(.caption)
@@ -1186,6 +1198,14 @@ private extension AgentRunKind {
 }
 
 private extension AgentRun {
+    var isTimedOut: Bool {
+        phase == .ended && endReason == "lease_expired"
+    }
+
+    var endedByIssueClose: Bool {
+        phase == .ended && endReason == "issue_closed"
+    }
+
     var displayName: String {
         if let displayLabel = displayLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
            !displayLabel.isEmpty {
@@ -1196,6 +1216,8 @@ private extension AgentRun {
 
     var statusTitle: String {
         if phase == .running { return "Running" }
+        if isTimedOut { return "Timed Out" }
+        if endedByIssueClose { return "Ended" }
         return switch outcome {
         case .completed: "Completed"
         case .blocked: "Blocked"
@@ -1208,6 +1230,8 @@ private extension AgentRun {
 
     var statusSymbolName: String {
         if phase == .running { return "bolt.circle" }
+        if isTimedOut { return "hourglass.circle" }
+        if endedByIssueClose { return "stop.circle" }
         return switch outcome {
         case .completed: "checkmark.circle"
         case .blocked: "pause.circle"
@@ -1220,6 +1244,8 @@ private extension AgentRun {
 
     var statusColor: Color {
         if phase == .running { return .accentColor }
+        if isTimedOut { return .orange }
+        if endedByIssueClose { return .secondary }
         return switch outcome {
         case .failed: .red
         case .blocked, .cancelled, .unknown: .orange
