@@ -562,7 +562,7 @@ enum IssueBoardState: String, Codable, CaseIterable, Hashable, Sendable {
     case todo
     case inProgress = "in_progress"
     case paused
-    case closureRequested = "closure_requested"
+    case inReview = "in_review"
     case done
 }
 
@@ -675,6 +675,26 @@ struct ApplyIssueGateRequest: Codable, Equatable, Sendable {
     let action: IssueGateAction
 }
 
+struct SetVerificationStepCompletedRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueKey: String
+    let expectedRevision: Int
+    let stepIndex: Int
+    let completed: Bool
+}
+
+struct VerificationStep: Codable, Equatable, Hashable, Sendable {
+    let text: String
+    var completed: Bool
+}
+
+struct IssueStateEvent: Codable, Equatable, Hashable, Sendable {
+    let fromState: IssueBoardState
+    let toState: IssueBoardState
+    let changedByRunId: String?
+    let occurredAt: String
+}
+
 struct IssueMutationResponse: Codable, Equatable, Sendable {
     let issueId: String
     let issueKey: String
@@ -741,7 +761,8 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let latestRun: AgentRun?
     let changedByRunId: String?
     let verificationLevel: VerificationLevel
-    let verificationSteps: [String]
+    let verificationSteps: [VerificationStep]
+    let stateEvents: [IssueStateEvent]
 }
 
 enum VerificationLevel: String, Codable, Hashable, Sendable {
@@ -786,6 +807,7 @@ extension IssueBoardCard {
         case changedByRunId
         case verificationLevel
         case verificationSteps
+        case stateEvents
     }
 
     init(from decoder: Decoder) throws {
@@ -842,8 +864,12 @@ extension IssueBoardCard {
             forKey: .verificationLevel
         ) ?? .agentSelf
         verificationSteps = try container.decodeIfPresent(
-            [String].self,
+            [VerificationStep].self,
             forKey: .verificationSteps
+        ) ?? []
+        stateEvents = try container.decodeIfPresent(
+            [IssueStateEvent].self,
+            forKey: .stateEvents
         ) ?? []
     }
 }

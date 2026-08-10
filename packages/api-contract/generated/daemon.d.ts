@@ -27,7 +27,7 @@ export interface components {
             error: components["schemas"]["ApiError"] | null;
         };
         /** @enum {string} */
-        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "list_project_bindings" | "replace_project_binding" | "remove_project_binding" | "list_project_agent_adapters" | "install_project_agent_adapter" | "remove_project_agent_adapter" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "record_agent_run_event" | "list_issue_board" | "get_issue_detail" | "get_issue" | "create_issue" | "update_issue" | "apply_issue_gate" | "remove_issue" | "start_issue_work" | "request_issue_closure" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
+        DaemonIpcMethod: "health" | "project_config" | "replace_project_config" | "select_project" | "resolve_project_binding" | "list_project_bindings" | "replace_project_binding" | "remove_project_binding" | "list_project_agent_adapters" | "install_project_agent_adapter" | "remove_project_agent_adapter" | "sync_status" | "project_storage" | "replace_project_storage" | "project_storage_move" | "reset_project_storage" | "clear_project_cache" | "memory_cache" | "project_checkout" | "activate_memory" | "load_memory" | "record_agent_run_event" | "list_issue_board" | "get_issue_detail" | "get_issue" | "create_issue" | "update_issue" | "apply_issue_gate" | "set_verification_step_completed" | "remove_issue" | "start_issue_work" | "request_issue_closure" | "search_index_status" | "rebuild_search_index" | "list_retrieval_runs" | "get_retrieval_run" | "create_evaluation_case" | "resolve_evaluation_case" | "clear_retrieval_runs" | "export_evaluation_set" | "retry_sync" | "mcp_status" | "list_drafts" | "get_draft" | "store_draft_operation" | "server_request";
         DaemonBootstrapStatus: {
             label: string;
             mach_service_name: string;
@@ -292,6 +292,30 @@ export interface components {
              */
             url: string;
         };
+        /** @enum {string} */
+        IssueBlockingFactKind: "host_capability" | "external";
+        IssueBlockingFact: {
+            fact_id: string;
+            kind: components["schemas"]["IssueBlockingFactKind"];
+            value?: string | null;
+            description: string;
+            satisfied: boolean;
+        };
+        /** @enum {string} */
+        IssueBlockingReasonKind: "dependency" | "fact";
+        IssueBlockingReason: {
+            kind: components["schemas"]["IssueBlockingReasonKind"];
+            issue_key?: string | null;
+            title?: string | null;
+            board_state?: components["schemas"]["IssueBoardState"] | null;
+            fact_id?: string | null;
+            description?: string | null;
+        };
+        IssueDependencyState: {
+            issue_key: string;
+            title: string;
+            board_state: components["schemas"]["IssueBoardState"];
+        };
         IssueBoardCard: {
             issue_id: string;
             project_id: string;
@@ -302,6 +326,7 @@ export interface components {
             lifecycle: components["schemas"]["IssueLifecycle"];
             title: string;
             description: string;
+            description_excerpt?: string;
             external_references: components["schemas"]["IssueExternalReference"][];
             /** Format: date-time */
             found_at: string | null;
@@ -323,8 +348,16 @@ export interface components {
             state_updated_at: string | null;
             closure_summary: string | null;
             is_stale: boolean;
+            blocked: boolean;
+            blocking_reasons: components["schemas"]["IssueBlockingReason"][];
+            dependencies: components["schemas"]["IssueDependencyState"][];
+            blocking_facts: components["schemas"]["IssueBlockingFact"][];
             active_runs: components["schemas"]["AgentRun"][];
             latest_run: components["schemas"]["AgentRun"] | null;
+            changed_by_run_id: string | null;
+            verification_level: components["schemas"]["VerificationLevel"];
+            verification_steps: components["schemas"]["VerificationStep"][];
+            state_events: components["schemas"]["IssueStateEvent"][];
         };
         IssueBoardDiagnostic: {
             resource_id: string;
@@ -832,11 +865,24 @@ export interface components {
         /** @enum {string} */
         IssueLifecycle: "open" | "closed";
         /** @enum {string} */
-        IssueBoardState: "todo" | "in_progress" | "closure_requested" | "done";
+        IssueBoardState: "todo" | "in_progress" | "paused" | "in_review" | "done";
         /** @enum {string} */
         IssueExternalReferenceKind: "issue" | "pull_request";
         /** @enum {string} */
         IssueGateAction: "approve_closure" | "request_changes" | "reopen";
+        IssueStateEvent: {
+            from_state: components["schemas"]["IssueBoardState"];
+            to_state: components["schemas"]["IssueBoardState"];
+            changed_by_run_id?: string | null;
+            occurred_at: string;
+        };
+        VerificationStep: {
+            text: string;
+            /** @default false */
+            completed: boolean;
+        };
+        /** @enum {string} */
+        VerificationLevel: "agent_self" | "human_required" | "mixed";
         /** @enum {string} */
         IssueRemovalAction: "archive" | "delete";
         /** @enum {string} */

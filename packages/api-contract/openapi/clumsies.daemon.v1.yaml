@@ -78,6 +78,7 @@ components:
         - create_issue
         - update_issue
         - apply_issue_gate
+        - set_verification_step_completed
         - remove_issue
         - start_issue_work
         - request_issue_closure
@@ -724,6 +725,54 @@ components:
           minLength: 1
           maxLength: 2048
           description: Absolute HTTP(S) URL without embedded credentials.
+    IssueBlockingFactKind:
+      type: string
+      enum: [host_capability, external]
+    IssueBlockingFact:
+      type: object
+      required: [fact_id, kind, description, satisfied]
+      properties:
+        fact_id:
+          type: string
+        kind:
+          $ref: "#/components/schemas/IssueBlockingFactKind"
+        value:
+          type: [string, "null"]
+        description:
+          type: string
+        satisfied:
+          type: boolean
+    IssueBlockingReasonKind:
+      type: string
+      enum: [dependency, fact]
+    IssueBlockingReason:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          $ref: "#/components/schemas/IssueBlockingReasonKind"
+        issue_key:
+          type: [string, "null"]
+        title:
+          type: [string, "null"]
+        board_state:
+          oneOf:
+            - $ref: "#/components/schemas/IssueBoardState"
+            - type: "null"
+        fact_id:
+          type: [string, "null"]
+        description:
+          type: [string, "null"]
+    IssueDependencyState:
+      type: object
+      required: [issue_key, title, board_state]
+      properties:
+        issue_key:
+          type: string
+        title:
+          type: string
+        board_state:
+          $ref: "#/components/schemas/IssueBoardState"
     IssueBoardCard:
       type: object
       required:
@@ -751,8 +800,16 @@ components:
         - state_updated_at
         - closure_summary
         - is_stale
+        - blocked
+        - blocking_reasons
+        - dependencies
+        - blocking_facts
         - active_runs
         - latest_run
+        - changed_by_run_id
+        - verification_level
+        - verification_steps
+        - state_events
       properties:
         issue_id:
           type: string
@@ -774,6 +831,8 @@ components:
         title:
           type: string
         description:
+          type: string
+        description_excerpt:
           type: string
         external_references:
           type: array
@@ -816,6 +875,20 @@ components:
           maxLength: 1000
         is_stale:
           type: boolean
+        blocked:
+          type: boolean
+        blocking_reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueBlockingReason"
+        dependencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueDependencyState"
+        blocking_facts:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueBlockingFact"
         active_runs:
           type: array
           items:
@@ -824,6 +897,18 @@ components:
           oneOf:
             - $ref: "#/components/schemas/AgentRun"
             - type: "null"
+        changed_by_run_id:
+          type: [string, "null"]
+        verification_level:
+          $ref: "#/components/schemas/VerificationLevel"
+        verification_steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerificationStep"
+        state_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueStateEvent"
     IssueBoardDiagnostic:
       type: object
       required: [resource_id, path, code, message]
@@ -2059,13 +2144,38 @@ components:
       enum: [open, closed]
     IssueBoardState:
       type: string
-      enum: [todo, in_progress, closure_requested, done]
+      enum: [todo, in_progress, paused, in_review, done]
     IssueExternalReferenceKind:
       type: string
       enum: [issue, pull_request]
     IssueGateAction:
       type: string
       enum: [approve_closure, request_changes, reopen]
+    IssueStateEvent:
+      type: object
+      properties:
+        from_state:
+          $ref: "#/components/schemas/IssueBoardState"
+        to_state:
+          $ref: "#/components/schemas/IssueBoardState"
+        changed_by_run_id:
+          type: string
+          nullable: true
+        occurred_at:
+          type: string
+      required: [from_state, to_state, occurred_at]
+    VerificationStep:
+      type: object
+      properties:
+        text:
+          type: string
+        completed:
+          type: boolean
+          default: false
+      required: [text]
+    VerificationLevel:
+      type: string
+      enum: [agent_self, human_required, mixed]
     IssueRemovalAction:
       type: string
       enum: [archive, delete]

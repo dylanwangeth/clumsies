@@ -447,6 +447,19 @@ struct WorkspaceView: View {
                                 }
                             }
                         },
+                        onToggleVerificationStep: { issue, index, completed in
+                            Task {
+                                do {
+                                    try await issueBoardModel.setVerificationStep(
+                                        completed,
+                                        stepIndex: index,
+                                        issue: issue
+                                    )
+                                } catch {
+                                    store.errorMessage = error.localizedDescription
+                                }
+                            }
+                        },
                         onArchive: nil,
                         onDelete: nil
                     )

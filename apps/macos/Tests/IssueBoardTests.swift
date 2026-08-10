@@ -511,7 +511,8 @@ final class IssueBoardModelTests: XCTestCase {
                     latestRun: nil,
                     changedByRunId: nil,
                     verificationLevel: .agentSelf,
-                    verificationSteps: []
+                    verificationSteps: [],
+                    stateEvents: []
                 ),
                 unblockedIssue,
             ],
@@ -733,7 +734,8 @@ final class IssueBoardModelTests: XCTestCase {
             latestRun: run,
             changedByRunId: run.runId,
             verificationLevel: .agentSelf,
-            verificationSteps: []
+            verificationSteps: [],
+            stateEvents: []
         )
     }
 }
@@ -922,13 +924,13 @@ final class IssueBoardLayoutTests: XCTestCase {
     func testBoardUsesTheRequiredFiveColumnOrder() {
         XCTAssertEqual(
             IssueBoardState.allCases,
-            [.todo, .inProgress, .paused, .closureRequested, .done]
+            [.todo, .inProgress, .paused, .inReview, .done]
         )
         XCTAssertEqual(IssueBoardState.allCases.map(\.title), [
             "Todo",
             "In Progress",
             "Paused",
-            "Closure Requested",
+            "In Review",
             "Done",
         ])
         XCTAssertTrue(IssueBoardState.allCases.allSatisfy { !$0.symbolName.isEmpty })

@@ -312,8 +312,10 @@ fn issueBoundPrefixFromDetail(allocator: std.mem.Allocator, detail_json: []const
         "Todo"
     else if (std.mem.eql(u8, board_state, "in_progress"))
         "In Progress"
-    else if (std.mem.eql(u8, board_state, "closure_requested"))
-        "Closure Requested"
+    else if (std.mem.eql(u8, board_state, "paused"))
+        "Paused"
+    else if (std.mem.eql(u8, board_state, "in_review"))
+        "In Review"
     else if (std.mem.eql(u8, board_state, "done"))
         "Done"
     else
@@ -606,6 +608,18 @@ test "bound run context renders the linked Issue prefix from detail" {
     )).?;
     defer std.testing.allocator.free(done);
     try std.testing.expectEqualStrings("This run is bound to ISSUE-007 (Done). ", done);
+
+    const paused = (try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-018","board_state":"paused"}}
+    )).?;
+    defer std.testing.allocator.free(paused);
+    try std.testing.expectEqualStrings("This run is bound to ISSUE-018 (Paused). ", paused);
+
+    const review = (try issueBoundPrefixFromDetail(std.testing.allocator,
+        \\{"issue":{"issue_key":"ISSUE-027","board_state":"in_review"}}
+    )).?;
+    defer std.testing.allocator.free(review);
+    try std.testing.expectEqualStrings("This run is bound to ISSUE-027 (In Review). ", review);
 }
 
 test "bound prefix is null for unparseable or unbinding detail" {

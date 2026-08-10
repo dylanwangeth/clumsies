@@ -506,6 +506,7 @@ struct IssueDetailView: View {
     let issueId: String
     @ObservedObject var model: IssueBoardModel
     var onGate: ((IssueGateAction, IssueBoardCard) -> Void)?
+    var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
     var onArchive: ((IssueBoardCard) -> Void)?
     var onDelete: ((IssueBoardCard) -> Void)?
 
@@ -544,10 +545,11 @@ struct IssueDetailView: View {
             switch issue.boardState {
             case .todo, .inProgress, .paused:
                 EmptyView()
-            case .closureRequested:
-                Button("Approve Closure", systemImage: "checkmark.circle") {
+            case .inReview:
+                Button("Approve", systemImage: "checkmark.circle") {
                     onGate?(.approveClosure, issue)
                 }
+                .disabled(issue.hasIncompleteVerificationSteps)
                 Button("Request Changes", systemImage: "arrow.uturn.backward.circle") {
                     onGate?(.requestChanges, issue)
                 }
@@ -583,27 +585,6 @@ struct IssueDetailView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    HStack(spacing: 12) {
-                        Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
-                            .foregroundStyle(issue.boardState.iconColor)
-                        if let started = issue.startedAt,
-                           let relative = IssueTiming.relativeText(started, relativeTo: .now)
-                        {
-                            Text("·").foregroundStyle(.tertiary)
-                            Text(relative).foregroundStyle(.secondary)
-                        }
-                        if issue.isStale {
-                            Text("·").foregroundStyle(.tertiary)
-                            Text("Stale").foregroundStyle(.orange)
-                        }
-                        if issue.blocked {
-                            Text("·").foregroundStyle(.tertiary)
-                            Text("Blocked").foregroundStyle(.red)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .font(.caption)
-
                     if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Markdown(issue.description)
                             .markdownTheme(.basic)
@@ -623,14 +604,6 @@ struct IssueDetailView: View {
                             }
                         }
                     }
-
-                    if let summary = issue.closureSummary, !summary.isEmpty {
-                        Text(summary)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 28)
@@ -638,9 +611,13 @@ struct IssueDetailView: View {
                 .padding(.bottom, 48)
             }
 
-            IssueDetailInspector(issue: issue, detail: model.detail(for: issue))
-                .frame(width: 240)
-                .background(Color(nsColor: .controlBackgroundColor))
+            IssueDetailInspector(
+                issue: issue,
+                detail: model.detail(for: issue),
+                onToggleVerificationStep: onToggleVerificationStep
+            )
+            .frame(width: 240)
+            .background(Color(nsColor: .controlBackgroundColor))
         }
     }
 }
@@ -750,10 +727,11 @@ private struct IssueBoardColumn: View {
                             switch issue.boardState {
                             case .todo, .inProgress, .paused:
                                 deleteButton(issue)
-                            case .closureRequested:
-                                Button("Approve Closure", systemImage: "checkmark.circle") {
+                            case .inReview:
+                                Button("Approve", systemImage: "checkmark.circle") {
                                     onGate(.approveClosure, issue)
                                 }
+                                .disabled(issue.hasIncompleteVerificationSteps)
                                 Button("Request Changes", systemImage: "arrow.uturn.backward.circle") {
                                     onGate(.requestChanges, issue)
                                 }
@@ -970,7 +948,7 @@ private struct IssueTimingSummary: View {
         switch issue.boardState {
         case .todo:
             values = [(issue.createdAt, "Created", "calendar.badge.plus")]
-        case .inProgress, .paused, .closureRequested:
+        case .inProgress, .paused, .inReview:
             values = [(issue.startedAt, "Opened", "play.circle")]
         case .done:
             values = [
@@ -1152,7 +1130,7 @@ extension IssueBoardState {
         case .todo: "Todo"
         case .inProgress: "In Progress"
         case .paused: "Paused"
-        case .closureRequested: "Closure Requested"
+        case .inReview: "In Review"
         case .done: "Done"
         }
     }
@@ -1162,7 +1140,7 @@ extension IssueBoardState {
         case .todo: "circle"
         case .inProgress: "bolt.circle"
         case .paused: "pause.circle"
-        case .closureRequested: "checkmark.circle"
+        case .inReview: "checkmark.circle"
         case .done: "checkmark.circle.fill"
         }
     }
@@ -1172,7 +1150,7 @@ extension IssueBoardState {
         case .inProgress: .accentColor
         case .paused: .orange
         case .done: .green
-        case .todo, .closureRequested: .secondary
+        case .todo, .inReview: .secondary
         }
     }
 }
@@ -1250,14 +1228,74 @@ private extension AgentRun {
 }
 
 
+extension IssueBoardCard {
+    var hasIncompleteVerificationSteps: Bool {
+        verificationSteps.contains { !$0.completed }
+    }
+}
+
+private struct IssueTimelineEvent: Identifiable {
+    let id: Int
+    let label: String
+    let timestamp: String
+    let tint: Color
+}
+
+private struct TimelineEventRow: View {
+    let event: IssueTimelineEvent
+    let isLast: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ZStack(alignment: .top) {
+                if !isLast {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.25))
+                        .frame(width: 1)
+                        .padding(.top, 10)
+                }
+                Circle()
+                    .fill(event.tint)
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 2)
+            }
+            .frame(width: 7)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(event.label)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(event.tint)
+                    if let relative = IssueTiming.relativeText(event.timestamp, relativeTo: .now) {
+                        Text(relative)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let absolute = IssueTiming.absoluteText(event.timestamp) {
+                    Text(absolute)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 private struct IssueDetailInspector: View {
     let issue: IssueBoardCard
     let detail: IssueDetailResponse?
+    var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                statusRow
                 timelineRow
+                closureSummaryRow
                 verificationRow
                 activityRow
                 referencesRow
@@ -1267,24 +1305,114 @@ private struct IssueDetailInspector: View {
     }
 
     private var statusRow: some View {
-        inspectorRow(icon: issue.boardState.symbolName,
-                     tint: issue.boardState.iconColor,
-                     label: "Status",
-                     value: issue.boardState.title)
+        VStack(alignment: .leading, spacing: 4) {
+            inspectorLabel("Status")
+            HStack(spacing: 6) {
+                Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+                    .foregroundStyle(issue.boardState.iconColor)
+                    .font(.callout)
+                Spacer(minLength: 0)
+            }
+            if issue.isStale {
+                Text("Stale")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            if issue.blocked {
+                Text("Blocked")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     @ViewBuilder
     private var timelineRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            inspectorLabel("Timeline")
-            if let created = issue.createdAt {
-                inspectorDate("Created", created)
+        let events = timelineEvents
+        if !events.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                inspectorLabel("Timeline")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(events.enumerated()), id: \.offset) { index, event in
+                        TimelineEventRow(event: event, isLast: index == events.count - 1)
+                    }
+                }
             }
+        }
+    }
+
+    private var timelineEvents: [IssueTimelineEvent] {
+        var result: [IssueTimelineEvent] = []
+        var nextId = 0
+        if let created = issue.createdAt {
+            result.append(
+                IssueTimelineEvent(
+                    id: nextId,
+                    label: "Created",
+                    timestamp: created,
+                    tint: .secondary
+                )
+            )
+            nextId += 1
+        }
+        var hasSeenStart = false
+        for event in issue.stateEvents {
+            let (label, tint): (String, Color) = switch event.toState {
+            case .inProgress: (hasSeenStart ? "Resumed" : "Started", .accentColor)
+            case .paused: ("Paused", .orange)
+            case .inReview: ("In Review", .blue)
+            case .done: ("Done", .green)
+            case .todo: ("Reopened", .secondary)
+            }
+            if event.toState == .inProgress {
+                hasSeenStart = true
+            }
+            result.append(
+                IssueTimelineEvent(
+                    id: nextId,
+                    label: label,
+                    timestamp: event.occurredAt,
+                    tint: tint
+                )
+            )
+            nextId += 1
+        }
+        if issue.stateEvents.isEmpty {
             if let started = issue.startedAt {
-                inspectorDate("Started", started)
+                result.append(
+                    IssueTimelineEvent(
+                        id: nextId,
+                        label: "Started",
+                        timestamp: started,
+                        tint: .accentColor
+                    )
+                )
+                nextId += 1
             }
             if let closed = issue.closedAt {
-                inspectorDate("Closed", closed)
+                result.append(
+                    IssueTimelineEvent(
+                        id: nextId,
+                        label: "Done",
+                        timestamp: closed,
+                        tint: .green
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    @ViewBuilder
+    private var closureSummaryRow: some View {
+        if let summary = issue.closureSummary, !summary.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                inspectorLabel("Review Summary")
+                Text(summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1301,12 +1429,27 @@ private struct IssueDetailInspector: View {
                 }
                 .foregroundStyle(verifColor)
                 .font(.callout)
-                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { i, step in
-                    Text("\(i + 1). \(step)")
+                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
+                    Toggle(isOn: Binding(
+                        get: { step.completed },
+                        set: { completed in
+                            onToggleVerificationStep?(issue, index, completed)
+                        }
+                    )) {
+                        Text(step.text)
+                            .font(.callout)
+                            .strikethrough(step.completed)
+                            .foregroundStyle(step.completed ? .secondary : .primary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .toggleStyle(.checkbox)
+                    .disabled(issue.boardState == .done)
+                }
+                if issue.hasIncompleteVerificationSteps {
+                    Text("Complete all steps before approving.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -1343,31 +1486,10 @@ private struct IssueDetailInspector: View {
         }
     }
 
-    private func inspectorRow(icon: String, tint: Color, label: String, value: String) -> some View {
-        HStack {
-            Image(systemName: icon).foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                inspectorLabel(label)
-                Text(value).font(.callout)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
     private func inspectorLabel(_ text: String) -> some View {
         Text(text)
             .font(.callout.weight(.semibold))
             .foregroundStyle(.secondary)
-    }
-
-    private func inspectorDate(_ label: String, _ iso: String) -> some View {
-        HStack {
-            Text(label).font(.callout).foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            Text(IssueTiming.absoluteText(iso) ?? "—")
-                .font(.callout.monospaced())
-                .foregroundStyle(.secondary)
-        }
     }
 
     private var verifLabel: String {

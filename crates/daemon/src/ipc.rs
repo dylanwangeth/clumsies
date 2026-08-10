@@ -22,7 +22,8 @@ use crate::{
     LoadMemoryResponse, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
     RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
     RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
-    SearchIndexProjectRequest, SearchIndexStatus, StartIssueWorkRequest, UpdateIssueRequest,
+    SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
+    StartIssueWorkRequest, UpdateIssueRequest,
 };
 
 #[derive(Clone, Debug)]
@@ -315,6 +316,17 @@ impl DaemonIpcClient {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "apply_issue_gate",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn set_verification_step_completed(
+        &self,
+        request: SetVerificationStepCompletedRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "set_verification_step_completed",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

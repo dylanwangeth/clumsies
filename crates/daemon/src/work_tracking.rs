@@ -61,7 +61,7 @@ pub enum IssueBoardState {
     Todo,
     InProgress,
     Paused,
-    ClosureRequested,
+    InReview,
     Done,
 }
 
@@ -161,7 +161,7 @@ impl IssueBoardState {
             Self::Todo => "todo",
             Self::InProgress => "in_progress",
             Self::Paused => "paused",
-            Self::ClosureRequested => "closure_requested",
+            Self::InReview => "in_review",
             Self::Done => "done",
         }
     }
@@ -171,7 +171,7 @@ impl IssueBoardState {
             "todo" => Ok(Self::Todo),
             "in_progress" => Ok(Self::InProgress),
             "paused" => Ok(Self::Paused),
-            "closure_requested" => Ok(Self::ClosureRequested),
+            "in_review" => Ok(Self::InReview),
             "done" => Ok(Self::Done),
             value => Err(corrupt_run(format!("unknown native Issue status {value}"))),
         }
@@ -182,7 +182,7 @@ impl IssueBoardState {
             Self::Todo => Ok("todo"),
             Self::InProgress => Ok("in_progress"),
             Self::Paused => Ok("paused"),
-            Self::ClosureRequested => Ok("closure_requested"),
+            Self::InReview => Ok("in_review"),
             Self::Done => Err(DaemonError::InvalidRequest(
                 "Done is derived from the closed Issue path".to_owned(),
             )),
@@ -193,7 +193,7 @@ impl IssueBoardState {
         match value {
             "todo" => Ok(Self::Todo),
             "in_progress" => Ok(Self::InProgress),
-            "closure_requested" => Ok(Self::ClosureRequested),
+            "in_review" => Ok(Self::InReview),
             value => Err(corrupt_run(format!(
                 "unknown open Issue board state {value}"
             ))),
@@ -471,6 +471,23 @@ impl VerificationLevel {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VerificationStep {
+    pub text: String,
+    #[serde(default)]
+    pub completed: bool,
+}
+
+/// One recorded board-state transition, e.g. `in_progress` -> `in_review`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueStateEvent {
+    pub from_state: IssueBoardState,
+    pub to_state: IssueBoardState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_by_run_id: Option<String>,
+    pub occurred_at: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CreateIssueRequest {
     pub project_id: String,
     pub title: String,
@@ -486,7 +503,7 @@ pub struct CreateIssueRequest {
     #[serde(default)]
     pub verification_level: VerificationLevel,
     #[serde(default)]
-    pub verification_steps: Vec<String>,
+    pub verification_steps: Vec<VerificationStep>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -501,7 +518,7 @@ pub struct UpdateIssueRequest {
     pub dependencies: Option<Vec<String>>,
     pub blocking_facts: Option<Vec<IssueBlockingFact>>,
     pub verification_level: Option<VerificationLevel>,
-    pub verification_steps: Option<Vec<String>>,
+    pub verification_steps: Option<Vec<VerificationStep>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -518,6 +535,15 @@ pub struct ApplyIssueGateRequest {
     pub issue_number: i64,
     pub expected_revision: i64,
     pub action: IssueGateAction,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SetVerificationStepCompletedRequest {
+    pub project_id: String,
+    pub issue_key: String,
+    pub expected_revision: i64,
+    pub step_index: usize,
+    pub completed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -680,7 +706,8 @@ pub(crate) struct NativeIssue {
     pub(crate) closed_at: Option<String>,
     pub(crate) archived_at: Option<String>,
     pub(crate) verification_level: VerificationLevel,
-    pub(crate) verification_steps: Vec<String>,
+    pub(crate) verification_steps: Vec<VerificationStep>,
+    pub(crate) state_events: Vec<IssueStateEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -718,7 +745,8 @@ pub struct IssueBoardCard {
     pub latest_run: Option<AgentRun>,
     pub changed_by_run_id: Option<String>,
     pub verification_level: VerificationLevel,
-    pub verification_steps: Vec<String>,
+    pub verification_steps: Vec<VerificationStep>,
+    pub state_events: Vec<IssueStateEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -821,7 +849,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             project_id TEXT NOT NULL,
             issue_number BIGINT NOT NULL CHECK (issue_number > 0),
             open_state TEXT NOT NULL CHECK (open_state IN (
-                'todo', 'in_progress', 'paused', 'closure_requested'
+                'todo', 'in_progress', 'paused', 'in_review'
             )),
             observed_lifecycle TEXT NOT NULL CHECK (observed_lifecycle IN ('open', 'closed')),
             revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
@@ -841,7 +869,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
             external_references_json TEXT NOT NULL DEFAULT '[]',
             status TEXT NOT NULL CHECK (status IN (
-                'todo', 'in_progress', 'paused', 'closure_requested', 'done'
+                'todo', 'in_progress', 'paused', 'in_review', 'done'
             )),
             revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
             changed_by_run_id TEXT REFERENCES agent_runs(run_id),
@@ -888,6 +916,19 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
         )",
         "CREATE INDEX IF NOT EXISTS idx_issue_blocking_facts_issue
          ON issue_blocking_facts (project_id, issue_number)",
+        "CREATE TABLE IF NOT EXISTS issue_state_events (
+            event_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL,
+            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
+            occurred_at TEXT NOT NULL,
+            FOREIGN KEY (project_id, issue_number)
+                REFERENCES native_issues(project_id, issue_number) ON DELETE CASCADE
+        )",
+        "CREATE INDEX IF NOT EXISTS idx_issue_state_events_issue_occurred
+         ON issue_state_events (project_id, issue_number, occurred_at ASC, event_id ASC)",
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
@@ -1394,7 +1435,7 @@ pub(crate) async fn request_issue_closure(
     let current_issue = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
-    let is_idempotent = current_issue.board_state == IssueBoardState::ClosureRequested
+    let is_idempotent = current_issue.board_state == IssueBoardState::InReview
         && current_issue.changed_by_run_id.as_deref() == Some(run.run_id.as_str())
         && current_issue.closure_summary == request.summary;
     if is_idempotent {
@@ -1439,7 +1480,7 @@ pub(crate) async fn request_issue_closure(
         &mut tx,
         &request.project_id,
         issue_number,
-        IssueBoardState::ClosureRequested,
+        IssueBoardState::InReview,
         Some(&run.run_id),
         request.summary.as_deref(),
         &now,
@@ -1814,11 +1855,31 @@ pub(crate) async fn apply_issue_gate(
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{:03}", request.issue_number)))?;
     ensure_issue_revision(&current, request.expected_revision)?;
+    if request.action == IssueGateAction::ApproveClosure {
+        let pending = current
+            .verification_steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| (!step.completed).then_some(index))
+            .collect::<Vec<_>>();
+        if !pending.is_empty() {
+            let list = pending
+                .iter()
+                .map(|index| format!("step {}", index + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(DaemonError::InvalidRequest(format!(
+                "cannot approve ISSUE-{:03}: verification {} still incomplete: {list}",
+                request.issue_number,
+                if pending.len() == 1 { "step is" } else { "steps are" }
+            )));
+        }
+    }
     let target = match (request.action, current.board_state) {
-        (IssueGateAction::ApproveClosure, IssueBoardState::ClosureRequested) => {
+        (IssueGateAction::ApproveClosure, IssueBoardState::InReview) => {
             IssueBoardState::Done
         }
-        (IssueGateAction::RequestChanges, IssueBoardState::ClosureRequested) => {
+        (IssueGateAction::RequestChanges, IssueBoardState::InReview) => {
             IssueBoardState::InProgress
         }
         (IssueGateAction::Reopen, IssueBoardState::Done) => IssueBoardState::Todo,
@@ -1855,11 +1916,81 @@ pub(crate) async fn apply_issue_gate(
     .bind(closed_at)
     .execute(&mut *tx)
     .await?;
+    record_issue_state_event_tx(
+        &mut tx,
+        &request.project_id,
+        request.issue_number,
+        current.board_state,
+        target,
+        None,
+        &now,
+    )
+    .await?;
     tx.commit().await?;
     Ok(IssueMutationResponse {
         issue_id: current.issue_id,
         issue_key: format!("ISSUE-{:03}", request.issue_number),
         board_state: target,
+        revision,
+        updated_at: now,
+    })
+}
+
+pub(crate) async fn set_verification_step_completed(
+    pool: &SqlitePool,
+    request: SetVerificationStepCompletedRequest,
+) -> Result<IssueMutationResponse, DaemonError> {
+    validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
+    let issue_number = parse_issue_reference(&request.issue_key)?;
+    validate_revision(request.expected_revision)?;
+    let mut tx = pool.begin().await?;
+    let current = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
+    ensure_issue_revision(&current, request.expected_revision)?;
+    if current.board_state == IssueBoardState::Done {
+        return Err(DaemonError::InvalidRequest(format!(
+            "ISSUE-{issue_number:03} is Done; reopen it before editing verification steps"
+        )));
+    }
+    let mut steps = current.verification_steps.clone();
+    let step = steps.get_mut(request.step_index).ok_or_else(|| {
+        DaemonError::InvalidRequest(format!(
+            "verification step {} does not exist on ISSUE-{issue_number:03}",
+            request.step_index
+        ))
+    })?;
+    if step.completed == request.completed {
+        tx.commit().await?;
+        return Ok(IssueMutationResponse {
+            issue_id: current.issue_id,
+            issue_key: format!("ISSUE-{issue_number:03}"),
+            board_state: current.board_state,
+            revision: current.revision,
+            updated_at: current.updated_at,
+        });
+    }
+    step.completed = request.completed;
+    let steps_json = serde_json::to_string(&steps)?;
+    let revision = current.revision + 1;
+    let (now, _) = db_clock(&mut tx).await?;
+    sqlx::query(
+        "UPDATE native_issues
+         SET verification_steps_json = $3, revision = $4, updated_at = $5
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(&request.project_id)
+    .bind(issue_number)
+    .bind(steps_json)
+    .bind(revision)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(IssueMutationResponse {
+        issue_id: current.issue_id,
+        issue_key: format!("ISSUE-{issue_number:03}"),
+        board_state: current.board_state,
         revision,
         updated_at: now,
     })
@@ -2266,6 +2397,7 @@ fn native_issue_card(
         changed_by_run_id: issue.changed_by_run_id.clone(),
         verification_level: issue.verification_level,
         verification_steps: issue.verification_steps,
+        state_events: issue.state_events,
     }
 }
 
@@ -2288,6 +2420,7 @@ async fn load_native_issues(
     .await?;
     let dependencies = load_project_dependencies(pool, project_id).await?;
     let blocking_facts = load_project_blocking_facts(pool, project_id).await?;
+    let state_events = load_project_state_events(pool, project_id).await?;
     rows.iter()
         .map(|row| {
             native_issue_from_row(row).map(|mut issue| {
@@ -2299,10 +2432,42 @@ async fn load_native_issues(
                     .get(&issue.issue_number)
                     .cloned()
                     .unwrap_or_default();
+                issue.state_events = state_events
+                    .get(&issue.issue_number)
+                    .cloned()
+                    .unwrap_or_default();
                 issue
             })
         })
         .collect()
+}
+
+async fn load_project_state_events(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<BTreeMap<i64, Vec<IssueStateEvent>>, DaemonError> {
+    let rows = sqlx::query(
+        "SELECT issue_number, from_state, to_state, changed_by_run_id, occurred_at
+         FROM issue_state_events
+         WHERE project_id = $1
+         ORDER BY occurred_at ASC, event_id ASC",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let mut events: BTreeMap<i64, Vec<IssueStateEvent>> = BTreeMap::new();
+    for row in rows {
+        let issue_number: i64 = row.try_get("issue_number")?;
+        let from_state: String = row.try_get("from_state")?;
+        let to_state: String = row.try_get("to_state")?;
+        events.entry(issue_number).or_default().push(IssueStateEvent {
+            from_state: IssueBoardState::from_db(&from_state)?,
+            to_state: IssueBoardState::from_db(&to_state)?,
+            changed_by_run_id: row.try_get("changed_by_run_id")?,
+            occurred_at: row.try_get("occurred_at")?,
+        });
+    }
+    Ok(events)
 }
 
 /// All native Issue numbers, titles, and board states for a Project, including
@@ -2458,9 +2623,83 @@ fn native_issue_from_row(row: &SqliteRow) -> Result<NativeIssue, DaemonError> {
         closed_at: row.try_get("closed_at")?,
         archived_at: row.try_get("archived_at")?,
         verification_level: VerificationLevel::from_db(&verification_level)?,
-        verification_steps: serde_json::from_str(&verification_steps_json)
-            .map_err(|error| corrupt_run(format!("invalid Issue verification steps: {error}")))?,
+        verification_steps: parse_verification_steps_json(&verification_steps_json)?,
+        state_events: Vec::new(),
     })
+}
+
+fn parse_verification_steps_json(value: &str) -> Result<Vec<VerificationStep>, DaemonError> {
+    let raw: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| corrupt_run(format!("invalid Issue verification steps: {error}")))?;
+    let items = match raw {
+        serde_json::Value::Array(items) => items,
+        _ => {
+            return Err(corrupt_run(
+                "invalid Issue verification steps: expected a JSON array".to_owned(),
+            ));
+        }
+    };
+    let mut steps = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            serde_json::Value::String(text) => {
+                steps.push(VerificationStep {
+                    text,
+                    completed: false,
+                });
+            }
+            serde_json::Value::Object(map) => {
+                let text = map
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        corrupt_run(
+                            "invalid Issue verification step: missing string text".to_owned(),
+                        )
+                    })?
+                    .to_owned();
+                let completed = match map.get("completed") {
+                    Some(serde_json::Value::Bool(completed)) => *completed,
+                    Some(serde_json::Value::Number(number)) => number.as_i64() == Some(1),
+                    _ => false,
+                };
+                steps.push(VerificationStep { text, completed });
+            }
+            _ => {
+                return Err(corrupt_run(
+                    "invalid Issue verification step: expected a string or object".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(steps)
+}
+
+async fn record_issue_state_event_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    issue_number: i64,
+    from_state: IssueBoardState,
+    to_state: IssueBoardState,
+    changed_by_run_id: Option<&str>,
+    now: &str,
+) -> Result<(), DaemonError> {
+    sqlx::query(
+        "INSERT INTO issue_state_events (
+            event_id, project_id, issue_number, from_state, to_state,
+            changed_by_run_id, occurred_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(format!("isevt_{}", Uuid::new_v4().simple()))
+    .bind(project_id)
+    .bind(issue_number)
+    .bind(from_state.as_str())
+    .bind(to_state.as_str())
+    .bind(changed_by_run_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 async fn set_native_issue_state_tx(
@@ -2482,6 +2721,7 @@ async fn set_native_issue_state_tx(
     {
         return Ok(issue);
     }
+    let from_state = issue.board_state;
     issue.board_state = board_state;
     issue.revision += 1;
     issue.changed_by_run_id = changed_by_run_id.map(str::to_owned);
@@ -2508,6 +2748,16 @@ async fn set_native_issue_state_tx(
     .bind(issue.started_at.as_deref())
     .bind(issue.closed_at.as_deref())
     .execute(&mut **tx)
+    .await?;
+    record_issue_state_event_tx(
+        tx,
+        project_id,
+        issue_number,
+        from_state,
+        board_state,
+        changed_by_run_id,
+        now,
+    )
     .await?;
     Ok(issue)
 }
@@ -3983,6 +4233,7 @@ impl ParsedIssue {
             changed_by_run_id: None,
             verification_level: VerificationLevel::AgentSelf,
             verification_steps: Vec::new(),
+            state_events: Vec::new(),
         }
     }
 }
@@ -4810,8 +5061,14 @@ mod tests {
                 blocking_facts: Vec::new(),
                 verification_level: VerificationLevel::HumanRequired,
                 verification_steps: vec![
-                    "Open Settings > Coding Agents".to_owned(),
-                    "Toggle opencode and confirm install".to_owned(),
+                    VerificationStep {
+                        text: "Open Settings > Coding Agents".to_owned(),
+                        completed: false,
+                    },
+                    VerificationStep {
+                        text: "Toggle opencode and confirm install".to_owned(),
+                        completed: false,
+                    },
                 ],
             },
         )
@@ -5152,6 +5409,7 @@ mod tests {
             changed_by_run_id: None,
             verification_level: VerificationLevel::AgentSelf,
             verification_steps: Vec::new(),
+            state_events: Vec::new(),
         };
         let criteria = vec![
             "Preserve stable keys".to_owned(),
@@ -5923,7 +6181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closure_requested_requires_an_explicit_root_decision_even_after_stop() {
+    async fn in_review_requires_an_explicit_root_decision_even_after_stop() {
         let pool = run_pool().await;
         native_issue(&pool, "project-1", 3).await;
         let started = record_agent_run_event(
@@ -5995,7 +6253,7 @@ mod tests {
             expected_revision: Some(stopped.revision),
         };
         let closure = request_issue_closure(&pool, request.clone()).await.unwrap();
-        assert_eq!(closure.board_state, IssueBoardState::ClosureRequested);
+        assert_eq!(closure.board_state, IssueBoardState::InReview);
         let repeated = request_issue_closure(&pool, request).await.unwrap();
         assert_eq!(repeated.state_revision, closure.state_revision);
 
@@ -6529,7 +6787,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(closure.board_state, IssueBoardState::ClosureRequested);
+        assert_eq!(closure.board_state, IssueBoardState::InReview);
         assert_eq!(closure.run.host, AgentRunHost::Manual);
         assert_eq!(closure.run.issue_number, Some(3));
     }

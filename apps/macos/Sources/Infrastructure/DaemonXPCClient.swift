@@ -168,6 +168,12 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "apply_issue_gate", payload: request)
     }
 
+    func setVerificationStepCompleted(
+        _ request: SetVerificationStepCompletedRequest
+    ) async throws -> IssueMutationResponse {
+        try await call(method: "set_verification_step_completed", payload: request)
+    }
+
     func removeIssue(_ request: RemoveIssueRequest) async throws -> IssueRemovalResponse {
         try await call(method: "remove_issue", payload: request)
     }

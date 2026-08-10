@@ -180,6 +180,6 @@ type _daemonIssueRunContract = [
   Expect<Equals<IssueRemovalResponseSchema["action"], "archive" | "delete">>,
   Expect<Equals<StartIssueWorkRequestSchema["project_id"], string>>,
   Expect<Equals<RequestIssueClosureRequestSchema["project_id"], string>>,
-  Expect<Equals<IssueWorkflowMutationResponseSchema["board_state"], "todo" | "in_progress" | "closure_requested" | "done">>,
+  Expect<Equals<IssueWorkflowMutationResponseSchema["board_state"], "todo" | "in_progress" | "paused" | "in_review" | "done">>,
   Expect<Equals<IssueWorkflowMutationResponseSchema["issue_id"], string>>,
 ];

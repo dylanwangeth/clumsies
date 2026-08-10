@@ -855,6 +855,16 @@ impl DaemonState {
         work_tracking::apply_issue_gate(&self.inner.pool, request).await
     }
 
+    pub async fn set_verification_step_completed(
+        &self,
+        request: SetVerificationStepCompletedRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::set_verification_step_completed(&self.inner.pool, request).await
+    }
+
     pub async fn remove_issue(
         &self,
         request: RemoveIssueRequest,
@@ -1591,6 +1601,13 @@ impl DaemonIpcService {
         self.state.apply_issue_gate(request).await
     }
 
+    pub async fn set_verification_step_completed(
+        &self,
+        request: SetVerificationStepCompletedRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.state.set_verification_step_completed(request).await
+    }
+
     pub async fn remove_issue(
         &self,
         request: RemoveIssueRequest,
@@ -1775,6 +1792,9 @@ impl DaemonIpcService {
             "create_issue" => dispatch_async!(self, request.payload, create_issue),
             "update_issue" => dispatch_async!(self, request.payload, update_issue),
             "apply_issue_gate" => dispatch_async!(self, request.payload, apply_issue_gate),
+            "set_verification_step_completed" => {
+                dispatch_async!(self, request.payload, set_verification_step_completed)
+            }
             "remove_issue" => dispatch_async!(self, request.payload, remove_issue),
             "start_issue_work" => {
                 dispatch_async!(self, request.payload, start_issue_work)

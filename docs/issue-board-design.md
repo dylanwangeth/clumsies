@@ -29,7 +29,7 @@ title
 description              Markdown, Agent-authored
 acceptance_criteria_json JSON string array
 external_references_json JSON array of typed Issue/PR URL references
-status                   todo | in_progress | closure_requested | done
+status                   todo | in_progress | paused | in_review | done
 revision                 optimistic concurrency token
 changed_by_run_id?       latest semantic Agent owner/proposer
 closure_summary?
