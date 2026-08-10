@@ -531,98 +531,114 @@ struct IssueDetailView: View {
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                documentArea(issue)
-                metadataArea(issue)
+            VStack(alignment: .leading, spacing: 28) {
+                headerSection(issue)
+                bodySection(issue)
+                acceptanceCriteriaSection(issue)
+                verificationSection(issue)
+                activitySection(issue)
+                timelineSection(issue)
+                referencesSection(issue)
             }
+            .frame(maxWidth: DocumentContentMetrics.maximumWidth)
+            .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
+            .padding(.top, 28)
+            .padding(.bottom, 48)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(issue.issueKey) details")
     }
 
-    private func documentArea(_ issue: IssueBoardCard) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+    private func headerSection(_ issue: IssueBoardCard) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Text(issue.issueKey)
                     .font(.caption.monospaced().weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
                 Spacer(minLength: 4)
                 statusBadge(issue)
             }
-            .padding(.top, 8)
 
             Text(issue.title)
-                .font(.title.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+        }
+    }
 
+    private func bodySection(_ issue: IssueBoardCard) -> some View {
+        Group {
             if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Markdown(issue.description)
                     .markdownTheme(.basic)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
 
+    private func acceptanceCriteriaSection(_ issue: IssueBoardCard) -> some View {
+        detailSection("Acceptance Criteria") {
             if let detail = model.detail(for: issue),
                !detail.acceptanceCriteria.isEmpty
             {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Acceptance Criteria")
-                        .font(.headline)
-                    ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "circle")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .padding(.top, 2)
-                            Text(criteria)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "circle")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                        Text(criteria)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.top, 4)
             }
         }
-        .frame(maxWidth: 680, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 28)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func metadataArea(_ issue: IssueBoardCard) -> some View {
-        Form {
+    private func verificationSection(_ issue: IssueBoardCard) -> some View {
+        Group {
             if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
-                Section("Verification") {
-                    LabeledContent("Level") {
-                        Label(verificationLabel(issue.verificationLevel), systemImage: verificationSymbol(issue.verificationLevel))
+                detailSection("Verification") {
+                    HStack(spacing: 6) {
+                        Image(systemName: verificationSymbol(issue.verificationLevel))
                             .foregroundStyle(verificationColor(issue.verificationLevel))
+                        Text(verificationLabel(issue.verificationLevel))
+                            .foregroundStyle(.secondary)
                     }
-                    if !issue.verificationSteps.isEmpty {
-                        ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                            Text("\(index + 1). \(step)")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                    .font(.callout)
+
+                    ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
+                        Text("\(index + 1). \(step)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
+        }
+    }
 
+    private func activitySection(_ issue: IssueBoardCard) -> some View {
+        Group {
             if let changedBy = issue.changedByRunId,
                let run = issue.activeRuns.first(where: { $0.runId == changedBy })
                 ?? issue.latestRun
             {
-                Section("Activity") {
-                    LabeledContent("Last changed") {
+                detailSection("Activity") {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pencil.circle")
+                            .foregroundStyle(.tertiary)
                         Text("\(run.host.title) · \(run.runId)")
-                            .font(.caption.monospaced())
+                            .font(.callout.monospaced())
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
+
                     if !issue.activeRuns.isEmpty {
                         ForEach(Array(issue.activeRuns.prefix(5))) { activeRun in
                             AgentRunRow(run: activeRun)
@@ -635,40 +651,40 @@ struct IssueDetailView: View {
                     }
                 }
             }
+        }
+    }
 
-            Section("Timeline") {
-                ForEach(Array(timelineEntries(issue).enumerated()), id: \.offset) { _, entry in
-                    LabeledContent(entry.label) {
-                        Text(entry.absolute)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .help(entry.help)
-                    }
-                }
-            }
+    private func timelineSection(_ issue: IssueBoardCard) -> some View {
+        detailSection("Timeline") {
+            IssueTimingSummary(issue: issue)
+        }
+    }
 
+    private func referencesSection(_ issue: IssueBoardCard) -> some View {
+        Group {
             let externalReferences = IssueExternalReferencePresentation.cardPresentation(
                 for: issue.externalReferences
             )
             if !externalReferences.items.isEmpty {
-                Section("References") {
-                    ForEach(Array(externalReferences.items.enumerated()), id: \.offset) { _, item in
-                        if let url = IssueExternalReferencePresentation.destinationURL(for: item.reference) {
-                            ExternalLinkText(
-                                url: url,
-                                title: item.title,
-                                systemImage: item.kind.symbolName
-                            )
-                        } else {
-                            Label(item.title, systemImage: item.kind.symbolName)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
+                detailSection("References") {
+                    IssueExternalReferencesSummary(presentation: externalReferences)
                 }
             }
         }
-        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func detailSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            content()
+        }
     }
 
     private func statusBadge(_ issue: IssueBoardCard) -> some View {
@@ -678,26 +694,6 @@ struct IssueDetailView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(issue.boardState.iconColor.opacity(0.12), in: Capsule())
-    }
-
-    private struct TimelineEntry {
-        let label: String
-        let absolute: String
-        let help: String
-    }
-
-    private func timelineEntries(_ issue: IssueBoardCard) -> [TimelineEntry] {
-        var entries: [TimelineEntry] = []
-        if let created = issue.createdAt {
-            entries.append(TimelineEntry(label: "Created", absolute: IssueTiming.absoluteText(created) ?? "—", help: created))
-        }
-        if let started = issue.startedAt {
-            entries.append(TimelineEntry(label: "Started", absolute: IssueTiming.absoluteText(started) ?? "—", help: started))
-        }
-        if let closed = issue.closedAt {
-            entries.append(TimelineEntry(label: "Closed", absolute: IssueTiming.absoluteText(closed) ?? "—", help: closed))
-        }
-        return entries
     }
 
     private func verificationLabel(_ level: VerificationLevel) -> String {
