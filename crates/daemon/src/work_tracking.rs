@@ -1871,17 +1871,17 @@ pub(crate) async fn apply_issue_gate(
             return Err(DaemonError::InvalidRequest(format!(
                 "cannot approve ISSUE-{:03}: verification {} still incomplete: {list}",
                 request.issue_number,
-                if pending.len() == 1 { "step is" } else { "steps are" }
+                if pending.len() == 1 {
+                    "step is"
+                } else {
+                    "steps are"
+                }
             )));
         }
     }
     let target = match (request.action, current.board_state) {
-        (IssueGateAction::ApproveClosure, IssueBoardState::InReview) => {
-            IssueBoardState::Done
-        }
-        (IssueGateAction::RequestChanges, IssueBoardState::InReview) => {
-            IssueBoardState::InProgress
-        }
+        (IssueGateAction::ApproveClosure, IssueBoardState::InReview) => IssueBoardState::Done,
+        (IssueGateAction::RequestChanges, IssueBoardState::InReview) => IssueBoardState::InProgress,
         (IssueGateAction::Reopen, IssueBoardState::Done) => IssueBoardState::Todo,
         (action, state) => {
             return Err(run_conflict(format!(
@@ -2460,12 +2460,15 @@ async fn load_project_state_events(
         let issue_number: i64 = row.try_get("issue_number")?;
         let from_state: String = row.try_get("from_state")?;
         let to_state: String = row.try_get("to_state")?;
-        events.entry(issue_number).or_default().push(IssueStateEvent {
-            from_state: IssueBoardState::from_db(&from_state)?,
-            to_state: IssueBoardState::from_db(&to_state)?,
-            changed_by_run_id: row.try_get("changed_by_run_id")?,
-            occurred_at: row.try_get("occurred_at")?,
-        });
+        events
+            .entry(issue_number)
+            .or_default()
+            .push(IssueStateEvent {
+                from_state: IssueBoardState::from_db(&from_state)?,
+                to_state: IssueBoardState::from_db(&to_state)?,
+                changed_by_run_id: row.try_get("changed_by_run_id")?,
+                occurred_at: row.try_get("occurred_at")?,
+            });
     }
     Ok(events)
 }
