@@ -2027,6 +2027,79 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mcp_text_update_of_org_resource_resolves_its_real_scope() {
+        let (_temp, state) = test_state().await;
+        sqlx::query(
+            "INSERT INTO cached_refs (
+                ref_key, name, scope, org_id, project_id, commit_id, etag, server_updated_at
+             ) VALUES ('org:org_test', 'refs/heads/main', 'org', 'org_test', NULL,
+                       'commit_test', '\"commit_test\"', '2026-07-21T00:00:00Z')",
+        )
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
+        let service = DaemonIpcService::new(state);
+        let original = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["rule_testing".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap()
+            .resources
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let response = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "project",
+                    "resource": "rule",
+                    "op": {
+                        "update": {
+                            "id": "rule_testing",
+                            "expected_hash": original.content_hash,
+                            "replacements": [{
+                                "old_text": "Run integration tests.",
+                                "new_text": "Run integration and regression tests."
+                            }]
+                        }
+                    },
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(
+            response.ok,
+            "daemon rejected org text replacement envelope: {:?}",
+            response.error
+        );
+        let stored: DaemonDraftOperationResponse = serde_json::from_value(response.payload).unwrap();
+
+        let detail = service.get_draft(&stored.draft_id).await.unwrap();
+        assert_eq!(detail.draft.scope, crate::DaemonDraftScope::Org);
+
+        let loaded = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["rule_testing".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded.resources[0].content.as_deref(),
+            Some(
+                "# Testing\n\nApply when changing retrieval.\n\nRun integration and regression tests.\n\nTags: testing"
+            )
+        );
+    }
+
     #[test]
     fn draft_overlay_uses_the_complete_base_result_for_every_crud_action() {
         fn context_resource(path: &str, content: &str, commit_id: &str) -> EffectiveResource {
