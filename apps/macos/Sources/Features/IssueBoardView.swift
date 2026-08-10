@@ -426,7 +426,7 @@ struct IssueBoardView: View {
     private func board(_ response: IssueBoardResponse) -> some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
-                LazyHStack(alignment: .top, spacing: IssueBoardLayout.columnSpacing) {
+                HStack(alignment: .top, spacing: IssueBoardLayout.columnSpacing) {
                     ForEach(IssueBoardState.allCases, id: \.self) { state in
                         IssueBoardColumn(
                             state: state,
