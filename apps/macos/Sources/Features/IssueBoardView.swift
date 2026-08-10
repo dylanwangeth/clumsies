@@ -1361,11 +1361,13 @@ private struct IssueDetailInspector: View {
         VStack(alignment: .leading, spacing: 4) {
             inspectorLabel("Status")
             HStack(spacing: 6) {
-                Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+                Image(systemName: issue.boardState.symbolName)
                     .foregroundStyle(issue.boardState.iconColor)
-                    .font(.callout)
+                Text(issue.boardState.title)
+                    .foregroundStyle(.primary)
                 Spacer(minLength: 0)
             }
+            .font(.callout)
             if issue.isStale {
                 Text("Stale")
                     .font(.caption.weight(.semibold))
