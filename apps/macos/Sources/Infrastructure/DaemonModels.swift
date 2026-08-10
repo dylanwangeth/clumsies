@@ -683,6 +683,13 @@ struct SetVerificationStepCompletedRequest: Codable, Equatable, Sendable {
     let completed: Bool
 }
 
+struct UnclaimIssueRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueKey: String
+    let expectedRevision: Int
+    let runId: String
+}
+
 struct VerificationStep: Codable, Equatable, Hashable, Sendable {
     let text: String
     var completed: Bool

@@ -438,6 +438,7 @@ struct IssueBoardView: View {
                             onOpenExternalReference: openExternalReference,
                             onCopyExternalReference: copyExternalReference,
                             onGate: applyGate,
+                            onUnclaim: unclaim,
                             onArchive: { remove(.archive, issue: $0) },
                             onDelete: { pendingDeletion = $0 }
                         )
@@ -465,6 +466,22 @@ struct IssueBoardView: View {
             defer { mutatingIssueId = nil }
             do {
                 try await model.applyGate(action, to: issue)
+            } catch {
+                mutationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func unclaim(_ issue: IssueBoardCard) {
+        guard mutatingIssueId == nil else { return }
+        mutatingIssueId = issue.id
+        Task {
+            defer { mutatingIssueId = nil }
+            do {
+                try await model.unclaim(issue)
+                if selectedIssueId == issue.id {
+                    selectedIssueId = nil
+                }
             } catch {
                 mutationError = error.localizedDescription
             }
@@ -514,6 +531,7 @@ struct IssueDetailView: View {
     let issueId: String
     @ObservedObject var model: IssueBoardModel
     var onGate: ((IssueGateAction, IssueBoardCard) -> Void)?
+    var onUnclaim: ((IssueBoardCard) -> Void)?
     var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
     var onArchive: ((IssueBoardCard) -> Void)?
     var onDelete: ((IssueBoardCard) -> Void)?
@@ -551,8 +569,14 @@ struct IssueDetailView: View {
     private func gateMenu(_ issue: IssueBoardCard) -> some View {
         Menu {
             switch issue.boardState {
-            case .todo, .inProgress, .paused:
+            case .todo:
                 EmptyView()
+            case .inProgress, .paused:
+                if let onUnclaim {
+                    Button("Release to Todo", systemImage: "arrow.uturn.backward") {
+                        onUnclaim(issue)
+                    }
+                }
             case .inReview:
                 Button("Approve", systemImage: "checkmark.circle") {
                     onGate?(.approveClosure, issue)
@@ -640,6 +664,7 @@ private struct IssueBoardColumn: View {
     let onOpenExternalReference: (IssueExternalReference) -> Void
     let onCopyExternalReference: (IssueExternalReference) -> Void
     let onGate: (IssueGateAction, IssueBoardCard) -> Void
+    let onUnclaim: (IssueBoardCard) -> Void
     let onArchive: (IssueBoardCard) -> Void
     let onDelete: (IssueBoardCard) -> Void
 
@@ -734,7 +759,13 @@ private struct IssueBoardColumn: View {
                             Divider()
 
                             switch issue.boardState {
-                            case .todo, .inProgress, .paused:
+                            case .todo:
+                                deleteButton(issue)
+                            case .inProgress, .paused:
+                                Button("Release to Todo", systemImage: "arrow.uturn.backward") {
+                                    onUnclaim(issue)
+                                }
+                                Divider()
                                 deleteButton(issue)
                             case .inReview:
                                 Button("Approve", systemImage: "checkmark.circle") {

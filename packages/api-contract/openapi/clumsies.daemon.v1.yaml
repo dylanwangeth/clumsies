@@ -79,6 +79,7 @@ components:
         - update_issue
         - apply_issue_gate
         - set_verification_step_completed
+        - unclaim_issue
         - remove_issue
         - start_issue_work
         - request_issue_closure
