@@ -77,7 +77,7 @@ impl DaemonState {
         reset_memory_cache_if_required(&pool, &config.cache_dir).await?;
         recover_interrupted_operations(&pool).await?;
         retrieval_history::recover_interrupted_runs(&pool).await?;
-        work_tracking::recover_expired_runs(&pool).await?;
+        work_tracking::recover_stale_runs(&pool).await?;
         let daemon_installation_id = load_or_create_installation_id(&pool).await?;
         let credentials =
             load_startup_credentials(credential_store.clone(), STARTUP_CREDENTIAL_LOAD_TIMEOUT)
@@ -1344,6 +1344,21 @@ impl DaemonState {
         if self.inner.config.sync.enabled {
             self.inner.sync_notify.notify_one();
         }
+    }
+
+    /// Periodically persists the lease-expired and Done-bound run
+    /// transitions so Activity never shows a permanently Running or
+    /// Unknown run (see work_tracking::recover_stale_runs).
+    pub fn start_run_reaper(&self) -> JoinHandle<()> {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let _ = work_tracking::recover_stale_runs(&state.inner.pool).await;
+            }
+        })
     }
 
     async fn run_sync_cycle(&self, retry_transient_failures: bool) -> Result<(), DaemonError> {
