@@ -683,6 +683,7 @@ private struct IssueBoardColumn: View {
                                 .onEnded { onOpenDetails(issue) }
                         )
                         .focusable()
+                        .focusEffectDisabled()
                         .help("\(issue.issueKey): \(issue.title). Double-click to view details.")
                         .accessibilityIdentifier("issue-card-\(issue.issueKey)")
                         .accessibilityLabel(accessibilityLabel(for: issue))
@@ -1329,6 +1330,7 @@ private struct VerificationStepsSection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .disabled(isDisabled)
             }
         }
