@@ -531,18 +531,149 @@ struct IssueDetailView: View {
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                headerSection(issue)
-                bodySection(issue)
-                acceptanceCriteriaSection(issue)
-                verificationSection(issue)
-                activitySection(issue)
-                timelineSection(issue)
-                referencesSection(issue)
+            VStack(alignment: .leading, spacing: 0) {
+                // ── Title bar ──
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(issue.issueKey)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.tertiary)
+
+                    Text(issue.title)
+                        .font(.title.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // ── Status strip ──
+                HStack(spacing: 16) {
+                    Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+                        .foregroundStyle(issue.boardState.iconColor)
+
+                    Divider()
+                        .frame(height: 14)
+
+                    if let started = issue.startedAt,
+                       let relative = IssueTiming.relativeText(started, relativeTo: .now)
+                    {
+                        Label(relative, systemImage: "clock")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if issue.isStale {
+                        Label("Stale", systemImage: "clock.badge.exclamationmark")
+                            .foregroundStyle(.orange)
+                    }
+
+                    if issue.blocked {
+                        Label("Blocked", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .padding(.top, 10)
+
+                Divider()
+                    .padding(.top, 14)
+                    .padding(.bottom, 20)
+
+                // ── Body ──
+                if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Markdown(issue.description)
+                        .markdownTheme(.basic)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, 24)
+                }
+
+                // ── Acceptance Criteria ──
+                if let detail = model.detail(for: issue),
+                   !detail.acceptanceCriteria.isEmpty
+                {
+                    infoBlock("Acceptance Criteria") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text("•")
+                                        .foregroundStyle(.tertiary)
+                                    Text(criteria)
+                                        .font(.body)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Closure summary ──
+                if let summary = issue.closureSummary, !summary.isEmpty {
+                    infoBlock("Closure Summary") {
+                        Text(summary)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                // ── Verification ──
+                if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
+                    infoBlock("Verification") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label {
+                                Text(verificationLabel(issue.verificationLevel))
+                            } icon: {
+                                Image(systemName: verificationSymbol(issue.verificationLevel))
+                            }
+                            .foregroundStyle(verificationColor(issue.verificationLevel))
+
+                            ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
+                                Text("\(index + 1). \(step)")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+
+                // ── Agent activity ──
+                if !issue.activeRuns.isEmpty || issue.latestRun != nil {
+                    infoBlock("Agent Activity") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(issue.activeRuns.prefix(3))) { run in
+                                AgentRunRow(run: run)
+                            }
+                            if issue.activeRuns.isEmpty, let latest = issue.latestRun {
+                                AgentRunRow(run: latest)
+                            }
+                            if issue.activeRuns.count > 3 {
+                                Text("+\(issue.activeRuns.count - 3) more")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+
+                // ── External references ──
+                let externalReferences = IssueExternalReferencePresentation.cardPresentation(
+                    for: issue.externalReferences
+                )
+                if !externalReferences.items.isEmpty {
+                    infoBlock("Linked") {
+                        IssueExternalReferencesSummary(presentation: externalReferences)
+                    }
+                }
             }
             .frame(maxWidth: DocumentContentMetrics.maximumWidth)
             .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
-            .padding(.top, 28)
+            .padding(.top, 32)
             .padding(.bottom, 48)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -550,165 +681,33 @@ struct IssueDetailView: View {
         .accessibilityLabel("\(issue.issueKey) details")
     }
 
-    private func headerSection(_ issue: IssueBoardCard) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Text(issue.issueKey)
-                    .font(.caption.monospaced().weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                Spacer(minLength: 4)
-                statusBadge(issue)
-            }
-
-            Text(issue.title)
-                .font(.title2.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-    }
-
-    private func bodySection(_ issue: IssueBoardCard) -> some View {
-        Group {
-            if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Markdown(issue.description)
-                    .markdownTheme(.basic)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func acceptanceCriteriaSection(_ issue: IssueBoardCard) -> some View {
-        detailSection("Acceptance Criteria") {
-            if let detail = model.detail(for: issue),
-               !detail.acceptanceCriteria.isEmpty
-            {
-                ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "circle")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                        Text(criteria)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-
-    private func verificationSection(_ issue: IssueBoardCard) -> some View {
-        Group {
-            if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
-                detailSection("Verification") {
-                    HStack(spacing: 6) {
-                        Image(systemName: verificationSymbol(issue.verificationLevel))
-                            .foregroundStyle(verificationColor(issue.verificationLevel))
-                        Text(verificationLabel(issue.verificationLevel))
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.callout)
-
-                    ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                        Text("\(index + 1). \(step)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-
-    private func activitySection(_ issue: IssueBoardCard) -> some View {
-        Group {
-            if let changedBy = issue.changedByRunId,
-               let run = issue.activeRuns.first(where: { $0.runId == changedBy })
-                ?? issue.latestRun
-            {
-                detailSection("Activity") {
-                    HStack(spacing: 6) {
-                        Image(systemName: "pencil.circle")
-                            .foregroundStyle(.tertiary)
-                        Text("\(run.host.title) · \(run.runId)")
-                            .font(.callout.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-
-                    if !issue.activeRuns.isEmpty {
-                        ForEach(Array(issue.activeRuns.prefix(5))) { activeRun in
-                            AgentRunRow(run: activeRun)
-                        }
-                        if issue.activeRuns.count > 5 {
-                            Text("+\(issue.activeRuns.count - 5) more active runs")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func timelineSection(_ issue: IssueBoardCard) -> some View {
-        detailSection("Timeline") {
-            IssueTimingSummary(issue: issue)
-        }
-    }
-
-    private func referencesSection(_ issue: IssueBoardCard) -> some View {
-        Group {
-            let externalReferences = IssueExternalReferencePresentation.cardPresentation(
-                for: issue.externalReferences
-            )
-            if !externalReferences.items.isEmpty {
-                detailSection("References") {
-                    IssueExternalReferencesSummary(presentation: externalReferences)
-                }
-            }
-        }
-    }
-
     @ViewBuilder
-    private func detailSection<Content: View>(
+    private func infoBlock<Content: View>(
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.tertiary)
             content()
         }
-    }
-
-    private func statusBadge(_ issue: IssueBoardCard) -> some View {
-        Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(issue.boardState.iconColor)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(issue.boardState.iconColor.opacity(0.12), in: Capsule())
+        .padding(.bottom, 20)
     }
 
     private func verificationLabel(_ level: VerificationLevel) -> String {
         switch level {
-        case .agentSelf: "Agent self"
-        case .humanRequired: "Human required"
-        case .mixed: "Mixed"
+        case .agentSelf: "Agent self-verified"
+        case .humanRequired: "Human verification required"
+        case .mixed: "Mixed verification"
         }
     }
 
     private func verificationSymbol(_ level: VerificationLevel) -> String {
         switch level {
-        case .agentSelf: "checkmark.circle"
-        case .humanRequired: "person.crop.circle.badge.exclamationmark"
-        case .mixed: "checkmark.circle.badge.person.crop"
+        case .agentSelf: "checkmark.seal"
+        case .humanRequired: "person.crop.circle.badge.questionmark"
+        case .mixed: "checkmark.seal.fill"
         }
     }
 
