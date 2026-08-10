@@ -505,6 +505,9 @@ struct IssueBoardView: View {
 struct IssueDetailView: View {
     let issueId: String
     @ObservedObject var model: IssueBoardModel
+    var onGate: ((IssueGateAction, IssueBoardCard) -> Void)?
+    var onArchive: ((IssueBoardCard) -> Void)?
+    var onDelete: ((IssueBoardCard) -> Void)?
 
     private var issue: IssueBoardCard? {
         model.issues.first { $0.id == issueId }
@@ -518,6 +521,11 @@ struct IssueDetailView: View {
                         await model.loadDetail(issue)
                     }
                     .navigationTitle(issue.issueKey)
+                    .toolbar {
+                        ToolbarItemGroup(placement: .primaryAction) {
+                            gateMenu(issue)
+                        }
+                    }
             } else {
                 ContentUnavailableView {
                     Label("Issue Unavailable", systemImage: "doc.text.magnifyingglass")
@@ -530,9 +538,42 @@ struct IssueDetailView: View {
         .background(IssueBoardSurface.background)
     }
 
+    @ViewBuilder
+    private func gateMenu(_ issue: IssueBoardCard) -> some View {
+        Menu {
+            switch issue.boardState {
+            case .todo, .inProgress, .paused:
+                EmptyView()
+            case .closureRequested:
+                Button("Approve Closure", systemImage: "checkmark.circle") {
+                    onGate?(.approveClosure, issue)
+                }
+                Button("Request Changes", systemImage: "arrow.uturn.backward.circle") {
+                    onGate?(.requestChanges, issue)
+                }
+            case .done:
+                Button("Reopen", systemImage: "arrow.counterclockwise") {
+                    onGate?(.reopen, issue)
+                }
+                if let onArchive {
+                    Button("Archive", systemImage: "archivebox") {
+                        onArchive(issue)
+                    }
+                }
+            }
+            if let onDelete {
+                Divider()
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    onDelete(issue)
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+    }
+
     private func issueContent(_ issue: IssueBoardCard) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            // Main column: title, status, body
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(issue.title)
@@ -596,7 +637,6 @@ struct IssueDetailView: View {
                 .padding(.bottom, 48)
             }
 
-            // Inspector column
             IssueDetailInspector(issue: issue, detail: model.detail(for: issue))
                 .frame(width: 240)
                 .background(Color(nsColor: .controlBackgroundColor))
@@ -1215,8 +1255,7 @@ private struct IssueDetailInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                statusRow
+            VStack(alignment: .leading, spacing: 18) {
                 timelineRow
                 verificationRow
                 activityRow
@@ -1316,16 +1355,16 @@ private struct IssueDetailInspector: View {
 
     private func inspectorLabel(_ text: String) -> some View {
         Text(text)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(.tertiary)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.secondary)
     }
 
     private func inspectorDate(_ label: String, _ iso: String) -> some View {
         HStack {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.callout).foregroundStyle(.secondary)
             Spacer(minLength: 4)
             Text(IssueTiming.absoluteText(iso) ?? "—")
-                .font(.caption.monospaced())
+                .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
         }
     }

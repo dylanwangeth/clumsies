@@ -436,7 +436,18 @@ struct WorkspaceView: View {
                 .navigationDestination(for: IssueBoardRoute.self) { route in
                     IssueDetailView(
                         issueId: route.issueId,
-                        model: issueBoardModel
+                        model: issueBoardModel,
+                        onGate: { action, issue in
+                            Task {
+                                do {
+                                    try await issueBoardModel.applyGate(action, to: issue)
+                                } catch {
+                                    store.errorMessage = error.localizedDescription
+                                }
+                            }
+                        },
+                        onArchive: nil,
+                        onDelete: nil
                     )
                 }
             }
