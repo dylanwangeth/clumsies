@@ -146,7 +146,7 @@ type _daemonIssueRunMethods = [
 ];
 
 type _daemonIssueRunContract = [
-  Expect<Equals<DaemonSchemas["AgentRunHost"], "codex" | "claude-code">>,
+  Expect<Equals<DaemonSchemas["AgentRunHost"], "codex" | "claude-code" | "zed" | "manual" | "opencode">>,
   Expect<Equals<DaemonSchemas["IssueExternalReferenceKind"], "issue" | "pull_request">>,
   Expect<Equals<
     DaemonSchemas["AgentRunEventType"],

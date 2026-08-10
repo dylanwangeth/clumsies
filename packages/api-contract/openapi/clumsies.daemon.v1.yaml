@@ -2123,7 +2123,7 @@ components:
       enum: [codex, claude-code]
     AgentRunHost:
       type: string
-      enum: [codex, claude-code]
+      enum: [codex, claude-code, zed, manual, opencode]
     AgentRunKind:
       type: string
       enum: [root, subagent]

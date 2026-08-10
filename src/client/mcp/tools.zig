@@ -661,14 +661,15 @@ fn validateIssueBeginWork(
     if (!isIssueKey(issue_key)) {
         return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
     }
-    const run_id = optionalString(args, "run_id");
-    if (run_id) |value| {
-        if (value.len == 0 or value.len > 256) {
-            return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
-        }
-        if (optionalRevision(args, "expected_revision") == null) {
-            return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
-        }
+    // AgentRuns must be issued by a host lifecycle hook; an Agent cannot
+    // mint its own identity (ISSUE-039).
+    const run_id = requiredString(args, "run_id") orelse
+        return try tool_result.buildErrorResult(allocator, "run_id is required: AgentRuns must be issued by a host lifecycle hook");
+    if (run_id.len == 0 or run_id.len > 256) {
+        return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+    }
+    if (optionalRevision(args, "expected_revision") == null) {
+        return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
     }
     return null;
 }
@@ -698,16 +699,15 @@ fn validateIssueClosureRequest(
             return try tool_result.buildErrorResult(allocator, "summary must not exceed 1000 UTF-8 bytes");
         }
     }
-    const run_id = optionalString(args, "run_id");
-    if (run_id) |value| {
-        if (value.len == 0 or value.len > 256) {
-            return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
-        }
-        if (optionalRevision(args, "expected_revision") == null) {
-            return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
-        }
-    } else if (args.get("issue_key") == null) {
-        return try tool_result.buildErrorResult(allocator, "issue_key is required when run_id is omitted");
+    // AgentRuns must be issued by a host lifecycle hook; an Agent cannot
+    // mint its own identity (ISSUE-039).
+    const run_id = requiredString(args, "run_id") orelse
+        return try tool_result.buildErrorResult(allocator, "run_id is required: AgentRuns must be issued by a host lifecycle hook");
+    if (run_id.len == 0 or run_id.len > 256) {
+        return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+    }
+    if (optionalRevision(args, "expected_revision") == null) {
+        return try tool_result.buildErrorResult(allocator, "expected_revision is required when run_id is provided");
     }
     return null;
 }
@@ -1279,7 +1279,9 @@ test "issue validates tagged start and request_closure inputs before daemon IPC"
         .{},
     );
     defer without_run.deinit();
-    try testing.expect((try validateIssueBeginWork(testing.allocator, without_run.value.object)) == null);
+    const without_run_error = (try validateIssueBeginWork(testing.allocator, without_run.value.object)).?;
+    defer testing.allocator.free(without_run_error);
+    try testing.expect(std.mem.indexOf(u8, without_run_error, "run_id is required") != null);
 
     const github_number = try std.json.parseFromSlice(
         std.json.Value,
