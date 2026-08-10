@@ -1238,7 +1238,6 @@ private struct IssueTimelineEvent: Identifiable {
     let id: Int
     let label: String
     let timestamp: String
-    let tint: Color
 }
 
 private struct TimelineEventRow: View {
@@ -1255,30 +1254,25 @@ private struct TimelineEventRow: View {
                         .padding(.top, 10)
                 }
                 Circle()
-                    .fill(event.tint)
+                    .fill(Color.secondary.opacity(0.6))
                     .frame(width: 7, height: 7)
                     .padding(.top, 2)
             }
             .frame(width: 7)
 
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(event.label)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(event.tint)
-                    if let relative = IssueTiming.relativeText(event.timestamp, relativeTo: .now) {
-                        Text(relative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let absolute = IssueTiming.absoluteText(event.timestamp) {
-                    Text(absolute)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
-                }
+                Text(event.label)
+                    .font(.callout)
+                Text(IssueTiming.absoluteText(event.timestamp) ?? "—")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            if let relative = IssueTiming.relativeText(event.timestamp, relativeTo: .now) {
+                Text(relative)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 2)
         .fixedSize(horizontal: false, vertical: true)
@@ -1346,57 +1340,37 @@ private struct IssueDetailInspector: View {
         var nextId = 0
         if let created = issue.createdAt {
             result.append(
-                IssueTimelineEvent(
-                    id: nextId,
-                    label: "Created",
-                    timestamp: created,
-                    tint: .secondary
-                )
+                IssueTimelineEvent(id: nextId, label: "Created", timestamp: created)
             )
             nextId += 1
         }
         var hasSeenStart = false
         for event in issue.stateEvents {
-            let (label, tint): (String, Color) = switch event.toState {
-            case .inProgress: (hasSeenStart ? "Resumed" : "Started", .accentColor)
-            case .paused: ("Paused", .orange)
-            case .inReview: ("In Review", .blue)
-            case .done: ("Done", .green)
-            case .todo: ("Reopened", .secondary)
+            let label = switch event.toState {
+            case .inProgress: hasSeenStart ? "Resumed" : "Started"
+            case .paused: "Paused"
+            case .inReview: "In Review"
+            case .done: "Done"
+            case .todo: "Reopened"
             }
             if event.toState == .inProgress {
                 hasSeenStart = true
             }
             result.append(
-                IssueTimelineEvent(
-                    id: nextId,
-                    label: label,
-                    timestamp: event.occurredAt,
-                    tint: tint
-                )
+                IssueTimelineEvent(id: nextId, label: label, timestamp: event.occurredAt)
             )
             nextId += 1
         }
         if issue.stateEvents.isEmpty {
             if let started = issue.startedAt {
                 result.append(
-                    IssueTimelineEvent(
-                        id: nextId,
-                        label: "Started",
-                        timestamp: started,
-                        tint: .accentColor
-                    )
+                    IssueTimelineEvent(id: nextId, label: "Started", timestamp: started)
                 )
                 nextId += 1
             }
             if let closed = issue.closedAt {
                 result.append(
-                    IssueTimelineEvent(
-                        id: nextId,
-                        label: "Done",
-                        timestamp: closed,
-                        tint: .green
-                    )
+                    IssueTimelineEvent(id: nextId, label: "Done", timestamp: closed)
                 )
             }
         }
@@ -1430,20 +1404,24 @@ private struct IssueDetailInspector: View {
                 .foregroundStyle(verifColor)
                 .font(.callout)
                 ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                    Toggle(isOn: Binding(
-                        get: { step.completed },
-                        set: { completed in
-                            onToggleVerificationStep?(issue, index, completed)
+                    Button {
+                        onToggleVerificationStep?(issue, index, !step.completed)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: step.completed ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(
+                                    step.completed ? Color.accentColor : Color.secondary
+                                )
+                            Text(step.text)
+                                .font(.callout)
+                                .foregroundStyle(step.completed ? .secondary : .primary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    )) {
-                        Text(step.text)
-                            .font(.callout)
-                            .strikethrough(step.completed)
-                            .foregroundStyle(step.completed ? .secondary : .primary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .contentShape(Rectangle())
                     }
-                    .toggleStyle(.checkbox)
+                    .buttonStyle(.plain)
                     .disabled(issue.boardState == .done)
                 }
                 if issue.hasIncompleteVerificationSteps {
