@@ -1443,7 +1443,7 @@ private struct IssueDetailInspector: View {
                 inspectorLabel("Review Summary")
                 Text(summary)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
