@@ -236,6 +236,7 @@ struct WorkspaceView: View {
                             } label: {
                                 Image(systemName: "ellipsis")
                             }
+                            .menuIndicator(.hidden)
                             .help("Bundle Actions")
                         }
 

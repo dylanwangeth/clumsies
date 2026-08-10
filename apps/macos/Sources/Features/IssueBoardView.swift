@@ -570,6 +570,7 @@ struct IssueDetailView: View {
         } label: {
             Image(systemName: "ellipsis")
         }
+        .menuIndicator(.hidden)
     }
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {

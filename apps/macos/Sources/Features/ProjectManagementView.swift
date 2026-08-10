@@ -409,6 +409,7 @@ private struct ProjectLocalSetupSettings: View {
                         } label: {
                             Image(systemName: "ellipsis")
                         }
+                        .menuIndicator(.hidden)
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                         .help("Repository Actions")
