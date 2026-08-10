@@ -2079,7 +2079,8 @@ mod tests {
             "daemon rejected org text replacement envelope: {:?}",
             response.error
         );
-        let stored: DaemonDraftOperationResponse = serde_json::from_value(response.payload).unwrap();
+        let stored: DaemonDraftOperationResponse =
+            serde_json::from_value(response.payload).unwrap();
 
         let detail = service.get_draft(&stored.draft_id).await.unwrap();
         assert_eq!(detail.draft.scope, crate::DaemonDraftScope::Org);
@@ -2121,7 +2122,10 @@ mod tests {
             discarded.error
         );
         let detail = service.get_draft(&stored.draft_id).await.unwrap();
-        assert_eq!(detail.draft.status, crate::DaemonLocalDraftStatus::Discarded);
+        assert_eq!(
+            detail.draft.status,
+            crate::DaemonLocalDraftStatus::Discarded
+        );
 
         let reverted = service
             .load_memory(LoadMemoryRequest {
@@ -2131,7 +2135,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(reverted.resources[0].content.as_deref(), original.content.as_deref());
+        assert_eq!(
+            reverted.resources[0].content.as_deref(),
+            original.content.as_deref()
+        );
     }
 
     #[test]
