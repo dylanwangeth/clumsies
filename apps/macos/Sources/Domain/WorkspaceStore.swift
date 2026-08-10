@@ -168,6 +168,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedReviewId: String?
     @Published var searchQuery = ""
     @Published var showsGlobalSearch = false
+    @Published var issueSearchFocusToken = UUID()
     @Published var showsProjectCreation = false
     @Published var showsProjectSettings = false
     @Published var sidebarExpanded = true
@@ -589,6 +590,10 @@ final class WorkspaceStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func focusIssueSearch() {
+        issueSearchFocusToken = UUID()
     }
 
     func prepareWorkspaceIndex(includeContent: Bool) async {

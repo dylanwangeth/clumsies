@@ -655,6 +655,130 @@ final class IssueBoardModelTests: XCTestCase {
         XCTAssertNil(model.detailError(for: issue))
     }
 
+    func testSearchFiltersIssuesByKeyNumberTitleAndDescription() async {
+        let response = IssueBoardResponse(
+            projectId: "project-1",
+            effectiveHash: "sha256:effective",
+            issues: [
+                makeIssue(
+                    projectId: "project-1",
+                    issueNumber: 7,
+                    title: "Native Issue board",
+                    description: "A board rendered from native Issues."
+                ),
+                makeIssue(
+                    projectId: "project-1",
+                    issueNumber: 42,
+                    title: "Sync reliability",
+                    description: "Retry syncs when the daemon is unavailable."
+                ),
+                makeIssue(
+                    projectId: "project-1",
+                    issueNumber: 43,
+                    title: "Page search independence",
+                    description: "Each page searches only its own domain."
+                ),
+            ],
+            unlinkedRuns: [],
+            diagnostics: []
+        )
+        let model = IssueBoardModel { _ in response }
+        await model.loadOnce(projectId: "project-1")
+
+        model.searchQuery = "ISSUE-042"
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [42])
+
+        model.searchQuery = "board"
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [7])
+
+        model.searchQuery = "43"
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [43])
+
+        model.searchQuery = "own domain"
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [43])
+
+        model.searchQuery = "   "
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [7, 42, 43])
+    }
+
+    func testSearchComposesWithStateAndToggleFilters() async {
+        let matching = makeIssue(
+            projectId: "project-1",
+            issueNumber: 1,
+            title: "Searchable blocked stale board issue"
+        )
+        let response = IssueBoardResponse(
+            projectId: "project-1",
+            effectiveHash: "sha256:effective",
+            issues: [
+                IssueBoardCard(
+                    issueId: matching.issueId,
+                    projectId: matching.projectId,
+                    issueNumber: matching.issueNumber,
+                    issueKey: matching.issueKey,
+                    resourceId: matching.resourceId,
+                    path: matching.path,
+                    lifecycle: matching.lifecycle,
+                    title: matching.title,
+                    description: matching.description,
+                    descriptionExcerpt: matching.descriptionExcerpt,
+                    externalReferences: [],
+                    foundAt: matching.foundAt,
+                    createdAt: matching.createdAt,
+                    startedAt: matching.startedAt,
+                    closedAt: matching.closedAt,
+                    archivedAt: matching.archivedAt,
+                    contentHash: matching.contentHash,
+                    sourceCommitId: matching.sourceCommitId,
+                    draftId: matching.draftId,
+                    draftRevision: matching.draftRevision,
+                    boardState: .todo,
+                    stateRevision: matching.stateRevision,
+                    stateUpdatedAt: matching.stateUpdatedAt,
+                    closureSummary: matching.closureSummary,
+                    isStale: true,
+                    blocked: true,
+                    blockingReasons: [],
+                    dependencies: [],
+                    blockingFacts: [],
+                    activeRuns: [],
+                    latestRun: nil,
+                    changedByRunId: nil,
+                    verificationLevel: .agentSelf,
+                    verificationSteps: [],
+                    stateEvents: []
+                ),
+                makeIssue(
+                    projectId: "project-1",
+                    issueNumber: 2,
+                    title: "Searchable healthy issue"
+                ),
+                makeIssue(
+                    projectId: "project-1",
+                    issueNumber: 3,
+                    title: "Unrelated issue"
+                ),
+            ],
+            unlinkedRuns: [],
+            diagnostics: []
+        )
+        let model = IssueBoardModel { _ in response }
+        await model.loadOnce(projectId: "project-1")
+
+        model.searchQuery = "searchable"
+        XCTAssertEqual(model.matchingIssues.map(\.issueNumber), [1, 2])
+        XCTAssertEqual(model.issues(in: .todo).map(\.issueNumber), [1])
+        XCTAssertEqual(model.issues(in: .inProgress).map(\.issueNumber), [2])
+        XCTAssertTrue(model.issues(in: .done).isEmpty)
+
+        model.showsStaleOnly = true
+        XCTAssertEqual(model.issues(in: .todo).map(\.issueNumber), [1])
+        XCTAssertTrue(model.issues(in: .inProgress).isEmpty)
+
+        model.showsBlockedOnly = true
+        XCTAssertEqual(model.issues(in: .todo).map(\.issueNumber), [1])
+    }
+
     private func makeBoardResponse(
         projectId: String,
         isStale: Bool = false,
@@ -678,8 +802,13 @@ final class IssueBoardModelTests: XCTestCase {
         projectId: String,
         issueNumber: Int = 1,
         isStale: Bool = false,
-        externalReferences: [IssueExternalReference] = []
+        externalReferences: [IssueExternalReference] = [],
+        title: String? = nil,
+        description: String? = nil
     ) -> IssueBoardCard {
+        let resolvedTitle = title ?? "Issue board \(issueNumber)"
+        let resolvedDescription = description
+            ?? "Explain the durable problem to users and Agents."
         let run = AgentRun(
             runId: "run-\(issueNumber)",
             projectId: projectId,
@@ -708,9 +837,9 @@ final class IssueBoardModelTests: XCTestCase {
             resourceId: "context-\(issueNumber)",
             path: String(format: "issues/open/%03d_issue_board.md", issueNumber),
             lifecycle: .open,
-            title: "Issue board \(issueNumber)",
-            description: "Explain the durable problem to users and Agents.",
-            descriptionExcerpt: "Explain the durable problem to users and Agents.",
+            title: resolvedTitle,
+            description: resolvedDescription,
+            descriptionExcerpt: resolvedDescription,
             externalReferences: externalReferences,
             foundAt: nil,
             createdAt: "2026-08-05T23:00:00Z",

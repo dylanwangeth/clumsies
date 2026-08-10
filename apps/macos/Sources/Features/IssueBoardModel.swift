@@ -35,6 +35,7 @@ final class IssueBoardModel: ObservableObject {
     @Published var showsBlockedOnly = false
     @Published var showsExternalIssuesOnly = false
     @Published var showsPullRequestsOnly = false
+    @Published var searchQuery = ""
 
     private let loader: Loader
     private let detailLoader: DetailLoader
@@ -88,14 +89,26 @@ final class IssueBoardModel: ObservableObject {
         response?.diagnostics ?? []
     }
 
+    var matchingIssues: [IssueBoardCard] {
+        let needle = searchNeedle
+        guard !needle.isEmpty else { return issues }
+        return issues.filter { $0.matches(query: needle) }
+    }
+
     func issues(in state: IssueBoardState) -> [IssueBoardCard] {
-        issues.filter { issue in
+        let needle = searchNeedle
+        return issues.filter { issue in
             issue.boardState == state
+                && (needle.isEmpty || issue.matches(query: needle))
                 && (!showsStaleOnly || issue.isStale)
                 && (!showsBlockedOnly || issue.blocked)
                 && (!showsExternalIssuesOnly || issue.hasExternalReference(kind: .issue))
                 && (!showsPullRequestsOnly || issue.hasExternalReference(kind: .pullRequest))
         }
+    }
+
+    private var searchNeedle: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
     }
 
     var hasExternalReferenceFilters: Bool {
@@ -307,5 +320,9 @@ final class IssueBoardModel: ObservableObject {
 private extension IssueBoardCard {
     func hasExternalReference(kind: IssueExternalReferenceKind) -> Bool {
         externalReferences.contains { $0.kind == kind }
+    }
+
+    func matches(query needle: String) -> Bool {
+        "\(issueKey) \(issueNumber) \(title) \(description)".localizedLowercase.contains(needle)
     }
 }

@@ -112,6 +112,7 @@ struct WorkspaceView: View {
     @State private var showsUnlinkedActivity = false
     @State private var showsIssueWorkflowHelp = false
     @State private var issueNavigationPath: [IssueBoardRoute] = []
+    @FocusState private var issueSearchFocused: Bool
 
     init(
         store: WorkspaceStore,
@@ -473,6 +474,11 @@ struct WorkspaceView: View {
                     }
 
                     ToolbarItemGroup(placement: .primaryAction) {
+                        IssueSearchField(
+                            text: $issueBoardModel.searchQuery,
+                            isFocused: $issueSearchFocused
+                        )
+
                         Toggle(isOn: $issueBoardModel.showsStaleOnly) {
                             Label("Stale", systemImage: "clock.badge.exclamationmark")
                         }
@@ -546,21 +552,6 @@ struct WorkspaceView: View {
                                 }
                             }
                         }
-
-                        Button {
-                            store.showsGlobalSearch.toggle()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .help("Search")
-                        .accessibilityLabel("Search")
-                        .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
-                            WorkspaceSearchPopover(
-                                store: store,
-                                results: searchResults,
-                                onOpen: open
-                            )
-                        }
                     }
                 }
             }
@@ -572,9 +563,8 @@ struct WorkspaceView: View {
                 issueSplitVisibility = target
             }
         }
-        .onChange(of: store.searchQuery) { _, query in
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            Task { await store.prepareWorkspaceIndex(includeContent: true) }
+        .onChange(of: store.issueSearchFocusToken) { _, _ in
+            issueSearchFocused = true
         }
         .onChange(of: issueSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
@@ -761,6 +751,38 @@ struct WorkspaceView: View {
         let needle = store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
         guard !needle.isEmpty else { return [] }
         var entries: [SearchEntry] = []
+        switch store.selectedSection {
+        case .hub:
+            entries = memorySearchEntries(needle: needle) { $0.scope == .org }
+        case .local:
+            let inheritedIds = store.activeProject?.selectedOrgResourceIds ?? []
+            entries = memorySearchEntries(needle: needle) { item in
+                if item.scope == .project {
+                    return item.projectId == store.activeProjectId
+                }
+                return inheritedIds.contains(item.id)
+            }
+        case .bundles:
+            for bundle in store.bundles
+            where "\(bundle.name) \(bundle.description)".localizedLowercase.contains(needle) {
+                entries.append(.bundle(bundle))
+            }
+        case .reviews:
+            for review in store.reviews
+            where "\(review.title) \(review.description) \(review.author.email) \(review.status)"
+                .localizedLowercase.contains(needle) {
+                entries.append(.review(review))
+            }
+        case .issues:
+            break
+        }
+        return Array(entries.prefix(30))
+    }
+
+    private func memorySearchEntries(
+        needle: String,
+        inScope: (MemoryListItem) -> Bool
+    ) -> [SearchEntry] {
         let resourceItems = store.resources.map { resource -> MemoryListItem in
             let draft = store.drafts.first {
                 $0.targetId == resource.id && $0.status != .discarded && $0.status != .merged
@@ -770,20 +792,15 @@ struct WorkspaceView: View {
         let newDrafts = store.drafts.filter { $0.targetId == nil }.map {
             MemoryListItem(id: $0.id, resource: nil, draft: $0, inherited: false)
         }
-        for item in resourceItems + newDrafts {
-            let document = item.document
-            let haystack = "\(document.title) \(document.path) \(document.body) \(item.kind.title)".localizedLowercase
-            if haystack.contains(needle) {
-                entries.append(.memory(item))
+        return (resourceItems + newDrafts)
+            .filter(inScope)
+            .compactMap { item in
+                let document = item.document
+                let haystack = "\(document.title) \(document.path) \(document.body) \(item.kind.title)"
+                    .localizedLowercase
+                guard haystack.contains(needle) else { return nil }
+                return .memory(item)
             }
-        }
-        for bundle in store.bundles where "\(bundle.name) \(bundle.description)".localizedLowercase.contains(needle) {
-            entries.append(.bundle(bundle))
-        }
-        for review in store.reviews where "\(review.title) \(review.description) \(review.author.email) \(review.status)".localizedLowercase.contains(needle) {
-            entries.append(.review(review))
-        }
-        return Array(entries.prefix(30))
     }
 
     private func open(_ entry: SearchEntry) {
@@ -853,6 +870,45 @@ private struct IssueProjectFilter: View {
         .help("Filter Kanban by Project")
         .accessibilityLabel("Project Filter")
         .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
+    }
+}
+
+private struct IssueSearchField: View {
+    @Binding var text: String
+    @FocusState.Binding var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search Issues", text: $text)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .frame(width: 190)
+        .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+        .accessibilityLabel("Search Issues")
+        .accessibilityHint("Search only the Issues on this board")
     }
 }
 
@@ -943,9 +999,19 @@ private struct WorkspaceSearchPopover: View {
     let onOpen: (SearchEntry) -> Void
     @FocusState private var searchFocused: Bool
 
+    private var searchPrompt: String {
+        switch store.selectedSection {
+        case .hub: "Search Hub"
+        case .local: "Search Local"
+        case .bundles: "Search Bundles"
+        case .reviews: "Search Reviews"
+        case .issues: "Search Issues"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            TextField("Search", text: $store.searchQuery)
+            TextField(searchPrompt, text: $store.searchQuery)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchFocused)
                 .padding(12)
@@ -962,7 +1028,7 @@ private struct WorkspaceSearchPopover: View {
                     }
 
                     if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("Search Hub, Local, Bundles, and Reviews")
+                        Text(searchPrompt)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 8)

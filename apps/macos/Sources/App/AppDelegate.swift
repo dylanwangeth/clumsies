@@ -506,7 +506,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func showSearch(_ sender: Any?) {
         mainWindow?.makeKeyAndOrderFront(nil)
-        store.showsGlobalSearch = true
+        if store.selectedSection == .issues {
+            store.focusIssueSearch()
+        } else {
+            store.showsGlobalSearch = true
+        }
     }
 
     @objc private func toggleSidebar(_ sender: Any?) {

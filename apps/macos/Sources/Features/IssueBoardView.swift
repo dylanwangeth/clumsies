@@ -356,6 +356,13 @@ struct IssueBoardView: View {
                 } description: {
                     Text("Tell your Agent what should be tracked. It can create a native Todo through the Issue tool.")
                 }
+            } else if !model.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      model.matchingIssues.isEmpty {
+                ContentUnavailableView {
+                    Label("No Matching Issues", systemImage: "magnifyingglass")
+                } description: {
+                    Text("No Issue on this board matches “\(model.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines))”.")
+                }
             } else {
                 board(response)
             }
@@ -1279,6 +1286,55 @@ private struct TimelineEventRow: View {
     }
 }
 
+private struct VerificationStepsSection: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    let steps: [VerificationStep]
+    let isDisabled: Bool
+    var hint: String?
+    var onToggle: ((Int, Bool) -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } icon: {
+                Image(systemName: symbol)
+                    .foregroundStyle(tint)
+            }
+            if let hint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                Button {
+                    onToggle?(index, !step.completed)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: step.completed ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(
+                                step.completed ? Color.accentColor : Color.secondary
+                            )
+                        Text(step.text)
+                            .font(.callout)
+                            .foregroundStyle(step.completed ? .secondary : .primary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isDisabled)
+            }
+        }
+    }
+}
+
 private struct IssueDetailInspector: View {
     let issue: IssueBoardCard
     let detail: IssueDetailResponse?
@@ -1394,42 +1450,19 @@ private struct IssueDetailInspector: View {
     @ViewBuilder
     private var verificationRow: some View {
         if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                inspectorLabel("Verification")
-                Label {
-                    Text(verifLabel)
-                } icon: {
-                    Image(systemName: verifSymbol)
+            VerificationStepsSection(
+                title: verifLabel,
+                symbol: verifSymbol,
+                tint: verifColor,
+                steps: issue.verificationSteps,
+                isDisabled: issue.boardState == .done,
+                hint: issue.hasIncompleteVerificationSteps
+                    ? "Complete all steps before approving."
+                    : nil,
+                onToggle: { index, completed in
+                    onToggleVerificationStep?(issue, index, completed)
                 }
-                .foregroundStyle(verifColor)
-                .font(.callout)
-                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                    Button {
-                        onToggleVerificationStep?(issue, index, !step.completed)
-                    } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: step.completed ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(
-                                    step.completed ? Color.accentColor : Color.secondary
-                                )
-                            Text(step.text)
-                                .font(.callout)
-                                .foregroundStyle(step.completed ? .secondary : .primary)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(issue.boardState == .done)
-                }
-                if issue.hasIncompleteVerificationSteps {
-                    Text("Complete all steps before approving.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
+            )
         }
     }
 
