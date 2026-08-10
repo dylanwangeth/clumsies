@@ -531,168 +531,75 @@ struct IssueDetailView: View {
     }
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // Title
-                Text(issue.title)
-                    .font(.title2.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Status row
-                HStack(spacing: 12) {
-                    Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
-                        .foregroundStyle(issue.boardState.iconColor)
-
-                    if let started = issue.startedAt,
-                       let relative = IssueTiming.relativeText(started, relativeTo: .now)
-                    {
-                        Text("·")
-                            .foregroundStyle(.tertiary)
-                        Text(relative)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if issue.isStale {
-                        Text("·")
-                            .foregroundStyle(.tertiary)
-                        Text("Stale")
-                            .foregroundStyle(.orange)
-                    }
-
-                    if issue.blocked {
-                        Text("·")
-                            .foregroundStyle(.tertiary)
-                        Text("Blocked")
-                            .foregroundStyle(.red)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-                .font(.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Body
-                if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Markdown(issue.description)
-                        .markdownTheme(.basic)
+        HStack(alignment: .top, spacing: 0) {
+            // Main column: title, status, body
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(issue.title)
+                        .font(.title2.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }
 
-                Divider()
+                    HStack(spacing: 12) {
+                        Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
+                            .foregroundStyle(issue.boardState.iconColor)
+                        if let started = issue.startedAt,
+                           let relative = IssueTiming.relativeText(started, relativeTo: .now)
+                        {
+                            Text("·").foregroundStyle(.tertiary)
+                            Text(relative).foregroundStyle(.secondary)
+                        }
+                        if issue.isStale {
+                            Text("·").foregroundStyle(.tertiary)
+                            Text("Stale").foregroundStyle(.orange)
+                        }
+                        if issue.blocked {
+                            Text("·").foregroundStyle(.tertiary)
+                            Text("Blocked").foregroundStyle(.red)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption)
 
-                // Supplementary info blocks
-                if let detail = model.detail(for: issue),
-                   !detail.acceptanceCriteria.isEmpty
-                {
-                    infoBlock("Acceptance Criteria") {
+                    if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Markdown(issue.description)
+                            .markdownTheme(.basic)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if let detail = model.detail(for: issue),
+                       !detail.acceptanceCriteria.isEmpty
+                    {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
                                 Text("•  \(criteria)")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
+                                    .font(.body)
                                     .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
-                }
 
-                if let summary = issue.closureSummary, !summary.isEmpty {
-                    infoBlock("Closure Summary") {
+                    if let summary = issue.closureSummary, !summary.isEmpty {
                         Text(summary)
-                            .font(.callout)
+                            .font(.body)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-
-                if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
-                    infoBlock("Verification") {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label(verificationLabel(issue.verificationLevel),
-                                  systemImage: verificationSymbol(issue.verificationLevel))
-                                .foregroundStyle(verificationColor(issue.verificationLevel))
-
-                            ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { i, step in
-                                Text("\(i + 1). \(step)")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                }
-
-                if !issue.activeRuns.isEmpty || issue.latestRun != nil {
-                    infoBlock("Activity") {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(issue.activeRuns.prefix(3))) { run in
-                                AgentRunRow(run: run)
-                            }
-                            if issue.activeRuns.isEmpty, let latest = issue.latestRun {
-                                AgentRunRow(run: latest)
-                            }
-                            if issue.activeRuns.count > 3 {
-                                Text("+\(issue.activeRuns.count - 3) more")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                }
-
-                let refs = IssueExternalReferencePresentation.cardPresentation(for: issue.externalReferences)
-                if !refs.items.isEmpty {
-                    infoBlock("Linked") {
-                        IssueExternalReferencesSummary(presentation: refs)
-                    }
-                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 28)
+                .padding(.top, 24)
+                .padding(.bottom, 48)
             }
-            .frame(maxWidth: DocumentContentMetrics.maximumWidth)
-            .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
-            .padding(.top, 24)
-            .padding(.bottom, 48)
-            .frame(maxWidth: .infinity, alignment: .center)
-        }
-    }
 
-    @ViewBuilder
-    private func infoBlock<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.tertiary)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func verificationLabel(_ level: VerificationLevel) -> String {
-        switch level {
-        case .agentSelf: "Agent self-verified"
-        case .humanRequired: "Human verification required"
-        case .mixed: "Mixed verification"
-        }
-    }
-
-    private func verificationSymbol(_ level: VerificationLevel) -> String {
-        switch level {
-        case .agentSelf: "checkmark.seal"
-        case .humanRequired: "person.crop.circle.badge.questionmark"
-        case .mixed: "checkmark.seal.fill"
-        }
-    }
-
-    private func verificationColor(_ level: VerificationLevel) -> Color {
-        switch level {
-        case .agentSelf: .green
-        case .humanRequired: .orange
-        case .mixed: .blue
+            // Inspector column
+            IssueDetailInspector(issue: issue, detail: model.detail(for: issue))
+                .frame(width: 240)
+                .background(Color(nsColor: .controlBackgroundColor))
         }
     }
 }
@@ -1301,3 +1208,147 @@ private extension AgentRun {
     }
 }
 
+
+private struct IssueDetailInspector: View {
+    let issue: IssueBoardCard
+    let detail: IssueDetailResponse?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                statusRow
+                timelineRow
+                verificationRow
+                activityRow
+                referencesRow
+            }
+            .padding(16)
+        }
+    }
+
+    private var statusRow: some View {
+        inspectorRow(icon: issue.boardState.symbolName,
+                     tint: issue.boardState.iconColor,
+                     label: "Status",
+                     value: issue.boardState.title)
+    }
+
+    @ViewBuilder
+    private var timelineRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            inspectorLabel("Timeline")
+            if let created = issue.createdAt {
+                inspectorDate("Created", created)
+            }
+            if let started = issue.startedAt {
+                inspectorDate("Started", started)
+            }
+            if let closed = issue.closedAt {
+                inspectorDate("Closed", closed)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var verificationRow: some View {
+        if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                inspectorLabel("Verification")
+                Label {
+                    Text(verifLabel)
+                } icon: {
+                    Image(systemName: verifSymbol)
+                }
+                .foregroundStyle(verifColor)
+                .font(.callout)
+                ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { i, step in
+                    Text("\(i + 1). \(step)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var activityRow: some View {
+        if !issue.activeRuns.isEmpty || issue.latestRun != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                inspectorLabel("Activity")
+                ForEach(Array(issue.activeRuns.prefix(3))) { run in
+                    AgentRunRow(run: run)
+                }
+                if issue.activeRuns.isEmpty, let latest = issue.latestRun {
+                    AgentRunRow(run: latest)
+                }
+                if issue.activeRuns.count > 3 {
+                    Text("+\(issue.activeRuns.count - 3) more")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var referencesRow: some View {
+        let refs = IssueExternalReferencePresentation.cardPresentation(for: issue.externalReferences)
+        if !refs.items.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                inspectorLabel("Linked")
+                IssueExternalReferencesSummary(presentation: refs)
+            }
+        }
+    }
+
+    private func inspectorRow(icon: String, tint: Color, label: String, value: String) -> some View {
+        HStack {
+            Image(systemName: icon).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 1) {
+                inspectorLabel(label)
+                Text(value).font(.callout)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func inspectorLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.tertiary)
+    }
+
+    private func inspectorDate(_ label: String, _ iso: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(IssueTiming.absoluteText(iso) ?? "—")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var verifLabel: String {
+        switch issue.verificationLevel {
+        case .agentSelf: "Agent self-verified"
+        case .humanRequired: "Human required"
+        case .mixed: "Mixed"
+        }
+    }
+    private var verifSymbol: String {
+        switch issue.verificationLevel {
+        case .agentSelf: "checkmark.seal"
+        case .humanRequired: "person.crop.circle.badge.questionmark"
+        case .mixed: "checkmark.seal.fill"
+        }
+    }
+    private var verifColor: Color {
+        switch issue.verificationLevel {
+        case .agentSelf: .green
+        case .humanRequired: .orange
+        case .mixed: .blue
+        }
+    }
+}
