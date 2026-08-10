@@ -23,8 +23,7 @@ use crate::{
     RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
     RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
     SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
-    UnclaimIssueRequest,
-    StartIssueWorkRequest, UpdateIssueRequest,
+    StartIssueWorkRequest, UnclaimIssueRequest, UpdateIssueRequest,
 };
 
 #[derive(Clone, Debug)]

@@ -1525,4 +1525,3 @@ test "tool validation rejects undeclared and type-specific fields" {
         exact_update.value.object,
     )) == null);
 }
-

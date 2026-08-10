@@ -845,11 +845,9 @@ pub(crate) async fn migrate_local_schema_33_to_34(pool: &SqlitePool) -> Result<(
 /// `manual` run as the opencode host so no row keeps the self-issued
 /// identity, and no future code path can create one.
 pub(crate) async fn migrate_local_schema_34_to_35(pool: &SqlitePool) -> Result<(), DaemonError> {
-    sqlx::query(
-        "UPDATE agent_runs SET host = 'opencode' WHERE host = 'manual'",
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE agent_runs SET host = 'opencode' WHERE host = 'manual'")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
