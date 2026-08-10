@@ -23,6 +23,7 @@ use crate::{
     RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
     RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
     SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
+    UnclaimIssueRequest,
     StartIssueWorkRequest, UpdateIssueRequest,
 };
 
@@ -327,6 +328,17 @@ impl DaemonIpcClient {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "set_verification_step_completed",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn unclaim_issue(
+        &self,
+        request: UnclaimIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "unclaim_issue",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

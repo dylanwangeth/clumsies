@@ -80,11 +80,12 @@ const issue_schema =
     "\"get\":{\"type\":\"object\",\"description\":\"Fetch a single Issue by exactly one of: issue_id (globally unique, copied from Kanban) or issue_key (stable per-project number, e.g. ISSUE-038).\",\"properties\":{\"issue_id\":{\"type\":\"string\",\"pattern\":\"^issue_[0-9a-f]{32}$\",\"description\":\"Globally unique Issue ID copied from Kanban.\"},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\",\"description\":\"Stable per-project Issue number, e.g. ISSUE-038.\"}},\"oneOf\":[{\"required\":[\"issue_id\"]},{\"required\":[\"issue_key\"]}],\"additionalProperties\":false}," ++
     "\"create\":{\"type\":\"object\",\"description\":\"Create a durable Todo Issue; first call list and verify no existing Issue already covers the same problem.\",\"properties\":{\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"verification_level\":{\"type\":\"string\",\"enum\":[\"agent_self\",\"human_required\",\"mixed\"],\"description\":\"How this Issue should be verified: agent_self (agent tests are enough), human_required (a human must verify per the steps), mixed (both).\"},\"verification_steps\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000},\"description\":\"Human verification protocol: concrete steps a human follows to accept or reject this Issue at closure.\"},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"title\",\"description\"],\"additionalProperties\":false}," ++
     "\"update\":{\"type\":\"object\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1},\"title\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":240},\"description\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":65536},\"acceptance_criteria\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"verification_level\":{\"type\":\"string\",\"enum\":[\"agent_self\",\"human_required\",\"mixed\"]},\"verification_steps\":{\"type\":\"array\",\"maxItems\":64,\"items\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":2000}},\"external_references\":" ++ issue_external_references_schema ++ ",\"dependencies\":" ++ issue_dependencies_schema ++ ",\"blocking_facts\":" ++ issue_blocking_facts_schema ++ "},\"required\":[\"issue_key\",\"expected_revision\"],\"additionalProperties\":false}," ++
-    "\"begin_work\":{\"type\":\"object\",\"description\":\"Call this first before starting work on any Issue. Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision (the AgentRun revision) are required only when the caller has a hook-issued AgentRun; omit both to let the daemon issue a manual run. One session holds at most one In Progress Issue: provide session_id for manual runs so the daemon can enforce it.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision, not the Issue state revision. With a hook-issued run use the run context revision; omit for a manual run.\"},\"session_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256,\"description\":\"Session identity for a manual run (hook-issued runs carry host_session_id already). Enables the one-session-one-In-Progress-issue rule.\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
+    "\"begin_work\":{\"type\":\"object\",\"description\":\"Call this first before starting work on any Issue. Bind the current AgentRun to this Issue and enter In Progress. run_id and expected_revision (the AgentRun revision) are required: the run must be issued by a host lifecycle hook, an Agent cannot mint its own identity. One session holds at most one In Progress Issue.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision, not the Issue state revision; use the run context revision.\"}},\"required\":[\"issue_key\",\"run_id\",\"expected_revision\"],\"additionalProperties\":false}," ++
     "\"pause_issue\":{\"type\":\"object\",\"description\":\"Pause an In Progress Issue held by the given run, moving it to Paused so the session can start another Issue. Only the run that holds the Issue may pause it.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"}},\"required\":[\"run_id\",\"issue_key\"],\"additionalProperties\":false}," ++
     "\"resume_issue\":{\"type\":\"object\",\"description\":\"Resume a Paused Issue to In Progress. The pausing run resumes it, or pass takeover=true to explicitly take it over with another run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"takeover\":{\"type\":\"boolean\",\"description\":\"Explicitly take over an Issue paused by another run.\"}},\"required\":[\"run_id\",\"issue_key\"],\"additionalProperties\":false}," ++
     "\"export\":{\"type\":\"object\",\"description\":\"Export a single Issue as a stable, portable Markdown snapshot (key, status, body, acceptance criteria, closure summary, timeline). Deterministic for a given Issue state; does not create Context Drafts or live document mapping.\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"}},\"required\":[\"issue_key\"],\"additionalProperties\":false}," ++
-    "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. With run_id, expected_revision (the AgentRun revision from begin_work, not the Issue state revision) is required. Without run_id, issue_key is required and the daemon verifies no active AgentRun holds the Issue before issuing a manual run.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision (run.revision from the begin_work response), not the Issue state revision.\"}},\"additionalProperties\":false}" ++
+    "\"request_closure\":{\"type\":\"object\",\"description\":\"Request user approval to close an In Progress Issue. run_id and expected_revision (the AgentRun revision from begin_work) are required: the run must be issued by a host lifecycle hook. Issues that require human verification must carry verification_steps before closure can be requested.\",\"properties\":{\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"summary\":{\"type\":\"string\",\"maxLength\":1000},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"AgentRun revision (run.revision from the begin_work response), not the Issue state revision.\"}},\"additionalProperties\":false}," ++
+    "\"unclaim\":{\"type\":\"object\",\"description\":\"Release an In Progress or Paused Issue back to Todo, unbinding the current AgentRun so another Agent can take it over or the work can be dropped.\",\"properties\":{\"issue_key\":{\"type\":\"string\",\"pattern\":\"^ISSUE-(?!000$)[0-9]{3}$\"},\"expected_revision\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"Issue state revision from the card, not the AgentRun revision.\"},\"run_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"required\":[\"issue_key\",\"expected_revision\",\"run_id\"],\"additionalProperties\":false}" ++
     "},\"additionalProperties\":false}" ++
     "},\"required\":[\"op\"],\"additionalProperties\":false,\"$defs\":{\"externalReference\":" ++ issue_external_reference_definition ++ ",\"blockingFact\":" ++ issue_blocking_fact_definition ++ "}}}";
 
@@ -259,7 +260,7 @@ fn handleStore(
     return try buildDaemonOperationResult(allocator, operation);
 }
 
-const IssueOp = enum { list, get, create, update, begin_work, pause_issue, resume_issue, request_closure, export_issue };
+const IssueOp = enum { list, get, create, update, begin_work, pause_issue, resume_issue, request_closure, unclaim, export_issue };
 
 fn handleIssue(
     allocator: std.mem.Allocator,
@@ -371,6 +372,16 @@ fn handleIssue(
                 optionalBool(op_args, "takeover") orelse false,
             );
         },
+        .unclaim => blk: {
+            if (try validateIssueUnclaim(allocator, op_args)) |result| return result;
+            break :blk try daemon_ipc.unclaimIssueOperation(
+                allocator,
+                session.project_id,
+                requiredString(op_args, "run_id").?,
+                requiredString(op_args, "issue_key").?,
+                optionalRevision(op_args, "expected_revision"),
+            );
+        },
         .export_issue => blk: {
             if (try rejectUnexpectedFields(allocator, op_args, &.{"issue_key"}, "export")) |result| return result;
             const issue_key = requiredString(op_args, "issue_key") orelse
@@ -389,7 +400,7 @@ fn handleIssue(
 
 fn parseIssueOp(object: std.json.ObjectMap) ?IssueOp {
     if (object.count() != 1) return null;
-    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.begin_work, IssueOp.pause_issue, IssueOp.resume_issue, IssueOp.request_closure, IssueOp.export_issue }) |op| {
+    inline for (.{ IssueOp.list, IssueOp.get, IssueOp.create, IssueOp.update, IssueOp.begin_work, IssueOp.pause_issue, IssueOp.resume_issue, IssueOp.request_closure, IssueOp.unclaim, IssueOp.export_issue }) |op| {
         if (object.get(issueOpName(op)) != null) return op;
     }
     return null;
@@ -405,6 +416,7 @@ fn issueOpName(op: IssueOp) []const u8 {
         .pause_issue => "pause_issue",
         .resume_issue => "resume_issue",
         .request_closure => "request_closure",
+        .unclaim => "unclaim",
         .export_issue => "export",
     };
 }
@@ -478,6 +490,23 @@ fn validateIssuePauseResume(
     const issue_key = requiredString(args, "issue_key") orelse
         return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
     if (!isIssueKey(issue_key)) return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
+    return null;
+}
+
+fn validateIssueUnclaim(
+    allocator: std.mem.Allocator,
+    args: std.json.ObjectMap,
+) !?[]u8 {
+    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision" }, "unclaim")) |result| return result;
+    const run_id = requiredString(args, "run_id") orelse
+        return try tool_result.buildErrorResult(allocator, "run_id is required and must be a string");
+    if (run_id.len == 0 or run_id.len > 256) return try tool_result.buildErrorResult(allocator, "run_id must contain 1 to 256 bytes");
+    const issue_key = requiredString(args, "issue_key") orelse
+        return try tool_result.buildErrorResult(allocator, "issue_key is required and must be a string");
+    if (!isIssueKey(issue_key)) return try tool_result.buildErrorResult(allocator, "issue_key must use the ISSUE-NNN form");
+    if (optionalRevision(args, "expected_revision") == null) {
+        return try tool_result.buildErrorResult(allocator, "expected_revision (the Issue state revision) is required");
+    }
     return null;
 }
 
@@ -653,7 +682,7 @@ fn validateIssueBeginWork(
     allocator: std.mem.Allocator,
     args: std.json.ObjectMap,
 ) !?[]u8 {
-    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision", "session_id" }, "begin_work")) |result| {
+    if (try rejectUnexpectedFields(allocator, args, &.{ "run_id", "issue_key", "expected_revision" }, "begin_work")) |result| {
         return result;
     }
     const issue_key = requiredString(args, "issue_key") orelse
@@ -1496,3 +1525,4 @@ test "tool validation rejects undeclared and type-specific fields" {
         exact_update.value.object,
     )) == null);
 }
+

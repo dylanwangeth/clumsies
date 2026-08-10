@@ -546,6 +546,14 @@ pub struct SetVerificationStepCompletedRequest {
     pub completed: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct UnclaimIssueRequest {
+    pub project_id: String,
+    pub issue_key: String,
+    pub expected_revision: i64,
+    pub run_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueRemovalAction {
@@ -1374,6 +1382,15 @@ pub(crate) async fn request_issue_closure(
             run.run_id
         )));
     }
+    if current_issue.verification_level != VerificationLevel::AgentSelf
+        && current_issue.verification_steps.is_empty()
+    {
+        return Err(DaemonError::InvalidRequest(format!(
+            "ISSUE-{issue_number:03} requires human verification ({}) but has no \
+             verification_steps; add them with update_issue before requesting closure",
+            current_issue.verification_level.as_str()
+        )));
+    }
     let other_active_runs: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM agent_runs
          WHERE project_id = $1 AND issue_number = $2 AND run_id <> $3
@@ -1845,6 +1862,76 @@ pub(crate) async fn apply_issue_gate(
         issue_id: current.issue_id,
         issue_key: format!("ISSUE-{:03}", request.issue_number),
         board_state: target,
+        revision,
+        updated_at: now,
+    })
+}
+
+pub(crate) async fn unclaim_issue(
+    pool: &SqlitePool,
+    request: UnclaimIssueRequest,
+) -> Result<IssueMutationResponse, DaemonError> {
+    validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
+    validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
+    let issue_number = parse_issue_reference(&request.issue_key)?;
+    validate_revision(request.expected_revision)?;
+    let mut tx = pool.begin().await?;
+    let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
+    let current = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
+    ensure_issue_revision(&current, request.expected_revision)?;
+    if run.issue_number != Some(issue_number) {
+        return Err(run_conflict(format!(
+            "AgentRun {} is not bound to ISSUE-{issue_number:03}",
+            run.run_id
+        )));
+    }
+    if !matches!(
+        current.board_state,
+        IssueBoardState::InProgress | IssueBoardState::Paused
+    ) {
+        return Err(run_conflict(format!(
+            "ISSUE-{issue_number:03} is {:?}; only In Progress or Paused Issues can be released",
+            current.board_state
+        )));
+    }
+    let (now, _) = db_clock(&mut tx).await?;
+    let revision = current.revision + 1;
+    let mut run = run;
+    run.issue_number = None;
+    run.revision += 1;
+    run.last_seen_at = now.clone();
+    update_run(&mut tx, &run).await?;
+    sqlx::query(
+        "UPDATE native_issues
+         SET status = 'todo', revision = $3, changed_by_run_id = NULL,
+             updated_at = $4
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(&request.project_id)
+    .bind(issue_number)
+    .bind(revision)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+    record_issue_state_event_tx(
+        &mut tx,
+        &request.project_id,
+        issue_number,
+        current.board_state,
+        IssueBoardState::Todo,
+        None,
+        &now,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(IssueMutationResponse {
+        issue_id: current.issue_id,
+        issue_key: format!("ISSUE-{issue_number:03}"),
+        board_state: IssueBoardState::Todo,
         revision,
         updated_at: now,
     })
@@ -6789,6 +6876,196 @@ mod tests {
         assert_eq!(closure.board_state, IssueBoardState::InReview);
         assert_eq!(closure.run.host, AgentRunHost::Codex);
         assert_eq!(closure.run.issue_number, Some(3));
+    }
+
+    #[tokio::test]
+    async fn unclaim_releases_in_progress_back_to_todo() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_unclaim_start",
+                Some("root:unclaim"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let released = unclaim_issue(
+            &pool,
+            UnclaimIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: started.state_revision,
+                run_id: run.run_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(released.board_state, IssueBoardState::Todo);
+        let unbound = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        assert_eq!(unbound.issue_number, None);
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(board[0].board_state, IssueBoardState::Todo);
+        assert!(board[0].changed_by_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn unclaim_rejects_a_run_not_bound_to_the_issue() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        native_issue(&pool, "project-1", 4).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_unclaim_other",
+                Some("root:other"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let error = unclaim_issue(
+            &pool,
+            UnclaimIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: 1,
+                run_id: run.run_id,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            DaemonError::State {
+                code: "agent_run_conflict",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn closure_requires_verification_steps_for_human_review() {
+        let pool = run_pool().await;
+        create_issue(
+            &pool,
+            CreateIssueRequest {
+                project_id: "project-1".to_owned(),
+                title: "Human reviewed".to_owned(),
+                description: "needs human".to_owned(),
+                acceptance_criteria: vec![],
+                external_references: Vec::new(),
+                dependencies: Vec::new(),
+                blocking_facts: Vec::new(),
+                verification_level: VerificationLevel::HumanRequired,
+                verification_steps: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_verification_start",
+                Some("root:verification"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-001".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let run_after_start = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        let error = request_issue_closure(
+            &pool,
+            RequestIssueClosureRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: None,
+                summary: Some("done".to_owned()),
+                expected_revision: Some(run_after_start.revision),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidRequest(_)));
+        assert_eq!(started.board_state, IssueBoardState::InProgress);
+
+        // Adding the steps unblocks the closure request.
+        update_issue(
+            &pool,
+            UpdateIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-001".to_owned(),
+                expected_revision: started.state_revision,
+                title: None,
+                description: None,
+                acceptance_criteria: None,
+                external_references: None,
+                dependencies: None,
+                blocking_facts: None,
+                verification_level: None,
+                verification_steps: Some(vec![VerificationStep {
+                    text: "Check the panel".to_owned(),
+                    completed: false,
+                }]),
+            },
+        )
+        .await
+        .unwrap();
+        let run_final = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        let closure = request_issue_closure(
+            &pool,
+            RequestIssueClosureRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id),
+                issue_key: None,
+                summary: Some("done".to_owned()),
+                expected_revision: Some(run_final.revision),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(closure.board_state, IssueBoardState::InReview);
     }
 
     #[tokio::test]

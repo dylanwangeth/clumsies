@@ -21,6 +21,7 @@ final class IssueBoardModel: ObservableObject {
     typealias DetailLoader = @Sendable (String, Int) async throws -> IssueDetailResponse
     typealias GateApplier = @Sendable (ApplyIssueGateRequest) async throws -> IssueMutationResponse
     typealias VerificationStepToggler = @Sendable (SetVerificationStepCompletedRequest) async throws -> IssueMutationResponse
+    typealias UnclaimApplier = @Sendable (UnclaimIssueRequest) async throws -> IssueMutationResponse
     typealias RemovalApplier = @Sendable (RemoveIssueRequest) async throws -> IssueRemovalResponse
 
     @Published private(set) var response: IssueBoardResponse?
@@ -41,6 +42,7 @@ final class IssueBoardModel: ObservableObject {
     private let detailLoader: DetailLoader
     private let gateApplier: GateApplier
     private let verificationStepToggler: VerificationStepToggler
+    private let unclaimApplier: UnclaimApplier
     private let removalApplier: RemovalApplier
     private var generation = UUID()
     private var activeRequestGeneration: UUID?
@@ -58,6 +60,9 @@ final class IssueBoardModel: ObservableObject {
         verificationStepToggler = { request in
             try await daemon.setVerificationStepCompleted(request)
         }
+        unclaimApplier = { request in
+            try await daemon.unclaimIssue(request)
+        }
         removalApplier = { request in
             try await daemon.removeIssue(request)
         }
@@ -68,12 +73,14 @@ final class IssueBoardModel: ObservableObject {
         detailLoader: @escaping DetailLoader = { _, _ in throw IssueBoardModelError.unexpectedIssue },
         gateApplier: @escaping GateApplier = { _ in throw IssueBoardModelError.unexpectedIssue },
         verificationStepToggler: @escaping VerificationStepToggler = { _ in throw IssueBoardModelError.unexpectedIssue },
+        unclaimApplier: @escaping UnclaimApplier = { _ in throw IssueBoardModelError.unexpectedIssue },
         removalApplier: @escaping RemovalApplier = { _ in throw IssueBoardModelError.unexpectedIssue }
     ) {
         self.loader = loader
         self.detailLoader = detailLoader
         self.gateApplier = gateApplier
         self.verificationStepToggler = verificationStepToggler
+        self.unclaimApplier = unclaimApplier
         self.removalApplier = removalApplier
     }
 
@@ -171,6 +178,22 @@ final class IssueBoardModel: ObservableObject {
         if let updated = issues.first(where: { $0.id == issue.id }) {
             await loadDetail(updated, force: true)
         }
+    }
+
+    func unclaim(_ issue: IssueBoardCard) async throws {
+        guard let runId = issue.activeRuns.first?.runId else {
+            throw IssueBoardModelError.unexpectedIssue
+        }
+        _ = try await unclaimApplier(
+            .init(
+                projectId: issue.projectId,
+                issueKey: issue.issueKey,
+                expectedRevision: issue.stateRevision,
+                runId: runId
+            )
+        )
+        detailByIssueId[issue.id] = nil
+        await refresh()
     }
 
     func setVerificationStep(_ completed: Bool, stepIndex: Int, issue: IssueBoardCard) async throws {

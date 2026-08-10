@@ -416,6 +416,46 @@ struct WorkspaceView: View {
         }
     }
 
+    private func issueDetailView(for route: IssueBoardRoute) -> some View {
+        IssueDetailView(
+            issueId: route.issueId,
+            model: issueBoardModel,
+            onGate: { action, issue in
+                Task {
+                    do {
+                        try await issueBoardModel.applyGate(action, to: issue)
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+            },
+            onUnclaim: { issue in
+                Task {
+                    do {
+                        try await issueBoardModel.unclaim(issue)
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+            },
+            onToggleVerificationStep: { issue, index, completed in
+                Task {
+                    do {
+                        try await issueBoardModel.setVerificationStep(
+                            completed,
+                            stepIndex: index,
+                            issue: issue
+                        )
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+            },
+            onArchive: nil,
+            onDelete: nil
+        )
+    }
+
     private var issuesWorkspace: some View {
         NavigationSplitView(columnVisibility: $issueSplitVisibility) {
             GlobalSidebar(
@@ -436,34 +476,7 @@ struct WorkspaceView: View {
                     }
                 )
                 .navigationDestination(for: IssueBoardRoute.self) { route in
-                    IssueDetailView(
-                        issueId: route.issueId,
-                        model: issueBoardModel,
-                        onGate: { action, issue in
-                            Task {
-                                do {
-                                    try await issueBoardModel.applyGate(action, to: issue)
-                                } catch {
-                                    store.errorMessage = error.localizedDescription
-                                }
-                            }
-                        },
-                        onToggleVerificationStep: { issue, index, completed in
-                            Task {
-                                do {
-                                    try await issueBoardModel.setVerificationStep(
-                                        completed,
-                                        stepIndex: index,
-                                        issue: issue
-                                    )
-                                } catch {
-                                    store.errorMessage = error.localizedDescription
-                                }
-                            }
-                        },
-                        onArchive: nil,
-                        onDelete: nil
-                    )
+                    issueDetailView(for: route)
                 }
             }
             .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)

@@ -122,5 +122,5 @@ pub use work_tracking::{
     IssueRemovalAction, IssueRemovalResponse, IssueWorkflowMutationResponse, PauseIssueRequest,
     RecordAgentRunEventRequest, RecordAgentRunEventResponse, RemoveIssueRequest,
     RequestIssueClosureRequest, ResumeIssueRequest, SetVerificationStepCompletedRequest,
-    StartIssueWorkRequest, UpdateIssueRequest,
+    StartIssueWorkRequest, UnclaimIssueRequest, UpdateIssueRequest,
 };

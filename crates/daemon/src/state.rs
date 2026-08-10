@@ -912,6 +912,16 @@ impl DaemonState {
         work_tracking::set_verification_step_completed(&self.inner.pool, request).await
     }
 
+    pub async fn unclaim_issue(
+        &self,
+        request: UnclaimIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.ensure_native_issues_imported(&request.project_id)
+            .await?;
+        let _guard = self.inner.agent_run_lock.lock().await;
+        work_tracking::unclaim_issue(&self.inner.pool, request).await
+    }
+
     pub async fn remove_issue(
         &self,
         request: RemoveIssueRequest,
@@ -1677,6 +1687,13 @@ impl DaemonIpcService {
         self.state.set_verification_step_completed(request).await
     }
 
+    pub async fn unclaim_issue(
+        &self,
+        request: UnclaimIssueRequest,
+    ) -> Result<IssueMutationResponse, DaemonError> {
+        self.state.unclaim_issue(request).await
+    }
+
     pub async fn remove_issue(
         &self,
         request: RemoveIssueRequest,
@@ -1864,6 +1881,7 @@ impl DaemonIpcService {
             "set_verification_step_completed" => {
                 dispatch_async!(self, request.payload, set_verification_step_completed)
             }
+            "unclaim_issue" => dispatch_async!(self, request.payload, unclaim_issue),
             "remove_issue" => dispatch_async!(self, request.payload, remove_issue),
             "start_issue_work" => {
                 dispatch_async!(self, request.payload, start_issue_work)
