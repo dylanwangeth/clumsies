@@ -1135,6 +1135,13 @@ impl DaemonState {
                 ),
             });
         }
+        let resolved_scope = match resource.scope {
+            SourceScope::Org => DaemonDraftScope::Org,
+            SourceScope::Project => DaemonDraftScope::Project,
+        };
+        if request.scope != resolved_scope {
+            request.scope = resolved_scope;
+        }
         let content = resource.content.ok_or_else(|| DaemonError::State {
             code: "memory_content_unavailable",
             message: format!(
