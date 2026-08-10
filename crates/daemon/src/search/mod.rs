@@ -2098,6 +2098,40 @@ mod tests {
                 "# Testing\n\nApply when changing retrieval.\n\nRun integration and regression tests.\n\nTags: testing"
             )
         );
+
+        let discarded = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "project",
+                    "resource": "rule",
+                    "op": {
+                        "discard": {
+                            "id": "rule_testing"
+                        }
+                    },
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(
+            discarded.ok,
+            "daemon rejected discarding an org draft with project scope: {:?}",
+            discarded.error
+        );
+        let detail = service.get_draft(&stored.draft_id).await.unwrap();
+        assert_eq!(detail.draft.status, crate::DaemonLocalDraftStatus::Discarded);
+
+        let reverted = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["rule_testing".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(reverted.resources[0].content.as_deref(), original.content.as_deref());
     }
 
     #[test]
