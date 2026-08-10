@@ -1168,52 +1168,6 @@ pub(crate) async fn record_agent_run_event(
     })
 }
 
-async fn create_manual_run_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    project_id: &str,
-    issue_number: i64,
-    now: &str,
-    lease_expires_at: &str,
-    session_id: Option<&str>,
-) -> Result<AgentRun, DaemonError> {
-    let run_id = format!("arun_{}", Uuid::new_v4().simple());
-    let run = AgentRun {
-        run_id: run_id.clone(),
-        project_id: project_id.to_owned(),
-        issue_number: Some(issue_number),
-        host: AgentRunHost::Manual,
-        host_run_key: format!("manual:{run_id}"),
-        host_session_id: session_id.map(str::to_owned),
-        parent_run_id: None,
-        kind: AgentRunKind::Root,
-        phase: AgentRunPhase::Running,
-        outcome: None,
-        end_reason: None,
-        display_label: None,
-        summary: None,
-        revision: 1,
-        started_at: now.to_owned(),
-        last_seen_at: now.to_owned(),
-        lease_expires_at: lease_expires_at.to_owned(),
-        ended_at: None,
-    };
-    insert_run(tx, &run, true).await?;
-    insert_event(
-        tx,
-        &format!("arevt_{}", Uuid::new_v4().simple()),
-        None,
-        Some(&run.run_id),
-        None,
-        AgentRunEventType::IssueBound,
-        AgentRunEventSource::Mcp,
-        Some(issue_number),
-        None,
-        None,
-        now,
-    )
-    .await?;
-    Ok(run)
-}
 
 pub(crate) async fn start_issue_work(
     pool: &SqlitePool,
@@ -1242,15 +1196,11 @@ pub(crate) async fn start_issue_work(
             run
         }
         None => {
-            create_manual_run_tx(
-                &mut tx,
-                &request.project_id,
-                issue_number,
-                &now,
-                &lease_expires_at,
-                request.session_id.as_deref(),
-            )
-            .await?
+            return Err(DaemonError::InvalidRequest(
+                "run_id is required: AgentRuns must be issued by a host lifecycle hook, \
+                 Agents cannot mint their own identity"
+                    .to_owned(),
+            ));
         }
     };
     let current_issue = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
@@ -1371,7 +1321,7 @@ pub(crate) async fn request_issue_closure(
     let mut tx = pool.begin().await?;
     let (now, lease_expires_at) = db_clock(&mut tx).await?;
 
-    let (issue_number, run, manual_run_created) = match &request.run_id {
+    let (issue_number, run) = match &request.run_id {
         Some(run_id) => {
             let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, run_id)
                 .await?
@@ -1387,48 +1337,14 @@ pub(crate) async fn request_issue_closure(
                         .to_owned(),
                 )
             })?;
-            (issue_number, run, false)
+            (issue_number, run)
         }
         None => {
-            let issue_key = request.issue_key.as_deref().ok_or_else(|| {
-                DaemonError::InvalidRequest(
-                    "issue_key is required when run_id is omitted".to_owned(),
-                )
-            })?;
-            let issue_number = parse_issue_reference(issue_key)?;
-            let current_issue = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
-                .await?
-                .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
-            if current_issue.board_state != IssueBoardState::InProgress {
-                return Err(run_conflict(format!(
-                    "ISSUE-{issue_number:03} is not in progress"
-                )));
-            }
-            let other_active_runs: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM agent_runs
-                 WHERE project_id = $1 AND issue_number = $2
-                   AND phase = 'running' AND lease_expires_at > $3",
-            )
-            .bind(&request.project_id)
-            .bind(issue_number)
-            .bind(&now)
-            .fetch_one(&mut *tx)
-            .await?;
-            if other_active_runs > 0 {
-                return Err(run_conflict(format!(
-                    "ISSUE-{issue_number:03} still has {other_active_runs} active AgentRun(s)"
-                )));
-            }
-            let run = create_manual_run_tx(
-                &mut tx,
-                &request.project_id,
-                issue_number,
-                &now,
-                &lease_expires_at,
-                None,
-            )
-            .await?;
-            (issue_number, run, true)
+            return Err(DaemonError::InvalidRequest(
+                "run_id is required: AgentRuns must be issued by a host lifecycle hook, \
+                 Agents cannot mint their own identity"
+                    .to_owned(),
+            ));
         }
     };
 
@@ -1442,23 +1358,21 @@ pub(crate) async fn request_issue_closure(
         tx.commit().await?;
         return Ok(issue_workflow_mutation_response(run, &current_issue));
     }
-    if !manual_run_created {
-        match request.expected_revision {
-            Some(expected_revision) => ensure_revision(&run, expected_revision)?,
-            None => {
-                return Err(DaemonError::InvalidRequest(
-                    "expected_revision is required when run_id is provided".to_owned(),
-                ));
-            }
+    match request.expected_revision {
+        Some(expected_revision) => ensure_revision(&run, expected_revision)?,
+        None => {
+            return Err(DaemonError::InvalidRequest(
+                "expected_revision is required when run_id is provided".to_owned(),
+            ));
         }
-        if current_issue.board_state != IssueBoardState::InProgress
-            || current_issue.changed_by_run_id.as_deref() != Some(run.run_id.as_str())
-        {
-            return Err(run_conflict(format!(
-                "ISSUE-{issue_number:03} is not in progress for AgentRun {}",
-                run.run_id
-            )));
-        }
+    }
+    if current_issue.board_state != IssueBoardState::InProgress
+        || current_issue.changed_by_run_id.as_deref() != Some(run.run_id.as_str())
+    {
+        return Err(run_conflict(format!(
+            "ISSUE-{issue_number:03} is not in progress for AgentRun {}",
+            run.run_id
+        )));
     }
     let other_active_runs: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM agent_runs
@@ -3464,7 +3378,14 @@ pub(crate) async fn load_agent_run_for_project(
     row.as_ref().map(agent_run_from_row).transpose()
 }
 
-pub(crate) async fn recover_expired_runs(pool: &SqlitePool) -> Result<u64, DaemonError> {
+pub(crate) const ISSUE_CLOSED_REASON: &str = "issue_closed";
+
+/// Persistently ends runs that can no longer make progress: running runs
+/// whose lease expired (no heartbeat for 24h) and running runs bound to a
+/// Done Issue. The lease-expired transition was previously only derived at
+/// read time, so Activity showed Running for up to a day and then Unknown
+/// forever; ending it in the DB keeps every read consistent.
+pub(crate) async fn recover_stale_runs(pool: &SqlitePool) -> Result<u64, DaemonError> {
     let mut tx = pool.begin().await?;
     let rows = sqlx::query(
         "SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
@@ -3472,19 +3393,36 @@ pub(crate) async fn recover_expired_runs(pool: &SqlitePool) -> Result<u64, Daemo
                 revision, started_at, last_seen_at, lease_expires_at, ended_at
          FROM agent_runs
          WHERE phase = 'running'
-           AND lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           AND (lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                OR issue_number IN (
+                    SELECT issue_number FROM native_issues
+                    WHERE project_id = agent_runs.project_id AND status = 'done'
+                ))
          ORDER BY lease_expires_at, run_id",
     )
     .fetch_all(&mut *tx)
     .await?;
     let count = rows.len() as u64;
+    let (now, _) = db_clock(&mut tx).await?;
     for row in rows {
         let mut run = agent_run_from_row(&row)?;
+        let timed_out = run.lease_expires_at.as_str() <= now.as_str();
         run.phase = AgentRunPhase::Ended;
         run.outcome = Some(AgentRunOutcome::Unknown);
-        run.end_reason = Some(LEASE_EXPIRED_REASON.to_owned());
+        run.end_reason = Some(
+            if timed_out {
+                LEASE_EXPIRED_REASON
+            } else {
+                ISSUE_CLOSED_REASON
+            }
+            .to_owned(),
+        );
         run.revision += 1;
-        run.ended_at = Some(run.lease_expires_at.clone());
+        run.ended_at = Some(if timed_out {
+            run.lease_expires_at.clone()
+        } else {
+            now.clone()
+        });
         update_run(&mut tx, &run).await?;
         insert_event(
             &mut tx,
@@ -4545,6 +4483,25 @@ mod tests {
         }
     }
 
+    async fn session_hook_start(
+        pool: &SqlitePool,
+        event_id: &str,
+        host_run_key: &str,
+        session_id: &str,
+    ) -> AgentRun {
+        let mut request = lifecycle_request(
+            event_id,
+            Some(host_run_key),
+            AgentRunEventType::Started,
+        );
+        request.host_session_id = Some(session_id.to_owned());
+        record_agent_run_event(pool, request)
+            .await
+            .unwrap()
+            .run
+            .unwrap()
+    }
+
     #[test]
     fn wire_values_match_swift_and_zig_contracts() {
         assert_eq!(
@@ -5160,15 +5117,16 @@ mod tests {
         .await
         .unwrap();
 
-        // A manual run with a declared session starts the first Issue.
+        // A hook run in session-a starts the first Issue.
+        let run_a = session_hook_start(&pool, "session_a_1", "root:a1", "session-a").await;
         let started = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
+                run_id: Some(run_a.run_id.clone()),
                 issue_key: first.issue_key.clone(),
-                expected_revision: None,
-                session_id: Some("session-a".to_owned()),
+                expected_revision: Some(run_a.revision),
+                session_id: None,
             },
         )
         .await
@@ -5176,14 +5134,15 @@ mod tests {
         assert_eq!(started.board_state, IssueBoardState::InProgress);
 
         // The same session cannot start the second Issue while the first is In Progress.
+        let run_a2 = session_hook_start(&pool, "session_a_2", "root:a2", "session-a").await;
         let conflict = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
+                run_id: Some(run_a2.run_id.clone()),
                 issue_key: second.issue_key.clone(),
-                expected_revision: None,
-                session_id: Some("session-a".to_owned()),
+                expected_revision: Some(run_a2.revision),
+                session_id: None,
             },
         )
         .await
@@ -5197,14 +5156,15 @@ mod tests {
         ));
 
         // A different session can start the second Issue.
+        let run_b = session_hook_start(&pool, "session_b_1", "root:b1", "session-b").await;
         let other = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
+                run_id: Some(run_b.run_id.clone()),
                 issue_key: second.issue_key.clone(),
-                expected_revision: None,
-                session_id: Some("session-b".to_owned()),
+                expected_revision: Some(run_b.revision),
+                session_id: None,
             },
         )
         .await
@@ -5241,14 +5201,15 @@ mod tests {
         .unwrap();
         assert_eq!(paused.board_state, IssueBoardState::Paused);
 
+        let run_a3 = session_hook_start(&pool, "session_a_3", "root:a3", "session-a").await;
         let started_third = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
+                run_id: Some(run_a3.run_id.clone()),
                 issue_key: third.issue_key.clone(),
-                expected_revision: None,
-                session_id: Some("session-a".to_owned()),
+                expected_revision: Some(run_a3.revision),
+                session_id: None,
             },
         )
         .await
@@ -5348,14 +5309,15 @@ mod tests {
         assert!(cards[0].changed_by_run_id.is_none());
 
         // After a run starts work, the board exposes who changed it.
+        let run = session_hook_start(&pool, "excerpt_start", "root:excerpt", "session-excerpt").await;
         let started = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
+                run_id: Some(run.run_id.clone()),
                 issue_key: created.issue_key.clone(),
-                expected_revision: None,
-                session_id: Some("session-excerpt".to_owned()),
+                expected_revision: Some(run.revision),
+                session_id: None,
             },
         )
         .await
@@ -6607,10 +6569,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn begin_work_without_run_issues_a_manual_run_and_is_idempotent() {
+    async fn begin_work_without_run_is_rejected() {
         let pool = run_pool().await;
         native_issue(&pool, "project-1", 3).await;
-        let started = start_issue_work(
+        let error = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
@@ -6621,28 +6583,22 @@ mod tests {
             },
         )
         .await
-        .unwrap();
-        assert_eq!(started.board_state, IssueBoardState::InProgress);
-        assert_eq!(started.run.host, AgentRunHost::Manual);
-        assert_eq!(started.run.issue_number, Some(3));
-
-        let again = start_issue_work(
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidRequest(_)));
+        let board = project_native_issue_board(
             &pool,
-            StartIssueWorkRequest {
-                project_id: "project-1".to_owned(),
-                run_id: Some(started.run.run_id.clone()),
-                issue_key: "ISSUE-003".to_owned(),
-                expected_revision: Some(started.run.revision),
-                session_id: None,
-            },
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
         )
         .await
         .unwrap();
-        assert_eq!(again.run.run_id, started.run.run_id);
+        assert_eq!(board[0].board_state, IssueBoardState::Todo);
     }
 
     #[tokio::test]
-    async fn begin_work_without_run_rejects_an_issue_claimed_by_another_active_run() {
+    async fn begin_work_rejects_an_issue_claimed_by_another_active_run() {
         let pool = run_pool().await;
         native_issue(&pool, "project-1", 3).await;
         native_issue(&pool, "project-1", 4).await;
@@ -6671,13 +6627,14 @@ mod tests {
         .await
         .unwrap();
 
+        // The same run cannot claim a second Issue.
         let error = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
-                issue_key: "ISSUE-003".to_owned(),
-                expected_revision: None,
+                run_id: Some(started.run_id.clone()),
+                issue_key: "ISSUE-004".to_owned(),
+                expected_revision: Some(started.revision),
                 session_id: None,
             },
         )
@@ -6691,21 +6648,9 @@ mod tests {
             }
         ));
 
-        // 反向：manual run 已绑定 ISSUE-004，hook run 再来也会被拒
-        let manual = start_issue_work(
-            &pool,
-            StartIssueWorkRequest {
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                issue_key: "ISSUE-004".to_owned(),
-                expected_revision: None,
-                session_id: None,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(manual.run.host, AgentRunHost::Manual);
-        let hook_run = record_agent_run_event(
+        // A second hook run cannot claim another Issue while the session
+        // holds an In Progress one.
+        let second = record_agent_run_event(
             &pool,
             lifecycle_request(
                 "hook_claim_start_2",
@@ -6721,9 +6666,9 @@ mod tests {
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: Some(hook_run.run_id),
+                run_id: Some(second.run_id),
                 issue_key: "ISSUE-004".to_owned(),
-                expected_revision: Some(hook_run.revision),
+                expected_revision: Some(second.revision),
                 session_id: None,
             },
         )
@@ -6739,7 +6684,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closure_without_run_requires_in_progress_without_active_runs() {
+    async fn closure_without_run_is_rejected() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let error = request_issue_closure(
+            &pool,
+            RequestIssueClosureRequest {
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                issue_key: Some("ISSUE-003".to_owned()),
+                summary: Some("Acceptance criteria are satisfied".to_owned()),
+                expected_revision: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidRequest(_)));
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T01:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(board[0].board_state, IssueBoardState::Todo);
+    }
+
+    #[tokio::test]
+    async fn closure_requires_the_run_that_started_work() {
         let pool = run_pool().await;
         native_issue(&pool, "project-1", 3).await;
         let started = record_agent_run_event(
@@ -6766,44 +6740,88 @@ mod tests {
         )
         .await
         .unwrap();
-        // 结束 run：run 已 ended，issue 仍在 In Progress
-        record_agent_run_event(
+
+        // A different root run that never started work on the Issue cannot
+        // request closure.
+        let other = record_agent_run_event(
             &pool,
             lifecycle_request(
-                "hook_closure_stop",
-                Some("root:closure"),
-                AgentRunEventType::Ended,
+                "hook_closure_other",
+                Some("root:other"),
+                AgentRunEventType::Started,
             ),
         )
         .await
+        .unwrap()
+        .run
         .unwrap();
+        let error = request_issue_closure(
+            &pool,
+            RequestIssueClosureRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(other.run_id),
+                issue_key: None,
+                summary: Some("Acceptance criteria are satisfied".to_owned()),
+                expected_revision: Some(other.revision),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidRequest(_)));
 
+        // start_issue_work bumped the run revision; reload it for closure.
+        let started_after_start = load_agent_run(&pool, &started.run_id)
+            .await
+            .unwrap()
+            .unwrap();
         let closure = request_issue_closure(
             &pool,
             RequestIssueClosureRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
-                issue_key: Some("ISSUE-003".to_owned()),
+                run_id: Some(started.run_id),
+                issue_key: None,
                 summary: Some("Acceptance criteria are satisfied".to_owned()),
-                expected_revision: None,
+                expected_revision: Some(started_after_start.revision),
             },
         )
         .await
         .unwrap();
         assert_eq!(closure.board_state, IssueBoardState::InReview);
-        assert_eq!(closure.run.host, AgentRunHost::Manual);
+        assert_eq!(closure.run.host, AgentRunHost::Codex);
         assert_eq!(closure.run.issue_number, Some(3));
     }
 
     #[tokio::test]
-    async fn closure_without_run_rejects_while_another_active_run_holds_the_issue() {
+    async fn recover_stale_runs_ends_lease_expired_and_done_bound_runs() {
         let pool = run_pool().await;
         native_issue(&pool, "project-1", 3).await;
-        let started = record_agent_run_event(
+        // One run with an already-expired lease.
+        let expired = record_agent_run_event(
             &pool,
             lifecycle_request(
-                "hook_closure_active",
-                Some("root:closure-active"),
+                "hook_reaper_expired",
+                Some("root:expired"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        sqlx::query(
+            "UPDATE agent_runs SET lease_expires_at = '2020-01-01T00:00:00.000Z'
+             WHERE run_id = $1",
+        )
+        .bind(&expired.run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Another run whose Issue is closed while it is still running.
+        let closed = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_reaper_closed",
+                Some("root:closed"),
                 AgentRunEventType::Started,
             ),
         )
@@ -6815,33 +6833,63 @@ mod tests {
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
-                run_id: Some(started.run_id),
+                run_id: Some(closed.run_id.clone()),
                 issue_key: "ISSUE-003".to_owned(),
-                expected_revision: Some(started.revision),
+                expected_revision: Some(closed.revision),
                 session_id: None,
             },
         )
         .await
         .unwrap();
-
-        let error = request_issue_closure(
+        // start_issue_work bumped the run revision; reload it for closure.
+        let closed_after_start = load_agent_run(&pool, &closed.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        request_issue_closure(
             &pool,
             RequestIssueClosureRequest {
                 project_id: "project-1".to_owned(),
-                run_id: None,
-                issue_key: Some("ISSUE-003".to_owned()),
-                summary: None,
-                expected_revision: None,
+                run_id: Some(closed.run_id.clone()),
+                issue_key: None,
+                summary: Some("done".to_owned()),
+                expected_revision: Some(closed_after_start.revision),
             },
         )
         .await
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            DaemonError::State {
-                code: "agent_run_conflict",
-                ..
-            }
-        ));
+        .unwrap();
+        apply_issue_gate(
+            &pool,
+            ApplyIssueGateRequest {
+                project_id: "project-1".to_owned(),
+                issue_number: 3,
+                expected_revision: 3,
+                action: IssueGateAction::ApproveClosure,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recover_stale_runs(&pool).await.unwrap(), 2);
+        let expired_row = load_agent_run(&pool, &expired.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(expired_row.phase, AgentRunPhase::Ended);
+        assert_eq!(
+            expired_row.end_reason.as_deref(),
+            Some(LEASE_EXPIRED_REASON)
+        );
+        let closed_row = load_agent_run(&pool, &closed.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed_row.phase, AgentRunPhase::Ended);
+        assert_eq!(
+            closed_row.end_reason.as_deref(),
+            Some(ISSUE_CLOSED_REASON)
+        );
+        // A second sweep is a no-op.
+        assert_eq!(recover_stale_runs(&pool).await.unwrap(), 0);
     }
 }

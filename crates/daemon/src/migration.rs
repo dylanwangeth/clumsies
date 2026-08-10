@@ -129,6 +129,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_33_to_34(pool).await?;
         existing_schema_version = 34;
     }
+    if existing_schema_version == 34 {
+        migrate_local_schema_34_to_35(pool).await?;
+        existing_schema_version = 35;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -834,6 +838,18 @@ pub(crate) async fn migrate_local_schema_33_to_34(pool: &SqlitePool) -> Result<(
         sqlx::query(statement).execute(&mut *tx).await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// Manual AgentRuns are removed (ISSUE-039): retag every existing
+/// `manual` run as the opencode host so no row keeps the self-issued
+/// identity, and no future code path can create one.
+pub(crate) async fn migrate_local_schema_34_to_35(pool: &SqlitePool) -> Result<(), DaemonError> {
+    sqlx::query(
+        "UPDATE agent_runs SET host = 'opencode' WHERE host = 'manual'",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

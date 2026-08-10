@@ -851,7 +851,7 @@ export interface components {
         /** @enum {string} */
         ProjectAgentAdapterKind: "codex" | "claude-code";
         /** @enum {string} */
-        AgentRunHost: "codex" | "claude-code";
+        AgentRunHost: "codex" | "claude-code" | "zed" | "manual" | "opencode";
         /** @enum {string} */
         AgentRunKind: "root" | "subagent";
         /** @enum {string} */
