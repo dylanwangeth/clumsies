@@ -568,7 +568,7 @@ struct IssueDetailView: View {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
         }
     }
 
