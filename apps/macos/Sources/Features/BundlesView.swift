@@ -104,6 +104,7 @@ private struct BundleEditor: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .focusEffectDisabled()
                             .help("Open \(resource.document.title)")
                             .accessibilityLabel("Open \(resource.document.title)")
 

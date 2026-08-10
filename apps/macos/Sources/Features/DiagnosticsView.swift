@@ -350,6 +350,7 @@ private struct RetrievalRunList: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .focusEffectDisabled()
                     .padding(.horizontal, 8)
                 }
                 if model.nextCursor != nil {

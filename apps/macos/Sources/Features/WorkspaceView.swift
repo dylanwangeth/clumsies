@@ -892,6 +892,7 @@ private struct IssueSearchField: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
                 .help("Clear search")
                 .accessibilityLabel("Clear search")
             }
@@ -1061,6 +1062,7 @@ private struct WorkspaceSearchPopover: View {
                                 .padding(.vertical, 7)
                             }
                             .buttonStyle(.plain)
+                            .focusEffectDisabled()
                         }
                     }
                 }
@@ -1107,6 +1109,7 @@ private struct GlobalSidebar: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .focusEffectDisabled()
 
                     if store.canManageProjects {
                         Button {
@@ -1116,6 +1119,7 @@ private struct GlobalSidebar: View {
                                 .frame(width: 16, height: 16, alignment: .center)
                         }
                         .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .frame(width: 20, height: 20, alignment: .center)
                         .contentShape(Rectangle())
                         .help("New Project")

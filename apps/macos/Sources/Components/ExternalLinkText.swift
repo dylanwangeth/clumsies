@@ -32,6 +32,7 @@ struct ExternalLinkText: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .pointingHandCursor()
         .help(url.absoluteString)
     }

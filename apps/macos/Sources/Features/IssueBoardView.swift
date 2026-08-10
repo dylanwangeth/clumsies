@@ -411,6 +411,7 @@ struct IssueBoardView: View {
                 )
             }
             .buttonStyle(.plain)
+            .focusEffectDisabled()
             .help("Show Issue diagnostics")
             .popover(isPresented: $showsDiagnostics, arrowEdge: .top) {
                 IssueDiagnosticsPopover(diagnostics: diagnostics)

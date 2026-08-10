@@ -371,6 +371,7 @@ struct SplitDiffView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focusEffectDisabled()
 
             if expandedOmissionIds.contains(block.id) {
                 ForEach(block.rows) { row in
