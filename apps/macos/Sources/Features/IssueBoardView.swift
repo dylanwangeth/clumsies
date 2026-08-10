@@ -517,6 +517,7 @@ struct IssueDetailView: View {
                     .task(id: issueId) {
                         await model.loadDetail(issue)
                     }
+                    .navigationTitle(issue.issueKey)
             } else {
                 ContentUnavailableView {
                     Label("Issue Unavailable", systemImage: "doc.text.magnifyingglass")
@@ -531,85 +532,74 @@ struct IssueDetailView: View {
 
     private func issueContent(_ issue: IssueBoardCard) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // ── Title bar ──
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(issue.issueKey)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 24) {
+                // Title
+                Text(issue.title)
+                    .font(.title2.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Text(issue.title)
-                        .font(.title.weight(.semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // ── Status strip ──
-                HStack(spacing: 16) {
+                // Status row
+                HStack(spacing: 12) {
                     Label(issue.boardState.title, systemImage: issue.boardState.symbolName)
                         .foregroundStyle(issue.boardState.iconColor)
-
-                    Divider()
-                        .frame(height: 14)
 
                     if let started = issue.startedAt,
                        let relative = IssueTiming.relativeText(started, relativeTo: .now)
                     {
-                        Label(relative, systemImage: "clock")
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(relative)
                             .foregroundStyle(.secondary)
                     }
 
                     if issue.isStale {
-                        Label("Stale", systemImage: "clock.badge.exclamationmark")
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text("Stale")
                             .foregroundStyle(.orange)
                     }
 
                     if issue.blocked {
-                        Label("Blocked", systemImage: "exclamationmark.triangle.fill")
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text("Blocked")
                             .foregroundStyle(.red)
                     }
 
                     Spacer(minLength: 0)
                 }
                 .font(.caption)
-                .padding(.top, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Divider()
-                    .padding(.top, 14)
-                    .padding(.bottom, 20)
-
-                // ── Body ──
+                // Body
                 if !issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Markdown(issue.description)
                         .markdownTheme(.basic)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.bottom, 24)
                 }
 
-                // ── Acceptance Criteria ──
+                Divider()
+
+                // Supplementary info blocks
                 if let detail = model.detail(for: issue),
                    !detail.acceptanceCriteria.isEmpty
                 {
                     infoBlock("Acceptance Criteria") {
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(detail.acceptanceCriteria.enumerated()), id: \.offset) { _, criteria in
-                                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text("•")
-                                        .foregroundStyle(.tertiary)
-                                    Text(criteria)
-                                        .font(.body)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                                Text("•  \(criteria)")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
                 }
 
-                // ── Closure summary ──
                 if let summary = issue.closureSummary, !summary.isEmpty {
                     infoBlock("Closure Summary") {
                         Text(summary)
@@ -620,19 +610,15 @@ struct IssueDetailView: View {
                     }
                 }
 
-                // ── Verification ──
                 if issue.verificationLevel != .agentSelf || !issue.verificationSteps.isEmpty {
                     infoBlock("Verification") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Label {
-                                Text(verificationLabel(issue.verificationLevel))
-                            } icon: {
-                                Image(systemName: verificationSymbol(issue.verificationLevel))
-                            }
-                            .foregroundStyle(verificationColor(issue.verificationLevel))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(verificationLabel(issue.verificationLevel),
+                                  systemImage: verificationSymbol(issue.verificationLevel))
+                                .foregroundStyle(verificationColor(issue.verificationLevel))
 
-                            ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { index, step in
-                                Text("\(index + 1). \(step)")
+                            ForEach(Array(issue.verificationSteps.enumerated()), id: \.offset) { i, step in
+                                Text("\(i + 1). \(step)")
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
@@ -642,10 +628,9 @@ struct IssueDetailView: View {
                     }
                 }
 
-                // ── Agent activity ──
                 if !issue.activeRuns.isEmpty || issue.latestRun != nil {
-                    infoBlock("Agent Activity") {
-                        VStack(alignment: .leading, spacing: 6) {
+                    infoBlock("Activity") {
+                        VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(issue.activeRuns.prefix(3))) { run in
                                 AgentRunRow(run: run)
                             }
@@ -661,38 +646,30 @@ struct IssueDetailView: View {
                     }
                 }
 
-                // ── External references ──
-                let externalReferences = IssueExternalReferencePresentation.cardPresentation(
-                    for: issue.externalReferences
-                )
-                if !externalReferences.items.isEmpty {
+                let refs = IssueExternalReferencePresentation.cardPresentation(for: issue.externalReferences)
+                if !refs.items.isEmpty {
                     infoBlock("Linked") {
-                        IssueExternalReferencesSummary(presentation: externalReferences)
+                        IssueExternalReferencesSummary(presentation: refs)
                     }
                 }
             }
             .frame(maxWidth: DocumentContentMetrics.maximumWidth)
             .padding(.horizontal, DocumentContentMetrics.minimumHorizontalInset)
-            .padding(.top, 32)
+            .padding(.top, 24)
             .padding(.bottom, 48)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(issue.issueKey) details")
     }
 
     @ViewBuilder
-    private func infoBlock<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func infoBlock<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.tertiary)
             content()
         }
-        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func verificationLabel(_ level: VerificationLevel) -> String {
