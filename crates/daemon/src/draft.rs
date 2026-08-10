@@ -59,13 +59,9 @@ pub(crate) async fn resolve_local_draft(
         .ok_or_else(|| DaemonError::NotFound(format!("local draft not found: {draft_id}")))?;
         let stored_kind: String = row.try_get("resource_kind")?;
         let stored_project_id: String = row.try_get("project_id")?;
-        let stored_scope: String = row.try_get("resource_scope")?;
-        if stored_project_id != project_id
-            || stored_scope != scope.as_str()
-            || stored_kind != resource.as_str()
-        {
+        if stored_project_id != project_id || stored_kind != resource.as_str() {
             return Err(DaemonError::InvalidRequest(format!(
-                "local draft {draft_id} belongs to a different project, scope, or resource kind"
+                "local draft {draft_id} belongs to a different project or resource kind"
             )));
         }
         let stored_base_commit_id: Option<String> = row.try_get("base_commit_id")?;
@@ -133,14 +129,10 @@ pub(crate) async fn resolve_local_draft(
     {
         let draft_id: String = existing.try_get("draft_id")?;
         let stored_project_id: String = existing.try_get("project_id")?;
-        let stored_scope: String = existing.try_get("resource_scope")?;
         let stored_kind: String = existing.try_get("resource_kind")?;
-        if stored_project_id != project_id
-            || stored_scope != scope.as_str()
-            || stored_kind != resource.as_str()
-        {
+        if stored_project_id != project_id || stored_kind != resource.as_str() {
             return Err(DaemonError::InvalidRequest(format!(
-                "local draft {draft_id} belongs to a different project, scope, or resource kind"
+                "local draft {draft_id} belongs to a different project or resource kind"
             )));
         }
         let stored_base_commit_id: Option<String> = existing.try_get("base_commit_id")?;
