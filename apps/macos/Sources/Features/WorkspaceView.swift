@@ -89,7 +89,7 @@ enum WorkspaceColumnLayout: Equatable {
     case sidebarContentDetail
 
     init(section: WorkspaceSection) {
-        self = section == .issues ? .sidebarDetail : .sidebarContentDetail
+        self = (section == .issues || section == .reviews) ? .sidebarDetail : .sidebarContentDetail
     }
 }
 
@@ -103,7 +103,6 @@ struct WorkspaceView: View {
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
     @StateObject private var issueBoardModel: IssueBoardModel
-    @State private var reviewStatusFilter: ReviewStatusFilter = .open
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
@@ -113,6 +112,8 @@ struct WorkspaceView: View {
     @State private var showsIssueWorkflowHelp = false
     @State private var issueNavigationPath: [IssueBoardRoute] = []
     @FocusState private var issueSearchFocused: Bool
+    @State private var reviewNavigationPath: [ReviewRoute] = []
+    @State private var reviewStatusFilter: ReviewStatusFilter = .open
 
     init(
         store: WorkspaceStore,
@@ -140,9 +141,12 @@ struct WorkspaceView: View {
     }
 
     var body: some View {
-        if WorkspaceColumnLayout(section: store.selectedSection) == .sidebarDetail {
+        switch store.selectedSection {
+        case .issues:
             issuesWorkspace
-        } else {
+        case .reviews:
+            reviewsWorkspace
+        default:
             regularWorkspace
         }
     }
@@ -456,6 +460,60 @@ struct WorkspaceView: View {
         )
     }
 
+    private var reviewsWorkspace: some View {
+        NavigationSplitView(columnVisibility: $issueSplitVisibility) {
+            GlobalSidebar(
+                store: store,
+                onOpenSettings: onOpenSettings,
+                onOpenDiagnostics: onOpenDiagnostics,
+                onShowLogs: onShowLogs
+            )
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+        } detail: {
+            NavigationStack(path: $reviewNavigationPath) {
+                ReviewListPage(
+                    store: store,
+                    reviews: filteredReviews,
+                    statusFilter: $reviewStatusFilter,
+                    onOpen: { review in
+                        reviewNavigationPath = [ReviewRoute(reviewId: review.id)]
+                    }
+                )
+                .navigationDestination(for: ReviewRoute.self) { route in
+                    ReviewDetailPage(
+                        store: store,
+                        reviewId: route.reviewId,
+                        orderedReviews: filteredReviews,
+                        onNavigateToReview: { reviewId in
+                            reviewNavigationPath = [ReviewRoute(reviewId: reviewId)]
+                        }
+                    )
+                }
+            }
+            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar {
+                if reviewNavigationPath.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        ReviewStatusFilterControl(
+                            reviews: store.reviews,
+                            selection: $reviewStatusFilter
+                        )
+                    }
+                }
+            }
+        }
+        .onChange(of: store.selectedReviewId) { _, reviewId in
+            guard store.selectedSection == .reviews, let reviewId else { return }
+            guard reviewNavigationPath.last?.reviewId != reviewId else { return }
+            guard store.reviews.contains(where: { $0.id == reviewId }) else { return }
+            reviewNavigationPath = [ReviewRoute(reviewId: reviewId)]
+        }
+    }
+
+    private var filteredReviews: [ReviewRecord] {
+        store.reviews.filter { reviewStatusFilter.matches($0) }
+    }
+
     private var issuesWorkspace: some View {
         NavigationSplitView(columnVisibility: $issueSplitVisibility) {
             GlobalSidebar(
@@ -692,11 +750,8 @@ struct WorkspaceView: View {
                 EmptyView()
             }
         case .reviews:
-            ToolbarItem(placement: .navigation) {
-                ReviewStatusFilterControl(
-                    reviews: store.reviews,
-                    selection: $reviewStatusFilter
-                )
+            ToolbarItem {
+                EmptyView()
             }
         }
     }
@@ -711,7 +766,7 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
-            ReviewNavigator(store: store, statusFilter: $reviewStatusFilter)
+            EmptyView()
         }
     }
 
@@ -735,12 +790,8 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
-            ReviewDetailPane(store: store, review: selectedReview)
+            EmptyView()
         }
-    }
-
-    private var selectedReview: ReviewRecord? {
-        filteredReviews.first { $0.id == store.selectedReviewId } ?? filteredReviews.first
     }
 
     @ViewBuilder
@@ -750,10 +801,6 @@ struct WorkspaceView: View {
                 .frame(minWidth: 120, maxWidth: 360, alignment: .leading)
                 .accessibilityLabel("Path: \(path)")
         }
-    }
-
-    private var filteredReviews: [ReviewRecord] {
-        store.reviews.filter(reviewStatusFilter.matches)
     }
 
     private var searchResults: [SearchEntry] {

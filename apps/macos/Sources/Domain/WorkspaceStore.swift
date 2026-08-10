@@ -1426,11 +1426,20 @@ final class WorkspaceStore: ObservableObject {
         try await server.get("/api/v1/reviews/\(reviewId)")
     }
 
-    func addComment(_ body: String, to review: ReviewRecord) async throws {
+    func addComment(
+        _ body: String,
+        to review: ReviewRecord,
+        anchorPath: String? = nil,
+        anchorLine: Int? = nil
+    ) async throws {
         let _: ReviewComment = try await server.send(
             method: "POST",
             path: "/api/v1/reviews/\(review.id)/comments",
-            body: CreateReviewCommentRequest(body: body)
+            body: CreateReviewCommentRequest(
+                body: body,
+                anchorPath: anchorPath,
+                anchorLine: anchorLine
+            )
         )
         try await refreshReview(review.id)
     }

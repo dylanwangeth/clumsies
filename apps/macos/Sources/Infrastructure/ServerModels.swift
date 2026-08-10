@@ -250,6 +250,8 @@ struct ReviewComment: Codable, Identifiable, Hashable, Sendable {
     let author: UserReference
     let body: String
     let createdAt: String
+    let anchorPath: String?
+    let anchorLine: Int?
 }
 
 struct ServerDraftResourceReference: Codable, Hashable, Sendable {
@@ -388,6 +390,14 @@ struct CreateReviewSubmissionRequest: Codable, Sendable {
 
 struct CreateReviewCommentRequest: Codable, Sendable {
     let body: String
+    let anchorPath: String?
+    let anchorLine: Int?
+
+    init(body: String, anchorPath: String? = nil, anchorLine: Int? = nil) {
+        self.body = body
+        self.anchorPath = anchorPath
+        self.anchorLine = anchorLine
+    }
 }
 
 struct CreateReviewDecisionRequest: Codable, Sendable {

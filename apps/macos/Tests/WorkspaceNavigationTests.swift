@@ -7,20 +7,55 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSection.issues.title, "Kanban")
     }
 
-    func testIssuesUseSidebarAndDetailWhileOtherSectionsKeepThreeColumns() {
+    func testIssuesAndReviewsUseSidebarAndDetailWhileOtherSectionsKeepThreeColumns() {
         XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
+        XCTAssertEqual(WorkspaceColumnLayout(section: .reviews), .sidebarDetail)
 
         for section in [
             WorkspaceSection.hub,
             .local,
             .bundles,
-            .reviews,
         ] {
             XCTAssertEqual(
                 WorkspaceColumnLayout(section: section),
                 .sidebarContentDetail
             )
         }
+    }
+
+    func testReviewStatusFilterMatchesByStatus() {
+        func record(status: String) -> ReviewRecord {
+            ReviewRecord(
+                id: UUID().uuidString,
+                projectId: "prj",
+                draftId: "draft",
+                title: "T",
+                description: "",
+                author: UserReference(
+                    userId: "u",
+                    email: "u@example.com",
+                    displayName: nil,
+                    avatarUrl: nil,
+                    role: "member"
+                ),
+                status: status,
+                version: 1,
+                decisionBody: nil,
+                approvedResultHash: nil,
+                freshness: .current,
+                reconciliation: .clean,
+                reconciliationCandidateId: nil,
+                currentCommitId: nil,
+                updatedAt: "2026-08-09T00:00:00Z"
+            )
+        }
+
+        let all = ReviewStatusFilter.allCases
+        let open = record(status: "open")
+        XCTAssertTrue(ReviewStatusFilter.open.matches(open))
+        XCTAssertFalse(ReviewStatusFilter.approved.matches(open))
+        XCTAssertTrue(ReviewStatusFilter.all.matches(open))
+        XCTAssertEqual(all.count, 5)
     }
 
     func testIssueDetailRouteCarriesOnlyTheGlobalIssueId() {
