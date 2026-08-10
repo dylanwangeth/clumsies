@@ -1176,7 +1176,6 @@ pub(crate) async fn record_agent_run_event(
     })
 }
 
-
 pub(crate) async fn start_issue_work(
     pool: &SqlitePool,
     request: StartIssueWorkRequest,
@@ -1187,7 +1186,7 @@ pub(crate) async fn start_issue_work(
     }
     let issue_number = parse_issue_reference(&request.issue_key)?;
     let mut tx = pool.begin().await?;
-    let (now, lease_expires_at) = db_clock(&mut tx).await?;
+    let (now, _) = db_clock(&mut tx).await?;
     let mut run = match &request.run_id {
         Some(run_id) => {
             let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, run_id)
@@ -1327,7 +1326,7 @@ pub(crate) async fn request_issue_closure(
     }
     validate_optional("summary", request.summary.as_deref(), MAX_SUMMARY_BYTES)?;
     let mut tx = pool.begin().await?;
-    let (now, lease_expires_at) = db_clock(&mut tx).await?;
+    let (now, _) = db_clock(&mut tx).await?;
 
     let (issue_number, run) = match &request.run_id {
         Some(run_id) => {
@@ -4576,11 +4575,8 @@ mod tests {
         host_run_key: &str,
         session_id: &str,
     ) -> AgentRun {
-        let mut request = lifecycle_request(
-            event_id,
-            Some(host_run_key),
-            AgentRunEventType::Started,
-        );
+        let mut request =
+            lifecycle_request(event_id, Some(host_run_key), AgentRunEventType::Started);
         request.host_session_id = Some(session_id.to_owned());
         record_agent_run_event(pool, request)
             .await
@@ -5396,7 +5392,8 @@ mod tests {
         assert!(cards[0].changed_by_run_id.is_none());
 
         // After a run starts work, the board exposes who changed it.
-        let run = session_hook_start(&pool, "excerpt_start", "root:excerpt", "session-excerpt").await;
+        let run =
+            session_hook_start(&pool, "excerpt_start", "root:excerpt", "session-excerpt").await;
         let started = start_issue_work(
             &pool,
             StartIssueWorkRequest {
@@ -7162,10 +7159,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(closed_row.phase, AgentRunPhase::Ended);
-        assert_eq!(
-            closed_row.end_reason.as_deref(),
-            Some(ISSUE_CLOSED_REASON)
-        );
+        assert_eq!(closed_row.end_reason.as_deref(), Some(ISSUE_CLOSED_REASON));
         // A second sweep is a no-op.
         assert_eq!(recover_stale_runs(&pool).await.unwrap(), 0);
     }
