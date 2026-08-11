@@ -248,6 +248,7 @@ pub(crate) fn filter_proxy_request_headers(
     const ALLOWED: &[&str] = &[
         "accept",
         "content-type",
+        "idempotency-key",
         "if-match",
         "if-none-match",
         "x-clumsies-request-id",
@@ -345,4 +346,36 @@ pub(crate) async fn clear_server_response_cache(pool: &SqlitePool) -> Result<(),
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_request_headers_preserve_contract_headers_and_filter_credentials() {
+        let filtered = filter_proxy_request_headers(BTreeMap::from([
+            ("Accept".to_owned(), "application/json".to_owned()),
+            ("Content-Type".to_owned(), "application/json".to_owned()),
+            ("IdEmPoTeNcY-Key".to_owned(), "project-create-1".to_owned()),
+            ("If-Match".to_owned(), "17".to_owned()),
+            ("If-None-Match".to_owned(), "\"etag\"".to_owned()),
+            ("X-Clumsies-Request-ID".to_owned(), "request-1".to_owned()),
+            ("Authorization".to_owned(), "Bearer caller-token".to_owned()),
+            ("Cookie".to_owned(), "session=caller".to_owned()),
+            ("X-Untrusted".to_owned(), "value".to_owned()),
+        ]));
+
+        assert_eq!(
+            filtered,
+            BTreeMap::from([
+                ("accept".to_owned(), "application/json".to_owned()),
+                ("content-type".to_owned(), "application/json".to_owned()),
+                ("idempotency-key".to_owned(), "project-create-1".to_owned(),),
+                ("if-match".to_owned(), "17".to_owned()),
+                ("if-none-match".to_owned(), "\"etag\"".to_owned()),
+                ("x-clumsies-request-id".to_owned(), "request-1".to_owned(),),
+            ])
+        );
+    }
 }

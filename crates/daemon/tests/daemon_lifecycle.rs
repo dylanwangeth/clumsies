@@ -4189,6 +4189,49 @@ async fn daemon_restart_requeues_an_interrupted_operation() {
 }
 
 #[tokio::test]
+async fn server_proxy_preserves_contract_headers_and_rejects_caller_credentials() {
+    let app = Router::new().route("/api/v1/header-probe", post(proxy_header_probe));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_headers".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+
+    let response = state
+        .server_request(DaemonServerRequest {
+            method: "POST".to_owned(),
+            path: "/api/v1/header-probe".to_owned(),
+            headers: BTreeMap::from([
+                ("IdEmPoTeNcY-Key".to_owned(), "project-create-1".to_owned()),
+                ("If-Match".to_owned(), "17".to_owned()),
+                ("IF-NONE-MATCH".to_owned(), "\"etag\"".to_owned()),
+                ("Authorization".to_owned(), "Bearer caller-token".to_owned()),
+                ("Cookie".to_owned(), "session=caller".to_owned()),
+                ("X-Untrusted".to_owned(), "value".to_owned()),
+            ]),
+            body: Some("{}".to_owned()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    let probe: ProxyHeaderProbe = serde_json::from_str(&response.body).unwrap();
+    assert_eq!(probe.idempotency_key.as_deref(), Some("project-create-1"));
+    assert_eq!(probe.if_match.as_deref(), Some("17"));
+    assert_eq!(probe.if_none_match.as_deref(), Some("\"etag\""));
+    assert_eq!(probe.authorization, vec!["Bearer test-token"]);
+    assert_eq!(probe.cookie, None);
+    assert_eq!(probe.untrusted, None);
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn server_proxy_uses_stale_cache_only_for_read_failures() {
     let proxy_state = CachedProxyState {
         unavailable: Arc::new(AtomicBool::new(false)),
@@ -4695,6 +4738,39 @@ async fn empty_draft_events() -> Json<serde_json::Value> {
 #[derive(Clone)]
 struct CachedProxyState {
     unavailable: Arc<AtomicBool>,
+}
+
+#[derive(Deserialize)]
+struct ProxyHeaderProbe {
+    idempotency_key: Option<String>,
+    if_match: Option<String>,
+    if_none_match: Option<String>,
+    authorization: Vec<String>,
+    cookie: Option<String>,
+    untrusted: Option<String>,
+}
+
+async fn proxy_header_probe(headers: axum::http::HeaderMap) -> Json<serde_json::Value> {
+    let authorization = headers
+        .get_all("authorization")
+        .iter()
+        .filter_map(|value| value.to_str().ok().map(str::to_owned))
+        .collect::<Vec<_>>();
+    Json(json!({
+        "idempotency_key": proxy_header_value(&headers, "idempotency-key"),
+        "if_match": proxy_header_value(&headers, "if-match"),
+        "if_none_match": proxy_header_value(&headers, "if-none-match"),
+        "authorization": authorization,
+        "cookie": proxy_header_value(&headers, "cookie"),
+        "untrusted": proxy_header_value(&headers, "x-untrusted"),
+    }))
+}
+
+fn proxy_header_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 async fn cached_proxy_get(
