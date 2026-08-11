@@ -1,5 +1,7 @@
 mod common;
 
+use std::collections::BTreeMap;
+
 use daemon::{
     DaemonConfig, DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,
     DaemonDraftContent, DaemonDraftListQuery, DaemonDraftOperation,
@@ -8,15 +10,15 @@ use daemon::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonProjectCheckoutRequest,
     DaemonProjectSelectionRequest, DaemonProjectStorageMoveState,
     DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest, DaemonRenameDraftOperation,
-    DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    LoadMemoryRequest, SyncRetryChannel, SyncState,
+    DaemonServerRequest, DaemonSyncRetryRequest, DaemonUpdateDraftOperation,
+    DraftOperationSyncStatus, LoadMemoryRequest, SyncRetryChannel, SyncState,
 };
 use server::api::{
-    CreateDraftRebaseRequest, CreateDraftRequest, CreateReviewDecisionRequest,
-    CreateReviewMergeRequest, CreateReviewRequest, CreateReviewSubmissionRequest,
-    DraftOperationAction, DraftOperationInput, DraftResourceContent, DraftResourceKind,
-    DraftResourceRef, ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest,
-    ResourceScope, ReviewDecision, ReviewMergeResult,
+    CreateDraftRebaseRequest, CreateDraftRequest, CreateProjectRequest,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
+    DraftResourceKind, DraftResourceRef, Project, ReconciliationCandidateStatus,
+    ReplaceProjectOrgSelectionRequest, ResourceScope, ReviewDecision, ReviewMergeResult,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -323,6 +325,92 @@ async fn cache_root_for_commit(
         .unwrap();
     assert_eq!(cache.commit_id.as_deref(), Some(commit_id));
     std::path::PathBuf::from(cache.active_generation_path.unwrap())
+}
+
+#[tokio::test]
+async fn project_creation_proxy_preserves_idempotency_and_replays_the_result() {
+    let postgres = common::start_postgres().await;
+    let port = postgres.port;
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    server::db::run_migrations(&pool).await.unwrap();
+    let bootstrap = common::initialize_installation(pool.clone(), "Project Proxy").await;
+
+    let access_token = "daemon-project-create-access-token";
+    let token_hash = hex::encode(Sha256::digest(access_token.as_bytes()));
+    sqlx::query(
+        "INSERT INTO auth_sessions (session_id, user_id, org_id)
+         VALUES ('ses_daemon_project_create', $1, $2)",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(&bootstrap.org_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO access_tokens (
+            token_id, session_id, user_id, kind, token_hash, expires_at
+         ) VALUES (
+            'tok_daemon_project_create', 'ses_daemon_project_create', $1,
+            'access', $2, now() + interval '30 minutes'
+         )",
+    )
+    .bind(&bootstrap.user_id)
+    .bind(token_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_address = listener.local_addr().unwrap();
+    let server_pool = pool.clone();
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, server::http::router(server_pool))
+            .await
+            .unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{server_address}");
+    config.project.project_id = Some(bootstrap.project_id);
+    let (state, _) = common::initialize_authenticated_daemon(config, access_token, None).await;
+    let request = DaemonServerRequest {
+        method: "POST".to_owned(),
+        path: "/api/v1/projects".to_owned(),
+        headers: BTreeMap::from([
+            ("Content-Type".to_owned(), "application/json".to_owned()),
+            (
+                "Idempotency-Key".to_owned(),
+                "daemon-project-create-1".to_owned(),
+            ),
+        ]),
+        body: Some(
+            serde_json::to_string(&CreateProjectRequest {
+                name: "Created Through Daemon".to_owned(),
+                description: Some("Proxy contract verification".to_owned()),
+            })
+            .unwrap(),
+        ),
+    };
+
+    let first = state.server_request(request.clone()).await.unwrap();
+    assert_eq!(first.status, 201);
+    let first_project: Project = serde_json::from_str(&first.body).unwrap();
+
+    let replay = state.server_request(request).await.unwrap();
+    assert_eq!(replay.status, 201);
+    let replayed_project: Project = serde_json::from_str(&replay.body).unwrap();
+    assert_eq!(replayed_project.project_id, first_project.project_id);
+
+    let project_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM projects WHERE lower(name) = lower($1)")
+            .bind("Created Through Daemon")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(project_count, 1);
+
+    server_task.abort();
 }
 
 #[tokio::test]
