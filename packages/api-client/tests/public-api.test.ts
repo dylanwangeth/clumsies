@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createPublicApiClient,
   ClumsiesApi,
+  type PublicSchema,
 } from "../src/index";
 
 describe("Clumsies API", () => {
@@ -10,6 +11,7 @@ describe("Clumsies API", () => {
     let mergeIfMatch: string | null = null;
     let submissionIfMatch: string | null = null;
     let projectIdempotencyKey: string | null = null;
+    let reviewCommentBody: Record<string, unknown> | null = null;
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
@@ -26,6 +28,12 @@ describe("Clumsies API", () => {
       }
       if (url.pathname.endsWith("/submissions")) {
         submissionIfMatch = request.headers.get("if-match");
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/v1/reviews/review/comments"
+      ) {
+        reviewCommentBody = await request.json() as Record<string, unknown>;
       }
       return new Response("{}", {
         status: 200,
@@ -104,7 +112,12 @@ describe("Clumsies API", () => {
     });
     await api.review("review");
     await api.listReviewComments("review");
-    await api.createReviewComment("review", { body: "Comment" });
+    await api.createReviewComment("review", {
+      body: "Comment",
+      expected_review_version: 3,
+      anchor_path: "notes/a.md",
+      anchor_line: 12,
+    });
     await api.createReviewDecision("review", {
       decision: "approved",
       expected_review_version: 1,
@@ -178,5 +191,40 @@ describe("Clumsies API", () => {
     expect(mergeIfMatch).toBe('"ref-none"');
     expect(submissionIfMatch).toBe('"commit"');
     expect(projectIdempotencyKey).toBe("project-create-test");
+    expect(reviewCommentBody).toEqual({
+      body: "Comment",
+      expected_review_version: 3,
+      anchor_path: "notes/a.md",
+      anchor_line: 12,
+    });
+  });
+
+  test("exposes versioned comments and optional decision audit metadata", () => {
+    const request: PublicSchema<"CreateReviewCommentRequest"> = {
+      body: "Comment",
+      expected_review_version: 3,
+      anchor_path: "notes/a.md",
+      anchor_line: 12,
+    };
+    const commentVersion: Pick<PublicSchema<"ReviewComment">, "review_version"> = {
+      review_version: 4,
+    };
+    const decisionAudit: Pick<
+      PublicSchema<"Review">,
+      "decided_by" | "decided_at"
+    > = {
+      decided_by: {
+        user_id: "reviewer-1",
+        email: "reviewer@example.com",
+        display_name: "Reviewer",
+        avatar_url: null,
+        role: "member",
+      },
+      decided_at: "2026-08-06T01:00:00Z",
+    };
+
+    expect(request.expected_review_version).toBe(3);
+    expect(commentVersion.review_version).toBe(4);
+    expect(decisionAudit.decided_by?.user_id).toBe("reviewer-1");
   });
 });

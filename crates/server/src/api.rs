@@ -794,6 +794,9 @@ pub struct Review {
     pub version: i64,
     pub decision_body: Option<String>,
     pub approved_result_hash: Option<String>,
+    pub decided_by: Option<UserRef>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub decided_at: Option<OffsetDateTime>,
     pub coordination: DraftCoordination,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -827,6 +830,11 @@ pub struct ReviewComment {
     pub review_id: String,
     pub author: UserRef,
     pub body: String,
+    #[serde(default)]
+    pub anchor_path: Option<String>,
+    #[serde(default)]
+    pub anchor_line: Option<i64>,
+    pub review_version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -834,6 +842,11 @@ pub struct ReviewComment {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateReviewCommentRequest {
     pub body: String,
+    pub expected_review_version: i64,
+    #[serde(default)]
+    pub anchor_path: Option<String>,
+    #[serde(default)]
+    pub anchor_line: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

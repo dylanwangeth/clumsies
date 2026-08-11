@@ -1536,7 +1536,7 @@ async fn delete_draft(
     Ok(Json(
         state
             .repository
-            .discard_draft(&draft_id, expected_version)
+            .discard_draft(&draft_id, &principal.user_id, expected_version)
             .await?,
     ))
 }
@@ -1757,7 +1757,7 @@ async fn create_review_decision(
     Ok(Json(
         state
             .repository
-            .create_review_decision(&review_id, request)
+            .create_review_decision(&review_id, &principal.user_id, request)
             .await?,
     ))
 }
