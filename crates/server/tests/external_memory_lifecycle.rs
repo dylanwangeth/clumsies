@@ -102,9 +102,13 @@ async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
             .contains("must be discarded instead of deleted")
     );
 
-    repo.discard_draft(&draft.draft.draft_id, draft.draft.version)
-        .await
-        .unwrap();
+    repo.discard_draft(
+        &draft.draft.draft_id,
+        &bootstrap.user_id,
+        draft.draft.version,
+    )
+    .await
+    .unwrap();
     let discarded = repo.get_draft(&draft.draft.draft_id).await.unwrap();
     assert_eq!(discarded.draft.status, DraftStatus::Discarded);
 }
@@ -431,6 +435,8 @@ async fn draft_review_merge_produces_project_commit() {
     let review_detail = create_review_for_draft(app.clone(), &draft).await;
     let review = review_detail.review;
     assert_eq!(review.status, ReviewStatus::Open);
+    assert_eq!(review.decided_by, None);
+    assert_eq!(review.decided_at, None);
     assert_eq!(review_detail.draft.status, DraftStatus::Submitted);
 
     let review_page: ReviewListResponse = get_json(
@@ -444,12 +450,16 @@ async fn draft_review_merge_produces_project_commit() {
     let created_comment: ReviewComment = post_json(
         app.clone(),
         &format!("/api/v1/reviews/{}/comments", review.review_id),
-        &CreateReviewCommentRequest {
-            body: "Ready to merge".to_owned(),
-        },
+        &serde_json::json!({
+            "body": "Ready to merge",
+            "expected_review_version": review.version
+        }),
     )
     .await;
     assert_eq!(created_comment.author.user_id, user_id);
+    assert_eq!(created_comment.anchor_path, None);
+    assert_eq!(created_comment.anchor_line, None);
+    assert_eq!(created_comment.review_version, review.version);
 
     let comments: ReviewCommentListResponse = get_json(
         app.clone(),
@@ -478,6 +488,24 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     let review = review_detail.review;
     assert_eq!(review.status, ReviewStatus::Approved);
+    assert_eq!(
+        review.decided_by.as_ref().map(|user| user.user_id.as_str()),
+        Some(user_id.as_str())
+    );
+    assert_eq!(
+        review
+            .decided_by
+            .as_ref()
+            .and_then(|user| user.display_name.as_deref()),
+        Some("Owner")
+    );
+    let approved_at = review.decided_at.expect("approval time should be recorded");
+    let incomplete_decision_metadata =
+        sqlx::query("UPDATE reviews SET decided_by_user_id = NULL WHERE review_id = $1")
+            .bind(&review.review_id)
+            .execute(&postgres.pool)
+            .await;
+    assert!(incomplete_decision_metadata.is_err());
 
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
@@ -489,6 +517,8 @@ async fn draft_review_merge_produces_project_commit() {
     )
     .await;
     assert_eq!(merge.review.status, ReviewStatus::Merged);
+    assert_eq!(merge.review.decided_by, review.decided_by);
+    assert_eq!(merge.review.decided_at, Some(approved_at));
     assert_eq!(merge.applied_operation_count, 1);
     let commit_id = merge.commit_id.expect("merge should create a commit");
     let merged_draft: DraftDetail = get_json(
@@ -1120,6 +1150,7 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     let project_review = repo
         .create_review_decision(
             &project_review.review.review_id,
+            &project_review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: project_review.review.version,
@@ -1198,6 +1229,7 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     let org_review = repo
         .create_review_decision(
             &org_review.review.review_id,
+            &org_review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: org_review.review.version,
@@ -1323,6 +1355,8 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     let submitted = create_review_for_draft(owner_app.clone(), &draft).await;
     assert_eq!(submitted.review.status, ReviewStatus::Open);
     assert_eq!(submitted.review.decision_body, None);
+    assert_eq!(submitted.review.decided_by, None);
+    assert_eq!(submitted.review.decided_at, None);
     assert_eq!(submitted.draft.status, DraftStatus::Submitted);
     assert_eq!(submitted.draft.version, 2);
     let visible_to_reviewer: ReviewDetail = get_json(
@@ -1368,6 +1402,23 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     .await;
     assert_eq!(rejected.review.status, ReviewStatus::Rejected);
     assert_eq!(rejected.review.version, 2);
+    assert_eq!(
+        rejected
+            .review
+            .decided_by
+            .as_ref()
+            .map(|user| user.user_id.as_str()),
+        Some(member_id.as_str())
+    );
+    assert_eq!(
+        rejected
+            .review
+            .decided_by
+            .as_ref()
+            .and_then(|user| user.display_name.as_deref()),
+        Some("Member")
+    );
+    assert!(rejected.review.decided_at.is_some());
     assert_eq!(
         rejected.review.decision_body.as_deref(),
         Some("Add the operational constraint.")
@@ -1553,6 +1604,8 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(resubmitted.review.version, 4);
     assert_eq!(resubmitted.review.title, "Revised review lifecycle context");
     assert_eq!(resubmitted.review.decision_body, None);
+    assert_eq!(resubmitted.review.decided_by, None);
+    assert_eq!(resubmitted.review.decided_at, None);
     assert_eq!(resubmitted.draft.status, DraftStatus::Submitted);
     assert_eq!(
         resubmitted.draft.base_commit_id.as_deref(),
@@ -1697,6 +1750,19 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     )
     .await;
     assert_eq!(discarded.review.status, ReviewStatus::Rejected);
+    assert_eq!(
+        discarded.review.decision_body.as_deref(),
+        Some("Draft discarded.")
+    );
+    assert_eq!(
+        discarded
+            .review
+            .decided_by
+            .as_ref()
+            .map(|user| user.user_id.as_str()),
+        Some(bootstrap.user_id.as_str())
+    );
+    assert!(discarded.review.decided_at.is_some());
     assert_eq!(discarded.draft.status, DraftStatus::Discarded);
 
     let current = create_approved_context_review(
@@ -1961,6 +2027,8 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         rebased_review.approved_result_hash,
         behind.review.approved_result_hash
     );
+    assert_eq!(rebased_review.decided_by, behind.review.decided_by);
+    assert_eq!(rebased_review.decided_at, behind.review.decided_at);
 
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
@@ -2037,6 +2105,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     let seed_review = repo
         .create_review_decision(
             &seed_review.review.review_id,
+            &seed_review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: seed_review.review.version,
@@ -2113,6 +2182,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     let local_review = repo
         .create_review_decision(
             &local_review.review.review_id,
+            &local_review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: local_review.review.version,
@@ -2183,6 +2253,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     let remote_review = repo
         .create_review_decision(
             &remote_review.review.review_id,
+            &remote_review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: remote_review.review.version,
@@ -2258,7 +2329,12 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
         resolved.draft.draft.base_commit_id.as_deref(),
         Some(current_commit_id.as_str())
     );
-    assert_eq!(resolved.review.as_ref().unwrap().status, ReviewStatus::Open);
+    let invalidated_review = resolved.review.as_ref().unwrap();
+    assert_eq!(invalidated_review.status, ReviewStatus::Open);
+    assert_eq!(invalidated_review.decision_body, None);
+    assert_eq!(invalidated_review.approved_result_hash, None);
+    assert_eq!(invalidated_review.decided_by, None);
+    assert_eq!(invalidated_review.decided_at, None);
     let revision_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM draft_revisions WHERE draft_id = $1")
             .bind(&local_update.draft.draft_id)
@@ -3202,4 +3278,214 @@ where
 {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn review_comments_support_line_anchors() {
+    let postgres = common::migrated_postgres().await;
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Anchored comments",
+    )
+    .await;
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+    let seed = create_approved_context_review(
+        app.clone(),
+        &bootstrap.project_id,
+        None,
+        "context/anchored.md",
+        "# Anchored\n\nBody.\n",
+    )
+    .await;
+    let seed_merge: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", seed.review_id),
+        "\"ref-none\"",
+        &CreateReviewMergeRequest {
+            expected_review_version: seed.version,
+        },
+    )
+    .await;
+    let base_commit_id = seed_merge
+        .commit_id
+        .expect("seeding the anchored resource should create a commit");
+    let base_payload: CommitPayload =
+        get_json(app.clone(), &format!("/api/v1/commits/{base_commit_id}")).await;
+    let resource_id = base_payload
+        .tree
+        .entries
+        .iter()
+        .find(|entry| entry.path.as_deref() == Some("context/anchored.md"))
+        .expect("seeded anchored resource should be present in the base commit")
+        .id
+        .clone();
+    let draft: DraftDetail = post_json(
+        app.clone(),
+        "/api/v1/drafts",
+        &CreateDraftRequest {
+            daemon_installation_id: "daemon_anchors".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: Some(base_commit_id),
+            title: "Anchored comment draft".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                kind: DraftResourceKind::Context,
+                id: Some(resource_id.clone()),
+                path: None,
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Rename,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Project,
+                    kind: DraftResourceKind::Context,
+                    id: Some(resource_id),
+                    path: None,
+                },
+                content: None,
+                new_path: Some("context/anchored-final.md".to_owned()),
+            }],
+        },
+    )
+    .await;
+    let review = create_review_for_draft(app.clone(), &draft).await;
+    let review_id = review.review.review_id.clone();
+
+    let unpaired_storage_anchor = sqlx::query(
+        "INSERT INTO review_comments (
+            comment_id, review_id, author_user_id, body, anchor_path, anchor_line,
+            review_version
+         ) VALUES ('cmt_unpaired_storage', $1, $2, 'invalid', $3, NULL, $4)",
+    )
+    .bind(&review_id)
+    .bind(&bootstrap.user_id)
+    .bind("context/anchored.md")
+    .bind(review.review.version)
+    .execute(&postgres.pool)
+    .await;
+    assert!(unpaired_storage_anchor.is_err());
+
+    let non_positive_storage_anchor = sqlx::query(
+        "INSERT INTO review_comments (
+            comment_id, review_id, author_user_id, body, anchor_path, anchor_line,
+            review_version
+         ) VALUES ('cmt_non_positive_storage', $1, $2, 'invalid', $3, 0, $4)",
+    )
+    .bind(&review_id)
+    .bind(&bootstrap.user_id)
+    .bind("context/anchored.md")
+    .bind(review.review.version)
+    .execute(&postgres.pool)
+    .await;
+    assert!(non_positive_storage_anchor.is_err());
+
+    let anchored: ReviewComment = post_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Trailing line looks off".to_owned(),
+            expected_review_version: review.review.version,
+            anchor_path: Some("context/anchored-final.md".to_owned()),
+            anchor_line: Some(4),
+        },
+    )
+    .await;
+    assert_eq!(
+        anchored.anchor_path.as_deref(),
+        Some("context/anchored-final.md")
+    );
+    assert_eq!(anchored.anchor_line, Some(4));
+    assert_eq!(anchored.review_version, review.review.version);
+
+    let general: ReviewComment = post_json(
+        app.clone(),
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Overall direction is fine".to_owned(),
+            expected_review_version: review.review.version,
+            anchor_path: None,
+            anchor_line: None,
+        },
+    )
+    .await;
+    assert_eq!(general.anchor_path, None);
+    assert_eq!(general.anchor_line, None);
+    assert_eq!(general.review_version, review.review.version);
+
+    let detail: ReviewDetail = get_json(app.clone(), &format!("/api/v1/reviews/{review_id}")).await;
+    assert_eq!(detail.comments.len(), 2);
+    let anchored_in_detail = detail
+        .comments
+        .iter()
+        .find(|comment| comment.comment_id == anchored.comment_id)
+        .expect("anchored comment should appear in review detail");
+    assert_eq!(
+        anchored_in_detail.anchor_path.as_deref(),
+        Some("context/anchored-final.md")
+    );
+    assert_eq!(anchored_in_detail.anchor_line, Some(4));
+    assert_eq!(anchored_in_detail.review_version, review.review.version);
+    let general_in_detail = detail
+        .comments
+        .iter()
+        .find(|comment| comment.comment_id == general.comment_id)
+        .expect("general comment should appear in review detail");
+    assert_eq!(general_in_detail.anchor_line, None);
+    assert_eq!(general_in_detail.anchor_path, None);
+
+    let unpaired = post_response(
+        app.clone(),
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Bad anchor".to_owned(),
+            expected_review_version: review.review.version,
+            anchor_path: None,
+            anchor_line: Some(3),
+        },
+    )
+    .await;
+    assert_eq!(unpaired.status(), StatusCode::BAD_REQUEST);
+
+    let wrong_path = post_response(
+        app.clone(),
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Wrong file".to_owned(),
+            expected_review_version: review.review.version,
+            anchor_path: Some("context/anchored.md".to_owned()),
+            anchor_line: Some(1),
+        },
+    )
+    .await;
+    assert_eq!(wrong_path.status(), StatusCode::BAD_REQUEST);
+
+    let out_of_range = post_response(
+        app.clone(),
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Past the end".to_owned(),
+            expected_review_version: review.review.version,
+            anchor_path: Some("context/anchored-final.md".to_owned()),
+            anchor_line: Some(5),
+        },
+    )
+    .await;
+    assert_eq!(out_of_range.status(), StatusCode::BAD_REQUEST);
+
+    let stale = post_response(
+        app,
+        &format!("/api/v1/reviews/{review_id}/comments"),
+        &CreateReviewCommentRequest {
+            body: "Stale context".to_owned(),
+            expected_review_version: review.review.version - 1,
+            anchor_path: None,
+            anchor_line: None,
+        },
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
 }

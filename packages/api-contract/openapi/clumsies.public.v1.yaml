@@ -1958,6 +1958,13 @@ components:
           type: [string, "null"]
         approved_result_hash:
           type: [string, "null"]
+        decided_by:
+          oneOf:
+            - $ref: "#/components/schemas/UserRef"
+            - type: "null"
+        decided_at:
+          type: [string, "null"]
+          format: date-time
         coordination:
           $ref: "#/components/schemas/DraftCoordination"
         created_at:
@@ -1978,13 +1985,20 @@ components:
           $ref: "#/components/schemas/PageInfo"
     CreateReviewCommentRequest:
       type: object
-      required: [body]
+      required: [body, expected_review_version]
       properties:
         body:
           type: string
+        expected_review_version:
+          type: integer
+        anchor_path:
+          type: [string, "null"]
+        anchor_line:
+          type: [integer, "null"]
     ReviewComment:
       type: object
-      required: [comment_id, review_id, author, body, created_at]
+      required:
+        [comment_id, review_id, author, body, anchor_path, anchor_line, review_version, created_at]
       properties:
         comment_id:
           type: string
@@ -1994,6 +2008,12 @@ components:
           $ref: "#/components/schemas/UserRef"
         body:
           type: string
+        anchor_path:
+          type: [string, "null"]
+        anchor_line:
+          type: [integer, "null"]
+        review_version:
+          type: integer
         created_at:
           type: string
           format: date-time

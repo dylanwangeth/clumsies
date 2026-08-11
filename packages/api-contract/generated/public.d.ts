@@ -1111,6 +1111,9 @@ export interface components {
             version: number;
             decision_body: string | null;
             approved_result_hash: string | null;
+            decided_by?: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            decided_at?: string | null;
             coordination: components["schemas"]["DraftCoordination"];
             /** Format: date-time */
             created_at: string;
@@ -1123,12 +1126,18 @@ export interface components {
         };
         CreateReviewCommentRequest: {
             body: string;
+            expected_review_version: number;
+            anchor_path?: string | null;
+            anchor_line?: number | null;
         };
         ReviewComment: {
             comment_id: string;
             review_id: string;
             author: components["schemas"]["UserRef"];
             body: string;
+            anchor_path: string | null;
+            anchor_line: number | null;
+            review_version: number;
             /** Format: date-time */
             created_at: string;
         };

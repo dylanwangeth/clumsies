@@ -125,6 +125,7 @@ async fn approve_and_merge(
     let approved = repository
         .create_review_decision(
             &review.review.review_id,
+            &review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: review.review.version,
@@ -480,6 +481,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
     let rejected = repository
         .create_review_decision(
             &review.review.review_id,
+            &review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Rejected,
                 expected_review_version: review.review.version,
@@ -1379,6 +1381,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
     let approved = repository
         .create_review_decision(
             &review.review.review_id,
+            &review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: review.review.version,
@@ -2477,6 +2480,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let approved = repository
         .create_review_decision(
             &review.review.review_id,
+            &review.review.author.user_id,
             CreateReviewDecisionRequest {
                 decision: ReviewDecision::Approved,
                 expected_review_version: review.review.version,

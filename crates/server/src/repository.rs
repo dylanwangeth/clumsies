@@ -1818,6 +1818,7 @@ impl ServerRepository {
     pub async fn discard_draft(
         &self,
         draft_id: &str,
+        actor_user_id: &str,
         expected_draft_version: i64,
     ) -> Result<DeleteResult, ServerError> {
         let mut tx = self.pool.begin().await?;
@@ -1856,10 +1857,12 @@ impl ServerRepository {
             "UPDATE reviews
              SET status = 'rejected', version = version + 1,
                  decision_body = 'Draft discarded.', approved_result_hash = NULL,
+                 decided_by_user_id = $2, decided_at = now(),
                  updated_at = now()
              WHERE draft_id = $1 AND status IN ('open', 'approved')",
         )
         .bind(draft_id)
+        .bind(actor_user_id)
         .execute(&mut *tx)
         .await?;
         insert_draft_event(
@@ -2229,18 +2232,78 @@ impl ServerRepository {
                 "review comment body must not be empty".to_owned(),
             ));
         }
+        let anchor = match (request.anchor_path.as_deref(), request.anchor_line) {
+            (None, None) => None,
+            (Some(path), Some(line)) if !path.is_empty() && line > 0 => Some((path, line)),
+            (Some(_), Some(_)) => {
+                return Err(ServerError::InvalidRequest(
+                    "review comment anchor_path must not be empty and anchor_line must be positive"
+                        .to_owned(),
+                ));
+            }
+            _ => {
+                return Err(ServerError::InvalidRequest(
+                    "review comment anchor_path and anchor_line must be provided together"
+                        .to_owned(),
+                ));
+            }
+        };
         let mut tx = self.pool.begin().await?;
-        load_review(&mut tx, review_id).await?;
+        let review_row = sqlx::query(
+            "SELECT draft_id, version
+             FROM reviews
+             WHERE review_id = $1
+             FOR UPDATE",
+        )
+        .bind(review_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ServerError::not_found("review", review_id))?;
+        let review_version: i64 = review_row.try_get("version")?;
+        if review_version != request.expected_review_version {
+            return Err(ServerError::version_conflict(
+                "review",
+                request.expected_review_version,
+                review_version,
+            ));
+        }
+        if let Some((anchor_path, anchor_line)) = anchor {
+            let draft_id: String = review_row.try_get("draft_id")?;
+            let final_state = draft_result_state(&mut tx, &draft_id).await?;
+            let final_path = final_state.resource.path.as_deref();
+            if !final_state.exists || final_path != Some(anchor_path) {
+                return Err(ServerError::InvalidRequest(format!(
+                    "review comment anchor_path must match the final review path ({})",
+                    final_path.unwrap_or("deleted resource")
+                )));
+            }
+            let line_count = final_state
+                .content
+                .as_ref()
+                .map(|content| review_comment_line_count(content_text(content)))
+                .unwrap_or(0);
+            if anchor_line > line_count {
+                return Err(ServerError::InvalidRequest(format!(
+                    "review comment anchor_line {anchor_line} is outside the final review line range 1..={line_count}"
+                )));
+            }
+        }
         user_ref(&mut tx, author_user_id).await?;
         let comment_id = prefixed_id("cmt");
         sqlx::query(
-            "INSERT INTO review_comments (comment_id, review_id, author_user_id, body)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO review_comments (
+                comment_id, review_id, author_user_id, body, anchor_path, anchor_line,
+                review_version
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&comment_id)
         .bind(review_id)
         .bind(author_user_id)
-        .bind(request.body)
+        .bind(&request.body)
+        .bind(request.anchor_path.as_deref())
+        .bind(request.anchor_line)
+        .bind(review_version)
         .execute(&mut *tx)
         .await?;
         let comments = load_review_comments(&mut tx, review_id).await?;
@@ -2255,6 +2318,7 @@ impl ServerRepository {
     pub async fn create_review_decision(
         &self,
         review_id: &str,
+        decided_by_user_id: &str,
         request: CreateReviewDecisionRequest,
     ) -> Result<ReviewDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
@@ -2329,13 +2393,15 @@ impl ServerRepository {
         sqlx::query(
             "UPDATE reviews
              SET status = $2, version = version + 1, decision_body = $3,
-                 approved_result_hash = $4, updated_at = now()
+                 approved_result_hash = $4, decided_by_user_id = $5,
+                 decided_at = now(), updated_at = now()
              WHERE review_id = $1",
         )
         .bind(review_id)
         .bind(next_status)
         .bind(&request.body)
         .bind(&approved_result_hash)
+        .bind(decided_by_user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -2467,6 +2533,7 @@ impl ServerRepository {
             "UPDATE reviews
              SET status = 'open', version = version + 1, decision_body = NULL,
                  approved_result_hash = NULL,
+                 decided_by_user_id = NULL, decided_at = NULL,
                  title = COALESCE($2, title), description = COALESCE($3, description),
                  updated_at = now()
              WHERE review_id = $1",
@@ -3157,6 +3224,8 @@ async fn refresh_review_after_draft_content_change(
          SET status = CASE WHEN status = 'approved' AND NOT $2 THEN 'open' ELSE status END,
              approved_result_hash = CASE WHEN status = 'approved' AND $2 THEN approved_result_hash ELSE NULL END,
              decision_body = CASE WHEN status = 'approved' AND $2 THEN decision_body ELSE NULL END,
+             decided_by_user_id = CASE WHEN status = 'approved' AND $2 THEN decided_by_user_id ELSE NULL END,
+             decided_at = CASE WHEN status = 'approved' AND $2 THEN decided_at ELSE NULL END,
              version = version + 1,
              updated_at = now()
          WHERE draft_id = $1 AND status IN ('open', 'approved')",
@@ -4226,10 +4295,10 @@ fn diff_resource_states(
     }
 }
 
-async fn draft_result_hash(
+async fn draft_result_state(
     tx: &mut Transaction<'_, Postgres>,
     draft_id: &str,
-) -> Result<String, ServerError> {
+) -> Result<ReconciliationResourceState, ServerError> {
     let row = sqlx::query(
         "SELECT base_commit_id, resource_scope, resource_kind, target_id, path
          FROM drafts WHERE draft_id = $1",
@@ -4252,7 +4321,14 @@ async fn draft_result_hash(
     let base =
         resource_state_at_commit(tx, base_commit_id.as_deref(), &resource, allow_path_lookup)
             .await?;
-    state_hash(&apply_operations_to_state(base, &operations)?)
+    apply_operations_to_state(base, &operations)
+}
+
+async fn draft_result_hash(
+    tx: &mut Transaction<'_, Postgres>,
+    draft_id: &str,
+) -> Result<String, ServerError> {
+    state_hash(&draft_result_state(tx, draft_id).await?)
 }
 
 async fn target_ref_for_draft(
@@ -4633,6 +4709,8 @@ async fn apply_draft_rebase_in_tx(
              SET status = CASE WHEN status = 'approved' AND NOT $2 THEN 'open' ELSE status END,
                  approved_result_hash = CASE WHEN status = 'approved' AND $2 THEN approved_result_hash ELSE NULL END,
                  decision_body = CASE WHEN status = 'approved' AND $2 THEN decision_body ELSE NULL END,
+                 decided_by_user_id = CASE WHEN status = 'approved' AND $2 THEN decided_by_user_id ELSE NULL END,
+                 decided_at = CASE WHEN status = 'approved' AND $2 THEN decided_at ELSE NULL END,
                  version = version + 1, updated_at = now()
              WHERE review_id = $1",
         )
@@ -4693,10 +4771,15 @@ async fn load_review(
         "SELECT
             r.review_id, r.project_id, r.draft_id, r.title, r.description,
             r.status, r.version, r.decision_body, r.approved_result_hash,
+            r.decided_by_user_id, r.decided_at,
             r.created_at, r.updated_at,
-            u.user_id, u.email, u.display_name, u.avatar_url, u.role
+            u.user_id, u.email, u.display_name, u.avatar_url, u.role,
+            du.user_id AS decision_user_id, du.email AS decision_user_email,
+            du.display_name AS decision_user_display_name,
+            du.avatar_url AS decision_user_avatar_url, du.role AS decision_user_role
          FROM reviews r
          JOIN users u ON u.user_id = r.author_user_id
+         LEFT JOIN users du ON du.user_id = r.decided_by_user_id
          WHERE r.review_id = $1",
     )
     .bind(review_id)
@@ -4739,6 +4822,19 @@ fn review_from_row(
         version: row.try_get("version")?,
         decision_body: row.try_get("decision_body")?,
         approved_result_hash: row.try_get("approved_result_hash")?,
+        decided_by: row
+            .try_get::<Option<String>, _>("decision_user_id")?
+            .map(|user_id| {
+                Ok::<UserRef, sqlx::Error>(UserRef {
+                    user_id,
+                    email: row.try_get("decision_user_email")?,
+                    display_name: row.try_get("decision_user_display_name")?,
+                    avatar_url: row.try_get("decision_user_avatar_url")?,
+                    role: row.try_get("decision_user_role")?,
+                })
+            })
+            .transpose()?,
+        decided_at: row.try_get("decided_at")?,
         coordination,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -4751,7 +4847,8 @@ async fn load_review_comments(
 ) -> Result<Vec<ReviewComment>, ServerError> {
     let rows = sqlx::query(
         "SELECT
-            c.comment_id, c.review_id, c.body, c.created_at,
+            c.comment_id, c.review_id, c.body, c.anchor_path, c.anchor_line,
+            c.review_version, c.created_at,
             u.user_id, u.email, u.display_name, u.avatar_url, u.role
          FROM review_comments c
          JOIN users u ON u.user_id = c.author_user_id
@@ -4770,10 +4867,21 @@ async fn load_review_comments(
                 review_id: row.try_get("review_id")?,
                 author: user_ref_from_row(row)?,
                 body: row.try_get("body")?,
+                anchor_path: row.try_get("anchor_path")?,
+                anchor_line: row.try_get("anchor_line")?,
+                review_version: row.try_get("review_version")?,
                 created_at: row.try_get("created_at")?,
             })
         })
         .collect()
+}
+
+fn review_comment_line_count(content: &str) -> i64 {
+    if content.is_empty() {
+        0
+    } else {
+        content.split('\n').count() as i64
+    }
 }
 
 async fn apply_operation(
@@ -6534,6 +6642,15 @@ mod tests {
         assert!(validate_rule_content("").is_err());
         assert!(validate_rule_content("  \n").is_err());
         assert!(validate_rule_content("# Testing\n\nRun focused tests.").is_ok());
+    }
+
+    #[test]
+    fn review_comment_line_count_matches_client_line_numbering() {
+        assert_eq!(review_comment_line_count(""), 0);
+        assert_eq!(review_comment_line_count("one"), 1);
+        assert_eq!(review_comment_line_count("one\ntwo"), 2);
+        assert_eq!(review_comment_line_count("one\n"), 2);
+        assert_eq!(review_comment_line_count("one\n\n"), 3);
     }
 
     #[test]
