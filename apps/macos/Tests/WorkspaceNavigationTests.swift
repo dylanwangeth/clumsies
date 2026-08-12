@@ -34,6 +34,17 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+    func testReviewStatusFiltersKeepServerStatusOrderAndTitles() {
+        XCTAssertEqual(
+            ReviewStatusFilter.allCases.map(\.rawValue),
+            ["open", "approved", "rejected", "merged", "all"]
+        )
+        XCTAssertEqual(
+            ReviewStatusFilter.allCases.map(\.title),
+            ["Open", "Approved", "Rejected", "Merged", "All"]
+        )
+    }
+
     func testBackAndForwardFollowTabSelectionHistory() {
         let store = WorkspaceStore()
         let first = tab(itemId: "first")

@@ -1,5 +1,73 @@
 import SwiftUI
 
+enum ReviewStatusFilter: String, CaseIterable, Identifiable {
+    case open
+    case approved
+    case rejected
+    case merged
+    case all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .open: "Open"
+        case .approved: "Approved"
+        case .rejected: "Rejected"
+        case .merged: "Merged"
+        case .all: "All"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .open: "clock"
+        case .approved: "checkmark.circle"
+        case .rejected: "xmark.circle"
+        case .merged: "arrow.triangle.merge"
+        case .all: "tray.full"
+        }
+    }
+
+    func matches(_ review: ReviewRecord) -> Bool {
+        self == .all || review.status == rawValue
+    }
+
+    func count(in reviews: [ReviewRecord]) -> Int {
+        reviews.lazy.filter(matches).count
+    }
+}
+
+struct ReviewStatusFilterControl: View {
+    let reviews: [ReviewRecord]
+    @Binding var selection: ReviewStatusFilter
+
+    var body: some View {
+        ToolbarFilterMenu(selectionTitle: selection.title) {
+            ForEach(ReviewStatusFilter.allCases) { filter in
+                Toggle(
+                    label(for: filter),
+                    isOn: Binding(
+                        get: { selection == filter },
+                        set: { isSelected in
+                            guard isSelected else { return }
+                            selection = filter
+                        }
+                    )
+                )
+            }
+        }
+        .help("Filter Reviews: \(label(for: selection))")
+        .accessibilityLabel("Filter Reviews")
+        .accessibilityValue(label(for: selection))
+        .accessibilityIdentifier("review-toolbar-filter")
+    }
+
+    private func label(for filter: ReviewStatusFilter) -> String {
+        "\(filter.title) (\(filter.count(in: reviews)))"
+    }
+}
+
 private enum ReviewReconciliationPurpose {
     case updateDraft
     case resubmit
@@ -7,10 +75,10 @@ private enum ReviewReconciliationPurpose {
 
 struct ReviewNavigator: View {
     @ObservedObject var store: WorkspaceStore
-    @Binding var statusFilter: String
+    @Binding var statusFilter: ReviewStatusFilter
 
     private var filteredReviews: [ReviewRecord] {
-        statusFilter == "all" ? store.reviews : store.reviews.filter { $0.status == statusFilter }
+        store.reviews.filter(statusFilter.matches)
     }
 
     var body: some View {
