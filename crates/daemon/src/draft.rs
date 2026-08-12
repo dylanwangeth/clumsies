@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::json;
 use sqlx::sqlite::SqliteRow;
@@ -991,6 +991,10 @@ pub(crate) async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonE
         // The Server projection is canonical even for events produced by this installation.
         // Re-projecting them refreshes coordination fields that an upload response cannot carry.
         let remote_events = response.events.iter().collect::<Vec<_>>();
+        let affected_projects = remote_events
+            .iter()
+            .map(|event| event.project_id.clone())
+            .collect::<BTreeSet<_>>();
         let mut drafts = BTreeMap::new();
         for event in &remote_events {
             if drafts.contains_key(&event.draft_id) {
@@ -1013,7 +1017,7 @@ pub(crate) async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonE
             drafts.insert(event.draft_id.clone(), detail);
         }
 
-        let mut tx = state.inner.pool.begin().await?;
+        let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
         for detail in drafts.values() {
             project_server_draft(&mut tx, detail).await?;
         }
@@ -1044,7 +1048,11 @@ pub(crate) async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonE
         .bind(next_cursor)
         .execute(&mut *tx)
         .await?;
+        for project_id in affected_projects {
+            crate::search::scheduler::enqueue_project_in_tx(&mut tx, &project_id).await?;
+        }
         tx.commit().await?;
+        state.inner.search_index_notify.notify_one();
 
         cursor = response.next_cursor;
         if !response.has_more {

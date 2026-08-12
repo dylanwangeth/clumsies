@@ -1,221 +1,118 @@
-# AgentRun Injection and Hook Coordination
+# AgentRun lifecycle and Hook coordination
 
-This document describes how the daemon learns about coding-agent lifecycle
-events, how the resulting `run_id` reaches the agent's reasoning context, and
-how the two supported hosts (Codex and Claude Code) differ in their hook
-plumbing.
+This page describes how the resident daemon observes coding-Agent lifecycle
+events, how a current `run_id` reaches the Agent, and where semantic Issue
+decisions happen.
 
-## 1. Why runs exist
+## Process boundary
 
-An `AgentRun` is the daemon-side record of one host turn (root) or one subagent
-execution. It is the unit that:
+Adapter-managed Hooks and the opencode plugin invoke the App-bundled Rust
+runtime directly:
 
-- **audits** issue mutations: `native_issues.changed_by_run_id` and
-  `issue_workflow_states.changed_by_run_id` record which run moved an issue
-  (`crates/daemon/src/work_tracking.rs`);
-- **grants authority**: only a *root* run may call `kanban.request_closure`;
-  subagents must report findings to the root agent (injected text enforces
-  this; the daemon validates it);
-- **provides optimistic concurrency**: mutations carry `expected_revision` and
-  the run's own revision, so stale writers are rejected;
-- **drives staleness**: an issue in `In Progress` with no active runs and no
-  activity for 24 h is flagged stale on the board (`docs/issue-board-design.md`);
-- **survives crashes**: a `SessionEnd` event ends every still-running run of
-  that session, and expired leases (`lease_expires_at`) are treated as
-  inactive.
+```text
+Agent host
+  -> clumsiesd _agent issue-run-event --host <host>
+  -> verify resident protocol revision + build identity
+  -> resolve current directory to canonical Project
+  -> normalize the event to a bounded typed request
+  -> resident clumsiesd over XPC
+```
 
-## 2. Why hooks, not tools
+`_agent issue-run-event` is a short-lived proxy mode of the same signed
+`clumsiesd` that launchd runs as the resident daemon. It does not initialize a
+database, model, search worker, or sync worker. Adapter pins its exact
+App-bundled path; it does not search a checkout, `PATH`, or a helper directory.
 
-MCP tools are invoked *by the agent*; the daemon never hears about a turn the
-agent does not mention. Host hooks fire *regardless*, at well-defined moments
-(prompt submitted, stop requested, subagent started/stopped, session ended).
-That makes hooks the only reliable observation point for:
+## Why AgentRuns exist
 
-- injecting the run identity *before* the agent starts reasoning,
-- blocking a Claude Code Stop once so the closure decision is actually made,
-- ending runs when a session dies without the agent calling anything.
+An `AgentRun` is the daemon-side record of one root turn or subagent execution.
+It provides:
 
-## 3. Design principles
+- a durable identity for auditing native Issue mutations;
+- root/subagent authority boundaries;
+- optimistic concurrency through the run revision;
+- a lease and terminal outcome for board staleness;
+- recovery when a host session ends unexpectedly.
 
-- **Observation vs decision are separated.** Hooks observe and inject context;
-  they never change issue state. Only explicit agent calls
-  (`kanban.create`, `kanban.begin_work`, `kanban.request_closure`) do.
-- **Fail-open.** Every hook script and the private command exit successfully
-  on any failure; lifecycle observation never blocks the host agent.
-- **Privacy boundary.** The raw host event JSON is reduced in memory to a
-  bounded allowlist of identifiers (session id, turn id, agent id, workspace
-  path, label). Prompts, transcripts, tool payloads, and assistant messages
-  never cross the daemon IPC boundary.
-- **Idempotent.** `event_id` is a stable hash of
-  `host + session + event name + run key`, and the daemon rejects replaying a
-  different payload under the same id (event fingerprint).
+Lifecycle events do not infer an Issue from prompt text. A run may remain
+unbound, and one active Issue cannot be claimed by a second active run.
 
-## 4. Registered lifecycle events
+## Event mapping
 
-Both hosts wire their lifecycle events to the single `issue-run-event.sh`
-hook; the mappings are rendered by the adapter packages:
+| Host | Observed events | Integration surface |
+| --- | --- | --- |
+| Codex | `UserPromptSubmit`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd` | `.codex/hooks.json` → managed shell Hook |
+| Claude Code | the common set plus `StopFailure` | `.claude/settings.json` → managed shell Hook |
+| opencode | user message, completed/failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `Stop`/`StopFailure`, and `SessionEnd` |
 
-| Host | Events → script | Where rendered |
-|---|---|---|
-| Codex | `UserPromptSubmit`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd` → `hooks/issue-run-event.sh` | `src/client/adapter/packages/codex.zig` (`renderHooksRegistry`) |
-| Claude Code | `UserPromptSubmit`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`, `StopFailure` → `hooks/issue-run-event.sh`; `SessionStart` → `hooks/session-start.sh` | `src/client/adapter/packages/claude_code.zig` |
+The resident daemon upserts a run by Project, host, and host run key. Stable
+event IDs make delivery idempotent; replaying the same event is a no-op, while
+reusing an ID with different content is rejected.
 
-Codex has no `SessionStart` hook; this is a deliberate difference (see
-section 9).
+## Injected context
 
-## 5. Event flow
+After a successful root `UserPromptSubmit` or `SubagentStart`, the proxy prints
+host-native JSON containing bounded `additionalContext`. It includes the
+current run ID, revision, and whether the run is already bound to an Issue.
 
-1. The host fires a lifecycle event and runs the registered script with the
-   raw event JSON on stdin.
-2. The script sources `resolve-binary.sh`, which locates the `clumsies`
-   binary: `CLUMSIES_ADAPTER_BINARY` → project `zig-out/bin/clumsies` (Codex)
-   → `PATH` → `~/.clumsies/bin/clumsies`. Missing binary → silent exit.
-3. The script pipes stdin to
-   `clumsies _agent issue-run-event --host codex|claude-code`
-   (`src/client/commands/issue_run_event_cmd.zig`).
-4. The command normalizes the payload:
-   - `event_id = "hook_" + sha256(host, session_id, event_name, run_key)`;
-   - `host_run_key`: `root:<turn_id>` (Codex) / `root:<prompt_id>` (Claude
-     Code), or `subagent:<session_id>:<agent_id>`;
-   - identifiers longer than 256 bytes are replaced by `sha256:<digest>`;
-     labels are UTF-8-checked and truncated to 160 bytes.
-5. The command calls the daemon IPC `record_agent_run_event`
-   (`crates/daemon/src/work_tracking.rs`), which upserts the run
-   (`UNIQUE (project_id, host, host_run_key)`), advances its revision, renews
-   the lease, records the event row, and transitions phase
-   (`started` → running; `ended` → ended with outcome; `session_ended` → ends
-   the session's running runs with outcome `unknown`).
-6. On a successful **started** event (`UserPromptSubmit`, `SubagentStart`),
-   the command emits a context JSON on stdout containing the run's `run_id`
-   and revision plus a semantic decision instruction; the host adds it to the
-   agent's context.
+Root context tells the Agent to:
 
-## 6. Injected context
+1. use `kanban.list` or `kanban.get` to inspect real board state;
+2. create durable work only when appropriate;
+3. call `kanban.begin_work` only for the active line of work and only when no
+   other run already holds the Issue;
+4. call `kanban.request_closure` only after judging acceptance criteria;
+5. otherwise leave the Issue In Progress.
 
-Root prompt (`UserPromptSubmit`):
+Subagent context allows explicit work binding but forbids requesting closure;
+the subagent reports findings to the root Agent instead.
 
-> Clumsies current root AgentRun: run_id=..., revision=.... Decide semantically
-> whether this prompt continues an existing native Issue, creates a new
-> durable Issue, or should not become an Issue; never infer that from text
-> matching. Use `kanban.list` to inspect existing Issues and `kanban.create` to
-> capture a new one. Call `kanban.begin_work` with this run_id and revision
-> only when the Issue is the active line of work. Capture unrelated follow-up
-> work with `kanban.create` but do not call `kanban.begin_work`, so it remains
-> Todo. Before finishing, call `kanban.request_closure` only when the linked
-> Issue's acceptance criteria are satisfied; otherwise leave it In Progress.
-> AgentRun Stop never advances, approves, or closes an Issue.
+## Stop is a reminder, not a decision
 
-Subagent start (`SubagentStart`):
+For Codex and Claude Code, the first root Stop becomes a distinct non-terminal
+heartbeat probe. The proxy asks the host to continue once so the Agent can make
+the semantic Kanban decision itself. If the Issue is ready, the Agent calls
+`kanban.request_closure`; if it is not ready, the Agent makes no state change.
 
-> Clumsies current subagent AgentRun: run_id=..., revision=.... Call
-> `kanban.begin_work` only when this subagent is explicitly working an existing
-> native Issue. Subagents must not request Issue closure; report findings to
-> the root Agent. AgentRun Stop never advances or closes an Issue.
+The follow-up Stop records the run end. A duplicate probe does not ask again.
+`StopFailure` records a failed outcome, and `SessionEnd` ends remaining runs for
+the session. No Stop event advances, approves, or closes an Issue.
 
-Codex Stop reminder (`additionalContext`):
+opencode forwards the lifecycle events exposed by its plugin API but does not
+synthesize an unsupported stop-blocking exchange.
 
-> Before ending, make an explicit semantic Issue decision. If the current root
-> task is linked to an In Progress Issue and its acceptance criteria are
-> satisfied, call `kanban.request_closure` with the current run_id and
-> revision. Otherwise leave it In Progress. Stop itself never completes or
-> advances an Issue.
+## Privacy and failure behavior
 
-Claude Code first Stop (`decision: block`):
+The proxy reads at most 1 MiB and reduces raw host JSON in memory to an
+allowlist: session and turn/agent identifiers, parent key, workspace path,
+bounded display label, event type, and outcome. Oversized identifiers are
+hashed; bounded labels are validated and truncated.
 
-> Before stopping, make the explicit semantic Issue decision now. ... call
-> `kanban.request_closure` with the current run_id and revision. ... If you
-> already made the appropriate decision, stop again without another mutation.
+Prompts, transcripts, assistant messages, tool inputs, and raw failure details
+do not cross XPC and are never persisted by this bridge. Hook wrappers are
+fail-open: malformed input, a missing Project binding, runtime identity
+mismatch, and IPC failure must not prevent the Agent host from continuing.
 
-## 7. Claude Code Stop blocking
+## Observation and semantic mutation
 
-Claude Code's first Stop is a *decision point*, not a run end. The hook emits
-`{"decision":"block", ...}`, which interrupts the stop once and forces the
-closure decision. The follow-up Stop carries `stop_hook_active=true`; only that
-one is recorded as `ended` (unless it is a `StopFailure`, which records
-`outcome=failed`). Codex cannot block stops; it receives the reminder text
-instead.
+The two paths are deliberately separate:
 
-## 8. Session end and leases
+```text
+Hook lifecycle event -> record_agent_run_event -> AgentRun observation
+Agent judgment       -> MCP kanban operation   -> Issue transition
+```
 
-`SessionEnd` ends every running run of the host session with outcome `unknown`
-and `end_reason=session_ended` (the daemon keeps `end_reason` first-write-wins
-for `agent_report`). Each recorded event renews `lease_expires_at`; a run
-whose lease expires is no longer counted as active, which feeds the board's
-stale computation.
+The private bridge is not an MCP tool. Conversely, `kanban.begin_work`, pause,
+resume, unclaim, and `request_closure` do not pretend to be host lifecycle
+events. This keeps transport telemetry from becoming product intent.
 
-## 9. Host differences
+## Implementation map
 
-### Claude Code keeps `SessionStart` + `workspace-info`; Codex does not
-
-Claude Code installs `hooks/session-start.sh` (`SessionStart` event). On every
-session start it:
-
-1. writes `export CLAUDE_PROJECT_DIR=...` into `$CLAUDE_ENV_FILE` so the other
-   hooks know the project root (Claude Code hooks have no reliable cwd —
-   `resolve-binary.sh` falls back to `$PWD` only when the env var is absent);
-2. runs `clumsies _agent workspace-info`
-   (`src/client/commands/workspace_info_cmd.zig`), which resolves the
-   workspace binding for the current directory and prints `WS_ID=` and
-   `CACHE_DIR=` lines (deliberately not shell-eval-able; parsed with
-   `while IFS='=' read`);
-3. scans `$CACHE_DIR/workflow/*.md` (the synchronized workflow rule cache) and
-   generates a thin `SKILL.md` proxy for each rule that does not already have
-   one, under the rendered `WORKFLOW_SKILLS_DIR` (`.claude/skills` for
-   workspace scope, disabled for user scope).
-
-Codex has no such hook. Per `d675aa8` ("adapter: import workflow-backed
-skills from cache"): workflow skill auto-import runs **during
-`clumsies adapt` / `clumsies adapt --update`**, from the synchronized cache
-manifest, **not from a Codex SessionStart hook** — and the runtime test
-"runtime no longer injects a SessionStart memory bootstrap" pins that
-decision. Codex hooks can locate the repository via `git rev-parse
---show-toplevel` in `resolve-binary.sh`, so they never needed
-`workspace-info`.
-
-Rationale for the asymmetry:
-
-- Codex resolves the project root from git, so its hooks do not need a
-  workspace-info lookup.
-- Claude Code's hooks receive the project root through the environment file
-  written by `session-start.sh`; the same hook doubles as the place to
-  incrementally sync newly synchronized workflow rules into skills, because
-  Claude Code discovers skills at session start and rules arrive in the cache
-  asynchronously from the server.
-- Codex re-runs `clumsies adapt --update` to refresh workflow skill proxies;
-  the install-time import path is shared by both hosts
-  (`src/client/adapter/workflow_skills.zig`).
-
-### Other differences
-
-- Claude Code registers `StopFailure`; Codex has no equivalent event.
-- Claude Code blocks the first Stop; Codex only receives reminder context.
-
-## 10. Zed status
-
-The `zed_extension_api` crate (latest 0.7.0, 2026-07) exposes no lifecycle
-hook surface: the `Extension` trait has 19 methods covering language servers,
-slash commands, context servers (MCP), DAP, docs indexing, and
-completion/label helpers — there is no `on_event`, no prompt/stop callback.
-Zed therefore cannot participate in this hook protocol. The supported
-integration is MCP-only (issue `ISSUE-008`), and run tracking for Zed needs
-one of:
-
-- an MCP-session-scoped run created by the daemon at session initialize
-  (`host=zed`, keyed by session id); or
-- a lazily created anonymous run on `kanban.begin_work` without `run_id`,
-  relying on the existing lease-expiry machinery to end it.
-
-Both options are tracked in `ISSUE-018`.
-
-## 11. File index
-
-| Concern | Path |
-|---|---|
-| Hook scripts (Codex) | `assets/adapters/codex/runtime/hooks/` |
-| Hook scripts (Claude Code) | `assets/adapters/claude-code/runtime/hooks/` |
-| Event → script registration | `src/client/adapter/packages/codex.zig`, `src/client/adapter/packages/claude_code.zig` |
-| Private bridge command | `src/client/commands/issue_run_event_cmd.zig` |
-| Workspace info command | `src/client/commands/workspace_info_cmd.zig` |
-| Run records and events | `crates/daemon/src/work_tracking.rs` |
-| Run ↔ Issue transitions | `crates/daemon/src/work_tracking.rs` (`start_issue_work`, `request_issue_closure`) |
-| Workflow skill import | `src/client/adapter/workflow_skills.zig` |
+| Concern | Active path |
+| --- | --- |
+| Proxy dispatch, runtime identity gate, and injected context | `crates/daemon/src/main.rs` |
+| Host payload normalization | `crates/daemon/src/agent_runtime/hook.rs` |
+| AgentRun persistence and Issue transitions | `crates/daemon/src/work_tracking.rs` |
+| Adapter rendering and migration | `crates/daemon/src/agent_adapter.rs` |
+| Codex / Claude Code Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| opencode plugin | `assets/adapters/opencode/runtime/plugin.ts` |

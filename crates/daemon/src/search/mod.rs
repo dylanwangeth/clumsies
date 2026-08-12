@@ -1,14 +1,15 @@
 mod activation;
 mod chunker;
-mod index;
+pub(crate) mod index;
 pub(crate) mod models;
 mod overlay;
 mod query;
+pub(crate) mod scheduler;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use super::retrieval_history::{
 };
 use super::{
     DaemonDraftContent, DaemonDraftOperation, DaemonError, DaemonMemoryCacheRequest,
-    DaemonMemoryCacheState, DaemonState, DaemonUpdateDraftOperation,
+    DaemonMemoryCacheState, DaemonMemoryCacheStatus, DaemonState, DaemonUpdateDraftOperation,
 };
 
 pub(super) const SEARCH_SCHEMA_VERSION: i64 = 3;
@@ -206,6 +207,9 @@ pub struct SearchIndexStatus {
     pub model_status: SearchModelStatus,
     pub model_downloaded_bytes: Option<u64>,
     pub model_total_bytes: Option<u64>,
+    pub build_state: Option<String>,
+    pub desired_sequence: Option<i64>,
+    pub completed_sequence: Option<i64>,
     pub last_error: Option<String>,
 }
 
@@ -253,6 +257,10 @@ impl SearchFailure {
 
     pub(super) fn not_ready(message: impl Into<String>) -> Self {
         Self::new("search_index_not_ready", message)
+    }
+
+    pub(super) fn index_preparing(message: impl Into<String>) -> Self {
+        Self::new("search_index_preparing", message)
     }
 
     pub(super) fn generation_changed(message: impl Into<String>) -> Self {
@@ -333,6 +341,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
     .bind(SEARCH_SCHEMA_VERSION.to_string())
     .execute(pool)
     .await?;
+    scheduler::migrate(pool).await?;
     Ok(())
 }
 
@@ -345,12 +354,26 @@ pub(super) async fn active_project_index(
     Ok((pool, storage))
 }
 
-async fn publish_search_head(
+async fn mirror_project_search_head_if_current(
     state: &DaemonState,
-    pool: &SqlitePool,
     project_id: &str,
     location_revision: i64,
 ) -> Result<(), DaemonError> {
+    // Serialize with scheduler publication, then reopen and reread the
+    // project head while holding the central writer barrier. This prevents a
+    // status read that observed R1 from overwriting a concurrently published
+    // R2 central head after that scheduler commit.
+    let mut barrier = state.inner.pool.begin().await?;
+    sqlx::query("UPDATE search_index_jobs SET updated_at = updated_at WHERE project_id = $1")
+        .bind(project_id)
+        .execute(&mut *barrier)
+        .await?;
+    let (pool, storage) = active_project_index(state, project_id).await?;
+    if storage.location_revision != location_revision {
+        pool.close().await;
+        barrier.rollback().await?;
+        return Ok(());
+    }
     let row = sqlx::query(
         "SELECT r.revision_id, r.effective_hash, r.status, r.last_error
          FROM search_heads h
@@ -358,7 +381,7 @@ async fn publish_search_head(
          WHERE h.project_id = $1",
     )
     .bind(project_id)
-    .fetch_optional(pool)
+    .fetch_optional(&pool)
     .await?;
     match row {
         Some(row) => {
@@ -380,38 +403,36 @@ async fn publish_search_head(
             .bind(row.try_get::<String, _>("status")?)
             .bind(row.try_get::<Option<String>, _>("last_error")?)
             .bind(location_revision)
-            .execute(&state.inner.pool)
+            .execute(&mut *barrier)
             .await?;
         }
         None => {
             sqlx::query("DELETE FROM search_heads WHERE project_id = $1")
                 .bind(project_id)
-                .execute(&state.inner.pool)
+                .execute(&mut *barrier)
                 .await?;
         }
     }
+    pool.close().await;
+    barrier.commit().await?;
     Ok(())
 }
 
 pub(crate) async fn materialize_project_index_at(
-    state: &DaemonState,
+    _state: &DaemonState,
     project_id: &str,
     path: &Path,
 ) -> Result<Option<String>, DaemonError> {
     let pool = index::connect_project_index(path).await?;
-    index::delete_project_index(&pool, project_id).await?;
-    let effective_hash = match load_effective_memory(state, project_id).await {
-        Ok(effective) => {
-            let effective_hash = effective.effective_hash.clone();
-            index::ensure_index(state, &pool, &effective).await?;
-            Some(effective_hash)
-        }
-        Err(DaemonError::State {
-            code: "project_ref_not_synced",
-            ..
-        }) => None,
-        Err(error) => return Err(error),
-    };
+    let effective_hash: Option<String> = sqlx::query_scalar(
+        "SELECT r.effective_hash
+         FROM search_heads h
+         JOIN search_revisions r ON r.revision_id = h.revision_id
+         WHERE h.project_id = $1 AND r.status = 'ready'",
+    )
+    .bind(project_id)
+    .fetch_optional(&pool)
+    .await?;
     sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
         .execute(&pool)
         .await?;
@@ -470,10 +491,8 @@ pub(crate) async fn publish_project_index_head(
     state: &DaemonState,
     project_id: &str,
 ) -> Result<(), DaemonError> {
-    let (pool, storage) = active_project_index(state, project_id).await?;
-    publish_search_head(state, &pool, project_id, storage.location_revision).await?;
-    pool.close().await;
-    Ok(())
+    let storage = super::project_storage::resolve_active(state, project_id).await?;
+    mirror_project_search_head_if_current(state, project_id, storage.location_revision).await
 }
 
 pub(crate) async fn activate_memory(
@@ -507,61 +526,101 @@ pub(crate) async fn activate_memory(
     };
     let mut failure_stage = "activation_state";
 
-    let result = async {
+    const ACTIVATION_DEADLINE: Duration = Duration::from_secs(60);
+    let (result, deadline_expired) = match tokio::time::timeout(ACTIVATION_DEADLINE, async {
         let previous_state = activation::decode_activation_state(request.state.as_deref())?;
 
-        failure_stage = "effective_memory";
+        failure_stage = "index_head";
         let started = Instant::now();
-        let effective = load_effective_memory(state, &project_id).await?;
-        completion.latencies.effective_memory_us = elapsed_us(started);
-        completion.effective_hash = Some(effective.effective_hash.clone());
-        completion.resources = effective
-            .resources
-            .iter()
-            .map(retrieval_corpus_resource)
-            .collect();
-
-        // Index ensure and search-head publication are serialized across
-        // Projects by search_index_lock, but run OUTSIDE search_lock so a
-        // slow first-time index build does not block other activates that
-        // only need to query an already-published index.
-        failure_stage = "index_ensure";
-        let started = Instant::now();
-        let (pool, storage) = active_project_index(state, &project_id).await?;
-        let revision_id = {
-            let _index_guard = state.inner.search_index_lock.lock().await;
-            match index::ensure_index(state, &pool, &effective).await {
-                Ok(revision_id) => revision_id,
-                Err(error) => {
-                    pool.close().await;
-                    return Err(error);
+        let _query_guard = state.inner.search_lock.lock().await;
+        // Pin the active storage location until every index query completes;
+        // a concurrent storage move cannot remove the selected SQLite file.
+        let _storage_guard = state.inner.storage_access.read().await;
+        // Preserve the public pre-index contract. A Project without a synced
+        // Ref or usable installed generation must report that condition
+        // before storage/index creation or model scheduling can mask it.
+        let cache = super::commit_sync::memory_cache_under_storage_guard(
+            state,
+            DaemonMemoryCacheRequest {
+                project_id: project_id.clone(),
+            },
+        )
+        .await?;
+        require_ready_memory_cache(cache, &project_id)?;
+        let (pool, _storage) = active_project_index(state, &project_id).await?;
+        let Some(revision_id) = index::ready_index_revision(state, &pool, &project_id).await?
+        else {
+            pool.close().await;
+            drop(_storage_guard);
+            scheduler::ensure_project_queued(state, &project_id).await?;
+            return match state.inner.search_models.status() {
+                SearchModelRuntimeStatus::Missing => Err(SearchFailure::model_preparing(
+                    "search models are waiting for background preparation",
+                )
+                .into()),
+                SearchModelRuntimeStatus::Preparing {
+                    downloaded_bytes,
+                    total_bytes,
+                } => Err(SearchFailure::model_preparing(format!(
+                    "search models are preparing ({downloaded_bytes}/{total_bytes} bytes)"
+                ))
+                .into()),
+                SearchModelRuntimeStatus::Failed => Err(SearchFailure::model(
+                    "search model preparation failed and will retry in the background",
+                )
+                .into()),
+                SearchModelRuntimeStatus::Ready => {
+                    let job = scheduler::status(state, &project_id).await?;
+                    if let Some(job) = job
+                        && job.state == "failed"
+                    {
+                        Err(SearchFailure::failed(job.last_error.unwrap_or_else(|| {
+                            "the background search index build failed".to_owned()
+                        }))
+                        .into())
+                    } else {
+                        Err(SearchFailure::index_preparing(
+                            "the first search index is building in the background; retry shortly",
+                        )
+                        .into())
+                    }
                 }
-            }
+            };
         };
         completion.latencies.index_ensure_us = elapsed_us(started);
         completion.index_revision = Some(revision_id.clone());
-        {
-            let _index_guard = state.inner.search_index_lock.lock().await;
-            publish_search_head(state, &pool, &project_id, storage.location_revision).await?;
-        }
+        let (indexed_effective_hash, indexed_resources) =
+            indexed_corpus(&pool, &revision_id).await?;
+        completion.effective_hash = Some(indexed_effective_hash);
+        completion.resources = indexed_resources;
+        completion.latencies.effective_memory_us = elapsed_us(started);
 
-        let response = {
-            let _guard = state.inner.search_lock.lock().await;
-            query::query_index(
-                state,
-                &pool,
-                &revision_id,
-                &query,
-                previous_state,
-                &mut completion,
-                &mut failure_stage,
-            )
-            .await
-        };
+        let response = query::query_index(
+            state,
+            &pool,
+            &revision_id,
+            &query,
+            previous_state,
+            &mut completion,
+            &mut failure_stage,
+        )
+        .await;
         pool.close().await;
         response
-    }
-    .await;
+    })
+    .await
+    {
+        Ok(result) => (result, false),
+        Err(_) => (
+            Err(DaemonError::Search {
+                code: "activation_deadline".to_owned(),
+                message: format!(
+                    "activate exceeded the {ACTIVATION_DEADLINE:?} budget; the Retrieval Run was finalized and remaining stages were skipped"
+                ),
+            }),
+            true,
+        ),
+    };
 
     completion.latencies.total_us = elapsed_us(total_started);
     match &result {
@@ -575,34 +634,77 @@ pub(crate) async fn activate_memory(
             completion.error_summary = Some(summary);
         }
     }
-    if let Some(run_id) = run_id
-        && let Err(error) = super::retrieval_history::finish_run(state, &run_id, completion).await
-    {
-        tracing::error!("failed to finish Retrieval Run {run_id}: {error}");
-        if let Err(record_error) =
-            super::retrieval_history::record_persistence_failure(state, &run_id, &error).await
-        {
-            tracing::error!(
-                "failed to record Retrieval Run persistence failure {run_id}: {record_error}"
-            );
+    if let Some(run_id) = run_id {
+        let finish_result = if deadline_expired {
+            // Keep the deadline terminalization independent of the history
+            // lock and blob persistence. The response cannot be held after
+            // the retrieval budget by another, unrelated history write.
+            super::retrieval_history::finish_deadline_run(
+                state,
+                &run_id,
+                failure_stage,
+                completion.latencies.total_us,
+            )
+            .await
+        } else {
+            super::retrieval_history::finish_run(state, &run_id, completion).await
+        };
+        if let Err(error) = finish_result {
+            tracing::error!("failed to finish Retrieval Run {run_id}: {error}");
+            if let Err(record_error) =
+                super::retrieval_history::record_persistence_failure(state, &run_id, &error).await
+            {
+                tracing::error!(
+                    "failed to record Retrieval Run persistence failure {run_id}: {record_error}"
+                );
+            }
         }
     }
     result
 }
 
-fn retrieval_corpus_resource(resource: &SourceResource) -> RetrievalCorpusResourceInput {
-    RetrievalCorpusResourceInput {
-        resource_id: resource.resource_id.clone(),
-        scope: resource.scope,
-        kind: resource.kind,
-        path: resource.path.clone(),
-        title: resource.title.clone(),
-        content: resource.content.clone(),
-        content_hash: resource.content_hash.clone(),
-        source_commit_id: resource.source_commit_id.clone(),
-        draft_id: resource.draft_id.clone(),
-        draft_revision: resource.draft_revision.clone(),
-    }
+async fn indexed_corpus(
+    pool: &SqlitePool,
+    revision_id: &str,
+) -> Result<(String, Vec<RetrievalCorpusResourceInput>), DaemonError> {
+    let effective_hash: String = sqlx::query_scalar(
+        "SELECT effective_hash FROM search_revisions
+         WHERE revision_id = $1 AND status = 'ready'",
+    )
+    .bind(revision_id)
+    .fetch_one(pool)
+    .await?;
+    let rows = sqlx::query(
+        "SELECT resource_id, scope, kind, path, title, content, content_hash,
+                source_commit_id, draft_id, draft_revision
+         FROM search_resources WHERE revision_id = $1 ORDER BY resource_id",
+    )
+    .bind(revision_id)
+    .fetch_all(pool)
+    .await?;
+    let resources = rows
+        .into_iter()
+        .map(|row| {
+            let scope = parse_source_scope(&row.try_get::<String, _>("scope")?)?;
+            let kind_value: String = row.try_get("kind")?;
+            let kind = parse_memory_kind(&kind_value).ok_or_else(|| {
+                SearchFailure::failed(format!("unknown indexed memory kind: {kind_value}"))
+            })?;
+            Ok(RetrievalCorpusResourceInput {
+                resource_id: row.try_get("resource_id")?,
+                scope,
+                kind,
+                path: row.try_get("path")?,
+                title: row.try_get("title")?,
+                content: row.try_get("content")?,
+                content_hash: row.try_get("content_hash")?,
+                source_commit_id: row.try_get("source_commit_id")?,
+                draft_id: row.try_get("draft_id")?,
+                draft_revision: row.try_get("draft_revision")?,
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    Ok((effective_hash, resources))
 }
 
 fn retrieval_error(error: &DaemonError) -> (String, String) {
@@ -683,8 +785,12 @@ pub(crate) async fn search_index_status(
     state: &DaemonState,
     request: SearchIndexProjectRequest,
 ) -> Result<SearchIndexStatus, DaemonError> {
-    let effective = load_effective_memory(state, &request.project_id).await?;
-    let (pool, storage) = active_project_index(state, &request.project_id).await?;
+    // Pin the active storage location until every project-index read has
+    // completed. A storage move takes the write side before switching or
+    // cleaning the source tree.
+    let _storage_guard = state.inner.storage_access.read().await;
+    let effective = load_effective_memory_under_storage_guard(state, &request.project_id).await?;
+    let (pool, _storage) = active_project_index(state, &request.project_id).await?;
     let row = sqlx::query(
         "SELECT r.revision_id, r.effective_hash, r.status, r.last_error
          FROM search_heads h
@@ -706,6 +812,8 @@ pub(crate) async fn search_index_status(
         }
         None => (None, None, false, None),
     };
+    let compatible_revision =
+        index::ready_index_revision(state, &pool, &request.project_id).await?;
     let (model_status, model_downloaded_bytes, model_total_bytes) =
         match state.inner.search_models.status() {
             SearchModelRuntimeStatus::Missing => (SearchModelStatus::Missing, None, None),
@@ -733,10 +841,9 @@ pub(crate) async fn search_index_status(
     .await?
     .flatten();
     let ready = revision_ready
-        && active_effective_hash.as_deref() == Some(effective.effective_hash.as_str());
-    if active_revision.is_some() {
-        publish_search_head(state, &pool, &request.project_id, storage.location_revision).await?;
-    }
+        && active_effective_hash.as_deref() == Some(effective.effective_hash.as_str())
+        && compatible_revision.as_deref() == active_revision.as_deref();
+    let job = scheduler::status(state, &request.project_id).await?;
     let status = SearchIndexStatus {
         project_id: request.project_id,
         effective_hash: effective.effective_hash,
@@ -746,7 +853,13 @@ pub(crate) async fn search_index_status(
         model_status,
         model_downloaded_bytes,
         model_total_bytes,
-        last_error: current_failure.or(last_error),
+        build_state: job.as_ref().map(|job| job.state.clone()),
+        desired_sequence: job.as_ref().map(|job| job.desired_sequence),
+        completed_sequence: job.as_ref().map(|job| job.completed_sequence),
+        last_error: job
+            .and_then(|job| job.last_error)
+            .or(current_failure)
+            .or(last_error),
     };
     pool.close().await;
     Ok(status)
@@ -756,14 +869,7 @@ pub(crate) async fn rebuild_search_index(
     state: &DaemonState,
     request: SearchIndexProjectRequest,
 ) -> Result<SearchIndexStatus, DaemonError> {
-    let _guard = state.inner.search_lock.lock().await;
-    let (pool, storage) = active_project_index(state, &request.project_id).await?;
-    index::delete_project_index(&pool, &request.project_id).await?;
-    let effective = load_effective_memory(state, &request.project_id).await?;
-    index::ensure_index(state, &pool, &effective).await?;
-    publish_search_head(state, &pool, &request.project_id, storage.location_revision).await?;
-    pool.close().await;
-    drop(_guard);
+    scheduler::enqueue_project(state, &request.project_id).await?;
     search_index_status(state, request).await
 }
 
@@ -772,6 +878,13 @@ pub(crate) async fn load_effective_memory(
     project_id: &str,
 ) -> Result<EffectiveMemory, DaemonError> {
     let _storage_guard = state.inner.storage_access.read().await;
+    load_effective_memory_under_storage_guard(state, project_id).await
+}
+
+async fn load_effective_memory_under_storage_guard(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<EffectiveMemory, DaemonError> {
     let cache = super::commit_sync::memory_cache_under_storage_guard(
         state,
         DaemonMemoryCacheRequest {
@@ -779,41 +892,7 @@ pub(crate) async fn load_effective_memory(
         },
     )
     .await?;
-    match cache.state {
-        DaemonMemoryCacheState::Ready => {}
-        DaemonMemoryCacheState::ProjectRefNotSynced => {
-            return Err(DaemonError::State {
-                code: "project_ref_not_synced",
-                message: cache.diagnostic.unwrap_or_else(|| {
-                    format!("the Project Ref for {project_id} has not been synchronized")
-                }),
-            });
-        }
-        DaemonMemoryCacheState::StorageUnavailable => {
-            return Err(DaemonError::State {
-                code: "project_storage_unavailable",
-                message: cache
-                    .diagnostic
-                    .unwrap_or_else(|| format!("Project storage for {project_id} is unavailable")),
-            });
-        }
-        DaemonMemoryCacheState::GenerationMissing => {
-            return Err(DaemonError::State {
-                code: "commit_generation_missing",
-                message: cache.diagnostic.unwrap_or_else(|| {
-                    format!("the Commit generation for {project_id} is missing")
-                }),
-            });
-        }
-        DaemonMemoryCacheState::GenerationCorrupt => {
-            return Err(DaemonError::State {
-                code: "commit_generation_corrupt",
-                message: cache.diagnostic.unwrap_or_else(|| {
-                    format!("the Commit generation for {project_id} is corrupt")
-                }),
-            });
-        }
-    }
+    let cache = require_ready_memory_cache(cache, project_id)?;
     let _active_storage = super::project_storage::resolve_active(state, project_id).await?;
 
     let mut resources = BTreeMap::<String, EffectiveResource>::new();
@@ -901,6 +980,39 @@ pub(crate) async fn load_effective_memory(
         effective_hash,
         resources: source_resources.into(),
     })
+}
+
+fn require_ready_memory_cache(
+    cache: DaemonMemoryCacheStatus,
+    project_id: &str,
+) -> Result<DaemonMemoryCacheStatus, DaemonError> {
+    match cache.state {
+        DaemonMemoryCacheState::Ready => Ok(cache),
+        DaemonMemoryCacheState::ProjectRefNotSynced => Err(DaemonError::State {
+            code: "project_ref_not_synced",
+            message: cache.diagnostic.unwrap_or_else(|| {
+                format!("the Project Ref for {project_id} has not been synchronized")
+            }),
+        }),
+        DaemonMemoryCacheState::StorageUnavailable => Err(DaemonError::State {
+            code: "project_storage_unavailable",
+            message: cache
+                .diagnostic
+                .unwrap_or_else(|| format!("Project storage for {project_id} is unavailable")),
+        }),
+        DaemonMemoryCacheState::GenerationMissing => Err(DaemonError::State {
+            code: "commit_generation_missing",
+            message: cache
+                .diagnostic
+                .unwrap_or_else(|| format!("the Commit generation for {project_id} is missing")),
+        }),
+        DaemonMemoryCacheState::GenerationCorrupt => Err(DaemonError::State {
+            code: "commit_generation_corrupt",
+            message: cache
+                .diagnostic
+                .unwrap_or_else(|| format!("the Commit generation for {project_id} is corrupt")),
+        }),
+    }
 }
 
 pub(super) fn project_authority_content(
@@ -999,16 +1111,27 @@ pub(super) fn sha256(value: &str) -> String {
 }
 
 pub(super) async fn run_model_work<T: Send + 'static>(
+    state: &DaemonState,
     operation: impl FnOnce() -> Result<T, SearchFailure> + Send + 'static,
 ) -> Result<T, DaemonError> {
-    tokio::task::spawn_blocking(operation)
+    let permit = state
+        .inner
+        .search_model_gate
+        .clone()
+        .acquire_owned()
         .await
-        .map_err(|error| {
-            SearchFailure::failed(format!(
-                "search model worker terminated unexpectedly: {error}"
-            ))
-        })?
-        .map_err(DaemonError::from)
+        .map_err(|_| SearchFailure::failed("search model inference gate closed"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|error| {
+        SearchFailure::failed(format!(
+            "search model worker terminated unexpectedly: {error}"
+        ))
+    })?
+    .map_err(DaemonError::from)
 }
 
 pub(super) fn elapsed_us(started: Instant) -> u64 {
@@ -1063,6 +1186,7 @@ mod tests {
 
     struct BatchRecordingModels {
         largest_batch: AtomicUsize,
+        total_embedded: AtomicUsize,
     }
 
     impl SearchModels for DeterministicModels {
@@ -1188,6 +1312,8 @@ mod tests {
 
         fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure> {
             self.largest_batch.fetch_max(texts.len(), Ordering::Relaxed);
+            self.total_embedded
+                .fetch_add(texts.len(), Ordering::Relaxed);
             Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0]).collect())
         }
 
@@ -1264,7 +1390,188 @@ mod tests {
     }
 
     async fn test_state() -> (TempDir, DaemonState) {
-        test_state_with_models(Arc::new(DeterministicModels)).await
+        let pair = test_state_with_models(Arc::new(DeterministicModels)).await;
+        let _worker = pair.1.start_search_index_worker();
+        scheduler::enqueue_project(&pair.1, "prj_test")
+            .await
+            .unwrap();
+        wait_for_index_job(&pair.1, "ready").await;
+        pair
+    }
+
+    async fn wait_for_index_job(state: &DaemonState, expected_state: &str) {
+        for _ in 0..200 {
+            if scheduler::status(state, "prj_test")
+                .await
+                .unwrap()
+                .is_some_and(|job| job.state == expected_state)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let status = scheduler::status(state, "prj_test").await.unwrap();
+        panic!("search index job did not reach {expected_state}: {status:?}");
+    }
+
+    #[tokio::test]
+    async fn index_pruning_uses_search_then_storage_lock_order() {
+        let (_temp, state) = test_state().await;
+        let search_guard = state.inner.search_lock.lock().await;
+        let prune_state = state.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let prune = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            scheduler::prune_old_revisions(&prune_state, "prj_test").await
+        });
+        started_rx.await.unwrap();
+
+        // If pruning held storage before waiting for search, this write lock
+        // would deadlock with the search guard held by this task.
+        let storage_guard = tokio::time::timeout(
+            Duration::from_millis(100),
+            state.inner.storage_access.write(),
+        )
+        .await
+        .expect("pruning must not acquire storage before the search lock");
+        drop(storage_guard);
+        drop(search_guard);
+        tokio::time::timeout(Duration::from_secs(1), prune)
+            .await
+            .expect("pruning did not resume after both locks became available")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_clear_invalidates_a_claimed_build_before_publication() {
+        let (_temp, state) = test_state_with_models(Arc::new(DeterministicModels)).await;
+        scheduler::enqueue_project(&state, "prj_test")
+            .await
+            .unwrap();
+        let claimed_sequence: i64 = sqlx::query_scalar(
+            "UPDATE search_index_jobs
+             SET state = 'building', building_sequence = desired_sequence
+             WHERE project_id = 'prj_test'
+             RETURNING desired_sequence",
+        )
+        .fetch_one(&state.inner.pool)
+        .await
+        .unwrap();
+
+        let storage = state
+            .project_storage(DaemonProjectStorageRequest {
+                project_id: "prj_test".to_owned(),
+            })
+            .await
+            .unwrap();
+        state
+            .clear_project_cache(DaemonProjectCacheClearRequest {
+                project_id: "prj_test".to_owned(),
+                expected_location_revision: storage.location_revision,
+            })
+            .await
+            .unwrap();
+
+        let status = scheduler::status(&state, "prj_test")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.desired_sequence, claimed_sequence + 1);
+        assert_eq!(status.completed_sequence, 0);
+        assert_eq!(status.state, "queued");
+        let stale_publish_cas = sqlx::query(
+            "UPDATE search_index_jobs SET updated_at = updated_at
+             WHERE project_id = 'prj_test' AND desired_sequence = $1
+               AND building_sequence = $1 AND state = 'building'",
+        )
+        .bind(claimed_sequence)
+        .execute(&state.inner.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        assert_eq!(stale_publish_cas, 0);
+        let published_heads: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM search_heads WHERE project_id = 'prj_test'")
+                .fetch_one(&state.inner.pool)
+                .await
+                .unwrap();
+        assert_eq!(published_heads, 0);
+    }
+
+    #[tokio::test]
+    async fn status_does_not_regress_a_newer_scheduler_publication() {
+        let (_temp, state) = test_state().await;
+        let (pool, _storage) = active_project_index(&state, "prj_test").await.unwrap();
+        let observed_revision: String = sqlx::query_scalar(
+            "SELECT revision_id FROM search_heads WHERE project_id = 'prj_test'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let newer_revision = "search_status_race_newer";
+        sqlx::query(
+            "INSERT INTO search_revisions (
+                revision_id, project_id, effective_hash, model_revision,
+                embedding_revision, parser_version, chunker_version,
+                ranking_version, status, ready_at
+             )
+             SELECT $1, project_id, effective_hash, model_revision,
+                    embedding_revision, parser_version, chunker_version,
+                    ranking_version, 'ready', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM search_revisions WHERE revision_id = $2",
+        )
+        .bind(newer_revision)
+        .bind(&observed_revision)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE search_heads SET revision_id = $2 WHERE project_id = $1")
+            .bind("prj_test")
+            .bind(newer_revision)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let effective_hash: String = sqlx::query_scalar(
+            "SELECT effective_hash FROM search_revisions WHERE revision_id = $1",
+        )
+        .bind(newer_revision)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE search_heads
+             SET revision_id = $2, effective_hash = $3
+             WHERE project_id = $1",
+        )
+        .bind("prj_test")
+        .bind(newer_revision)
+        .bind(&effective_hash)
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        // Resume a status request that had conceptually observed the older
+        // revision before the scheduler published the newer one. Status is
+        // read-only and therefore cannot write that stale observation back.
+        let status = search_index_status(
+            &state,
+            SearchIndexProjectRequest {
+                project_id: "prj_test".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.active_revision.as_deref(), Some(newer_revision));
+        let central_revision: String = sqlx::query_scalar(
+            "SELECT revision_id FROM search_heads WHERE project_id = 'prj_test'",
+        )
+        .fetch_one(&state.inner.pool)
+        .await
+        .unwrap();
+        assert_ne!(central_revision, observed_revision);
+        assert_eq!(central_revision, newer_revision);
     }
 
     async fn test_state_with_models(
@@ -1401,6 +1708,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activation_deadline_terminalization_does_not_wait_for_history_serialization() {
+        let (_temp, state) = test_state_with_models(Arc::new(DeterministicModels)).await;
+        let run_id = crate::retrieval_history::start_run(
+            &state,
+            "prj_test",
+            "deadline query",
+            "fingerprint",
+        )
+        .await
+        .unwrap();
+        let _history_guard = state.inner.retrieval_history_lock.lock().await;
+
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            crate::retrieval_history::finish_deadline_run(&state, &run_id, "retrieval", 250_000),
+        )
+        .await
+        .expect("deadline terminalization must not wait for the history lock")
+        .unwrap();
+
+        let row = sqlx::query(
+            "SELECT status, error_stage, error_code, completed_at
+             FROM retrieval_runs WHERE run_id = $1",
+        )
+        .bind(&run_id)
+        .fetch_one(&state.inner.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("status"), "failed");
+        assert_eq!(row.get::<String, _>("error_stage"), "retrieval");
+        assert_eq!(row.get::<String, _>("error_code"), "activation_deadline");
+        assert!(row.get::<Option<String>, _>("completed_at").is_some());
+    }
+
+    #[tokio::test]
     async fn commit_activate_load_and_draft_delta_form_one_effective_memory_loop() {
         let (_temp, state) = test_state().await;
         let first = state
@@ -1462,6 +1804,19 @@ mod tests {
             })
             .await
             .unwrap();
+
+        // Mutation scheduling is asynchronous: the old ready head stays
+        // queryable while the replacement is built.
+        let stale = state
+            .activate_memory(ActivateMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                query: "hybrid".to_owned(),
+                state: Some(second.next_state.clone()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(stale.index_revision, first.index_revision);
+        wait_for_index_job(&state, "ready").await;
 
         let third = state
             .activate_memory(ActivateMemoryRequest {
@@ -1890,6 +2245,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_text_replacements_are_atomic_and_persist_as_complete_content() {
         let (_temp, state) = test_state().await;
+        let central_pool = state.inner.pool.clone();
         let service = DaemonIpcService::new(state);
         let original = service
             .load_memory(LoadMemoryRequest {
@@ -1953,28 +2309,44 @@ mod tests {
         );
         let updated_hash = loaded.resources[0].content_hash.clone();
 
-        let repeated = service
-            .dispatch(DaemonIpcRequest::new(
-                "store_draft_operation",
-                json!({
-                    "project_id": "prj_test",
-                    "scope": "project",
-                    "resource": "context",
-                    "op": {
-                        "update": {
-                            "id": "ctx_retrieval",
-                            "expected_hash": updated_hash,
-                            "replacements": [{
-                                "old_text": "Memory activation",
-                                "new_text": "Agent memory activation"
-                            }]
-                        }
-                    },
-                    "source": "mcp_store"
-                }),
-            ))
-            .await;
-        assert!(repeated.ok);
+        // Hold the central SQLite writer slot while the second mutation reads
+        // and prepares its replacement. A deferred transaction would acquire
+        // a stale WAL snapshot and then fail its read-to-write upgrade with
+        // SQLITE_BUSY_SNAPSHOT (517). The mutation must instead wait for its
+        // BEGIN IMMEDIATE reservation and commit normally.
+        let writer = central_pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let repeated_service = service.clone();
+        let repeated_task = tokio::spawn(async move {
+            repeated_service
+                .dispatch(DaemonIpcRequest::new(
+                    "store_draft_operation",
+                    json!({
+                        "project_id": "prj_test",
+                        "scope": "project",
+                        "resource": "context",
+                        "op": {
+                            "update": {
+                                "id": "ctx_retrieval",
+                                "expected_hash": updated_hash,
+                                "replacements": [{
+                                    "old_text": "Memory activation",
+                                    "new_text": "Agent memory activation"
+                                }]
+                            }
+                        },
+                        "source": "mcp_store"
+                    }),
+                ))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        writer.commit().await.unwrap();
+        let repeated = repeated_task.await.unwrap();
+        assert!(
+            repeated.ok,
+            "daemon rejected repeated text replacement: {:?}",
+            repeated.error
+        );
         let repeated: DaemonDraftOperationResponse =
             serde_json::from_value(repeated.payload).unwrap();
         assert_eq!(repeated.draft_id, stored.draft_id);
@@ -2175,7 +2547,6 @@ mod tests {
                 target_id: target_id.map(ToOwned::to_owned),
                 path: Some("context/base.md".to_owned()),
                 base_resource,
-                updated_at: "2026-07-22T00:00:00Z".to_owned(),
                 operations: vec![(1, serde_json::to_string(&operation).unwrap(), operation)],
             }
         }
@@ -2291,9 +2662,52 @@ mod tests {
         assert!(created.contains_key("ctx_target"));
     }
 
+    #[test]
+    fn draft_overlay_revision_ignores_sync_only_timestamp_changes() {
+        let operation = DaemonDraftOperation {
+            create: Some(DaemonCreateDraftOperation {
+                path: "context/new.md".to_owned(),
+                content: DaemonDraftContent::Context {
+                    content: "# New context".to_owned(),
+                },
+                description: None,
+            }),
+            update: None,
+            rename: None,
+            delete: None,
+            discard: None,
+        };
+        let operation_json = serde_json::to_string(&operation).unwrap();
+        let make_overlay = || super::overlay::DraftOverlay {
+            draft_id: "draft_timestamp".to_owned(),
+            base_commit_id: Some("commit_base".to_owned()),
+            scope: SourceScope::Project,
+            kind: Some(MemoryKind::Context),
+            target_id: None,
+            path: Some("context/new.md".to_owned()),
+            base_resource: None,
+            operations: vec![(1, operation_json.clone(), operation.clone())],
+        };
+
+        let mut before = BTreeMap::new();
+        super::overlay::apply_draft_overlay("prj_test", &mut before, make_overlay()).unwrap();
+        let mut after = BTreeMap::new();
+        super::overlay::apply_draft_overlay("prj_test", &mut after, make_overlay()).unwrap();
+
+        assert_eq!(
+            before["draft_timestamp"].source.draft_revision,
+            after["draft_timestamp"].source.draft_revision
+        );
+    }
+
     #[tokio::test]
     async fn failed_index_build_is_recorded_without_moving_the_search_head() {
         let (_temp, state) = test_state_with_models(Arc::new(FailingIndexModels)).await;
+        let _worker = state.start_search_index_worker();
+        scheduler::enqueue_project(&state, "prj_test")
+            .await
+            .unwrap();
+        wait_for_index_job(&state, "failed").await;
         let error = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),
@@ -2304,7 +2718,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error,
-            DaemonError::Search { ref code, .. } if code == "search_model_unavailable"
+            DaemonError::Search { ref code, .. } if code == "search_index_failed"
         ));
 
         let status = state
@@ -2331,10 +2745,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(runs.items.len(), 1);
-        assert_eq!(runs.items[0].error_stage.as_deref(), Some("index_ensure"));
+        assert_eq!(runs.items[0].error_stage.as_deref(), Some("index_head"));
         assert_eq!(
             runs.items[0].error_code.as_deref(),
-            Some("search_model_unavailable")
+            Some("search_index_failed")
         );
     }
 
@@ -2421,11 +2835,123 @@ mod tests {
         }];
         let models = BatchRecordingModels {
             largest_batch: AtomicUsize::new(0),
+            total_embedded: AtomicUsize::new(0),
         };
         let units = index::build_index_units(&resources, &models).unwrap();
         assert!(units.len() > index::INDEX_EMBED_BATCH_SIZE);
         assert!(models.largest_batch.load(Ordering::Relaxed) <= index::INDEX_EMBED_BATCH_SIZE);
         assert!(units.iter().all(|unit| unit.resource_index == 0));
+    }
+
+    #[tokio::test]
+    async fn incremental_index_reuses_unchanged_resources_and_chunks_after_reopen() {
+        let models = Arc::new(BatchRecordingModels {
+            largest_batch: AtomicUsize::new(0),
+            total_embedded: AtomicUsize::new(0),
+        });
+        let (temp, state) = test_state_with_models(models.clone()).await;
+        let index_path = temp.path().join("incremental-index.sqlite");
+        let pool = index::connect_project_index(&index_path).await.unwrap();
+        let first_content = format!(
+            "# Alpha\n\n{}\n\n# Beta\n\n{}\n",
+            "a".repeat(900),
+            "b".repeat(900)
+        );
+        let second_content = format!("# Gamma\n\n{}\n", "c".repeat(900));
+        let first_resources: Arc<[SourceResource]> = vec![
+            SourceResource {
+                resource_id: "ctx_alpha".to_owned(),
+                project_id: "prj_test".to_owned(),
+                scope: SourceScope::Project,
+                kind: MemoryKind::Context,
+                path: "context/alpha.md".to_owned(),
+                title: "Alpha".to_owned(),
+                content_hash: sha256(&first_content),
+                content: first_content.clone(),
+                source_commit_id: Some("commit_one".to_owned()),
+                draft_id: None,
+                draft_revision: None,
+            },
+            SourceResource {
+                resource_id: "ctx_gamma".to_owned(),
+                project_id: "prj_test".to_owned(),
+                scope: SourceScope::Project,
+                kind: MemoryKind::Context,
+                path: "context/gamma.md".to_owned(),
+                title: "Gamma".to_owned(),
+                content_hash: sha256(&second_content),
+                content: second_content,
+                source_commit_id: Some("commit_one".to_owned()),
+                draft_id: None,
+                draft_revision: None,
+            },
+        ]
+        .into();
+        let first = EffectiveMemory {
+            project_id: "prj_test".to_owned(),
+            effective_hash: "effective_one".to_owned(),
+            resources: first_resources,
+        };
+        let prepared =
+            match index::prepare_incremental_index(&state, &pool, &first, || async { true })
+                .await
+                .unwrap()
+            {
+                index::PrepareIndexOutcome::Prepared(prepared) => prepared,
+                other => panic!("expected cold prepared index, got {other:?}"),
+            };
+        let cold_count = models.total_embedded.load(Ordering::Relaxed);
+        assert!(cold_count > 1);
+        let revision = index::stage_prepared_index(&pool, &first, &prepared)
+            .await
+            .unwrap();
+        index::publish_staged_index(&pool, "prj_test", &first.effective_hash, &revision)
+            .await
+            .unwrap();
+
+        // Reopen the on-disk database to prove reuse is persisted rather than
+        // an in-memory optimization. A same-length edit changes exactly one
+        // chunk; every other chunk and the untouched resource must be reused.
+        pool.close().await;
+        let pool = index::connect_project_index(&index_path).await.unwrap();
+        models.total_embedded.store(0, Ordering::Relaxed);
+        let mut changed_resources = first.resources.to_vec();
+        let mut changed_content = first_content.clone();
+        let body_start = changed_content.find("\n\n").unwrap() + 2;
+        changed_content.replace_range(body_start..body_start + 1, "z");
+        changed_resources[0].content = changed_content;
+        changed_resources[0].content_hash = sha256(&changed_resources[0].content);
+        changed_resources[0].source_commit_id = Some("commit_two".to_owned());
+        let changed = EffectiveMemory {
+            project_id: "prj_test".to_owned(),
+            effective_hash: "effective_two".to_owned(),
+            resources: changed_resources.into(),
+        };
+        let prepared =
+            match index::prepare_incremental_index(&state, &pool, &changed, || async { true })
+                .await
+                .unwrap()
+            {
+                index::PrepareIndexOutcome::Prepared(prepared) => prepared,
+                other => panic!("expected changed prepared index, got {other:?}"),
+            };
+        assert_eq!(models.total_embedded.load(Ordering::Relaxed), 1);
+        let revision = index::stage_prepared_index(&pool, &changed, &prepared)
+            .await
+            .unwrap();
+        index::publish_staged_index(&pool, "prj_test", &changed.effective_hash, &revision)
+            .await
+            .unwrap();
+
+        models.total_embedded.store(0, Ordering::Relaxed);
+        assert!(matches!(
+            index::prepare_incremental_index(&state, &pool, &changed, || async { true })
+                .await
+                .unwrap(),
+            index::PrepareIndexOutcome::AlreadyReady(_)
+        ));
+        assert_eq!(models.total_embedded.load(Ordering::Relaxed), 0);
+        pool.close().await;
     }
 
     #[test]

@@ -86,7 +86,6 @@ pub(super) struct DraftOverlay {
     pub(super) target_id: Option<String>,
     pub(super) path: Option<String>,
     pub(super) base_resource: Option<EffectiveResource>,
-    pub(super) updated_at: String,
     pub(super) operations: Vec<(i64, String, DaemonDraftOperation)>,
 }
 
@@ -96,13 +95,13 @@ pub(super) async fn load_draft_overlays(
 ) -> Result<Vec<DraftOverlay>, DaemonError> {
     let rows = sqlx::query(
         "SELECT d.draft_id, d.base_commit_id, d.resource_scope, d.resource_kind,
-                d.target_id, d.path, d.updated_at,
+                d.target_id, d.path,
                 o.rowid AS operation_order, o.operation_json
          FROM local_drafts d
          JOIN local_draft_operations o ON o.draft_id = d.draft_id
          WHERE d.project_id = $1
            AND d.status IN ('open', 'submitted')
-         ORDER BY d.updated_at, d.draft_id, o.rowid",
+         ORDER BY d.created_at, d.draft_id, o.rowid",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -131,7 +130,6 @@ pub(super) async fn load_draft_overlays(
                 target_id: row.try_get("target_id")?,
                 path: row.try_get("path")?,
                 base_resource: None,
-                updated_at: row.try_get("updated_at")?,
                 operations: Vec::new(),
             });
         }
@@ -231,8 +229,11 @@ pub(super) fn apply_draft_overlay(
     {
         return Ok(());
     }
+    // Draft synchronization acknowledgements update metadata timestamps but
+    // do not change Effective Memory. The semantic revision is therefore
+    // derived only from stable identity plus the ordered operation payloads.
     let mut revision_hasher = Sha256::new();
-    revision_hasher.update(draft.updated_at.as_bytes());
+    revision_hasher.update(draft.draft_id.as_bytes());
     for (order, operation_json, _) in &draft.operations {
         revision_hasher.update(order.to_le_bytes());
         revision_hasher.update(operation_json.as_bytes());

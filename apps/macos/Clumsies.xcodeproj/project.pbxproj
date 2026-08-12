@@ -48,6 +48,7 @@
 		CBE5011E99A3AD250840CDE0 /* IssueBoardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12AE1A7CBFCF53A737D1A05 /* IssueBoardTests.swift */; };
 		CE8F898D125EEB55013B1E78 /* IssueBoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8417B8F08E5E969A2EE13063 /* IssueBoardView.swift */; };
 		D673EA34613D807AEEAE78AD /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B8106838C68EADB97064D6 /* main.swift */; };
+		DA5DD6775CE7487DD57F02DF /* AppBundleRuntimeLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D28D1FCAAD46366BE5157162 /* AppBundleRuntimeLocation.swift */; };
 		DC1B191092F8585B353496E6 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A465E4AAC0AE529CEBADAEBD /* WorkspaceView.swift */; };
 		DE94FB3102FA47008FF58772 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6B5BB38CBEF00120EE35E78 /* DiagnosticsView.swift */; };
 		EEF5E92DEA84381918527F18 /* SplitDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325B2E0E0E56B671C925B71F /* SplitDiffView.swift */; };
@@ -102,6 +103,7 @@
 		C6ABC405480198DD68F37918 /* JSONCoding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCoding.swift; sourceTree = "<group>"; };
 		CAB3E1C996D7A718AE933D03 /* ClumsiesIdentifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClumsiesIdentifiers.swift; sourceTree = "<group>"; };
 		D0D4802A9777F53C78323C0E /* DaemonXPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonXPCClient.swift; sourceTree = "<group>"; };
+		D28D1FCAAD46366BE5157162 /* AppBundleRuntimeLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBundleRuntimeLocation.swift; sourceTree = "<group>"; };
 		D42BE12B94090440642362FC /* Clumsies.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clumsies.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D481B8C9371F57B60C8462AB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D5E2F9ADC924309D0DF748F2 /* SharedUpdateIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUpdateIndicator.swift; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 		5D96182237E9127C563AAF8D /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				D28D1FCAAD46366BE5157162 /* AppBundleRuntimeLocation.swift */,
 				660A9B545B2648D12AC3FF32 /* AuthenticationClient.swift */,
 				CAB3E1C996D7A718AE933D03 /* ClumsiesIdentifiers.swift */,
 				2698CA8F3BB84E3519C3D54B /* DaemonBootstrapController.swift */,
@@ -268,7 +271,6 @@
 				DB6093614F96D595CDFC3760 /* Resources */,
 				46DC7C132DCC158B3EF028AE /* Frameworks */,
 				DF117124F62E83B9DE6D839B /* Embed clumsiesd */,
-				F68770F62298A788C1E24D7B /* Embed clumsies */,
 			);
 			buildRules = (
 			);
@@ -370,27 +372,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "#!/bin/sh\nset -eu\n\nif [ \"${CLUMSIES_SKIP_DAEMON_BUILD:-0}\" = \"1\" ]; then\n  exit 0\nfi\n\nrepo_root=\"$(cd \"$SRCROOT/../..\" && pwd)\"\ncd \"$repo_root\"\nunset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy\ndestination=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/clumsiesd\"\ndaemon_identifier=\"ai.clumsies.daemon\"\nmkdir -p \"$(dirname \"$destination\")\"\n\nif [ \"$CONFIGURATION\" = \"Release\" ] && [ \"${CLUMSIES_UNIVERSAL_BUILD:-0}\" = \"1\" ]; then\n  cargo build -p daemon --bin clumsiesd --release --target aarch64-apple-darwin\n  cargo build -p daemon --bin clumsiesd --release --target x86_64-apple-darwin\n  lipo -create \\\n    \"$repo_root/target/aarch64-apple-darwin/release/clumsiesd\" \\\n    \"$repo_root/target/x86_64-apple-darwin/release/clumsiesd\" \\\n    -output \"$destination\"\nelif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  cargo build -p daemon --bin clumsiesd --release\n  cp \"$repo_root/target/release/clumsiesd\" \"$destination\"\nelse\n  cargo build -p daemon --bin clumsiesd\n  cp \"$repo_root/target/debug/clumsiesd\" \"$destination\"\nfi\n\nchmod 755 \"$destination\"\n\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  codesign \\\n    --force \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --identifier \"$daemon_identifier\" \\\n    --options runtime \\\n    \"$destination\"\nelse\n  # Keep the file-keychain ACL stable across unsigned local rebuilds.\n  codesign \\\n    --force \\\n    --sign - \\\n    --identifier \"$daemon_identifier\" \\\n    --requirements \"=designated => identifier \\\"$daemon_identifier\\\"\" \\\n    \"$destination\"\nfi\n";
-		};
-		F68770F62298A788C1E24D7B /* Embed clumsies */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Embed clumsies";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/clumsies",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "#!/bin/sh\nset -eu\n\nif [ \"${CLUMSIES_SKIP_DAEMON_BUILD:-0}\" = \"1\" ]; then\n  exit 0\nfi\n\nrepo_root=\"$(cd \"$SRCROOT/../..\" && pwd)\"\ndestination=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/clumsies\"\nclient_identifier=\"ai.clumsies.cli\"\nmkdir -p \"$(dirname \"$destination\")\"\ncd \"$repo_root\"\nunset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy\n\nif [ \"$CONFIGURATION\" = \"Release\" ] && [ \"${CLUMSIES_UNIVERSAL_BUILD:-0}\" = \"1\" ]; then\n  scratch=\"$TARGET_TEMP_DIR/clumsies-client-universal\"\n  rm -rf \"$scratch\"\n  mkdir -p \"$scratch/arm64\" \"$scratch/x86_64\"\n  zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe --prefix \"$scratch/arm64\"\n  zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe --prefix \"$scratch/x86_64\"\n  lipo -create \\\n    \"$scratch/arm64/bin/clumsies\" \\\n    \"$scratch/x86_64/bin/clumsies\" \\\n    -output \"$destination\"\nelif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  zig build -Doptimize=ReleaseSafe\n  cp \"$repo_root/zig-out/bin/clumsies\" \"$destination\"\nelse\n  zig build\n  cp \"$repo_root/zig-out/bin/clumsies\" \"$destination\"\nfi\n\nchmod 755 \"$destination\"\n\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  codesign \\\n    --force \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --identifier \"$client_identifier\" \\\n    --options runtime \\\n    \"$destination\"\nelse\n  codesign \\\n    --force \\\n    --sign - \\\n    --identifier \"$client_identifier\" \\\n    \"$destination\"\nfi\n";
+			shellScript = "#!/bin/sh\nset -eu\n\nif [ \"${CLUMSIES_SKIP_DAEMON_BUILD:-0}\" = \"1\" ]; then\n  exit 0\nfi\n\nrepo_root=\"$(cd \"$SRCROOT/../..\" && pwd)\"\ncd \"$repo_root\"\nunset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy\nexport CLUMSIES_AGENT_RUNTIME_BUILD_ID=\"${CLUMSIES_AGENT_RUNTIME_BUILD_ID:-app-$(date +%s)-$$}\"\ndestination=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/clumsiesd\"\ndaemon_identifier=\"ai.clumsies.daemon\"\nmkdir -p \"$(dirname \"$destination\")\"\n\nif [ \"$CONFIGURATION\" = \"Release\" ] && [ \"${CLUMSIES_UNIVERSAL_BUILD:-0}\" = \"1\" ]; then\n  cargo build -p daemon --bin clumsiesd --release --target aarch64-apple-darwin\n  cargo build -p daemon --bin clumsiesd --release --target x86_64-apple-darwin\n  lipo -create \\\n    \"$repo_root/target/aarch64-apple-darwin/release/clumsiesd\" \\\n    \"$repo_root/target/x86_64-apple-darwin/release/clumsiesd\" \\\n    -output \"$destination\"\nelif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  cargo build -p daemon --bin clumsiesd --release\n  cp \"$repo_root/target/release/clumsiesd\" \"$destination\"\nelse\n  cargo build -p daemon --bin clumsiesd\n  cp \"$repo_root/target/debug/clumsiesd\" \"$destination\"\nfi\n\nchmod 755 \"$destination\"\n\nif [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n  codesign \\\n    --force \\\n    --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \\\n    --identifier \"$daemon_identifier\" \\\n    --options runtime \\\n    \"$destination\"\nelse\n  # Keep the file-keychain ACL stable across unsigned local rebuilds.\n  codesign \\\n    --force \\\n    --sign - \\\n    --identifier \"$daemon_identifier\" \\\n    --requirements \"=designated => identifier \\\"$daemon_identifier\\\"\" \\\n    \"$destination\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -399,6 +381,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DA5DD6775CE7487DD57F02DF /* AppBundleRuntimeLocation.swift in Sources */,
 				06CBBD4CFE8160627E3DAEAE /* AppDelegate.swift in Sources */,
 				27D27351210746ADB09517AD /* AuthenticationClient.swift in Sources */,
 				F12498C396FD62EFD4716267 /* BundlesView.swift in Sources */,

@@ -6,9 +6,9 @@ corpus. The MCP server delivers stable protocol guidance through
 
 The removed bootstrap path required a host session ID and a special
 `retrieve` call before any other memory operation. It duplicated protocol
-state across an adapter hook, an MCP session object, an attestation log, and a
-special authority resource. The current `activate`, `load`, and `store` tools
-have no compatibility dispatch for that path.
+state across an adapter hook, an MCP session object, a retired client event
+log, and a special authority resource. The current `activate`, `load`, and
+`store` tools have no compatibility dispatch for that path.
 
 The removal migration rewrites affected Commit chains with Trees that omit the
 obsolete resource, advances every dependent Ref and draft base to the rewritten

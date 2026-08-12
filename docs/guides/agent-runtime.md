@@ -4,30 +4,45 @@ This page describes the host runtime path, not the human member workflow.
 
 ## Entrypoint
 
-The current local MCP entrypoint is:
+Supported adapters register the App-bundled runtime as:
 
 ```bash
-clumsies mcp serve
+/path/to/Clumsies.app/Contents/Resources/clumsiesd mcp serve
 ```
 
-The repository must already resolve to a selected Project, the macOS daemon
-must be installed and running, and its current Project Commit generation must
-be ready. Supported adapters install the host's MCP registration and thin
-skills; they do not own a second memory cache.
+This is an adapter-managed command, not a general-purpose CLI. The repository
+must already have a daemon-owned Project binding, the resident macOS daemon must
+be running, and the matching Project Commit generation must be ready. Adapters
+also register the private lifecycle bridge:
+
+```bash
+/path/to/Clumsies.app/Contents/Resources/clumsiesd \
+  _agent issue-run-event --host codex|claude-code|opencode
+```
+
+Both modes are short-lived proxies. They are parsed before daemon
+initialization and never open local databases or start models and workers.
 
 ## Runtime path
 
 ```text
 agent host
-  -> Zig MCP stdio (`clumsies mcp serve`)
-  -> Rust daemon over macOS XPC
+  -> App-bundled Rust proxy (`clumsiesd mcp serve`)
+  -> resident Rust clumsiesd over macOS XPC
   -> Effective Memory (installed Commit + current local Draft overlay)
   -> SQLite FTS/vector index and local ONNX models
 ```
 
-MCP does not crawl the repository, read a workspace manifest, or append a
-session attestation log. The daemon is the single owner of the current local
-read and write model.
+The proxy first compares its runtime protocol revision and build identity with
+the resident daemon, then asks daemon to resolve the current directory to a
+canonical Project. Every later Agent-scoped XPC request carries that identity;
+the resident rejects a missing or mismatched marker before decoding the
+operation. This is a release-compatibility fence, not an authorization
+boundary. Unmarked `health` remains available for Desktop startup discovery,
+and the few Desktop operations that share domain handlers use reserved
+`desktop_*` method names. MCP does not crawl the repository or read a second
+cache. The resident daemon is the single owner of the current local read and
+write model.
 
 ## Model preparation
 
@@ -86,6 +101,13 @@ Adapters make a concrete host launch the MCP server and expose thin host-native
 skills. They may still manage host-specific hooks for capabilities outside the
 MCP memory contract, but those hooks must not reimplement retrieval or inject a
 second bootstrap protocol.
+
+The native daemon installer writes the exact code-signed App-bundled
+`clumsiesd` path into host configuration and its managed resolver. It does not
+copy a helper into `~/.clumsies`, consult a checkout's build output, or fall back
+to `PATH`. Updating the App therefore updates the executable used by every new
+MCP or Hook proxy; the release-identity check detects a resident that still
+needs to be restarted.
 
 Members configure and select Projects through product clients. Agents consume
 the selected Project through MCP. Keeping those roles separate prevents host

@@ -79,7 +79,7 @@ struct DaemonProjectAgentAdapterInstallRequest: Codable, Sendable {
     let projectId: String
     let workspaceRoot: String
     let adapter: ProjectAgentAdapterKind
-    let helperBinaryPath: String
+    let runtimeBinaryPath: String
     let expectedRevision: Int?
 }
 
@@ -110,6 +110,25 @@ struct DaemonProjectAgentAdapter: Codable, Identifiable, Equatable, Sendable {
 
 struct DaemonProjectAgentAdapterListResponse: Codable, Sendable {
     let items: [DaemonProjectAgentAdapter]
+}
+
+struct DaemonLegacyAgentAdapterInspectionRequest: Codable, Sendable {
+    let runtimeBinaryPath: String
+}
+
+struct DaemonLegacyAgentAdapterConflict: Codable, Equatable, Sendable {
+    let installId: String
+    let adapter: ProjectAgentAdapterKind
+    let scope: String
+    let targetRoot: String
+    let code: String
+    let message: String
+}
+
+struct DaemonLegacyAgentAdapterInspectionResponse: Codable, Equatable, Sendable {
+    let scanned: Int
+    let deferred: Int
+    let conflicts: [DaemonLegacyAgentAdapterConflict]
 }
 
 enum DaemonProjectStorageMode: String, Codable, Sendable {
@@ -221,11 +240,17 @@ struct DaemonProjectCheckoutResource: Codable, Sendable {
 
 struct DaemonHealth: Codable, Equatable, Sendable {
     let daemonVersion: String
+    let agentRuntime: AgentRuntimeIdentity
     let serverUrl: String
     let projectId: String?
     let daemonInstallationId: String
     let logDir: String
     let localDb: DaemonLocalDatabaseStatus
+}
+
+struct AgentRuntimeIdentity: Codable, Equatable, Sendable {
+    let protocolRevision: Int
+    let buildId: String
 }
 
 struct DaemonLocalDatabaseStatus: Codable, Equatable, Sendable {

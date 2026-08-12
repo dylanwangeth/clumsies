@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -38,8 +38,9 @@ pub(crate) struct DaemonInner {
     pub(crate) token_refresh: Mutex<()>,
     pub(crate) credential_recovery: Mutex<CredentialRecovery>,
     pub(crate) search_models: Arc<dyn search::models::SearchModels>,
+    pub(crate) search_model_gate: Arc<Semaphore>,
+    pub(crate) search_index_notify: Notify,
     pub(crate) search_lock: Mutex<()>,
-    pub(crate) search_index_lock: Mutex<()>,
     pub(crate) retrieval_history_lock: Mutex<()>,
     pub(crate) draft_mutation_lock: Mutex<()>,
     pub(crate) local_setup_lock: Mutex<()>,
@@ -74,6 +75,14 @@ impl DaemonState {
         prepare_directories(&config)?;
         let pool = connect_local_db(&config.local_db_path()).await?;
         migrate_local_db(&pool).await?;
+        // A Coding Agent integration spans repository files and the local
+        // ownership manifest. Recover prepared filesystem transactions before
+        // normal reconciliation. A conflict is isolated to that Adapter: the
+        // resident daemon stays available so Desktop can diagnose it and
+        // already-running Agents in unrelated repositories keep working.
+        if let Err(error) = agent_adapter::recover_pending_fs_ops(&pool).await {
+            tracing::error!("adapter filesystem recovery is pending: {error}");
+        }
         reset_memory_cache_if_required(&pool, &config.cache_dir).await?;
         recover_interrupted_operations(&pool).await?;
         retrieval_history::recover_interrupted_runs(&pool).await?;
@@ -98,8 +107,9 @@ impl DaemonState {
                 token_refresh: Mutex::new(()),
                 credential_recovery: Mutex::new(CredentialRecovery::default()),
                 search_models,
+                search_model_gate: Arc::new(Semaphore::new(1)),
+                search_index_notify: Notify::new(),
                 search_lock: Mutex::new(()),
-                search_index_lock: Mutex::new(()),
                 retrieval_history_lock: Mutex::new(()),
                 draft_mutation_lock: Mutex::new(()),
                 local_setup_lock: Mutex::new(()),
@@ -349,8 +359,14 @@ impl DaemonState {
         ensure_server_success(response).await?;
 
         let _guard = self.inner.local_setup_lock.lock().await;
+        agent_adapter::recover_pending_fs_ops_for_workspace(
+            &self.inner.pool,
+            &server_url,
+            &workspace_root,
+        )
+        .await?;
         let workspace_root = workspace_root.display().to_string();
-        let mut tx = self.inner.pool.begin().await?;
+        let mut tx = self.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
         let existing = sqlx::query(
             "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
              FROM project_bindings
@@ -426,6 +442,12 @@ impl DaemonState {
         let workspace_root = canonical_workspace_directory(&request.workspace_root)?;
         let server_url = canonical_server_url(&self.project_config().server_url)?;
         let _guard = self.inner.local_setup_lock.lock().await;
+        agent_adapter::recover_pending_fs_ops_for_workspace(
+            &self.inner.pool,
+            &server_url,
+            &workspace_root,
+        )
+        .await?;
         let workspace_root = workspace_root.display().to_string();
         let adapter_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)
@@ -471,6 +493,19 @@ impl DaemonState {
         request: DaemonProjectAgentAdapterListRequest,
     ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
         agent_adapter::list(self, request).await
+    }
+
+    pub async fn list_all_project_agent_adapters(
+        &self,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        agent_adapter::list_all(self).await
+    }
+
+    pub async fn inspect_legacy_agent_adapters(
+        &self,
+        request: DaemonLegacyAgentAdapterInspectionRequest,
+    ) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
+        agent_adapter::inspect_legacy(self, request).await
     }
 
     pub async fn install_project_agent_adapter(
@@ -591,6 +626,10 @@ impl DaemonState {
         let project_config = self.project_config();
         DaemonHealth {
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            agent_runtime: AgentRuntimeIdentity {
+                protocol_revision: agent_runtime::AGENT_RUNTIME_PROTOCOL_REVISION,
+                build_id: agent_runtime::AGENT_RUNTIME_BUILD_ID.to_owned(),
+            },
             server_url: project_config.server_url,
             project_id: project_config.project_id,
             daemon_installation_id: self.inner.daemon_installation_id.clone(),
@@ -668,18 +707,7 @@ impl DaemonState {
         &self,
         request: ActivateMemoryRequest,
     ) -> Result<ActivateMemoryResponse, DaemonError> {
-        const ACTIVATION_DEADLINE: Duration = Duration::from_secs(60);
-        match tokio::time::timeout(ACTIVATION_DEADLINE, search::activate_memory(self, request))
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(DaemonError::Search {
-                code: "activation_deadline".to_owned(),
-                message: format!(
-                    "activate exceeded the {ACTIVATION_DEADLINE:?} budget; a stage timed out and the remaining stages were skipped"
-                ),
-            }),
-        }
+        search::activate_memory(self, request).await
     }
 
     pub async fn load_memory(
@@ -1237,7 +1265,12 @@ impl DaemonState {
                 .await?
             }
         };
-        let mut tx = self.inner.pool.begin().await?;
+        // This transaction reads the current draft before writing both the
+        // operation and its index invalidation. Reserve SQLite's writer slot
+        // up front: a concurrent index-worker commit between that read and
+        // the first write would otherwise fail with BUSY_SNAPSHOT (517),
+        // which is not retried by busy_timeout.
+        let mut tx = self.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         let draft_id = resolve_local_draft(
             &mut tx,
@@ -1278,7 +1311,9 @@ impl DaemonState {
         .execute(&mut *tx)
         .await?;
 
+        search::scheduler::enqueue_project_in_tx(&mut tx, &request.project_id).await?;
         tx.commit().await?;
+        self.inner.search_index_notify.notify_one();
         self.request_sync();
 
         Ok(DaemonDraftOperationResponse {
@@ -1327,6 +1362,7 @@ impl DaemonState {
     }
 
     pub fn start_search_model_worker(&self) -> JoinHandle<()> {
+        let state = self.clone();
         let models = self.inner.search_models.clone();
         models.begin_preparation();
         tokio::spawn(async move {
@@ -1335,7 +1371,16 @@ impl DaemonState {
                 let attempt_models = models.clone();
                 let result = tokio::task::spawn_blocking(move || attempt_models.prepare()).await;
                 match result {
-                    Ok(Ok(())) => break,
+                    Ok(Ok(())) => {
+                        if let Err(error) =
+                            search::scheduler::enqueue_all_cached_projects(&state).await
+                        {
+                            tracing::warn!(
+                                "failed to schedule search indexes after model preparation: {error}"
+                            );
+                        }
+                        break;
+                    }
                     Ok(Err(error)) => {
                         tracing::warn!("search model preparation failed: {}", error.message);
                     }
@@ -1348,6 +1393,10 @@ impl DaemonState {
                 models.begin_preparation();
             }
         })
+    }
+
+    pub fn start_search_index_worker(&self) -> JoinHandle<()> {
+        search::scheduler::start_worker(self)
     }
 
     pub fn request_sync(&self) {
@@ -1541,6 +1590,19 @@ impl DaemonIpcService {
         request: DaemonProjectAgentAdapterListRequest,
     ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
         self.state.list_project_agent_adapters(request).await
+    }
+
+    pub async fn list_all_project_agent_adapters(
+        &self,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        self.state.list_all_project_agent_adapters().await
+    }
+
+    pub async fn inspect_legacy_agent_adapters(
+        &self,
+        request: DaemonLegacyAgentAdapterInspectionRequest,
+    ) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
+        self.state.inspect_legacy_agent_adapters(request).await
     }
 
     pub async fn install_project_agent_adapter(
@@ -1844,6 +1906,12 @@ impl DaemonIpcService {
             "list_project_agent_adapters" => {
                 dispatch_async!(self, request.payload, list_project_agent_adapters)
             }
+            "list_all_project_agent_adapters" => {
+                dispatch_result_async!(self, list_all_project_agent_adapters)
+            }
+            "inspect_legacy_agent_adapters" => {
+                dispatch_async!(self, request.payload, inspect_legacy_agent_adapters)
+            }
             "install_project_agent_adapter" => {
                 dispatch_async!(self, request.payload, install_project_agent_adapter)
             }
@@ -1871,8 +1939,12 @@ impl DaemonIpcService {
             "record_agent_run_event" => {
                 dispatch_async!(self, request.payload, record_agent_run_event)
             }
-            "list_issue_board" => dispatch_async!(self, request.payload, list_issue_board),
-            "get_issue_detail" => dispatch_async!(self, request.payload, get_issue_detail),
+            "list_issue_board" | "desktop_list_issue_board" => {
+                dispatch_async!(self, request.payload, list_issue_board)
+            }
+            "get_issue_detail" | "desktop_get_issue_detail" => {
+                dispatch_async!(self, request.payload, get_issue_detail)
+            }
             "get_issue" => dispatch_async!(self, request.payload, get_issue),
             "export_issue" => dispatch_async!(self, request.payload, export_issue),
             "create_issue" => dispatch_async!(self, request.payload, create_issue),
@@ -1881,7 +1953,9 @@ impl DaemonIpcService {
             "set_verification_step_completed" => {
                 dispatch_async!(self, request.payload, set_verification_step_completed)
             }
-            "unclaim_issue" => dispatch_async!(self, request.payload, unclaim_issue),
+            "unclaim_issue" | "desktop_unclaim_issue" => {
+                dispatch_async!(self, request.payload, unclaim_issue)
+            }
             "remove_issue" => dispatch_async!(self, request.payload, remove_issue),
             "start_issue_work" => {
                 dispatch_async!(self, request.payload, start_issue_work)
@@ -1931,7 +2005,7 @@ impl DaemonIpcService {
                     Err(error) => Err(error),
                 }
             }
-            "store_draft_operation" => {
+            "store_draft_operation" | "desktop_store_draft_operation" => {
                 dispatch_async!(self, request.payload, store_draft_operation)
             }
             "server_request" => dispatch_async!(self, request.payload, server_request),

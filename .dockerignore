@@ -10,8 +10,7 @@ deploy
 dev
 docs
 src
-build.zig
-build.zig.zon
+archive/
 README.md
 client_secret_*.json
 .zig-cache

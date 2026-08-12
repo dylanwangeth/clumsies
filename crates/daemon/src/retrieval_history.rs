@@ -897,6 +897,42 @@ pub(crate) async fn finish_run(
     Ok(())
 }
 
+/// Mark a retrieval deadline without waiting for the history serialization
+/// lock or persisting the (potentially large) corpus/candidate payload.
+///
+/// The activation deadline is also an API/terminal-state deadline. Running
+/// the normal completion path here could wait behind another history writer
+/// or synchronous blob I/O after the retrieval computation has already timed
+/// out, leaving the durable Run observably `running` for an unbounded period.
+pub(crate) async fn finish_deadline_run(
+    state: &DaemonState,
+    run_id: &str,
+    error_stage: &str,
+    total_us: u64,
+) -> Result<(), DaemonError> {
+    let updated = sqlx::query(
+        "UPDATE retrieval_runs
+         SET status = 'failed',
+             total_us = $2,
+             error_stage = $3,
+             error_code = 'activation_deadline',
+             error_summary = 'Activation exceeded its retrieval deadline.',
+             completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE run_id = $1 AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(u64_to_i64(total_us, "total_us")?)
+    .bind(error_stage)
+    .execute(&state.inner.pool)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(history_corrupt(format!(
+            "Retrieval Run {run_id} is missing or already terminal"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) async fn record_persistence_failure(
     state: &DaemonState,
     run_id: &str,

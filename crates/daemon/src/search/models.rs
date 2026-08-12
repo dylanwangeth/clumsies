@@ -24,6 +24,7 @@ const EMBEDDING_DIMENSIONS: usize = 384;
 const EMBEDDING_MODEL_FILE: &str = "onnx/model_qint8_avx512_vnni.onnx";
 const RERANKER_MODEL_FILE: &str = "onnx/model_quantized.onnx";
 const MAX_MODEL_INTRA_THREADS: usize = 4;
+const PASSAGE_PREFIX: &str = "passage: ";
 
 #[derive(Clone, Copy)]
 struct ModelArtifact {
@@ -114,6 +115,9 @@ pub(crate) trait SearchModels: Send + Sync {
         self.revision().map(|_| ())
     }
     fn revision(&self) -> Result<String, SearchFailure>;
+    fn embedding_revision(&self) -> Result<String, SearchFailure> {
+        self.revision()
+    }
     fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure>;
     fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure>;
     fn embed_query(&self, query: &str) -> Result<Vec<f32>, SearchFailure>;
@@ -199,9 +203,9 @@ impl FastEmbedSearchModels {
             .unwrap_or_else(|| self.cache_dir.clone())
     }
 
-    fn artifact_revision() -> String {
+    fn artifact_revision(manifests: &[ModelManifest]) -> String {
         let mut hasher = Sha256::new();
-        for manifest in MODEL_MANIFESTS {
+        for manifest in manifests {
             hasher.update(manifest.repository.as_bytes());
             hasher.update([0]);
             hasher.update(manifest.revision.as_bytes());
@@ -215,6 +219,14 @@ impl FastEmbedSearchModels {
             }
         }
         hex::encode(hasher.finalize())
+    }
+
+    fn embedding_revision_value() -> String {
+        format!(
+            "fastembed-5.17.3:{EMBEDDING_MODEL_ID}@{EMBEDDING_MODEL_REVISION}:int8:mean:l2:dim-{EMBEDDING_DIMENSIONS}:passage-prefix-{}:{}",
+            hex::encode(PASSAGE_PREFIX),
+            Self::artifact_revision(&MODEL_MANIFESTS[..1])
+        )
     }
 
     fn prepare_inner(&self) -> Result<(), SearchFailure> {
@@ -264,7 +276,7 @@ impl FastEmbedSearchModels {
             .map_err(|_| SearchFailure::model("reranker model lock is poisoned"))? = Some(reranker);
         let revision = format!(
             "fastembed-5.17.3:{EMBEDDING_MODEL_ID}@{EMBEDDING_MODEL_REVISION}:{RERANKER_MODEL_ID}@{RERANKER_MODEL_REVISION}:int8:dim-{EMBEDDING_DIMENSIONS}:l2:{}",
-            Self::artifact_revision()
+            Self::artifact_revision(MODEL_MANIFESTS)
         );
         *self
             .revision
@@ -322,6 +334,11 @@ impl SearchModels for FastEmbedSearchModels {
             .ok_or_else(|| SearchFailure::model("prepared model revision is missing"))
     }
 
+    fn embedding_revision(&self) -> Result<String, SearchFailure> {
+        self.prepare()?;
+        Ok(Self::embedding_revision_value())
+    }
+
     fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
         self.with_embedding(|model| {
             let previous_truncation = model.tokenizer.get_truncation().cloned();
@@ -355,7 +372,7 @@ impl SearchModels for FastEmbedSearchModels {
         }
         let prefixed = texts
             .iter()
-            .map(|text| format!("passage: {text}"))
+            .map(|text| format!("{PASSAGE_PREFIX}{text}"))
             .collect::<Vec<_>>();
         self.with_embedding(|model| {
             let embeddings = model.embed(&prefixed, Some(32)).map_err(|error| {
@@ -666,6 +683,18 @@ mod tests {
     #[test]
     fn model_threads_leave_capacity_for_foreground_work() {
         assert!((1..=MAX_MODEL_INTRA_THREADS).contains(&model_intra_threads()));
+    }
+
+    #[test]
+    fn embedding_revision_excludes_reranker_artifacts() {
+        let revision = FastEmbedSearchModels::embedding_revision_value();
+        assert!(revision.contains(EMBEDDING_MODEL_ID));
+        assert!(revision.contains(&format!("passage-prefix-{}", hex::encode(PASSAGE_PREFIX))));
+        assert!(!revision.contains(RERANKER_MODEL_ID));
+        assert_ne!(
+            FastEmbedSearchModels::artifact_revision(&MODEL_MANIFESTS[..1]),
+            FastEmbedSearchModels::artifact_revision(MODEL_MANIFESTS)
+        );
     }
 
     #[test]

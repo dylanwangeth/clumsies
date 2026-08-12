@@ -86,6 +86,8 @@ type _adminContract = [
 
 type DaemonSchemas = DaemonComponents["schemas"];
 type DaemonMethods = DaemonSchemas["DaemonIpcMethod"];
+type DaemonIpcRequestSchema = DaemonSchemas["DaemonIpcRequest"];
+type AgentRuntimeIdentitySchema = DaemonSchemas["AgentRuntimeIdentity"];
 type AgentRunSchema = DaemonSchemas["AgentRun"];
 type RecordAgentRunEventRequestSchema = DaemonSchemas["RecordAgentRunEventRequest"];
 type RecordAgentRunEventResponseSchema = DaemonSchemas["RecordAgentRunEventResponse"];
@@ -101,6 +103,11 @@ type IssueRemovalResponseSchema = DaemonSchemas["IssueRemovalResponse"];
 type StartIssueWorkRequestSchema = DaemonSchemas["StartIssueWorkRequest"];
 type RequestIssueClosureRequestSchema = DaemonSchemas["RequestIssueClosureRequest"];
 type IssueWorkflowMutationResponseSchema = DaemonSchemas["IssueWorkflowMutationResponse"];
+type ProjectAgentAdapterSchema = DaemonSchemas["DaemonProjectAgentAdapter"];
+type ProjectAgentAdapterListResponseSchema = DaemonSchemas["DaemonProjectAgentAdapterListResponse"];
+type LegacyAgentAdapterInspectionRequestSchema = DaemonSchemas["DaemonLegacyAgentAdapterInspectionRequest"];
+type LegacyAgentAdapterConflictSchema = DaemonSchemas["DaemonLegacyAgentAdapterConflict"];
+type LegacyAgentAdapterInspectionResponseSchema = DaemonSchemas["DaemonLegacyAgentAdapterInspectionResponse"];
 
 type _daemonContract = [
   Expect<Equals<"DaemonBootstrapStatus" extends keyof DaemonSchemas ? true : false, true>>,
@@ -130,12 +137,79 @@ type _daemonContract = [
   Expect<Equals<"StartIssueWorkRequest" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"RequestIssueClosureRequest" extends keyof DaemonSchemas ? true : false, true>>,
   Expect<Equals<"IssueWorkflowMutationResponse" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonLegacyAgentAdapterInspectionRequest" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonLegacyAgentAdapterConflict" extends keyof DaemonSchemas ? true : false, true>>,
+  Expect<Equals<"DaemonLegacyAgentAdapterInspectionResponse" extends keyof DaemonSchemas ? true : false, true>>,
+];
+
+type _daemonAgentRuntimeIdentityContract = [
+  Expect<Equals<keyof DaemonIpcRequestSchema, "method" | "payload" | "agent_runtime">>,
+  Expect<Equals<DaemonIpcRequestSchema["method"], DaemonMethods>>,
+  Expect<Equals<
+    DaemonIpcRequestSchema["agent_runtime"],
+    AgentRuntimeIdentitySchema | undefined
+  >>,
+  Expect<Equals<keyof AgentRuntimeIdentitySchema, "protocol_revision" | "build_id">>,
+  Expect<Equals<AgentRuntimeIdentitySchema["protocol_revision"], number>>,
+  Expect<Equals<AgentRuntimeIdentitySchema["build_id"], string>>,
+];
+
+type _daemonAgentAdapterMethods = [
+  Expect<Equals<
+    Extract<DaemonMethods, "list_all_project_agent_adapters">,
+    "list_all_project_agent_adapters"
+  >>,
+  Expect<Equals<
+    Extract<DaemonMethods, "inspect_legacy_agent_adapters">,
+    "inspect_legacy_agent_adapters"
+  >>,
+];
+
+type _daemonAgentAdapterInspectionContract = [
+  Expect<Equals<DaemonSchemas["ProjectAgentAdapterKind"], "codex" | "claude-code" | "opencode">>,
+  Expect<Equals<keyof LegacyAgentAdapterInspectionRequestSchema, "runtime_binary_path">>,
+  Expect<Equals<LegacyAgentAdapterInspectionRequestSchema["runtime_binary_path"], string>>,
+  Expect<Equals<
+    keyof LegacyAgentAdapterConflictSchema,
+    "install_id" | "adapter" | "scope" | "target_root" | "code" | "message"
+  >>,
+  Expect<Equals<LegacyAgentAdapterConflictSchema["install_id"], string>>,
+  Expect<Equals<
+    LegacyAgentAdapterConflictSchema["adapter"],
+    DaemonSchemas["ProjectAgentAdapterKind"]
+  >>,
+  Expect<Equals<
+    LegacyAgentAdapterConflictSchema["scope"],
+    "workspace" | "user" | "repo" | "unknown"
+  >>,
+  Expect<Equals<LegacyAgentAdapterConflictSchema["target_root"], string>>,
+  Expect<Equals<LegacyAgentAdapterConflictSchema["code"], string>>,
+  Expect<Equals<LegacyAgentAdapterConflictSchema["message"], string>>,
+  Expect<Equals<
+    keyof LegacyAgentAdapterInspectionResponseSchema,
+    "scanned" | "deferred" | "conflicts"
+  >>,
+  Expect<Equals<LegacyAgentAdapterInspectionResponseSchema["scanned"], number>>,
+  Expect<Equals<LegacyAgentAdapterInspectionResponseSchema["deferred"], number>>,
+  Expect<Equals<
+    LegacyAgentAdapterInspectionResponseSchema["conflicts"],
+    LegacyAgentAdapterConflictSchema[]
+  >>,
+  Expect<Equals<keyof ProjectAgentAdapterListResponseSchema, "items">>,
+  Expect<Equals<ProjectAgentAdapterListResponseSchema["items"], ProjectAgentAdapterSchema[]>>,
 ];
 
 type _daemonIssueRunMethods = [
   Expect<Equals<Extract<DaemonMethods, "record_agent_run_event">, "record_agent_run_event">>,
   Expect<Equals<Extract<DaemonMethods, "list_issue_board">, "list_issue_board">>,
+  Expect<Equals<Extract<DaemonMethods, "desktop_list_issue_board">, "desktop_list_issue_board">>,
   Expect<Equals<Extract<DaemonMethods, "get_issue_detail">, "get_issue_detail">>,
+  Expect<Equals<Extract<DaemonMethods, "desktop_get_issue_detail">, "desktop_get_issue_detail">>,
+  Expect<Equals<Extract<DaemonMethods, "desktop_store_draft_operation">, "desktop_store_draft_operation">>,
+  Expect<Equals<Extract<DaemonMethods, "desktop_unclaim_issue">, "desktop_unclaim_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "export_issue">, "export_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "pause_issue">, "pause_issue">>,
+  Expect<Equals<Extract<DaemonMethods, "resume_issue">, "resume_issue">>,
   Expect<Equals<Extract<DaemonMethods, "get_issue">, "get_issue">>,
   Expect<Equals<Extract<DaemonMethods, "create_issue">, "create_issue">>,
   Expect<Equals<Extract<DaemonMethods, "update_issue">, "update_issue">>,

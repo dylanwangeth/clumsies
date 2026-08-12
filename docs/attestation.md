@@ -1,101 +1,10 @@
-# Attestation
+# Archived attestation client
 
-> Legacy capability reference. Attestation and agent observability are not part
-> of the current product direction or MCP memory contract. This page remains
-> only while the old implementation is removed under the history-cleanup stage.
-> Current Codex and Claude Code adapters do not install the legacy full-prompt
-> capture hook; existing `user_prompt` rows and code below describe old logs.
+The former Zig client attestation pipeline is not part of the current Agent
+runtime or MCP contract. Its historical implementation is preserved only under
+`archive/zig-cli/`; it is not built, installed, uploaded, or exposed as an
+active product surface.
 
-## What attestation is
-
-Attestation is the structured usage signal produced when agents work through clumsies. It is how the system stops guessing about rule value.
-
-This matters because rule systems often fail in a familiar way: teams write more and more instructions, but nobody can tell which ones are actually being used. Attestation is the mechanism that turns that vague situation into evidence.
-
-Earlier architecture notes and older docs may still call this layer `Trace`. In the current codebase, the event model, local files, upload endpoints, and Server handlers have largely moved to `Attestation`.
-
-## What attestation records
-
-At a high level, attestation exists around three kinds of runtime action:
-
-| Signal | Meaning |
-| --- | --- |
-| discover | the agent looked for relevant material |
-| load | the agent pulled material into task context |
-| draft | the agent proposed a local memory change |
-
-Those signals are not equally strong. Discover is weak evidence. Load is
-stronger. Draft operations are strongest when the task explicitly changes
-memory.
-
-The current attestation model also treats session setup and user input capture as part of the runtime event stream. In other words, attestation is not only about "which rule was mentioned." It is about reconstructing enough structured runtime behavior to support useful later analysis.
-
-Attestation is not only discovery and retrieval. The local event
-model in `src/client/attestation.zig` also includes:
-
-- `setup`
-- `user_prompt`
-- `context_propose_create`
-- `context_propose_update`
-- `context_propose_rename`
-- `context_propose_delete`
-- `rule_propose_create`
-- `rule_propose_update`
-- `rule_propose_rename`
-- `rule_propose_delete`
-- `draft_discard`
-
-That matters because the local runtime records more than retrieval. It also has evidence around session setup, user input, and content change proposals.
-
-## Why hash-bound attestation matters
-
-Attestation is supposed to bind to prompt content hash, not just to a human-readable rule name.
-
-That is a hard requirement if the system wants to support:
-
-- correct historical analysis after rule edits
-- rename without losing continuity
-- meaningful cross-workspace aggregation
-
-If two versions of a rule share a name but differ in content, the system should not pretend they are the same thing analytically.
-
-## Local buffering matters
-
-Attestation is designed to be buffered locally and uploaded asynchronously rather than synchronously sent to Server on every action.
-
-That is an architectural choice, not an implementation accident. It keeps runtime work non-blocking while still letting Server become the place where deduplication, persistence, and aggregation happen.
-
-The current local files are session-scoped:
-
-```text
-~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.jsonl
-~/.clumsies/workspaces/{workspace_name}/attestation/{session_id}.cursor
-```
-
-The JSONL file stores the append-only event stream for one host-agent
-session. The cursor file stores that session's upload offset. The TUI
-background uploader can then flush pending events without blocking work.
-
-The upload path on the server side is:
-
-```text
-POST /api/attestations
-```
-
-That endpoint is the handoff between local runtime evidence and Server-side aggregation.
-
-## Attestation and refinement
-
-Attestation does not automatically rewrite rules. That boundary is important.
-
-The system uses attestation to support judgment, not to replace it. Long-unreferred constraints may deserve revision or removal. Frequently referred constraints may prove their value. But that decision still belongs to people operating the system.
-
-## The product role of attestation
-
-Attestation is not a nice-to-have analytics page sitting beside the main product. It is one of the three core pillars in the architecture:
-
-- rule lifecycle management
-- context delivery
-- observability for agent-driven development
-
-That is why attestation belongs in the main conceptual path of the docs instead of a buried appendix.
+Current lifecycle observation is the privacy-bounded daemon `AgentRun` bridge.
+It records host lifecycle identifiers for Kanban coordination and never uploads
+prompts or transcripts. See [AgentRun lifecycle](/guides/agent-run-injection).

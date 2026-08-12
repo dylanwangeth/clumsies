@@ -271,7 +271,7 @@ pub(super) async fn ensure_commit_cached(
         incremental_supported: false,
     };
     validate_commit_payload(&payload, &synthetic_state)?;
-    let mut tx = state.inner.pool.begin().await?;
+    let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
     cache_commit_payload(&mut tx, &payload).await?;
     tx.commit().await?;
     Ok(())
@@ -618,9 +618,10 @@ async fn install_ref(
             None => true,
         };
         if commit_cached && generation_ready {
-            let mut tx = state.inner.pool.begin().await?;
+            let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
             upsert_ref(&mut tx, &commit_state.reference, etag).await?;
             tx.commit().await?;
+            state.inner.search_index_notify.notify_one();
             return Ok(());
         }
 
@@ -643,7 +644,7 @@ async fn install_ref(
             })??;
         }
 
-        let mut tx = state.inner.pool.begin().await?;
+        let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let (Some(project_id), Some(expected_revision)) =
             (materialized_project_id, installed_location_revision)
         {
@@ -660,6 +661,7 @@ async fn install_ref(
         cache_commit_payload(&mut tx, &payload).await?;
         upsert_ref(&mut tx, &commit_state.reference, etag).await?;
         tx.commit().await?;
+        state.inner.search_index_notify.notify_one();
     } else {
         if let Some(project_id) = materialized_project_id {
             let storage = super::project_storage::resolve_active(state, project_id).await?;
@@ -673,9 +675,10 @@ async fn install_ref(
                 DaemonError::Server(format!("Commit materialization task failed: {error}"))
             })??;
         }
-        let mut tx = state.inner.pool.begin().await?;
+        let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
         upsert_ref(&mut tx, &commit_state.reference, etag).await?;
         tx.commit().await?;
+        state.inner.search_index_notify.notify_one();
     }
     Ok(())
 }
@@ -1049,6 +1052,12 @@ async fn upsert_ref(
             })?)
         }
     };
+    let previous_commit_id: Option<Option<String>> =
+        sqlx::query_scalar("SELECT commit_id FROM cached_refs WHERE ref_key = $1")
+            .bind(&key)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let ref_changed = previous_commit_id.as_ref() != Some(&reference.commit_id);
     sqlx::query(
         "INSERT INTO cached_refs (
             ref_key, name, scope, org_id, project_id, commit_id, etag, server_updated_at
@@ -1110,6 +1119,19 @@ async fn upsert_ref(
             .execute(&mut **tx)
             .await?;
             refresh_upstream_resource_changes(tx, "org", &reference.org_id).await?;
+        }
+    }
+    if ref_changed {
+        match reference.scope {
+            ServerCommitScope::Project => {
+                let project_id = reference.project_id.as_deref().ok_or_else(|| {
+                    DaemonError::Server("Project Ref is missing project_id".to_owned())
+                })?;
+                search::scheduler::enqueue_project_in_tx(tx, project_id).await?;
+            }
+            ServerCommitScope::Org => {
+                search::scheduler::enqueue_all_cached_projects_in_tx(tx).await?;
+            }
         }
     }
     Ok(())

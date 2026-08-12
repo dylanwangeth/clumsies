@@ -12,7 +12,7 @@ Use this part of the docs when you already understand the system shape and need 
 | which local files clumsies writes | [Runtime surfaces](/runtime) |
 | how login, token refresh, and local credential storage work | [Auth and sessions](/reference/auth) |
 | which MCP tools are part of the current implementation | [MCP](/mcp) |
-| which commands and flags exist today | [CLI reference](/guides/cli-commands) |
+| how Agent hosts start the local proxies | [Agent runtime](/guides/agent-runtime) |
 | which directories in the repository own which responsibilities | [Codebase map](/repos) |
 
 ## What belongs here

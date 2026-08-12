@@ -80,6 +80,26 @@ struct DaemonXPCClient: Sendable {
         return response.items
     }
 
+    func allProjectAgentAdapters() async throws -> [DaemonProjectAgentAdapter] {
+        let response: DaemonProjectAgentAdapterListResponse = try await call(
+            method: "list_all_project_agent_adapters",
+            payload: EmptyPayload()
+        )
+        return response.items
+    }
+
+    func inspectLegacyAgentAdapters(
+        runtimeBinaryPath: String
+    ) async throws -> DaemonLegacyAgentAdapterInspectionResponse {
+        try await call(
+            method: "inspect_legacy_agent_adapters",
+            payload: DaemonLegacyAgentAdapterInspectionRequest(
+                runtimeBinaryPath: runtimeBinaryPath
+            ),
+            timeout: 2
+        )
+    }
+
     func installProjectAgentAdapter(_ request: DaemonProjectAgentAdapterInstallRequest) async throws
         -> DaemonProjectAgentAdapter {
         try await call(method: "install_project_agent_adapter", payload: request)
@@ -147,19 +167,19 @@ struct DaemonXPCClient: Sendable {
     }
 
     func store(_ request: DaemonDraftOperationRequest) async throws -> DaemonDraftOperationResponse {
-        try await call(method: "store_draft_operation", payload: request)
+        try await call(method: "desktop_store_draft_operation", payload: request)
     }
 
     func issueBoard(_ projectId: String) async throws -> IssueBoardResponse {
         try await call(
-            method: "list_issue_board",
+            method: "desktop_list_issue_board",
             payload: IssueBoardListRequest(projectId: projectId)
         )
     }
 
     func issueDetail(projectId: String, issueNumber: Int) async throws -> IssueDetailResponse {
         try await call(
-            method: "get_issue_detail",
+            method: "desktop_get_issue_detail",
             payload: IssueDetailRequest(projectId: projectId, issueNumber: issueNumber)
         )
     }
@@ -175,7 +195,7 @@ struct DaemonXPCClient: Sendable {
     }
 
     func unclaimIssue(_ request: UnclaimIssueRequest) async throws -> IssueMutationResponse {
-        try await call(method: "unclaim_issue", payload: request)
+        try await call(method: "desktop_unclaim_issue", payload: request)
     }
 
     func removeIssue(_ request: RemoveIssueRequest) async throws -> IssueRemovalResponse {

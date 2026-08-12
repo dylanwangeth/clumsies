@@ -66,11 +66,11 @@ pub(crate) fn build_units(
         if range.is_empty() {
             continue;
         }
-        let token_offsets = models.token_offsets(&content[range.clone()])?;
+        let token_offsets = token_offsets_in_range(&whole_offsets, &range);
         let parts = if token_offsets.len() <= HARD_TOKEN_LIMIT {
             vec![(range, token_offsets.len())]
         } else {
-            split_oversized_span(content, range, models)?
+            split_oversized_span(content, range, &whole_offsets)
         };
         for (part_index, (part_range, token_count)) in parts.into_iter().enumerate() {
             units.push(make_unit(
@@ -228,8 +228,8 @@ fn parse_headings(content: &str) -> Vec<Heading> {
 fn split_oversized_span(
     content: &str,
     range: Range<usize>,
-    models: &dyn SearchModels,
-) -> Result<Vec<(Range<usize>, usize)>, SearchFailure> {
+    token_offsets: &[(usize, usize)],
+) -> Vec<(Range<usize>, usize)> {
     let slice = &content[range.clone()];
     let boundaries = markdown_block_boundaries(slice);
     let mut parts = Vec::<Range<usize>>::new();
@@ -237,7 +237,8 @@ fn split_oversized_span(
     let mut cursor = 0usize;
     for boundary in boundaries {
         let candidate = trim_range(slice, start..boundary);
-        let count = models.token_offsets(&slice[candidate.clone()])?.len();
+        let candidate = (range.start + candidate.start)..(range.start + candidate.end);
+        let count = token_offsets_in_range(token_offsets, &candidate).len();
         if count > TARGET_TOKENS && cursor > start {
             let committed = trim_range(slice, start..cursor);
             if !committed.is_empty() {
@@ -254,22 +255,30 @@ fn split_oversized_span(
 
     let mut output = Vec::new();
     for part in parts {
-        let offsets = models.token_offsets(&slice[part.clone()])?;
+        let part = (range.start + part.start)..(range.start + part.end);
+        let offsets = token_offsets_in_range(token_offsets, &part);
         if offsets.len() <= HARD_TOKEN_LIMIT {
-            output.push((
-                (range.start + part.start)..(range.start + part.end),
-                offsets.len(),
-            ));
+            output.push((part, offsets.len()));
             continue;
         }
-        for (window, count) in token_windows(&slice[part.clone()], &offsets) {
-            output.push((
-                (range.start + part.start + window.start)..(range.start + part.start + window.end),
-                count,
-            ));
+        for (window, count) in token_windows(content, part, offsets) {
+            output.push((window, count));
         }
     }
-    Ok(output)
+    output
+}
+
+fn token_offsets_in_range<'a>(
+    offsets: &'a [(usize, usize)],
+    range: &Range<usize>,
+) -> &'a [(usize, usize)] {
+    if range.is_empty() {
+        return &offsets[..0];
+    }
+    let first = offsets.partition_point(|(_, end)| *end <= range.start);
+    let remaining = &offsets[first..];
+    let count = remaining.partition_point(|(start, _)| *start < range.end);
+    &remaining[..count]
 }
 
 fn markdown_block_boundaries(content: &str) -> Vec<usize> {
@@ -292,20 +301,24 @@ fn markdown_block_boundaries(content: &str) -> Vec<usize> {
     boundaries
 }
 
-fn token_windows(content: &str, offsets: &[(usize, usize)]) -> Vec<(Range<usize>, usize)> {
+fn token_windows(
+    content: &str,
+    span: Range<usize>,
+    offsets: &[(usize, usize)],
+) -> Vec<(Range<usize>, usize)> {
     let mut windows = Vec::new();
     let mut token_start = 0usize;
     while token_start < offsets.len() {
         let token_end = (token_start + TARGET_TOKENS).min(offsets.len());
         let byte_start = if token_start == 0 {
-            0
+            span.start
         } else {
-            offsets[token_start].0
+            offsets[token_start].0.max(span.start)
         };
         let byte_end = if token_end == offsets.len() {
-            content.len()
+            span.end
         } else {
-            offsets[token_end - 1].1
+            offsets[token_end - 1].1.min(span.end)
         };
         let range = trim_range(content, byte_start..byte_end);
         if !range.is_empty() {
@@ -386,12 +399,19 @@ fn sha256(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::search::models::SearchModelRuntimeStatus;
     use crate::search::{MemoryKind, SourceScope};
 
     struct CharacterModels;
+
+    #[derive(Default)]
+    struct CountingModels {
+        tokenization_calls: AtomicUsize,
+        tokenized_bytes: AtomicUsize,
+    }
 
     impl SearchModels for CharacterModels {
         fn revision(&self) -> Result<String, SearchFailure> {
@@ -423,6 +443,39 @@ mod tests {
 
         fn status(&self) -> SearchModelRuntimeStatus {
             SearchModelRuntimeStatus::Ready
+        }
+    }
+
+    impl SearchModels for CountingModels {
+        fn revision(&self) -> Result<String, SearchFailure> {
+            Ok("counting-test".to_owned())
+        }
+
+        fn token_offsets(&self, text: &str) -> Result<Vec<(usize, usize)>, SearchFailure> {
+            self.tokenization_calls.fetch_add(1, Ordering::Relaxed);
+            self.tokenized_bytes
+                .fetch_add(text.len(), Ordering::Relaxed);
+            CharacterModels.token_offsets(text)
+        }
+
+        fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, SearchFailure> {
+            CharacterModels.embed_passages(texts)
+        }
+
+        fn embed_query(&self, query: &str) -> Result<Vec<f32>, SearchFailure> {
+            CharacterModels.embed_query(query)
+        }
+
+        fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>, SearchFailure> {
+            CharacterModels.rerank(query, documents)
+        }
+
+        fn dimensions(&self) -> usize {
+            CharacterModels.dimensions()
+        }
+
+        fn status(&self) -> SearchModelRuntimeStatus {
+            CharacterModels.status()
         }
     }
 
@@ -488,6 +541,28 @@ mod tests {
         let units = build_units(&resource(content), &CharacterModels).unwrap();
         assert!(units.iter().any(|unit| unit.unit_key.contains("/a/0/")));
         assert!(units.iter().any(|unit| unit.unit_key.contains("/a/1/")));
+    }
+
+    #[test]
+    fn many_markdown_blocks_reuse_the_resource_token_offsets() {
+        let content = (0..2_048)
+            .map(|index| format!("paragraph-{index} {}\n\n", "x".repeat(64)))
+            .collect::<String>();
+        let models = CountingModels::default();
+
+        let units = build_units(&resource(content.clone()), &models).unwrap();
+
+        assert!(units.len() > 100);
+        assert!(
+            units
+                .iter()
+                .all(|unit| unit.token_count <= HARD_TOKEN_LIMIT)
+        );
+        assert_eq!(models.tokenization_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            models.tokenized_bytes.load(Ordering::Relaxed),
+            content.len()
+        );
     }
 
     #[test]

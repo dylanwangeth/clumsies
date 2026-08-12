@@ -34,6 +34,9 @@ components:
         payload:
           type: object
           additionalProperties: true
+        agent_runtime:
+          $ref: "#/components/schemas/AgentRuntimeIdentity"
+          description: Present only for short-lived Agent protocol proxies; Desktop and other resident clients omit it.
     DaemonIpcResponse:
       type: object
       required: [ok, payload, error]
@@ -59,6 +62,8 @@ components:
         - replace_project_binding
         - remove_project_binding
         - list_project_agent_adapters
+        - list_all_project_agent_adapters
+        - inspect_legacy_agent_adapters
         - install_project_agent_adapter
         - remove_project_agent_adapter
         - sync_status
@@ -73,16 +78,22 @@ components:
         - load_memory
         - record_agent_run_event
         - list_issue_board
+        - desktop_list_issue_board
         - get_issue_detail
+        - desktop_get_issue_detail
         - get_issue
+        - export_issue
         - create_issue
         - update_issue
         - apply_issue_gate
         - set_verification_step_completed
         - unclaim_issue
+        - desktop_unclaim_issue
         - remove_issue
         - start_issue_work
         - request_issue_closure
+        - pause_issue
+        - resume_issue
         - search_index_status
         - rebuild_search_index
         - list_retrieval_runs
@@ -96,6 +107,7 @@ components:
         - list_drafts
         - get_draft
         - store_draft_operation
+        - desktop_store_draft_operation
         - server_request
     DaemonBootstrapStatus:
       type: object
@@ -277,13 +289,52 @@ components:
       properties:
         project_id:
           type: string
+    DaemonLegacyAgentAdapterInspectionRequest:
+      type: object
+      required: [runtime_binary_path]
+      properties:
+        runtime_binary_path:
+          type: string
+          description: Signed App-bundled clumsiesd Agent runtime executable.
+    DaemonLegacyAgentAdapterConflict:
+      type: object
+      required: [install_id, adapter, scope, target_root, code, message]
+      properties:
+        install_id:
+          type: string
+        adapter:
+          $ref: "#/components/schemas/ProjectAgentAdapterKind"
+        scope:
+          type: string
+          enum: [workspace, user, repo, unknown]
+        target_root:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+    DaemonLegacyAgentAdapterInspectionResponse:
+      type: object
+      description: Read-only discovery result; archived Zig installations are never adopted implicitly.
+      required: [scanned, deferred, conflicts]
+      properties:
+        scanned:
+          type: integer
+          minimum: 0
+        deferred:
+          type: integer
+          minimum: 0
+        conflicts:
+          type: array
+          items:
+            $ref: "#/components/schemas/DaemonLegacyAgentAdapterConflict"
     DaemonProjectAgentAdapterInstallRequest:
       type: object
       required:
         - project_id
         - workspace_root
         - adapter
-        - helper_binary_path
+        - runtime_binary_path
         - expected_revision
       properties:
         project_id:
@@ -292,9 +343,9 @@ components:
           type: string
         adapter:
           $ref: "#/components/schemas/ProjectAgentAdapterKind"
-        helper_binary_path:
+        runtime_binary_path:
           type: string
-          description: Signed Clumsies CLI/MCP executable embedded by the Desktop app.
+          description: Signed App-bundled clumsiesd Agent runtime executable.
         expected_revision:
           type: [integer, "null"]
           minimum: 1
@@ -1682,6 +1733,7 @@ components:
       type: object
       required:
         - daemon_version
+        - agent_runtime
         - server_url
         - project_id
         - daemon_installation_id
@@ -1690,6 +1742,8 @@ components:
       properties:
         daemon_version:
           type: string
+        agent_runtime:
+          $ref: "#/components/schemas/AgentRuntimeIdentity"
         server_url:
           type: string
         project_id:
@@ -1700,6 +1754,17 @@ components:
           type: string
         local_db:
           $ref: "#/components/schemas/LocalDbStatus"
+    AgentRuntimeIdentity:
+      type: object
+      required: [protocol_revision, build_id]
+      properties:
+        protocol_revision:
+          type: integer
+          minimum: 1
+        build_id:
+          type: string
+          minLength: 1
+          maxLength: 128
     LocalDbStatus:
       type: object
       required: [path, ready, schema_version]
@@ -2121,7 +2186,7 @@ components:
       enum: [preparing, materializing, verifying, switching, cleaning, completed, failed]
     ProjectAgentAdapterKind:
       type: string
-      enum: [codex, claude-code]
+      enum: [codex, claude-code, opencode]
     AgentRunHost:
       type: string
       enum: [codex, claude-code, zed, manual, opencode]

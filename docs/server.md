@@ -60,7 +60,7 @@ The OpenAPI sources are the canonical wire contracts:
 
 | Contract | Scope |
 | --- | --- |
-| `packages/api-contract/openapi/clumsies.public.v1.yaml` | Desktop, daemon, MCP, and CLI product API |
+| `packages/api-contract/openapi/clumsies.public.v1.yaml` | Desktop and daemon product API |
 | `packages/api-contract/openapi/clumsies.admin.v1.yaml` | Web Admin API |
 | `packages/api-contract/openapi/clumsies.daemon.v1.yaml` | local daemon IPC capability map |
 

@@ -8,45 +8,6 @@ permissions:
   contents: write
 
 jobs:
-  cli-release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Run tests
-        run: zig build test
-
-      - name: Cross-compile CLI
-        run: |
-          mkdir -p dist
-
-          zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos
-          cp zig-out/bin/clumsies dist/clumsies-darwin-arm64
-
-          zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos
-          cp zig-out/bin/clumsies dist/clumsies-darwin-x86_64
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum clumsies-* > checksums.txt
-          cat checksums.txt
-
-      - name: Stage CLI artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: clumsies-cli
-          path: dist/
-          if-no-files-found: error
-
   macos-release:
     runs-on: macos-26
     steps:
@@ -142,15 +103,9 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    needs: [cli-release, macos-release]
+    needs: [macos-release]
     runs-on: ubuntu-latest
     steps:
-      - name: Download CLI artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: clumsies-cli
-          path: dist/cli
-
       - name: Download native macOS artifacts
         uses: actions/download-artifact@v4
         with:
@@ -167,6 +122,5 @@ jobs:
               --draft \
               --generate-notes \
               --title "$GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" dist/cli/* --clobber
           gh release upload "$GITHUB_REF_NAME" dist/macos/* --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false

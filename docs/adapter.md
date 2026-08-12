@@ -1,319 +1,132 @@
 # Adapter
 
-## What Adapter is
+Adapter is the daemon-owned integration layer that makes the Clumsies Agent
+runtime usable inside Codex, Claude Code, and opencode. It installs each host's
+MCP registration, lifecycle bridge, and thin skills without creating a second
+memory or runtime implementation.
 
-Adapter is the host integration layer. It is the system layer that makes clumsies actually run inside a concrete coding agent host such as Codex or Claude Code.
+## Runtime boundary
 
-It is not Server. It is not MCP. It is not just a bundle of convenience scripts. It is the layer that installs and manages the host-side runtime surfaces required for the protocol to work reliably.
-
-## Why Adapter is a first-class layer
-
-The specs make a strong point here: MCP alone is not enough.
-
-Real agent hosts need additional runtime surfaces such as config entries, hook registration, shell glue, skills, and optional plugin or marketplace assets.
-
-If clumsies leaves that work to hand-written README instructions, install and uninstall quality immediately degrades. Adapter exists so `clumsies adapt` can own that integration path as a product surface.
-
-## The product rule
-
-The intended user-facing rule is simple: users install a clumsies adapter. They do not manually assemble a host-specific pile of config fragments.
-
-That matters because different hosts expose very different native surfaces. A plugin-centric model may fit one host well and fit another poorly. Adapter gives clumsies one stable entry point across those differences without pretending every host has the same native packaging story.
-
-## Adapter versus MCP
-
-These two layers are adjacent but different:
-
-| Layer | Job |
-| --- | --- |
-| MCP | define the agent-facing activate, load, store, and issue protocol |
-| Adapter | make the host actually launch and reinforce that protocol |
-
-MCP tells you what the runtime contract is. Adapter tells you how a specific host gets wired up so that contract becomes usable.
-
-## Codex as the reference case
-
-The Codex adapter specs describe the runtime path as centered on repo-level or user-level `.codex/` surfaces rather than on a single monolithic plugin.
-
-The important runtime pieces include `.codex/config.toml`, `.codex/hooks.json`, `.codex/hooks/*.sh`, and optional repo-local skills.
-
-This is useful for the docs because it clarifies a general design point: adapter assets are real runtime infrastructure, not decorative extras. They are part of the path that makes the protocol actually happen inside a host.
-
-In the current implementation, the Codex package renders at least these managed resources:
-
-| Resource ID | Path shape | Ownership | Purpose |
-| --- | --- | --- | --- |
-| `codex.config` | `config.toml` | shared | configure Codex runtime behavior for clumsies |
-| `codex.hooks.registry` | `hooks.json` | shared | register the currently managed host hooks |
-| `codex.hooks.resolve_binary` | `hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
-| `codex.hooks.issue_run_event` | `hooks/issue-run-event.sh` | exclusive | normalize root and subagent lifecycle events for the private daemon bridge |
-| `codex.skills.*` | `skills/...` | exclusive | install built-in and imported workflow skills |
-
-Scope changes the target root rather than the package identity:
-
-| Scope | Target root |
-| --- | --- |
-| `workspace` | `<repo>/.codex` |
-| `user` | `~/.codex` |
-
-That is why the install key includes both scope and target root. A workspace-scoped Codex install and a user-scoped Codex install are not the same managed object.
-
-## Claude Code as the second implemented case
-
-Claude Code follows the same top-level product rule but uses a different host surface layout.
-
-In the current implementation, the adapter manages at least:
-
-| Resource ID | Path shape | Ownership | Purpose |
-| --- | --- | --- | --- |
-| `claude-code.settings` | `.claude/settings.json` | shared | register hook commands |
-| `claude-code.mcp` | `.mcp.json` or user-scoped MCP file | shared | register the clumsies MCP server |
-| `claude-code.hooks.resolve_binary` | `.claude/hooks/resolve-binary.sh` | exclusive | locate the active `clumsies` binary |
-| `claude-code.hooks.session_start` | `.claude/hooks/session-start.sh` | exclusive | run bootstrap at session start |
-| `claude-code.hooks.issue_run_event` | `.claude/hooks/issue-run-event.sh` | exclusive | normalize root, subagent, session-end, and failure lifecycle events for the private daemon bridge |
-| `claude-code.skills.*` | `.claude/skills/...` | exclusive | install built-in and imported workflow skills |
-
-The point is not just that Codex and Claude Code use different file names. The point is that Adapter absorbs those host differences behind one command surface.
-
-## Issue lifecycle decision hooks
-
-Both adapters register the same core AgentRun lifecycle events:
-
-| Host event | Normalized observation |
-| --- | --- |
-| `UserPromptSubmit` | start or upsert a root AgentRun and prompt the Agent to decide whether to call `kanban.begin_work` |
-| `Stop` | prompt the root Agent to decide whether to call `kanban.request_closure`, then end the AgentRun without an inferred outcome |
-| `SubagentStart` | start or upsert a child AgentRun and retain its parent host key |
-| `SubagentStop` | end the child AgentRun without inferring Issue state or an outcome |
-| `SessionEnd` | end remaining runs for the host session with an `unknown` outcome |
-
-Claude Code additionally registers `StopFailure`, which ends the root run with
-`failed`. Its existing `SessionStart` hook remains a separate workflow-skill
-bootstrap surface and does not create an AgentRun. Codex does not register
-`StopFailure`.
-
-Claude Code root lifecycle correlation uses the common `prompt_id` field added
-in Claude Code 2.1.196. Earlier payloads are ignored fail-open; falling back to
-the session ID would incorrectly merge every turn in a session.
-
-All lifecycle events use the same private path:
+The macOS App bundle contains one signed Rust executable:
 
 ```text
-Codex or Claude Code hook JSON
-  -> managed issue-run-event.sh
-  -> clumsies _agent issue-run-event --host <host>
-  -> daemon record_agent_run_event
+Clumsies.app/Contents/Resources/clumsiesd
 ```
 
-The hook command is fail-open. It resolves the repository binding, keeps only
-bounded host IDs, run keys, parentage, normalized outcomes, and a short display
-label, then discards the raw host payload. A successful root or subagent start
-returns the current `run_id`, revision, and semantic Issue instruction as
-bounded host-native context. Prompt text is not matched to an Issue.
-Transcripts, tool payloads, assistant messages, and raw hook JSON are not sent
-to daemon.
-
-Claude Code's first root Stop returns a loop-safe `decision=block` reminder
-when `stop_hook_active=false`; it is not yet an ended run. The follow-up Stop is
-recorded and not blocked. Codex receives Stop additional context on a fail-open
-basis.
-
-Hooks observe execution. They do not close or reopen Issues. The agent-facing
-MCP `kanban` tool provides explicit `list`, `start`, and `request_closure`
-operations. Done continues to come only from the Effective Memory path.
-
-## Equivalent installation paths
-
-The Zig `clumsies adapt` package and native Project Management through the Rust
-daemon both install the lifecycle bridge. They use the same core event set and
-managed script name while preserving the host's unrelated hook handlers.
-
-For repository-scoped native installation, Codex uses
-`.codex/hooks.json` and `.codex/hooks/issue-run-event.sh`; Claude Code uses
-`.claude/settings.json` and `.claude/hooks/issue-run-event.sh`. Shared JSON
-registries are merged, while hook scripts are exclusive managed files whose
-installed hashes are checked before update or removal.
-
-During upgrade, both installers remove legacy Clumsies
-`user-prompt-submit.sh` registry handlers and stale lifecycle-handler paths only
-when previous managed content, a manifest, or a known managed-content hash
-proves ownership. Unrelated and unowned same-name commands are preserved. A
-legacy script file without such ownership proof may remain inert on disk. The
-native installer replaces or removes only the exact managed hook group; a
-user-added matcher, sibling handler, or duplicate is reported as drift and is
-left unchanged.
-
-## Skills are workflow proxies
-
-Clumsies skills should stay thin. A skill installed into Codex, Claude Code, or another host is only a host-native entry point that loads a Clumsies workflow through MCP and then follows it.
-
-That indirection is the design advantage. The workflow remains a Hub or Project resource, so the team can update the real process through the normal review flow without asking every user to hand-edit host skill files. The adapter only needs to keep the proxy stable.
-
-Workflow proxies load by the exact materialized path, such as `workflow/GEN_COMMIT_MSG.md`, rather than requiring the generated skill author to know a Server ID. The proxy calls `load` and may pass a remembered hash when it has one.
-
-## Workflow skill auto-import
-
-Workflow-backed skills are imported when the adapter is installed or updated. For workspace-scoped installs, the adapter scans the local workspace cache manifest for files under `workflow/*.md`, turns each workflow filename into a host skill name, and writes a thin skill proxy into the host's skill directory.
-
-For example, `workflow/STUDY.md` becomes a `study` skill. The generated skill does not embed the workflow body. It calls `load` with the exact `workflow/STUDY.md` path and then tells the agent to follow the loaded workflow. The same rule applies to other workflow files, such as `workflow/ERROR_PRONE.md` becoming `error-prone`.
-
-This import path runs during `clumsies adapt` or `clumsies adapt --update`. Codex has no SessionStart memory bootstrap; MCP initialization carries the protocol instructions.
-
-The import source is the synchronized local cache, not the review draft list. A newly created workflow draft may be visible through MCP tools, but it will not necessarily produce a host skill until the workflow is accepted into the cache and the adapter is updated.
-
-## Install, update, remove
-
-Adapter is also responsible for lifecycle discipline. It needs to detect available host capabilities, plan what should be installed, write only the managed resources it owns, update those resources later, and remove them cleanly.
-
-That is what turns host integration into a trustworthy product feature instead of a one-way setup script.
-
-## Current support and future targets
-
-The current implementation ships two built-in adapter packages and one plugin-based host integration:
-
-| Adapter ID | Display name | Status | Integration kind |
-| --- | --- | --- | --- |
-| `codex` | `Codex` | supported now | `clumsies adapt` installable package (hooks + skills) |
-| `claude-code` | `Claude Code` | supported now | `clumsies adapt` installable package (hooks + skills) |
-| `opencode` | `opencode` | supported now | plugin-hook integration (event plugin + daemon bridge), no adapt package |
-
-Future targets will likely include more coding-agent CLIs and agentic editors. When those land, the docs should use the official product names. Examples of current external brand names include:
-
-- `Qwen Code`
-- `Kimi Code CLI`
-- `Cursor`
-- `Windsurf`
-- `GitHub Copilot coding agent`
-
-Those are examples of host surfaces the project may care about. They are not current built-in adapters.
-
-## opencode integration (plugin-hook)
-
-opencode has no config-file-level hook surface: its config schema has no `hook` key and there is no `hooks.json`. Lifecycle observation lives in the plugin event bus. The integration therefore ships a thin TypeScript plugin instead of shell hooks, and the install/remove machinery of `clumsies adapt` is intentionally not the delivery vehicle (project focus moved to the GUI).
-
-### What is installed
-
-| Resource | Location | Role |
-| --- | --- | --- |
-| `plugin.ts` | `.opencode/plugins/` (workspace) or `~/.config/opencode/plugins/` (global) | subscribe to session/message events, forward lifecycle to the daemon bridge, inject run context into the system prompt |
-| MCP entry | `opencode.json` → `mcp.clumsies` | register the clumsies MCP server (`type: local`) |
-| skills | `.agents/skills/` (already installed by other adapters) | discovered natively by opencode, no proxy layer needed |
-
-### Event mapping
-
-opencode emits message/session events rather than prompt lifecycle events. The plugin forwards only what opencode actually emits:
-
-| opencode event | Forwarded as | Normalized observation |
-| --- | --- | --- |
-| `chat.message` (user message received) | `UserPromptSubmit` (`message_id` = root run key) | root run started |
-| `message.updated` (assistant, `time.completed` present) | `Stop` | root run ended |
-| `message.updated` (assistant, error present) | `StopFailure` | root run failed |
-| `session.deleted` | `SessionEnd` | session ended |
-
-Subagent boundaries are **not** synthesized: opencode exposes `agent`/`subtask` message parts but has no reliable part stop event, so a start-only Subagent event would leave a dangling run. Root-level started/ended pairing is complete.
-
-### Run context injection
-
-The bridge prints `hookSpecificOutput.additionalContext` (run_id, revision, semantic instructions) after a successful start event. The plugin captures that text and injects it into the system prompt via `experimental.chat.system.transform` before each LLM call — the opencode analogue of the Codex hook stdout injection.
-
-### Parity
-
-- **Lifecycle parity**: root started/ended/failed and session ended. No subagent events (not synthesized).
-- **Run context injection**: yes, via system-prompt transform.
-- **Install/update/remove lifecycle**: not a `clumsies adapt` package; the plugin is a plain file the GUI (or a user) places in the opencode plugin directory. Shared config (`opencode.json`) merge semantics are documented; the plugin itself never rewrites user configuration.
-
-## The technical design in the current implementation
-
-The current adapter system already has a concrete internal model. It is not just "run some setup scripts."
-
-### Package layer
-
-Each built-in adapter package defines:
-
-- a stable package ID
-- a display name
-- scope descriptions
-- how to resolve the target root
-- how to render runtime assets
-- how to re-render managed shared resources during update or remove
-
-That is why the built-in package definitions for Codex and Claude Code are the real authority for which resources exist.
-
-### Plan layer
-
-The planner turns a package plus scope into an explicit install plan. Each plan contains:
-
-- `agent_name`
-- `mode`
-- `install_id`
-- `scope`
-- `target_root`
-- `revision`
-- `steps`
-
-Each step records:
-
-- `resource_id`
-- `resource_kind`
-- `relative_path`
-- optional `absolute_path`
-- `ownership`
-- `action`
-- `label`
-- `content`
-- optional `managed_content`
-- `file_mode`
-
-This matters because install is not supposed to be implicit. The planner decides whether each resource is a create, update, keep, or conflict before the apply path starts mutating host files.
-
-### Resource kinds and merge behavior
-
-The current planner already distinguishes several resource kinds:
-
-| Resource kind | Typical use | Behavior |
-| --- | --- | --- |
-| `plain_file` | hook scripts, skills | exclusive file write |
-| `toml_fragment` | Codex config | shared-file TOML merge logic |
-| `json_hooks_registry` | hooks registration | shared-file JSON merge logic |
-| `json_mcp_registry` | MCP registry | shared-file JSON merge logic |
-
-That split is what lets Adapter be reversible. Shared files need merge-aware behavior. Exclusive files can be written and later removed as managed assets.
-
-### Install state
-
-Adapter install state lives under:
+launchd runs that executable as the resident daemon. Adapter pins the same
+absolute App-bundled path into every managed MCP and Hook entry and starts it in
+one of two short-lived proxy modes:
 
 ```text
-~/.clumsies/adapters/installs/{install_id}/
+clumsiesd mcp serve
+clumsiesd _agent issue-run-event --host codex|claude-code|opencode
 ```
 
-The current implementation persists at least:
+The installer requires an executable whose canonical path ends in
+`Contents/Resources/clumsiesd` and verifies its macOS code signature. It records
+the path and SHA-256 in the adapter manifest. There is no checkout build,
+`PATH`, environment-variable, or copied-helper fallback.
 
-| File | Role |
+Each proxy verifies that its Agent runtime protocol revision and build identity
+match the resident daemon before forwarding traffic over XPC. Replacing the App
+therefore updates every newly started proxy, while a resident from an older
+release is detected and must be restarted.
+
+## Managed host surfaces
+
+Adapter is installed and removed from native Project Management. The resident
+daemon requires the repository's canonical Project binding first, serializes
+local setup, and persists one revisioned adapter record per Server authority,
+workspace root, and host.
+
+| Host | MCP registration | Lifecycle integration | Thin skills |
+| --- | --- | --- | --- |
+| Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.agents/skills/activate`, `.agents/skills/ntmd` |
+| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.claude/skills/activate`, `.claude/skills/ntmd` |
+| opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` | MCP tools are used directly |
+
+Codex and Claude Code MCP entries execute the pinned binary with arguments
+`mcp`, `serve`. The opencode local MCP entry executes the equivalent command
+array. The opencode plugin embeds the same pinned path for lifecycle events.
+
+## Lifecycle bridge
+
+Codex and Claude Code register one managed `issue-run-event.sh` for the common
+event set. Claude Code additionally registers `StopFailure`. opencode maps the
+events its plugin API actually exposes.
+
+```text
+host event
+  -> managed Hook or plugin
+  -> clumsiesd _agent issue-run-event --host <host>
+  -> typed XPC record_agent_run_event
+  -> resident daemon AgentRun
+```
+
+The proxy accepts at most 1 MiB, validates the host event, and reduces it to a
+bounded allowlist of lifecycle identifiers. Raw prompts, transcripts, assistant
+messages, tool payloads, and failure bodies never enter the daemon request.
+Lifecycle observation is fail-open: an unavailable runtime or daemon must not
+prevent the Agent host from continuing.
+
+Successful root and subagent starts return bounded context containing the
+current `run_id`, revision, binding status, and semantic Kanban instructions.
+Hooks observe and remind; only an explicit `kanban` tool call changes an Issue.
+For Codex and Claude Code, the first root Stop is stored as a non-terminal
+decision probe and asks the Agent to judge whether `request_closure` is
+appropriate. A follow-up Stop ends the run. Stop itself never advances an
+Issue.
+
+See [AgentRun lifecycle](/guides/agent-run-injection) for the event mapping and
+decision semantics.
+
+## Safe install, update, and remove
+
+Adapter merges shared host configuration while treating generated scripts,
+plugins, and thin skills as exclusive managed files. Its manifest records the
+installed hash of every managed file.
+
+The App refuses to bootstrap `clumsiesd` or persist an Agent runtime path while
+macOS is running it from an App Translocation mount. Move the released App to
+`/Applications` or `~/Applications` and reopen it first; this prevents a
+temporary quarantine UUID from entering LaunchAgent and host configuration.
+
+- Install refuses to replace an unrelated MCP entry or unmanaged file.
+- Update uses the adapter record revision as an optimistic concurrency guard.
+- A prior managed runtime path can be migrated to the current App-bundled path.
+- Installations created directly by the archived Zig CLI are discovered
+  read-only and left unchanged. Missing workspaces remain pending; reachable
+  installs report an actionable review-and-reinstall warning. Inspection is
+  best-effort, has a short App-side deadline, and never blocks reconciliation
+  of daemon-owned integrations, including while signed out or offline. Their external
+  manifests are not accepted as native ownership proof.
+- Archived `repo`-scope generations are reported as unsupported. For a
+  workspace install, remove its old Clumsies MCP/Hook entries and reinstall in
+  Project settings. For a user-wide install, remove the global entries and
+  enable the integration separately for each repository; the App deliberately
+  has no global-install ownership mode.
+- Reinstalling from the App is the explicit handoff: the native installer
+  refuses foreign or drifted entries instead of silently adopting them.
+- Remove deletes only exact managed entries and files; drift becomes a conflict
+  instead of an overwrite.
+- Filesystem changes are rolled back if the adapter record cannot be committed.
+
+This keeps unrelated host configuration intact and prevents an old worktree or
+helper copy from silently taking over the Agent runtime.
+
+## Implementation map
+
+| Concern | Active path |
 | --- | --- |
-| `manifest.json` | active managed install state |
-| `wal.jsonl` | append-only install, update, and remove history |
+| Native installer, merge rules, and legacy discovery | `crates/daemon/src/agent_adapter.rs` |
+| MCP and Hook proxy modes | `crates/daemon/src/main.rs` |
+| Typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
+| Hook normalization | `crates/daemon/src/agent_runtime/hook.rs` |
+| Codex and Claude Code Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| opencode lifecycle plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
-The install manifest carries:
-
-- `install_id`
-- `adapter_id`
-- `target_agent`
-- `scope`
-- `target_root`
-- `status`
-- `active_revision`
-- `managed_resources`
-
-This is the reason remove can be conservative. Adapter does not have to guess what it wrote last time.
-
-### Conflict handling
-
-The planner can return a conflict instead of a plan. In the current implementation, conflicts are raised when:
-
-- an active install already exists and the user did not ask for update
-- no active install exists for an update request
-- a shared file cannot be merged safely
-- an existing unmanaged file already occupies a managed path with different content
-
-That is a real product boundary. Adapter is designed to stop on ambiguous host state rather than silently overwrite it.
+The retired Zig adapter implementation is historical source under
+`archive/zig-cli/`; it is not executed as an installation or compatibility
+path. The native daemon contains only a bounded, read-only manifest discovery
+pass; it never runs code from the archive or treats archived manifests as an
+ownership database.

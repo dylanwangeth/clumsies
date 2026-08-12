@@ -50,6 +50,13 @@ struct WorkspaceSnapshot: Sendable {
     let bundles: [PersonalBundle]
     let reviews: [ReviewRecord]
     let runtime: RuntimeState
+    let legacyAgentAdapterConflicts: [DaemonLegacyAgentAdapterConflict]
+    let legacyAgentAdapterInspectionWarning: String?
+}
+
+struct LocalAgentAdapterReconciliationResult: Equatable, Sendable {
+    let conflicts: [DaemonLegacyAgentAdapterConflict]
+    let inspectionWarning: String?
 }
 
 enum WorkspaceLoadError: LocalizedError, Sendable {
@@ -92,7 +99,7 @@ enum ReviewRequestError: LocalizedError, Sendable {
 
 enum ProjectSetupError: LocalizedError, Sendable {
     case noRepositories
-    case bundledHelperMissing
+    case bundledAgentRuntimeMissing
     case bundleNotFound
     case bundleContainsUnavailableMemory
 
@@ -100,8 +107,8 @@ enum ProjectSetupError: LocalizedError, Sendable {
         switch self {
         case .noRepositories:
             "Choose at least one local repository."
-        case .bundledHelperMissing:
-            "The Clumsies MCP executable is missing from this app build."
+        case .bundledAgentRuntimeMissing:
+            "The clumsiesd Agent runtime is missing from this app build."
         case .bundleNotFound:
             "The selected Bundle is no longer available."
         case .bundleContainsUnavailableMemory:
@@ -159,6 +166,8 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var reviews: [ReviewRecord] = []
     @Published private(set) var runtime: RuntimeState?
     @Published private(set) var syncStatusAvailable = true
+    @Published private(set) var legacyAgentAdapterConflicts: [DaemonLegacyAgentAdapterConflict] = []
+    @Published private(set) var legacyAgentAdapterInspectionWarning: String?
 
     @Published var activeProjectId: String?
     @Published var selectedSection: WorkspaceSection = .hub
@@ -329,13 +338,18 @@ final class WorkspaceStore: ObservableObject {
                 daemon: daemon,
                 bootstrap: bootstrap,
                 server: server
-            ).load()
+            ).load { [weak self] result in
+                self?.applyLocalAgentAdapterResult(result)
+            }
             apply(snapshot)
             phase = .ready
         } catch WorkspaceLoadError.authenticationRequired {
             phase = .authenticationRequired
         } catch {
-            phase = .failed(error.localizedDescription)
+            let messages = [error.localizedDescription, errorMessage]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            phase = .failed(messages.joined(separator: "\n\n"))
         }
     }
 
@@ -406,7 +420,7 @@ final class WorkspaceStore: ObservableObject {
             )
         }
         if !adapters.isEmpty {
-            let helperBinaryPath = try bundledHelperBinaryPath()
+            let agentRuntimePath = try bundledAgentRuntimePath()
             for repositoryPath in repositoryPaths {
                 for adapter in adapters.sorted(by: { $0.rawValue < $1.rawValue }) {
                     _ = try await daemon.installProjectAgentAdapter(
@@ -414,7 +428,7 @@ final class WorkspaceStore: ObservableObject {
                             projectId: created.id,
                             workspaceRoot: repositoryPath,
                             adapter: adapter,
-                            helperBinaryPath: helperBinaryPath,
+                            runtimeBinaryPath: agentRuntimePath,
                             expectedRevision: nil
                         )
                     )
@@ -522,7 +536,7 @@ final class WorkspaceStore: ObservableObject {
                     projectId: projectId,
                     workspaceRoot: workspaceRoot,
                     adapter: adapter,
-                    helperBinaryPath: try bundledHelperBinaryPath(),
+                    runtimeBinaryPath: try bundledAgentRuntimePath(),
                     expectedRevision: current?.revision
                 )
             )
@@ -1559,6 +1573,10 @@ final class WorkspaceStore: ObservableObject {
         bundles = snapshot.bundles
         reviews = snapshot.reviews
         runtime = snapshot.runtime
+        applyLocalAgentAdapterResult(.init(
+            conflicts: snapshot.legacyAgentAdapterConflicts,
+            inspectionWarning: snapshot.legacyAgentAdapterInspectionWarning
+        ))
         syncStatusAvailable = true
         selectedBundleId = selectedBundleId ?? bundles.first?.id
         selectedReviewId = selectedReviewId ?? reviews.first?.id
@@ -1569,6 +1587,30 @@ final class WorkspaceStore: ObservableObject {
             activeTabId = nil
             selectedItemId = nil
         }
+    }
+
+    private func applyLocalAgentAdapterResult(_ result: LocalAgentAdapterReconciliationResult) {
+        legacyAgentAdapterConflicts = result.conflicts
+        legacyAgentAdapterInspectionWarning = result.inspectionWarning
+        errorMessage = Self.localAgentAdapterWarning(result)
+    }
+
+    static func localAgentAdapterWarning(
+        _ result: LocalAgentAdapterReconciliationResult
+    ) -> String? {
+        var messages: [String] = []
+        if let inspectionWarning = result.inspectionWarning {
+            messages.append(inspectionWarning)
+        }
+        let visible = result.conflicts.prefix(3).map { conflict in
+            let adapter = conflict.adapter == .claudeCode ? "Claude Code" : conflict.adapter.rawValue
+            return "\(adapter) \(conflict.scope) integration at \(conflict.targetRoot): \(conflict.message)"
+        }
+        messages.append(contentsOf: visible)
+        if result.conflicts.count > visible.count {
+            messages.append("\(result.conflicts.count - visible.count) more legacy integrations need review.")
+        }
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
     }
 
     private func refreshDraft(_ draftId: String) async throws {
@@ -1778,10 +1820,11 @@ final class WorkspaceStore: ObservableObject {
         .sorted()
     }
 
-    private func bundledHelperBinaryPath() throws -> String {
-        guard let path = Bundle.main.resourceURL?.appending(path: "clumsies").path,
+    private func bundledAgentRuntimePath() throws -> String {
+        try AppBundleRuntimeLocation.requireStable(Bundle.main.bundleURL)
+        guard let path = Bundle.main.resourceURL?.appending(path: "clumsiesd").path,
               FileManager.default.isExecutableFile(atPath: path) else {
-            throw ProjectSetupError.bundledHelperMissing
+            throw ProjectSetupError.bundledAgentRuntimeMissing
         }
         return path
     }
@@ -1838,15 +1881,29 @@ struct WorkspaceLoader: Sendable {
     let bootstrap: DaemonBootstrapController
     let server: ServerClient
 
-    func load() async throws -> WorkspaceSnapshot {
+    func load(
+        onLocalAgentAdapters: @MainActor @Sendable (LocalAgentAdapterReconciliationResult) async
+            -> Void = { _ in }
+    ) async throws -> WorkspaceSnapshot {
         server.resetDataSource()
         let health = try await ensureDaemon()
-        let config = try await daemon.projectConfig()
-        guard config.hasAccessToken && config.hasRefreshToken else {
-            throw WorkspaceLoadError.authenticationRequired
-        }
-        _ = try? await daemon.retrySync()
-        let me: CurrentUserResponse = try await server.get("/api/v1/me")
+        let (config, me, localAgentAdapters) = try await Self.loadAuthenticatedWorkspaceIdentity(
+            reconcileLocalAgentAdapters: {
+                try await reconcileInstalledAgentAdapters()
+            },
+            projectConfig: {
+                try await daemon.projectConfig()
+            },
+            retrySync: {
+                _ = try? await daemon.retrySync()
+            },
+            currentUser: {
+                try await server.get("/api/v1/me")
+            },
+            onLocalAgentAdapters: { result in
+                await onLocalAgentAdapters(result)
+            }
+        )
         let activeProjectId = configuredProject(config, me: me)
         if let activeProjectId, config.projectId != activeProjectId {
             _ = try await daemon.selectProject(activeProjectId)
@@ -1935,7 +1992,9 @@ struct WorkspaceLoader: Sendable {
                 sync: syncStatus,
                 mcp: mcpStatus,
                 serverDataSource: server.dataSource
-            )
+            ),
+            legacyAgentAdapterConflicts: localAgentAdapters.conflicts,
+            legacyAgentAdapterInspectionWarning: localAgentAdapters.inspectionWarning
         )
     }
 
@@ -2026,6 +2085,97 @@ struct WorkspaceLoader: Sendable {
         return try await readiness.waitForHealth { timeout in
             try await daemon.health(timeout: timeout)
         }
+    }
+
+    /// Move every daemon-owned integration to the runtime embedded in the
+    /// currently running App before authentication or Server access. Adapter
+    /// files deliberately point at the App bundle, so an App update must
+    /// reconcile existing installations even while the user is signed out or
+    /// the Hub is unreachable.
+    private func reconcileInstalledAgentAdapters() async throws
+        -> LocalAgentAdapterReconciliationResult {
+        let runtimePath = try Self.bundledAgentRuntimePath()
+        // Daemon-owned integrations are the safety-critical cutover and must
+        // never wait on advisory inspection of the archived external store.
+        let installed = try await daemon.allProjectAgentAdapters()
+        let requests = Self.agentAdapterReconciliationPlan(
+            installed: installed,
+            runtimePath: runtimePath,
+            workspaceExists: { FileManager.default.fileExists(atPath: $0) }
+        )
+        for request in requests {
+            _ = try await daemon.installProjectAgentAdapter(request)
+        }
+        do {
+            let legacyInspection = try await daemon.inspectLegacyAgentAdapters(
+                runtimeBinaryPath: runtimePath
+            )
+            return .init(conflicts: legacyInspection.conflicts, inspectionWarning: nil)
+        } catch {
+            return .init(
+                conflicts: [],
+                inspectionWarning: "Clumsies updated its managed integrations, but could not inspect the archived Zig CLI integration store. Review any old global or repository MCP and hook entries manually. \(error.localizedDescription)"
+            )
+        }
+    }
+
+    static func loadAuthenticatedWorkspaceIdentity(
+        reconcileLocalAgentAdapters: () async throws
+            -> LocalAgentAdapterReconciliationResult,
+        projectConfig: () async throws -> DaemonProjectConfig,
+        retrySync: () async -> Void,
+        currentUser: () async throws -> CurrentUserResponse,
+        onLocalAgentAdapters: @MainActor @Sendable (LocalAgentAdapterReconciliationResult) async
+            -> Void = { _ in }
+    ) async throws -> (
+        DaemonProjectConfig,
+        CurrentUserResponse,
+        LocalAgentAdapterReconciliationResult
+    ) {
+        let localAgentAdapters = try await reconcileLocalAgentAdapters()
+        await onLocalAgentAdapters(localAgentAdapters)
+        let config = try await projectConfig()
+        guard config.hasAccessToken && config.hasRefreshToken else {
+            throw WorkspaceLoadError.authenticationRequired
+        }
+        await retrySync()
+        return (config, try await currentUser(), localAgentAdapters)
+    }
+
+    static func agentAdapterReconciliationPlan(
+        installed: [DaemonProjectAgentAdapter],
+        runtimePath: String,
+        workspaceExists: (String) -> Bool
+    ) -> [DaemonProjectAgentAdapterInstallRequest] {
+        installed
+            .filter { workspaceExists($0.workspaceRoot) }
+            .sorted {
+                if $0.workspaceRoot != $1.workspaceRoot {
+                    return $0.workspaceRoot < $1.workspaceRoot
+                }
+                return $0.adapter.rawValue < $1.adapter.rawValue
+            }
+            .map {
+                .init(
+                    projectId: $0.projectId,
+                    workspaceRoot: $0.workspaceRoot,
+                    adapter: $0.adapter,
+                    runtimeBinaryPath: runtimePath,
+                    expectedRevision: $0.revision
+                )
+            }
+    }
+
+    static func bundledAgentRuntimePath(
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        try AppBundleRuntimeLocation.requireStable(bundle.bundleURL)
+        guard let path = bundle.resourceURL?.appending(path: "clumsiesd").path,
+              fileManager.isExecutableFile(atPath: path) else {
+            throw ProjectSetupError.bundledAgentRuntimeMissing
+        }
+        return path
     }
 
     private func configuredProject(_ config: DaemonProjectConfig, me: CurrentUserResponse) -> String? {
