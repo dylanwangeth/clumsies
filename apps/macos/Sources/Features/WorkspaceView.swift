@@ -103,7 +103,7 @@ struct WorkspaceView: View {
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
     @StateObject private var issueBoardModel: IssueBoardModel
-    @State private var reviewStatusFilter = "open"
+    @State private var reviewStatusFilter: ReviewStatusFilter = .open
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
@@ -644,21 +644,25 @@ struct WorkspaceView: View {
     private var navigationToolbarContent: some ToolbarContent {
         switch store.selectedSection {
         case .hub, .local:
-            ToolbarItem {
-                HStack(spacing: 4) {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .foregroundStyle(.secondary)
-                    Picker("Memory Type", selection: $store.selectedKind) {
-                        ForEach(MemoryKind.allCases) { kind in
+            ToolbarItem(placement: .navigation) {
+                ToolbarFilterMenu(selectionTitle: store.selectedKind.title) {
+                    ForEach(MemoryKind.allCases) { kind in
+                        Toggle(
+                            isOn: Binding(
+                                get: { store.selectedKind == kind },
+                                set: { isSelected in
+                                    guard isSelected else { return }
+                                    store.selectedKind = kind
+                                }
+                            )
+                        ) {
                             Label(kind.title, systemImage: kind.symbol)
-                                .tag(kind)
                         }
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .help("Memory Type: \(store.selectedKind.title)")
-                    .accessibilityLabel("Memory Type")
                 }
+                .help("Memory Type: \(store.selectedKind.title)")
+                .accessibilityLabel("Memory Type Filter")
+                .accessibilityValue(store.selectedKind.title)
             }
 
             if store.selectedSection == .local {
@@ -688,17 +692,11 @@ struct WorkspaceView: View {
                 EmptyView()
             }
         case .reviews:
-            ToolbarItem {
-                Picker("Status", selection: $reviewStatusFilter) {
-                    Text("Open").tag("open")
-                    Text("Approved").tag("approved")
-                    Text("Rejected").tag("rejected")
-                    Text("Merged").tag("merged")
-                    Text("All").tag("all")
-                }
-                .labelsHidden()
-                .frame(width: 110)
-                .help("Review Status")
+            ToolbarItem(placement: .navigation) {
+                ReviewStatusFilterControl(
+                    reviews: store.reviews,
+                    selection: $reviewStatusFilter
+                )
             }
         }
     }
@@ -755,9 +753,7 @@ struct WorkspaceView: View {
     }
 
     private var filteredReviews: [ReviewRecord] {
-        reviewStatusFilter == "all"
-            ? store.reviews
-            : store.reviews.filter { $0.status == reviewStatusFilter }
+        store.reviews.filter(reviewStatusFilter.matches)
     }
 
     private var searchResults: [SearchEntry] {
@@ -846,7 +842,10 @@ private struct IssueProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        Menu {
+        ToolbarFilterMenu(
+            selectionTitle: store.activeProject?.name ?? "Select Project",
+            isLoading: store.loadingProjectId != nil
+        ) {
             if store.projects.isEmpty {
                 Button("No Projects") {}
                     .disabled(true)
@@ -865,21 +864,7 @@ private struct IssueProjectFilter: View {
                     .disabled(store.loadingProjectId != nil)
                 }
             }
-        } label: {
-            HStack(spacing: 6) {
-                if store.loadingProjectId == nil {
-                    Image(systemName: "line.3.horizontal.decrease")
-                } else {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-                Text(store.activeProject?.name ?? "Select Project")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 180, alignment: .leading)
-            }
         }
-        .frame(maxWidth: 220, alignment: .leading)
         .help("Filter Kanban by Project")
         .accessibilityLabel("Project Filter")
         .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
