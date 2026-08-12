@@ -5,62 +5,38 @@
 ## Review Priorities
 
 **CRITICAL (Block merge)**
-- Memory safety: missing `defer` for allocations, use-after-free from parsed slices pointing into freed buffers, uninitialized memory
-- Security: path traversal (unsanitized server-provided paths joined with `fs.path.join`), injection (manual string formatting of JSON/TOML/URLs without escaping), exposed secrets
-- Data loss: silent `catch {}` on write operations that should propagate errors
+- Security: path traversal, unsafe command construction, unbounded input, exposed secrets, or raw Agent Hook payload persistence
+- Data loss: ignored write/transaction errors, incomplete rollback, or unsafe cross-database publication
+- Runtime authority drift: duplicated MCP/Hook validation, a proxy that opens daemon state directly, or an Adapter fallback to a retired executable
 
 **IMPORTANT (Requires discussion)**
-- Missing test coverage for new functions (every new module should have inline tests)
-- Resource ownership unclear (who frees an allocated return value?)
+- Missing test coverage for new behavior and failure paths
+- Lock ordering, cancellation, blocking work, and transaction ownership are unclear
 - Cross-platform correctness (HOME vs USERPROFILE, path separators, build target vs host OS)
 
 **SUGGESTION (Non-blocking)**
 - Naming clarity, code simplification
 
-## Zig 0.16 Conventions
+## Active runtime conventions
 
-### Style
-- Functions: camelCase. Types/Structs: PascalCase. Constants: SCREAMING_SNAKE_CASE. Files: snake_case
-- `zig fmt` enforced; `zig build && zig build test` must pass before merge
-- Comments: English only, no decorative separators. Prefer `try` over manual error handling
+- `cargo fmt --all --check`, `cargo test --workspace`, and daemon clippy gates must pass.
+- The resident daemon is the only owner of SQLite, model state, and background workers.
+- `clumsiesd mcp serve` and `_agent` modes are short-lived stdio/Hook proxies; they use typed XPC and must not construct `DaemonState`.
+- MCP schemas, argument validation, and domain conversion live in Rust. Do not add an untyped JSON tunnel.
+- Proxy stdout is protocol-only. Diagnostics go to bounded, privacy-safe logging.
+- Agent Hook normalization must discard prompt, transcript, assistant, and tool payloads before IPC.
+- Adapter entries must point to the signed bundled `clumsiesd`; no PATH, worktree build, or archived CLI fallback is allowed.
 
-### Memory Management
-Every allocation must have a corresponding free:
+## Archived Zig source
 
-- `getEnvVarOwned()`, `path.join()`, `allocPrint()` — must `defer allocator.free()`
-- `parseFromSlice()` — must `defer parsed.deinit()`; dupe fields before returning
-- `toOwnedSlice()` — caller must free or provide `deinit()`
-- Use `errdefer` for error-path-only cleanup
-
-Slices pointing into a buffer with `defer deinit()` become dangling after return. Dupe needed fields first.
-
-### Deprecated APIs (0.16)
-Flag any use of these:
-
-- `std.io.getStdOut().writer()` — use `File.Writer.init(File.stdout(), &buf)` + `.interface`
-- `std.json.stringifyAlloc` — does not exist; use `std.json.Stringify.valueAlloc()`
-- `ArrayList(T).init(allocator)` — use `var list: ArrayList(T) = .empty;`
-- `GeneralPurposeAllocator` — use `std.heap.DebugAllocator`
-- `file.writeAll()` / `file.readToEndAlloc()` — use `File.Writer` / `File.Reader`
-- `callconv(.C)` — use lowercase `callconv(.c)`
-
-### Serialization Safety
-- Never build JSON with `std.fmt.allocPrint("{s}")` — use `std.json.Stringify.valueAlloc()` with a typed struct
-- Never build TOML strings by raw concatenation — escape `"`, `\`, `\n`, `\r`, `\t`
-- Never interpolate values into URL query strings without percent-encoding
-- Never join file paths with server-provided names without validating against `..` traversal and absolute paths
-
-### Error Handling
-- `catch {}` only for best-effort cleanup; `makeDirAbsolute` should check `error.PathAlreadyExists`
-- Allocation errors must propagate, not be swallowed
-
-### Build System
-- Platform flags must use build **target** OS (`target.result.os.tag`), not host (`builtin.os.tag`)
-- Test modules must have the same imports and framework links as the main module
+`archive/zig-cli/` is historical, intentionally outside active build, CI,
+release, packaging, and installation paths. Do not fix, import, or reuse code
+from it as an active compatibility layer. Restoration requires the explicit
+migration described in its README.
 
 ## Compatibility
 - No backward compat layers or deprecated wrappers; modify interfaces directly; delete unused code
 
 ## Testing
 - E2E tests must isolate HOME to a temp directory with cleanup trap
-- Inline tests use `std.testing.allocator` (detects leaks); new utility functions need tests for valid and invalid inputs
+- Tests must not mutate the installed App, daemon, LaunchAgent, Adapter config, or user database unless the test explicitly owns and restores that environment

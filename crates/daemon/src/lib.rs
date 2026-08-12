@@ -3,6 +3,7 @@ use std::env;
 use std::path::PathBuf;
 
 mod agent_adapter;
+pub mod agent_runtime;
 mod commit_sync;
 pub mod config;
 mod credentials;
@@ -19,10 +20,11 @@ mod util;
 mod work_tracking;
 
 pub use agent_adapter::{
-    DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
-    DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
-    DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
-    ProjectAgentAdapterKind,
+    DaemonLegacyAgentAdapterConflict, DaemonLegacyAgentAdapterInspectionRequest,
+    DaemonLegacyAgentAdapterInspectionResponse, DaemonProjectAgentAdapter,
+    DaemonProjectAgentAdapterInstallRequest, DaemonProjectAgentAdapterListRequest,
+    DaemonProjectAgentAdapterListResponse, DaemonProjectAgentAdapterRemoveRequest,
+    DaemonProjectAgentAdapterRemoveResponse, ProjectAgentAdapterKind,
 };
 pub use commit_sync::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,
@@ -85,7 +87,7 @@ pub(crate) use types::ProjectConfigReadiness;
 pub(crate) use types::ServerTokenRefreshResponse;
 pub(crate) use types::project_binding_from_row;
 pub use types::{
-    ApiError, DaemonBootstrapStatus, DaemonDraftContent, DaemonDraftDetail,
+    AgentRuntimeIdentity, ApiError, DaemonBootstrapStatus, DaemonDraftContent, DaemonDraftDetail,
     DaemonDraftDetailRequest, DaemonDraftFreshness, DaemonDraftListQuery, DaemonDraftListResponse,
     DaemonDraftOperation, DaemonDraftOperationRecordSource, DaemonDraftOperationRequest,
     DaemonDraftOperationResponse, DaemonDraftOperationSource, DaemonDraftReconciliationStatus,

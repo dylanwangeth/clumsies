@@ -621,7 +621,12 @@ pub(super) async fn clear_project_cache(
         .bind(&request.project_id)
         .execute(&mut *tx)
         .await?;
+    // Invalidate any build that loaded the Project before this destructive
+    // clear. Its publish CAS must observe a newer desired sequence and refuse
+    // to restore the removed search head.
+    super::search::scheduler::enqueue_project_in_tx(&mut tx, &request.project_id).await?;
     tx.commit().await?;
+    state.inner.search_index_notify.notify_one();
     drop(_storage);
     drop(_search);
     drop(_sync);
@@ -879,7 +884,6 @@ fn spawn_move_worker(state: DaemonState, move_id: String) {
 
 async fn run_move(state: &DaemonState, move_id: &str) -> Result<(), DaemonError> {
     let _sync = state.inner.sync_lock.lock().await;
-    let _search = state.inner.search_lock.lock().await;
     let move_row = load_move_row(&state.inner.pool, move_id).await?;
     if move_row.state.is_terminal() {
         return Ok(());
@@ -887,6 +891,13 @@ async fn run_move(state: &DaemonState, move_id: &str) -> Result<(), DaemonError>
 
     if move_row.state == DaemonProjectStorageMoveState::Cleaning {
         let _storage = state.inner.storage_access.write().await;
+        // `switch_location` commits the active location and the cleaning
+        // phase together. A crash can therefore happen before the normal
+        // path mirrors the copied project-index head and schedules a build.
+        // Reconcile both durable search records before deleting the source so
+        // restart recovery cannot leave the central head on the old location.
+        super::search::publish_project_index_head(state, &move_row.project_id).await?;
+        super::search::scheduler::enqueue_project(state, &move_row.project_id).await?;
         let _security_scopes = match validate_move_paths(&move_row, false) {
             Ok(scopes) => scopes,
             Err(error) => {
@@ -947,8 +958,33 @@ async fn run_move(state: &DaemonState, move_id: &str) -> Result<(), DaemonError>
                 format!("Project generation copy task failed: {error}"),
             )
         })??;
+    let source_search = Path::new(&move_row.source_managed_root_path).join("search/index.sqlite");
     let staged_search = staging.join("search/index.sqlite");
-    let staged_effective_hash =
+    let staged_search_parent = staged_search
+        .parent()
+        .expect("staged search index has a parent");
+    ensure_private_directory(staged_search_parent)?;
+    {
+        let _storage_snapshot = state.inner.storage_access.write().await;
+        if source_search.exists() {
+            let source_pool = super::search::index::connect_project_index(&source_search).await?;
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&source_pool)
+                .await?;
+            source_pool.close().await;
+            std::fs::copy(&source_search, &staged_search).map_err(|error| {
+                storage_error(
+                    "storage_verification_failed",
+                    format!(
+                        "Failed to copy search index from {} to {}: {error}",
+                        source_search.display(),
+                        staged_search.display()
+                    ),
+                )
+            })?;
+        }
+    }
+    let mut staged_effective_hash =
         super::search::materialize_project_index_at(state, &move_row.project_id, &staged_search)
             .await?;
 
@@ -999,6 +1035,39 @@ async fn run_move(state: &DaemonState, move_id: &str) -> Result<(), DaemonError>
     })?;
 
     let _storage = state.inner.storage_access.write().await;
+    // The background index worker may have published a newer head after the
+    // optimistic snapshot above. Refresh and re-verify while holding the
+    // storage write barrier so the destination cannot be promoted with an
+    // obsolete (or newly missing) search database.
+    if source_search.exists() {
+        let source_pool = super::search::index::connect_project_index(&source_search).await?;
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&source_pool)
+            .await?;
+        source_pool.close().await;
+        std::fs::copy(&source_search, &staged_search).map_err(|error| {
+            storage_error(
+                "storage_verification_failed",
+                format!(
+                    "Failed to refresh search index snapshot from {} to {}: {error}",
+                    source_search.display(),
+                    staged_search.display()
+                ),
+            )
+        })?;
+    } else {
+        remove_if_exists(&staged_search)?;
+    }
+    staged_effective_hash =
+        super::search::materialize_project_index_at(state, &move_row.project_id, &staged_search)
+            .await?;
+    super::search::verify_project_index_at(
+        &move_row.project_id,
+        &staged_search,
+        staged_effective_hash.as_deref(),
+    )
+    .await?;
+    secure_managed_tree(&staging)?;
     update_move_state(
         &state.inner.pool,
         move_id,
@@ -1008,6 +1077,7 @@ async fn run_move(state: &DaemonState, move_id: &str) -> Result<(), DaemonError>
     promote_staging(&staging, Path::new(&move_row.destination_managed_root_path))?;
     switch_location(state, &move_row).await?;
     super::search::publish_project_index_head(state, &move_row.project_id).await?;
+    super::search::scheduler::enqueue_project(state, &move_row.project_id).await?;
 
     finish_cleanup(&state.inner.pool, move_id, &move_row).await?;
     Ok(())
@@ -1032,7 +1102,7 @@ async fn switch_location(
     state: &DaemonState,
     move_row: &StorageMoveRow,
 ) -> Result<(), DaemonError> {
-    let mut tx = state.inner.pool.begin().await?;
+    let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;
     let current_revision: Option<i64> = sqlx::query_scalar(
         "SELECT location_revision FROM project_storage_locations
          WHERE authority_key = $1 AND project_id = $2",

@@ -70,7 +70,7 @@ export default withMermaid(
             { text: "Deployment", link: "/guides/deploy-for-an-org" },
             { text: "Member workflow", link: "/guides/how-to-use-clumsies" },
             { text: "Agent runtime", link: "/guides/agent-runtime" },
-            { text: "CLI reference", link: "/guides/cli-commands" }
+            { text: "AgentRun lifecycle", link: "/guides/agent-run-injection" }
           ]
         },
         {
@@ -80,10 +80,8 @@ export default withMermaid(
             {
               text: "Core model",
               items: [
-                { text: "Hub", link: "/hub" },
-                { text: "Artifact", link: "/artifact" },
-                { text: "Workspace", link: "/workspace" },
-                { text: "Attestation", link: "/attestation" }
+                { text: "Hub", link: "/artifact" },
+                { text: "Project", link: "/workspace" }
               ]
             },
             {
@@ -94,7 +92,6 @@ export default withMermaid(
                 { text: "Adapter", link: "/adapter" },
                 { text: "Issue board requirements", link: "/issue-board-requirements" },
                 { text: "Issue board design", link: "/issue-board-design" },
-                { text: "TUI", link: "/tui" },
                 { text: "META_PROMPT", link: "/meta-prompt" }
               ]
             },

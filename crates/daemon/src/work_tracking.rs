@@ -963,7 +963,7 @@ pub(crate) async fn record_agent_run_event(
 ) -> Result<RecordAgentRunEventResponse, DaemonError> {
     validate_record_request(&request)?;
     let event_fingerprint = canonical_json_fingerprint(&request)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let existing_event = load_existing_event(&mut tx, &request.event_id).await?;
     if let Some(existing_event) = &existing_event
         && existing_event.event_fingerprint != event_fingerprint
@@ -1185,7 +1185,7 @@ pub(crate) async fn start_issue_work(
         validate_required("run_id", run_id, MAX_IDENTIFIER_BYTES)?;
     }
     let issue_number = parse_issue_reference(&request.issue_key)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
     let mut run = match &request.run_id {
         Some(run_id) => {
@@ -1325,7 +1325,7 @@ pub(crate) async fn request_issue_closure(
         validate_required("run_id", run_id, MAX_IDENTIFIER_BYTES)?;
     }
     validate_optional("summary", request.summary.as_deref(), MAX_SUMMARY_BYTES)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
 
     let (issue_number, run) = match &request.run_id {
@@ -1430,7 +1430,7 @@ pub(crate) async fn pause_issue_work(
     validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
     validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
     let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
         .await?
@@ -1472,7 +1472,7 @@ pub(crate) async fn resume_issue_work(
     validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
     validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
     let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
         .await?
@@ -1541,7 +1541,7 @@ pub(crate) async fn create_issue(
     let external_references = normalize_issue_external_references(&request.external_references)?;
     let dependencies = parse_dependencies(&request.project_id, &request.dependencies)?;
     let blocking_facts = normalize_issue_blocking_facts(&request.blocking_facts)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let next_number: Option<i64> = sqlx::query_scalar(
         "WITH RECURSIVE candidates(issue_number) AS (
             SELECT 1
@@ -1654,7 +1654,7 @@ pub(crate) async fn update_issue(
         .map(normalize_issue_blocking_facts)
         .transpose()?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
@@ -1780,7 +1780,7 @@ pub(crate) async fn apply_issue_gate(
         ));
     }
     validate_revision(request.expected_revision)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = load_native_issue_tx(&mut tx, &request.project_id, request.issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{:03}", request.issue_number)))?;
@@ -1874,7 +1874,7 @@ pub(crate) async fn unclaim_issue(
     validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
     validate_revision(request.expected_revision)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
@@ -1943,7 +1943,7 @@ pub(crate) async fn set_verification_step_completed(
     validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
     let issue_number = parse_issue_reference(&request.issue_key)?;
     validate_revision(request.expected_revision)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
@@ -2007,7 +2007,7 @@ pub(crate) async fn remove_issue(
         ));
     }
     validate_revision(request.expected_revision)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let current = load_native_issue_tx(&mut tx, &request.project_id, request.issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{:03}", request.issue_number)))?;
@@ -2109,7 +2109,7 @@ pub(crate) async fn import_legacy_issues(
     resources: &[SourceResource],
 ) -> Result<(), DaemonError> {
     validate_required("project_id", project_id, MAX_IDENTIFIER_BYTES)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let already_imported: i64 = sqlx::query_scalar(
         "SELECT EXISTS (
             SELECT 1 FROM native_issue_imports WHERE project_id = $1
@@ -3332,7 +3332,7 @@ pub(crate) async fn reconcile_issue_workflow_states(
     stale_before: &str,
 ) -> Result<(), DaemonError> {
     validate_required("project_id", project_id, MAX_IDENTIFIER_BYTES)?;
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
     for card in cards {
         let current = load_issue_workflow_state_tx(&mut tx, project_id, card.issue_number).await?;
@@ -3472,7 +3472,7 @@ pub(crate) const ISSUE_CLOSED_REASON: &str = "issue_closed";
 /// read time, so Activity showed Running for up to a day and then Unknown
 /// forever; ending it in the DB keeps every read consistent.
 pub(crate) async fn recover_stale_runs(pool: &SqlitePool) -> Result<u64, DaemonError> {
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let rows = sqlx::query(
         "SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
                 parent_run_id, kind, phase, outcome, end_reason, display_label, summary,

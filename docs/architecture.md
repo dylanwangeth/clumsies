@@ -6,9 +6,9 @@
 flowchart LR
     subgraph Machine["User machine"]
         Desktop["Desktop"]
-        MCP["Zig MCP server"]
-        CLI["CLI"]
-        Daemon["Rust daemon"]
+        Host["Agent host"]
+        Proxy["App-bundled clumsiesd proxy<br/>mcp serve / _agent"]
+        Daemon["Resident clumsiesd<br/>Rust + launchd"]
         LocalDB[("Local SQLite")]
         ProjectStorage["Project Local Storage<br/>generations + search index"]
         Models["Shared model cache"]
@@ -23,8 +23,8 @@ flowchart LR
     Browser["System browser / organization OIDC"]
 
     Desktop -->|"macOS XPC"| Daemon
-    MCP -->|"activate / load / store over XPC"| Daemon
-    CLI -.->|"client operations"| Daemon
+    Host -->|"MCP stdio or lifecycle Hook"| Proxy
+    Proxy -->|"typed macOS XPC"| Daemon
     Daemon --> LocalDB
     Daemon -->|"resolve + atomic materialization"| ProjectStorage
     Daemon --> Models
@@ -54,7 +54,7 @@ because it was not stored in renderer state.
 | Server | authority resources, identity, authorization, review state, Commit graph, audit | local files and client process lifecycle |
 | daemon | local Project bindings, Project storage registry, local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, derived search indexes, refresh handling, native Server proxy | authority decisions and merge policy |
 | Desktop | interaction state, editors, navigation, review workflows | bearer tokens and durable authority |
-| MCP | activation, exact loading, and agent-originated store calls | a parallel draft database or search implementation |
+| Agent runtime proxy | bounded MCP decoding, Hook normalization, Project binding lookup, and typed XPC forwarding | databases, models, background workers, or a second retrieval implementation |
 | Web Admin | administrative operations | memory editing and review workflows |
 
 ## Write path
@@ -113,19 +113,20 @@ sequenceDiagram
     participant D as daemon
     participant DB as SQLite
     participant F as generation files
-    participant M as MCP
+    participant P as clumsiesd MCP proxy
 
-    M->>D: resolve_project_binding(current directory)
-    D-->>M: canonical project_id
+    P->>D: verify runtime identity and resolve_project_binding(current directory)
+    P->>D: attach exact identity to every Agent-scoped dispatch
+    D-->>P: matching build + canonical project_id
     D->>S: GET project commit-state(local_commit_id)
     S-->>D: Ref, latest Commit, ETag, download URL
     D->>S: GET Commit payload
     D->>D: validate Commit, Tree, Blobs, ownership, paths
     D->>F: build temporary generation and atomic rename
     D->>DB: cache objects and move local Ref in one transaction
-    M->>D: activate_memory or load_memory over XPC
+    P->>D: activate_memory or load_memory over XPC
     D->>F: read exact generation and overlay local Drafts
-    D-->>M: ranked fragments or complete resources
+    D-->>P: ranked fragments or complete resources
 ```
 
 The SQLite Ref is the only mutable authority pointer. Moving it does not move a
@@ -220,9 +221,18 @@ refresh token and retries exactly once.
 
 The current daemon transport is macOS launchd plus XPC. Its LaunchAgent label
 and Mach service are both `ai.clumsies.daemon`, under the `ai.clumsies` product
-namespace. Windows is a later roadmap item and will need a native service
-manager and IPC transport behind the same daemon capability contract. It is not
-implemented as a degraded fallback.
+namespace. The signed App bundle contains one Rust `clumsiesd` executable. With
+no proxy subcommand it runs as the resident service; `mcp serve` and `_agent
+issue-run-event` run as short-lived protocol proxies. Adapters pin that exact
+App-bundled path rather than searching `PATH` or copying another executable.
+
+Before forwarding any Agent traffic, a proxy compares its protocol revision and
+build identity with the resident daemon's health response. Every Agent-scoped
+dispatch then carries the same marker, which the resident validates before
+decoding the operation. A stale resident or proxy is rejected explicitly
+instead of mixing two releases. Windows is a later roadmap item and will need a
+native service manager and IPC transport behind the same daemon capability
+contract. It is not implemented as a degraded fallback.
 
 ## Incomplete boundary
 

@@ -1,243 +1,91 @@
-# Workspace
+# Project
 
-> Legacy architecture reference. The current product term is `Project`, and
-> local runtime reads use daemon-owned Commit generations plus Draft overlay,
-> not the manifest bootstrap described below. See [Architecture](/architecture),
-> [Runtime surfaces](/runtime), and [MCP](/mcp).
+`Project` is the current product term for a repository-scoped memory and
+authorization boundary. This page keeps its historical `/workspace` URL so old
+links continue to resolve, but active APIs and runtime state use `project_id`.
 
-## What Workspace is
+## Identity and local binding
 
-Workspace is the project boundary inside clumsies. It is where shared organizational behavior meets project-specific knowledge and local runtime state.
-
-That sentence hides three different responsibilities, so it is worth unpacking them.
-
-A workspace selects Artifact-backed behavior. It owns project context. It also acts as the server-side anchor for the manifest and cache that local runtime reads from.
-
-This is why workspace is more than a folder binding and more than a repo name.
-
-## What a workspace contains
-
-A workspace combines several distinct object types that should not be collapsed into one bucket.
-
-| Part | Ownership | What it is |
-| --- | --- | --- |
-| selected rules and workflows | reference to Artifact | shared behavioral assets chosen for this project |
-| selected bundles | reference to Artifact | named group selections that expand into behavior content |
-| context files | workspace-owned | project knowledge such as specs, ADRs, research, design notes |
-| manifest | Server-generated | current indexed snapshot of workspace runtime state |
-| local drafts | local in-progress work | edits not yet merged into Artifact or workspace mainline |
-
-The first three rows are the most important. They explain why workspace exists as its own object rather than being implied by a local checkout path.
-
-## Workspace is not the same thing as a repo
-
-The specs are explicit about this: a workspace can bind to more than one local path and does not need to be reduced to a single repository checkout.
-
-The server-side workspace ID is the real identity. Local paths are bindings recorded by the client. That distinction matters because the product is trying to model a project boundary, not just a folder on one machine.
-
-## Binding: how local paths attach to a workspace
-
-The current client records workspace bindings in:
+Server issues the canonical Project identity. A local directory is only an
+installation-local binding to that identity:
 
 ```text
-~/.clumsies/config.toml
+normalized Server authority
+  + canonical workspace root
+  -> canonical project_id
 ```
 
-That file stores at least:
+The resident daemon stores bindings in central SQLite. It canonicalizes a
+caller's current directory and chooses the longest bound ancestor, so nested
+worktrees resolve to the intended Project without treating the folder name as
+identity. An unbound directory returns an explicit binding error.
 
-| Field | Meaning |
-| --- | --- |
-| `server.url` | Server base URL |
-| `[[workspaces]].name` | local label |
-| `[[workspaces]].ws_id` | authoritative workspace ID |
-| `[[workspaces]].paths` | local filesystem paths bound to this workspace |
+The Desktop-selected Project is UI state and is deliberately separate. Two MCP
+proxies can resolve two different repositories concurrently while Desktop is
+closed or showing a third Project.
 
-This means a local path lookup is a resolution step, not identity creation. The client does not infer a workspace from a folder name. It resolves the folder through the binding config and then works against the authoritative `ws_id`.
+Legacy `ws_id` configuration is only a one-time migration input. It is never
+sent to daemon as a Project identity and is not a runtime fallback.
 
-A simplified example looks like this:
+## Memory scope
 
-```toml
-[server]
-url = "http://127.0.0.1:8400"
+Projects own repository-specific Context, Rules, and Workflows. Organization
+memory remains under the independent Hub scope. Each scope has its own Ref and
+immutable Commit history; merging one scope never advances the other.
 
-[[workspaces]]
-name = "clumsies"
-ws_id = "ws-4a5c282474c9b5d9385dec0502267738"
-paths = [
-  "/Users/lilhammer/workspace/clumsies",
-  "/Users/lilhammer/workspace/clumsies-docs"
-]
-```
+Bundles are personal selections of shared organization memory. They help a
+member reuse a curated set but do not become Project identity or replace the
+organization Ref.
 
-That example makes two design points concrete.
+## Local state
 
-First, both local paths bind to the same workspace ID. Second, the path list is only local resolution state. The server-side workspace still remains the real project identity.
+The resident daemon owns the Project's installation-local state:
 
-The TUI can manage these bindings from Settings > Workspaces. A user can create
-a workspace, choose an initial bundle, and bind a local directory without
-leaving the TUI. The CLI `init` command remains available for scripts and
-explicit setup.
+- directory binding and selected Server authority;
+- installed organization and Project Refs;
+- immutable Commit generations;
+- current local Drafts and their queued operations;
+- the derived search index for the current Effective Memory;
+- optional Project Local Storage location and move status;
+- adapter installation records for the repository.
 
-Bound paths are a list, not a single value. A workspace can have several local
-directories on one machine, and each path resolves back to the same server-side
-workspace ID.
+Server remains authoritative for Project membership, memory history, Reviews,
+and merges. A local binding or cache never creates authority.
 
-## Manifest: the current workspace snapshot
+## Effective Memory
 
-The manifest is the bridge between Server authority and local runtime. In the current implementation it is written to:
+For Agent reads, daemon composes the latest installed authority generations
+with the Project's current open/submitted Draft operations:
 
 ```text
-~/.clumsies/workspaces/{workspace_name}/manifest.json
+organization Commit + Project Commit + local Draft overlay
+  -> Effective Memory hash
+  -> matching derived Index Revision
+  -> activate / load
 ```
 
-The current top-level schema is:
+`store` writes a durable local Project Draft through daemon. It does not update
+the authority Ref. Desktop shows the same Draft for coordination, Review, and
+merge.
 
-| Field | Meaning |
-| --- | --- |
-| `ws_id` | workspace identity |
-| `name` | workspace name |
-| `revision` | current workspace snapshot revision |
-| `rules` | stable-ID keyed map of selected Artifact behavior |
-| `context` | stable-ID keyed map of workspace context |
+## Project Local Storage
 
-The current entry schema inside `rules` and `context` includes:
+A Project may choose where this installation stores rebuildable generations
+and its search database. The setting is keyed by Server authority and
+`project_id`, remains local to the machine, and never enters Server Project
+metadata.
 
-| Field | Meaning |
-| --- | --- |
-| `path` | runtime-relative path for the item |
-| `hash` | content hash used during sync |
-| `description` | optional schema-carried description |
+The selected directory is only a parent for a marker-owned managed subtree.
+Central Drafts, operation queues, credentials, cached authority objects, and
+shared models do not move. If a custom location is unavailable, daemon reports
+the condition explicitly and does not create a second active cache elsewhere.
 
-A simplified example looks like this:
+See [Runtime](/runtime) for migration and recovery semantics.
 
-```json
-{
-  "ws_id": "ws-1",
-  "name": "demo",
-  "revision": 7,
-  "rules": {
-    "p-1": {
-      "path": "rule/coding/00_COMPATIBILITY.md",
-      "hash": "sha256:def",
-      "description": ""
-    }
-  },
-  "context": {
-    "ctx-1": {
-      "path": "spec/ARCHITECTURE.md",
-      "hash": "sha256:abc",
-      "description": ""
-    }
-  }
-}
-```
+## Agent runtime path
 
-There are two design choices here that deserve explicit explanation.
-
-First, the manifest is not just a list of names. It is the indexed state of the workspace.
-
-Second, `rules` and `context` are keyed by stable IDs rather than paths. That keeps identity stable across rename. The system can understand that an item moved without pretending it was deleted and recreated.
-
-For example, if a rule keeps the same `rule_id` but moves from `rule/coding/STYLE.md` to `rule/style/STYLE.md`, the manifest only needs to update the `path` field for that one entry. The client does not need to treat it as a delete plus a brand-new unrelated rule.
-
-## Why manifest matters
-
-The manifest does three jobs at once.
-
-It tells the client what the workspace currently contains. It gives sync a stable object to compare against. It gives runtime surfaces one shared snapshot instead of forcing each client to invent its own discovery path.
-
-That is why manifest belongs in the workspace model, not only in a sync page.
-
-## Cache: the materialized side of workspace runtime
-
-Each workspace also has a dedicated local runtime directory:
-
-```text
-~/.clumsies/workspaces/{workspace_name}/
-```
-
-The synced content lives under:
-
-```text
-~/.clumsies/workspaces/{workspace_name}/cache/
-```
-
-The current implementation materializes at least:
-
-| Path under cache | Meaning |
-| --- | --- |
-| `rule/` | synced rules and workflows selected by the workspace |
-| `context/` | synced workspace context files |
-
-This is where the workspace model touches runtime directly.
-
-The local workspace directory has two layers:
-
-| Path | Role |
-| --- | --- |
-| `~/.clumsies/workspaces/{workspace_name}/manifest.json` | workspace snapshot and sync index |
-| `~/.clumsies/workspaces/{workspace_name}/cache/` | materialized files used by local runtime |
-
-That split explains practical behavior. Sync can skip unchanged content because the manifest tells it what should exist and which hash each item should have. MCP can serve from local state because the cache already contains the materialized files.
-
-## Context belongs to the workspace side
-
-Context is where project-specific facts live. In the current design, that includes things like:
-
-- architecture documents
-- specs
-- ADRs
-- research notes
-- design material
-- journals
-
-The important point is not the file type. The important point is ownership and role. Context is workspace knowledge.
-
-That means context should not be explained as a special kind of Artifact content. It may be rendered into cache in a similar way, but it has a different collaboration destination and a different authority model.
-
-## Artifact selections stay Artifact selections
-
-Rules, workflows, and bundles remain Artifact-backed even after a workspace selects them. The workspace does not become their new authority. It becomes the project boundary that selects which shared behavioral assets should be active for this project.
-
-That distinction is what keeps the object model clean:
-
-- Artifact owns shared behavior
-- workspace owns project knowledge
-- manifest brings both into one runtime snapshot
-
-The TUI exposes that split directly. From Artifact, a user can select rules and
-import them into the active workspace. From Workspace, a user can select rules
-and detach them from the workspace. Both flows update Server state and the local
-manifest/cache instead of editing files by hand.
-
-Import means "make this Artifact rule active in this workspace." Detach means
-"stop selecting this Artifact rule for this workspace." Neither operation
-changes the rule's Artifact identity.
-
-## Drafts and review flow
-
-Workspace also matters because real editing happens around it.
-
-A local draft is not the same thing as synced cache. Cache is pulled state. Draft is in-progress work.
-
-The collaboration split stays important here:
-
-- rule-oriented edits move back toward Artifact proposal and review flow
-- context-oriented edits move toward workspace-owned mainline
-
-This is one of the reasons the workspace model exists at all. Without it, rule lifecycle and project-knowledge lifecycle would collapse into one ambiguous bucket.
-
-## Workspace membership and authorization
-
-The workspace boundary is also where membership starts to matter. A workspace is not only a content container. It is an authorization boundary for who can bind, inspect, edit, and review project-specific material.
-
-That is why the server-side workspace object has to stay authoritative. If local folders were treated as identity, permission checks would become guesswork.
-
-The TUI Settings surface includes workspace membership management. Maintainers
-can create invite tokens, change workspace roles, and remove members. These
-operations are checked against Server policy; the client presents errors in the
-same modal when the user can retry the operation.
-
-## Why Workspace matters in the docs
-
-If docs talk only about Artifact, the system looks too centralized. If docs talk only about local cache, the system looks too accidental. Workspace is the object that explains how shared behavior, project-specific knowledge, sync, and runtime all meet in one place.
+The adapter starts the App-bundled `clumsiesd mcp serve` proxy from the
+repository. At startup the proxy verifies the resident daemon release identity,
+resolves the current directory through the binding registry, and fixes that
+canonical `project_id` for the process. Agent input cannot select another
+Project or reuse Desktop's current selection.

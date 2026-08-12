@@ -102,7 +102,8 @@ pub(super) async fn query_index(
     let started = std::time::Instant::now();
     let query_owned = query.to_owned();
     let models = state.inner.search_models.clone();
-    let query_vector = super::run_model_work(move || models.embed_query(&query_owned)).await?;
+    let query_vector =
+        super::run_model_work(state, move || models.embed_query(&query_owned)).await?;
     completion.latencies.embedding_us = elapsed_us(started);
     if query_vector.len() != state.inner.search_models.dimensions()
         || !super::index::valid_normalized_vector(&query_vector)
@@ -139,7 +140,8 @@ pub(super) async fn query_index(
             .collect::<Vec<_>>();
         let query_owned = query.to_owned();
         let models = state.inner.search_models.clone();
-        let scores = super::run_model_work(move || models.rerank(&query_owned, &documents)).await?;
+        let scores =
+            super::run_model_work(state, move || models.rerank(&query_owned, &documents)).await?;
         completion.latencies.rerank_us = elapsed_us(started);
         if scores.len() != rerank_count {
             return Err(SearchFailure::failed(

@@ -40,6 +40,10 @@ pub struct DaemonIpcEndpoint {
 pub struct DaemonIpcRequest {
     pub method: String,
     pub payload: serde_json::Value,
+    /// Present only for short-lived Agent protocol proxies. Desktop and other
+    /// resident clients omit this marker and retain the existing IPC contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_runtime: Option<AgentRuntimeIdentity>,
 }
 
 impl DaemonIpcRequest {
@@ -47,6 +51,7 @@ impl DaemonIpcRequest {
         Self {
             method: method.into(),
             payload,
+            agent_runtime: None,
         }
     }
 
@@ -263,11 +268,18 @@ pub(crate) struct ProjectConfigReadiness {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonHealth {
     pub daemon_version: String,
+    pub agent_runtime: AgentRuntimeIdentity,
     pub server_url: String,
     pub project_id: Option<String>,
     pub daemon_installation_id: String,
     pub log_dir: String,
     pub local_db: LocalDbStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AgentRuntimeIdentity {
+    pub protocol_revision: u32,
+    pub build_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

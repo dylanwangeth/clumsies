@@ -1,112 +1,16 @@
-# CLI reference
+# Archived Zig CLI
 
-This page is the command surface in one place. Every command listed here is based on the current local binary help output.
+The standalone `clumsies` CLI is not an active product or runtime surface. Its
+source is preserved under `archive/zig-cli/` for historical reference and is
+not built, tested, packaged, installed, or released.
 
-## Top-level commands
+Current human workflows use the macOS Desktop. Supported Agent hosts are wired
+by native Project Management to the App-bundled Rust runtime:
 
-| Command | Purpose |
-| --- | --- |
-| `clumsies` | launch the TUI |
-| `clumsies login` | authenticate with Server or refresh local credentials |
-| `clumsies init` | bind the current directory to a workspace |
-| `clumsies sync` | sync local cache from Server |
-| `clumsies adapt` | install or update an adapter |
-| `clumsies server` | start the Server server |
-| `clumsies mcp serve` | start the MCP server |
-
-## login
-
-Usage:
-
-```bash
-clumsies login [--server-url <url>] [--username <user>]
+```text
+clumsiesd mcp serve
+clumsiesd _agent issue-run-event --host <host>
 ```
 
-| Flag | Meaning |
-| --- | --- |
-| `--server-url <url>` | Server URL. Default is `http://127.0.0.1:8400` |
-| `--username <user>` | username. Prompted if omitted |
-
-`clumsies login` is the CLI wrapper for the same auth capability the TUI uses.
-It is useful for scripting, setup, and users who prefer terminal prompts. The
-TUI remains the primary interactive entry point and should be able to enter a
-login state itself when credentials are missing.
-
-The credential store is selected with `CLUMSIES_AUTH_STORE=file|keychain|auto|memory`.
-The default is `file`, which stores credentials in `~/.clumsies/auth.json`.
-
-## init
-
-Usage:
-
-```bash
-clumsies init [--create <name> | --ws-id <id>] [--bundle <bundle_id>]
-```
-
-| Flag | Meaning |
-| --- | --- |
-| `--create <name>` | create a new workspace |
-| `--ws-id <id>` | bind to an existing workspace |
-| `--bundle <bundle_id>` | attach a bundle while creating |
-
-## sync
-
-Usage:
-
-```bash
-clumsies sync
-```
-
-This syncs workspace rules and context files from Server into the local cache.
-
-## adapt
-
-Usage:
-
-```bash
-clumsies adapt [--agent <name>] [--scope workspace|user] [--update] [--yes]
-```
-
-This command supports both interactive and explicit use.
-
-Interactive:
-
-```bash
-clumsies adapt
-```
-
-Explicit:
-
-```bash
-clumsies adapt --agent codex --scope workspace --yes
-```
-
-| Flag | Meaning |
-| --- | --- |
-| `--agent <name>` | adapter package name such as `codex` or `claude-code` |
-| `--scope workspace|user` | install scope |
-| `--update` | update an existing install |
-| `--yes` | skip confirmation |
-
-If multiple adapter packages are available, omitting `--agent` leaves package selection to the interactive flow.
-
-## server
-
-Usage:
-
-```bash
-clumsies server
-```
-
-This starts the Server HTTP server. It reads configuration from environment
-variables and `.env`, including PostgreSQL connection settings.
-
-## mcp serve
-
-Usage:
-
-```bash
-clumsies mcp serve
-```
-
-This starts the MCP stdio server for the current workspace. It is the entrypoint agent hosts use, not a normal member command.
+These are adapter-managed proxy modes, not a replacement general-purpose CLI.
+See [Agent runtime](/guides/agent-runtime) and [Adapter](/adapter).

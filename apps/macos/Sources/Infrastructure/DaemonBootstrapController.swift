@@ -109,6 +109,10 @@ struct DaemonBootstrapController: Sendable {
     }
 
     private func daemonBinaryURL() throws -> URL {
+        // Reject App Translocation before honoring any development executable
+        // override: no code path may reconcile or persist a daemon location
+        // while this App bundle itself has an ephemeral randomized path.
+        try AppBundleRuntimeLocation.requireStable(Bundle.main.bundleURL)
         if let override = ProcessInfo.processInfo.environment["CLUMSIES_DAEMON_PROGRAM"],
            !override.isEmpty {
             return URL(fileURLWithPath: override)

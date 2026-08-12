@@ -8,6 +8,242 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(DaemonXPCClient.serviceName, "ai.clumsies.daemon")
     }
 
+    func testAgentAdapterRequestUsesBundledDaemonRuntimePath() throws {
+        let runtime = "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        let request = DaemonProjectAgentAdapterInstallRequest(
+            projectId: "project-1",
+            workspaceRoot: "/tmp/repository",
+            adapter: .codex,
+            runtimeBinaryPath: runtime,
+            expectedRevision: nil
+        )
+
+        let data = try JSONCoding.encoder().encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["runtime_binary_path"] as? String, runtime)
+        XCTAssertTrue((object["runtime_binary_path"] as? String)?.hasSuffix("/clumsiesd") == true)
+    }
+
+    func testLegacyAdapterInspectionResponseDecodesDeferredTargets() throws {
+        let json = #"{"scanned":3,"deferred":1,"conflicts":[]}"#
+        let response = try JSONCoding.decoder().decode(
+            DaemonLegacyAgentAdapterInspectionResponse.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(response.scanned, 3)
+        XCTAssertEqual(response.deferred, 1)
+        XCTAssertTrue(response.conflicts.isEmpty)
+    }
+
+    func testWorkspaceStartupPlansEveryReachableAdapterUpgrade() {
+        let adapters = [
+            DaemonProjectAgentAdapter(
+                serverUrl: "https://app.clumsies.ai",
+                projectId: "project-2",
+                workspaceRoot: "/repos/missing",
+                adapter: .opencode,
+                revision: 4,
+                managedFiles: [],
+                createdAt: "2026-08-01T00:00:00Z",
+                updatedAt: "2026-08-01T00:00:00Z"
+            ),
+            DaemonProjectAgentAdapter(
+                serverUrl: "https://app.clumsies.ai",
+                projectId: "project-1",
+                workspaceRoot: "/repos/active",
+                adapter: .codex,
+                revision: 7,
+                managedFiles: [],
+                createdAt: "2026-08-01T00:00:00Z",
+                updatedAt: "2026-08-01T00:00:00Z"
+            ),
+            DaemonProjectAgentAdapter(
+                serverUrl: "https://app.clumsies.ai",
+                projectId: "project-1",
+                workspaceRoot: "/repos/active",
+                adapter: .claudeCode,
+                revision: 3,
+                managedFiles: [],
+                createdAt: "2026-08-01T00:00:00Z",
+                updatedAt: "2026-08-01T00:00:00Z"
+            ),
+        ]
+
+        let planned = WorkspaceLoader.agentAdapterReconciliationPlan(
+            installed: adapters,
+            runtimePath: "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
+            workspaceExists: { $0 == "/repos/active" }
+        )
+
+        XCTAssertEqual(planned.map(\.adapter), [.claudeCode, .codex])
+        XCTAssertEqual(planned.map(\.expectedRevision), [3, 7])
+        XCTAssertTrue(planned.allSatisfy {
+            $0.runtimeBinaryPath == "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        })
+    }
+
+    func testWorkspaceStartupMigratesAdaptersBeforeAuthenticationAndDoesNotReachServer() async {
+        actor EventRecorder {
+            var events: [String] = []
+
+            func append(_ event: String) {
+                events.append(event)
+            }
+        }
+
+        let recorder = EventRecorder()
+
+        do {
+            _ = try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
+                reconcileLocalAgentAdapters: {
+                    await recorder.append("list-all-native")
+                    await recorder.append("install-native")
+                    await recorder.append("inspect-legacy")
+                    return .init(conflicts: [], inspectionWarning: nil)
+                },
+                projectConfig: {
+                    await recorder.append("project-config")
+                    return .init(
+                        serverUrl: "https://app.clumsies.ai",
+                        projectId: "project-1",
+                        hasAccessToken: false,
+                        hasRefreshToken: false,
+                        ready: false,
+                        missingFields: ["access_token", "refresh_token"]
+                    )
+                },
+                retrySync: {
+                    await recorder.append("retry-sync")
+                },
+                currentUser: {
+                    await recorder.append("api-v1-me")
+                    throw DaemonContractTestError.unexpectedServerRequest
+                },
+                onLocalAgentAdapters: { _ in
+                    await recorder.append("publish-local-warning")
+                }
+            )
+            XCTFail("Expected authenticationRequired")
+        } catch WorkspaceLoadError.authenticationRequired {
+            // Local discovery and native reconciliation complete before the auth gate.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(
+            events,
+            [
+                "list-all-native", "install-native", "inspect-legacy",
+                "publish-local-warning", "project-config",
+            ]
+        )
+    }
+
+    func testLegacyAdapterConflictDoesNotBlockAuthenticatedWorkspaceLoading() async throws {
+        let conflict = DaemonLegacyAgentAdapterConflict(
+            installId: "codex-old",
+            adapter: .codex,
+            scope: "workspace",
+            targetRoot: "/repos/old/.codex",
+            code: "legacy_adapter_generation_unsupported",
+            message: "This legacy Adapter generation was left unchanged."
+        )
+        let user = CurrentUserResponse(
+            user: .init(
+                userId: "user-1",
+                email: "user@example.com",
+                displayName: nil,
+                avatarUrl: nil,
+                role: "member"
+            ),
+            org: .init(orgId: "org-1", name: "Example"),
+            projects: [],
+            defaultProjectId: nil,
+            capabilities: []
+        )
+
+        let (_, loadedUser, localResult) = try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
+            reconcileLocalAgentAdapters: {
+                return .init(conflicts: [conflict], inspectionWarning: nil)
+            },
+            projectConfig: {
+                .init(
+                    serverUrl: "https://app.clumsies.ai",
+                    projectId: nil,
+                    hasAccessToken: true,
+                    hasRefreshToken: true,
+                    ready: true,
+                    missingFields: []
+                )
+            },
+            retrySync: {},
+            currentUser: { user }
+        )
+
+        XCTAssertEqual(loadedUser.user.userId, "user-1")
+        XCTAssertEqual(localResult.conflicts, [conflict])
+    }
+
+    @MainActor
+    func testLegacyAdapterWarningIsActionableForUserScopeAndInspectionFailure() {
+        let conflict = DaemonLegacyAgentAdapterConflict(
+            installId: "claude-global",
+            adapter: .claudeCode,
+            scope: "user",
+            targetRoot: "/Users/example",
+            code: "legacy_adapter_manual_reinstall_required",
+            message: "Remove the global entries, then enable each repository from the App."
+        )
+        let warning = WorkspaceStore.localAgentAdapterWarning(.init(
+            conflicts: [conflict],
+            inspectionWarning: "The archived integration store could not be inspected."
+        ))
+
+        XCTAssertTrue(warning?.contains("could not be inspected") == true)
+        XCTAssertTrue(warning?.contains("Claude Code user integration at /Users/example") == true)
+        XCTAssertTrue(warning?.contains("enable each repository") == true)
+    }
+
+    func testAppTranslocationIsRejectedBeforeRuntimePathsCanBePersisted() throws {
+        XCTAssertThrowsError(try AppBundleRuntimeLocation.requireStable(
+            URL(fileURLWithPath: "/private/var/folders/example/AppTranslocation/UUID/d/Clumsies.app")
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("move Clumsies.app"))
+            XCTAssertTrue(error.localizedDescription.contains("No daemon"))
+        }
+
+        XCTAssertNoThrow(try AppBundleRuntimeLocation.requireStable(
+            URL(fileURLWithPath: "/Applications/Clumsies.app")
+        ))
+        XCTAssertNoThrow(try AppBundleRuntimeLocation.requireStable(
+            URL(fileURLWithPath: "/Users/example/Applications/Clumsies.app")
+        ))
+    }
+
+    func testMacAppBuildEmbedsDaemonWithoutTheArchivedZigClient() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let projectYAML = try String(
+            contentsOf: macOSRoot.appending(path: "project.yml"),
+            encoding: .utf8
+        )
+        let xcodeProject = try String(
+            contentsOf: macOSRoot.appending(path: "Clumsies.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(projectYAML.contains("name: Embed clumsiesd"))
+        XCTAssertFalse(projectYAML.contains("Scripts/embed-client.sh"))
+        XCTAssertFalse(projectYAML.contains("name: Embed clumsies\n"))
+        XCTAssertTrue(xcodeProject.contains("/* Embed clumsiesd */"))
+        XCTAssertFalse(xcodeProject.contains("embed-client.sh"))
+        XCTAssertFalse(xcodeProject.contains("/* Embed clumsies */"))
+        XCTAssertFalse(xcodeProject.contains("zig build"))
+    }
+
     func testBootstrapControllerDecodesCanonicalDaemonStatus() throws {
         let json = """
         {
@@ -293,6 +529,7 @@ final class DaemonContractTests: XCTestCase {
     func testDaemonStartupReadinessRetriesRequestTimeouts() async throws {
         let expected = DaemonHealth(
             daemonVersion: "0.1.0",
+            agentRuntime: .init(protocolRevision: 1, buildId: "test-build"),
             serverUrl: "https://app.clumsies.ai",
             projectId: "project-1",
             daemonInstallationId: "daemon-1",
@@ -1326,6 +1563,10 @@ final class DaemonContractTests: XCTestCase {
             blobs: [.init(blobId: "blob-\(id)", content: body)]
         )
     }
+}
+
+private enum DaemonContractTestError: Error {
+    case unexpectedServerRequest
 }
 
 private actor RetryingDaemonHealthProbe {

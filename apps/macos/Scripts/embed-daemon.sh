@@ -8,6 +8,7 @@ fi
 repo_root="$(cd "$SRCROOT/../.." && pwd)"
 cd "$repo_root"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
+export CLUMSIES_AGENT_RUNTIME_BUILD_ID="${CLUMSIES_AGENT_RUNTIME_BUILD_ID:-app-$(date +%s)-$$}"
 destination="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/clumsiesd"
 daemon_identifier="ai.clumsies.daemon"
 mkdir -p "$(dirname "$destination")"

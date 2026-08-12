@@ -1,7 +1,7 @@
 # Use clumsies
 
-Desktop is the primary human client. The normal workflow does not start in the
-TUI and does not require manual draft synchronization.
+Desktop is the primary human client. The normal workflow does not require a
+separate command-line client or manual draft synchronization.
 
 ## Sign in
 

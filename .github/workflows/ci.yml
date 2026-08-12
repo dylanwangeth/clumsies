@@ -7,26 +7,12 @@ on:
     branches: [main]
 
 jobs:
-  lint:
+  scripts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Lint (zig fmt)
-        run: zig fmt --check src/
-
-      - name: Build (native)
-        run: zig build
-
-      - name: Run CLI unit tests
-        run: zig build test
 
       - name: Check deployment scripts
         run: |
@@ -34,25 +20,10 @@ jobs:
           shellcheck deploy/server/*.sh
           bash deploy/server/server-release-test.sh
 
-  cross-compile:
-    runs-on: ubuntu-latest
-    strategy:
-      # Keep producing results for every target even if one fails;
-      # a break on one platform should not mask a break on another.
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-macos
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Cross-compile (${{ matrix.target }})
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+      - name: Check Agent runtime archive boundary
+        run: |
+          shellcheck dev/check-agent-runtime-boundary.sh
+          sh dev/check-agent-runtime-boundary.sh
 
   docs:
     runs-on: ubuntu-latest
@@ -123,11 +94,17 @@ jobs:
       - name: Run native macOS tests
         run: bun run test:macos
 
+      - name: Run Agent runtime process and XPC integration
+        run: cargo test -p daemon --test agent_runtime_xpc_e2e -- --nocapture
+
+      - name: Build and verify the signed Agent runtime package
+        run: bun run test:macos:package
+
   # Aggregator so branch protection rules that require a single "build"
   # status check continue to resolve after the split. Also gives a
   # convenient one-line pass/fail signal on the PR page.
   build:
     runs-on: ubuntu-latest
-    needs: [lint, cross-compile, docs, api-contract, rust, macos]
+    needs: [scripts, docs, api-contract, rust, macos]
     steps:
       - run: echo "All CI jobs passed."

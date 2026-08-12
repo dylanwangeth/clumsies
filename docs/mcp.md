@@ -9,9 +9,16 @@ Clumsies exposes four agent-facing tools:
 | `store` | Persist an explicitly requested Context, Rule, or Workflow Draft. |
 | `kanban` | Create, update, list, or semantically transition native Issues. |
 
-The Zig MCP server is a protocol adapter. Effective Memory construction,
-indexing, retrieval, exact loading, Draft persistence, and AgentRun projection
-belong to the Rust daemon and are reached over local XPC.
+The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
+Effective Memory construction, indexing, retrieval, exact loading, Draft
+persistence, and AgentRun projection belong to the resident `clumsiesd` and
+are reached over local XPC. The proxy exposes only the four typed MCP tools; it
+cannot pass arbitrary JSON through to daemon methods.
+
+The proxy verifies the resident's Agent runtime protocol revision and build
+identity before resolving the current directory's Project binding, and the
+resident revalidates that marker on every Agent-scoped dispatch. A missing or
+stale resident or proxy fails explicitly instead of mixing releases.
 
 There is no setup call. The removed `retrieve` tool, host-session binding,
 `META_PROMPT.md` bootstrap, and MCP attestation path have no compatibility
@@ -201,7 +208,7 @@ The input contains exactly one tagged operation under `op`:
 | `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, state, revision, and owning `project_id`. |
 | `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | A new Todo Issue with an atomically allocated key. |
 | `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | Updated Issue content without a status transition. |
-| `begin_work` | `issue_key`; `run_id`, `expected_revision` for a hook-issued run, optional `session_id` for a manual run | In Progress state plus the linked AgentRun. One session holds at most one In Progress Issue. |
+| `begin_work` | `issue_key`, Hook-issued `run_id`, and `expected_revision` | In Progress state plus the linked AgentRun. Agents cannot mint a manual run, and one session holds at most one In Progress Issue. |
 | `pause_issue` | `run_id`, `issue_key` | Paused state; the pausing run may later resume. |
 | `resume_issue` | `run_id`, `issue_key`; optional `takeover` | Back to In Progress. Non-owner resume requires `takeover`. |
 | `request_closure` | `run_id`, `expected_revision`; optional `summary` | Closure Requested state plus the linked AgentRun. |
@@ -237,10 +244,11 @@ On a successful root or subagent start, the lifecycle hook adds a short context
 message containing that agent's current `run_id` and revision. Use those exact
 values after deciding semantically whether the prompt continues an Issue,
 creates a new native Issue, or should not create one. Use `create` for durable
-work and `start` only when it is the active line of work. Before finishing, a root
-Agent uses `request_closure` only after judging the linked Issue acceptance
-criteria satisfied. Subagents cannot request closure. Do not choose a current
-run from `list` by recency: concurrent runs make that inference ambiguous.
+work and `begin_work` only when it is the active line of work. Before finishing,
+a root Agent uses `request_closure` only after judging the linked Issue
+acceptance criteria satisfied. Subagents cannot request closure. Do not choose
+a current run from `list` by recency: concurrent runs make that inference
+ambiguous.
 
 The optional closure summary is limited to 1,000 UTF-8 bytes. Closure Requested
 is an Agent proposal. Agents cannot approve it; only the user's desktop Approve
@@ -262,11 +270,11 @@ Example:
 
 `get` resolves its global ID independently and returns the owning Project. List
 and mutations use the Project binding established for the MCP process. For
-start and request_closure, the Zig server injects that Project ID into the private
-daemon request; a run from another Project is not visible or mutable even if
-its ID and revision are known. The daemon owns Issue discovery, AgentRun
-association, and board-state derivation; the Zig MCP server only validates the
-tagged input and forwards the operation.
+`begin_work` and `request_closure`, the MCP proxy injects that Project ID into
+the private daemon request; a run from another Project is not visible or
+mutable even if its ID and revision are known. The resident daemon owns Issue
+discovery, AgentRun association, and board-state derivation; the proxy only
+validates the tagged input and forwards the operation.
 
 ## Daemon operations
 
@@ -289,14 +297,14 @@ tagged input and forwards the operation.
 
 Lifecycle hooks do not call the agent-facing `kanban` tool. Adapter-managed
 scripts pipe the host event to the private command
-`clumsies _agent issue-run-event --host codex|claude-code`. The command resolves
-the repository's daemon Project binding, reduces the host payload to bounded
-identifiers and lifecycle fields, and calls `record_agent_run_event`. It emits
-a bounded current-run context containing `run_id`, revision, and the semantic
-decision instruction after a successful root or subagent start. Claude Code's
-first root Stop is blocked once to request the closure decision; that blocked
-Stop is not recorded as ended. All parsing, binding, binary, IPC, and daemon
-failures remain fail-open.
+`clumsiesd _agent issue-run-event --host codex|claude-code|opencode`. The
+short-lived Rust proxy resolves the repository's daemon Project binding,
+reduces the host payload to bounded identifiers and lifecycle fields, and
+calls `record_agent_run_event`. It emits a bounded current-run context
+containing `run_id`, revision, and the semantic decision instruction after a
+successful root or subagent start. For Codex and Claude Code, the first root
+Stop is a non-terminal decision probe; a follow-up Stop records the end. All
+parsing, binding, IPC, and daemon failures remain fail-open.
 
 The private bridge does not persist raw hook JSON, prompts, transcripts, tool
 payloads, or assistant messages. `record_agent_run_event` is not exposed as an
@@ -312,5 +320,8 @@ exports are daemon/Desktop diagnostic APIs described in
 sent to Server.
 
 The default retrieval profile has no silent BM25-only, old substring-search,
-or stale-index fallback. Model, vector, generation, and state failures remain
+or fallback to an incompatible index. While a compatible replacement index is
+building, the previous ready generation remains queryable; the scheduler
+atomically publishes the new generation when it is complete. Model, vector,
+generation, and state failures remain
 explicit protocol errors.

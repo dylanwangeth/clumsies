@@ -126,17 +126,33 @@ fn fake_daemon_program(root: &Path) -> PathBuf {
     path
 }
 
-fn signed_helper_binary(root: &Path) -> PathBuf {
+fn signed_runtime_binary(root: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        let _ = root;
-        PathBuf::from("/usr/bin/true")
+        let path = root.join("Clumsies.app/Contents/Resources/clumsiesd");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::copy("/usr/bin/true", &path).unwrap();
+        let status = std::process::Command::new("/usr/bin/codesign")
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "ai.clumsies.daemon",
+                "--requirements",
+                "=designated => identifier \"ai.clumsies.daemon\"",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        path
     }
     #[cfg(not(target_os = "macos"))]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = root.join("bin/clumsies");
+        let path = root.join("Clumsies.app/Contents/Resources/clumsiesd");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -675,6 +691,30 @@ async fn project_storage_moves_resume_from_every_nonterminal_state() {
             .execute(&pool)
             .await
             .unwrap();
+            // Simulate a crash immediately after `switch_location`: the
+            // central mirror still names the source location and no durable
+            // build request was committed yet. Cleaning recovery must repair
+            // both before it removes the source cache.
+            sqlx::query(
+                "INSERT INTO search_heads (
+                    project_id, revision_id, effective_hash, status,
+                    location_revision
+                 ) VALUES ('prj_recovery', 'stale_source_head',
+                           'stale_effective_hash', 'ready', $1)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                    revision_id = excluded.revision_id,
+                    effective_hash = excluded.effective_hash,
+                    status = excluded.status,
+                    location_revision = excluded.location_revision",
+            )
+            .bind(source.location_revision)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("DELETE FROM search_index_jobs WHERE project_id = 'prj_recovery'")
+                .execute(&pool)
+                .await
+                .unwrap();
             pool.close().await;
             (created.move_id, destination.managed_root_path)
         } else {
@@ -737,6 +777,33 @@ async fn project_storage_moves_resume_from_every_nonterminal_state() {
         assert_eq!(storage.mode, DaemonProjectStorageMode::Custom);
         assert_eq!(storage.managed_root_path, expected_destination);
         assert!(!Path::new(&source_root).exists());
+        if interrupted_state == "cleaning" {
+            let pool = sqlx::SqlitePool::connect(&format!(
+                "sqlite://{}",
+                restarted.local_db_path().display()
+            ))
+            .await
+            .unwrap();
+            let stale_head_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_heads
+                 WHERE project_id = 'prj_recovery'
+                   AND location_revision <> $1",
+            )
+            .bind(storage.location_revision)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(stale_head_count, 0);
+            let desired_sequence: i64 = sqlx::query_scalar(
+                "SELECT desired_sequence FROM search_index_jobs
+                 WHERE project_id = 'prj_recovery'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(desired_sequence >= 1);
+            pool.close().await;
+        }
     }
 }
 
@@ -3075,13 +3142,13 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
         .await
         .unwrap();
 
-    let helper = signed_helper_binary(daemon_root.path());
+    let helper = signed_runtime_binary(daemon_root.path());
     let installed = service
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Codex,
-            helper_binary_path: helper.display().to_string(),
+            runtime_binary_path: helper.display().to_string(),
             expected_revision: None,
         })
         .await
@@ -3090,6 +3157,15 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
     let rendered_config = std::fs::read_to_string(&codex_config).unwrap();
     assert!(rendered_config.contains("[model]"));
     assert!(rendered_config.contains("[mcp_servers.clumsies]"));
+    assert!(
+        rendered_config.contains(
+            &std::fs::canonicalize(&helper)
+                .unwrap()
+                .display()
+                .to_string()
+        )
+    );
+    assert!(!daemon_root.path().join("bin/clumsies").exists());
     assert!(
         repository_root
             .path()
@@ -3102,7 +3178,7 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Codex,
-            helper_binary_path: helper.display().to_string(),
+            runtime_binary_path: helper.display().to_string(),
             expected_revision: None,
         })
         .await
@@ -3186,13 +3262,13 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
         .await
         .unwrap();
 
-    let helper = signed_helper_binary(daemon_root.path());
+    let helper = signed_runtime_binary(daemon_root.path());
     let installed = service
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_opencode".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Opencode,
-            helper_binary_path: helper.display().to_string(),
+            runtime_binary_path: helper.display().to_string(),
             expected_revision: None,
         })
         .await
@@ -3236,7 +3312,7 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
             project_id: "prj_opencode".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Opencode,
-            helper_binary_path: helper.display().to_string(),
+            runtime_binary_path: helper.display().to_string(),
             expected_revision: None,
         })
         .await

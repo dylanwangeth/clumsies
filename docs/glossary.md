@@ -96,7 +96,8 @@ Revision for retrieval.
 ## Attestation
 
 Attestation is a legacy event-stream capability. Agent observability is not part
-of the current product direction or MCP memory contract.
+of the current product direction or MCP memory contract. Historical client
+source is preserved under `archive/zig-cli/` only.
 
 ## Adapter
 
@@ -108,12 +109,13 @@ Adapter is not the Server and not the MCP protocol itself. It is the layer that 
 
 MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates task-relevant fragments, loads known complete resources, and stores explicit Draft refinements.
 
-MCP is not an authority or storage layer. The Zig MCP server validates the
-agent-facing contract and delegates Effective Memory, retrieval, loading, and
-Draft persistence to the Rust daemon over XPC.
+MCP is not an authority or storage layer. The App-bundled Rust `clumsiesd mcp
+serve` proxy validates the agent-facing contract and delegates Effective
+Memory, retrieval, loading, Draft persistence, and Kanban operations to the
+resident daemon over XPC.
 
-The current implementation exposes concise tools: `activate`, `load`, and
-`store`. That is the runtime contract the docs should describe.
+The current implementation exposes four concise tools: `activate`, `load`,
+`store`, and `kanban`. That is the runtime contract the docs should describe.
 
 ## Retrieval Run and Evaluation Case
 

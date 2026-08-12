@@ -3,9 +3,11 @@
 ## Local daemon
 
 `clumsiesd` is an owner-scoped macOS launchd service. The macOS app installs and
-starts it, while both the app and MCP connect to the same process over XPC. The
-daemon has one central SQLite database for durable client state and one derived
-search database inside each Project's active local storage.
+starts it. Desktop connects directly over XPC; Agent hosts start the same
+App-bundled executable as a short-lived MCP or Hook proxy, which then connects
+to the resident process over XPC. The daemon has one central SQLite database for
+durable client state and one derived search database inside each Project's
+active local storage.
 
 The database currently stores:
 
@@ -69,13 +71,20 @@ keystroke.
 
 ## MCP write path
 
+The adapter-managed MCP entrypoint is `clumsiesd mcp serve`. This process owns
+only bounded JSON-RPC framing, the typed four-tool contract, Project binding,
+and XPC forwarding. Before accepting Agent traffic it verifies that its Agent
+runtime protocol revision and build identity match the resident daemon. It does
+not initialize `DaemonState`, open SQLite, load models, or start background
+workers.
+
 MCP keeps the public `store(resource, op)` tool shape. Internally it adds the
 current bound project ID and project scope before sending the operation to
 daemon. At process startup, MCP gives its current working directory to daemon;
 daemon canonicalizes the path and resolves the nearest bound ancestor in
-SQLite. MCP never treats a legacy Workspace ID as a Project ID. The Rust daemon
-test suite consumes a literal Zig MCP envelope to keep that cross-language
-contract executable.
+SQLite. MCP never treats a legacy Workspace ID as a Project ID. The Rust MCP
+contract tests exercise the exact Agent-facing envelopes before they are mapped
+to typed daemon requests.
 
 Agent-originated updates are exact text replacements, not complete-document
 writes. MCP forwards the resource ID, the complete-resource hash returned by

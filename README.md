@@ -3,7 +3,6 @@
 [![CI](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/lilhammerfun/clumsies?label=License)](https://github.com/lilhammerfun/clumsies/blob/main/LICENSE)
 [![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?label=Release)](https://github.com/lilhammerfun/clumsies/releases)
-[![Zig](https://img.shields.io/badge/Zig-0.16%2B-f7a41d?logo=zig&logoColor=white)](https://ziglang.org/)
 
 Building collaborative agent memory infrastructure for distributing rules,
 workflows, and project context to coding agents.
@@ -41,7 +40,8 @@ and store explicit draft refinements through the same system.
 - **Agent adapters.** The adapter layer installs the runtime hooks and skills
   needed by supported agents. Codex and Claude Code are supported today.
 - **Self-hosted authority.** The Rust Server and PostgreSQL run in your
-  infrastructure; Zig remains focused on CLI and MCP client surfaces.
+  infrastructure, while the signed Rust daemon owns local state and the Agent
+  MCP/Hook proxy surfaces.
 
 ## Quick start
 
@@ -57,17 +57,14 @@ bun run dev:macos
 
 The build embeds the Rust daemon binary, atomically replaces
 `~/Applications/Clumsies.app`, and launches the native AppKit/SwiftUI
-application from that stable path.
+application from that stable path. Supported Agent adapters point directly at
+the same signed `clumsiesd` artifact for MCP and lifecycle Hook proxy modes, so
+there is no separately installed CLI to keep in sync.
 
-Install the development CLI and MCP entrypoint on macOS with:
-
-```bash
-bun run install:cli:macos
-```
-
-The installer ad-hoc signs a staging binary and atomically replaces
-`~/.clumsies/bin/clumsies`, so active MCP processes can finish on the previous
-inode while new agent sessions start the new version.
+For a downloaded release, extract the ZIP and move `Clumsies.app` to
+`/Applications` or `~/Applications` before opening it. The App intentionally
+refuses to install its daemon or Agent integrations from macOS App
+Translocation's temporary quarantine path.
 
 For local Server and Web Admin development, start PostgreSQL, the deterministic
 fake OIDC provider, and Server with:
@@ -82,11 +79,10 @@ owns automatic draft synchronization and authenticated Server transport.
 
 For the self-hosted configuration, see the
 [deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/).
-The Zig CLI and MCP server can still be built separately:
 
-```bash
-zig build -Doptimize=ReleaseFast
-```
+The former Zig CLI/TUI/MCP implementation is retained only as an explicit
+[archive](archive/zig-cli/README.md). It is not built, released, installed, or
+used by supported Agent integrations.
 
 ## License
 

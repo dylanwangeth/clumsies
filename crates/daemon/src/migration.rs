@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -28,6 +29,7 @@ pub(crate) async fn connect_local_db(path: &Path) -> Result<SqlitePool, DaemonEr
     let options = SqliteConnectOptions::from_str(&path.display().to_string())?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5))
         .synchronous(SqliteSynchronous::Normal);
     Ok(SqlitePoolOptions::new()
         .max_connections(5)

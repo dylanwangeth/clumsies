@@ -2,9 +2,9 @@
 
 ## Why worktrees
 
-Clumsies development is moving to kanban-driven, parallel agent work: multiple
-issues are worked on concurrently by different agents (Codex, Claude Code,
-Zed). A single working directory does not survive this model:
+Clumsies development uses kanban-driven, parallel agent work: multiple issues
+are worked on concurrently by different Agent hosts. A single working directory
+does not survive this model:
 
 - switching branches in one checkout dirties the working tree, rebuilds, and
   editor state;
@@ -41,9 +41,9 @@ repository, one remote, and one set of git hooks.
 
 | Thing | Convention | Examples |
 |---|---|---|
-| Worktree directory | `.codex/worktrees/<slug>` | `issue-board-release`, `kanban-manual-runs` |
-| Branch | `codex/<slug>` for agent work; `fix/` or `feat/` for tracked issues | `codex/kanban-manual-runs`, `fix/issue-134-dispatch-macro` |
-| Commit subject | ≤ 72 characters, `<area>: <summary>` | `daemon: issue manual runs without hook events and reject concurrent work` |
+| Worktree directory | `target/codex-worktrees/<slug>` | `issue-board-release`, `search-index-refresh` |
+| Branch | `codex/<slug>` for agent work; `fix/` or `feat/` for tracked issues | `codex/search-index-refresh`, `fix/issue-134-dispatch-macro` |
+| Commit subject | ≤ 72 characters, `<area>: <summary>` | `daemon: move agent protocols into clumsiesd proxies` |
 
 The `clumsies-commit-format` commit-msg hook enforces the 72-character subject
 and runs in every worktree.
@@ -61,8 +61,8 @@ and runs in every worktree.
 
 ## Isolation and shared state
 
-- Each worktree has its own `zig-out/`, `.zig-cache/`, and `target/`; builds do
-  not interfere.
+- Each worktree has its own `target/` and frontend build output; builds do not
+  interfere.
 - Git hooks, remotes, and `~/.clumsies` state are shared by design.
 - The running daemon and macOS app are **not** part of the worktree: they run
   from `~/Applications/Clumsies.app` and `~/Library/...`. Code changes take
@@ -76,8 +76,8 @@ and runs in every worktree.
 | Layer | Command |
 |---|---|
 | daemon (lib + integration) | `cargo test -p daemon --lib` and `cargo test -p daemon --test daemon_lifecycle` |
-| Zig client | `zig build test --summary all` |
 | macOS app | `cd apps/macos && xcodebuild -project Clumsies.xcodeproj -scheme Clumsies -configuration Debug build` |
+| public docs | `bun run build` |
 
 Run at least the suites covering the changed layer before `kanban.request_closure`.
 
@@ -87,5 +87,5 @@ Worktree creation and cleanup will eventually be driven from the kanban itself:
 - `kanban.begin_work` ↔ worktree creation;
 - issue dependencies (ISSUE-024) tell an agent which worktrees can be
   created now (`kanban.list` reports `blocked` and `blocking_reasons`);
-- manual runs (ISSUE-026) already let non-hook hosts (Zed) claim issues, so
-  the loop above works for every agent type.
+- AgentRun identity comes from supported host lifecycle integration; Agents do
+  not mint a manual run through the public MCP contract.

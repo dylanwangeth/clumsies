@@ -1,9 +1,10 @@
 use crate::{
-    ActivateMemoryRequest, ActivateMemoryResponse, ApplyIssueGateRequest,
+    ActivateMemoryRequest, ActivateMemoryResponse, AgentRuntimeIdentity, ApplyIssueGateRequest,
     ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
     CreateIssueRequest, DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery,
     DaemonDraftListResponse, DaemonDraftOperationRequest, DaemonDraftOperationResponse,
     DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
+    DaemonLegacyAgentAdapterInspectionRequest, DaemonLegacyAgentAdapterInspectionResponse,
     DaemonMcpStatus, DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
     DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
     DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
@@ -25,17 +26,43 @@ use crate::{
     SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
     StartIssueWorkRequest, UnclaimIssueRequest, UpdateIssueRequest,
 };
+use std::time::Duration;
+
+const DEFAULT_IPC_TIMEOUT: Duration = Duration::from_secs(65);
 
 #[derive(Clone, Debug)]
 pub struct DaemonIpcClient {
     service_name: String,
+    agent_runtime: Option<AgentRuntimeIdentity>,
+    request_timeout: Duration,
 }
 
 impl DaemonIpcClient {
     pub fn new(service_name: impl Into<String>) -> Self {
         Self {
             service_name: service_name.into(),
+            agent_runtime: None,
+            request_timeout: DEFAULT_IPC_TIMEOUT,
         }
+    }
+
+    /// Creates the IPC client used by short-lived MCP and Hook proxies.
+    /// Every request sent through this client is marked with the same runtime
+    /// identity so the resident daemon can validate each dispatch separately.
+    pub fn for_agent_runtime(
+        service_name: impl Into<String>,
+        identity: AgentRuntimeIdentity,
+    ) -> Self {
+        Self {
+            service_name: service_name.into(),
+            agent_runtime: Some(identity),
+            request_timeout: DEFAULT_IPC_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
     }
 
     pub fn service_name(&self) -> &str {
@@ -43,7 +70,18 @@ impl DaemonIpcClient {
     }
 
     pub fn call(&self, request: DaemonIpcRequest) -> Result<DaemonIpcResponse, DaemonError> {
-        platform::call(&self.service_name, request)
+        platform::call(
+            &self.service_name,
+            self.prepare_request(request),
+            self.request_timeout,
+        )
+    }
+
+    fn prepare_request(&self, mut request: DaemonIpcRequest) -> DaemonIpcRequest {
+        if let Some(identity) = &self.agent_runtime {
+            request.agent_runtime = Some(identity.clone());
+        }
+        request
     }
 
     pub fn health(&self) -> Result<DaemonHealth, DaemonError> {
@@ -127,6 +165,24 @@ impl DaemonIpcClient {
     ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "list_project_agent_adapters",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_all_project_agent_adapters(
+        &self,
+    ) -> Result<DaemonProjectAgentAdapterListResponse, DaemonError> {
+        self.call(DaemonIpcRequest::empty("list_all_project_agent_adapters"))?
+            .into_payload()
+    }
+
+    pub fn inspect_legacy_agent_adapters(
+        &self,
+        request: DaemonLegacyAgentAdapterInspectionRequest,
+    ) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "inspect_legacy_agent_adapters",
             serde_json::to_value(request)?,
         ))?
         .into_payload()
@@ -528,6 +584,21 @@ pub struct DaemonIpcServer {
     inner: platform::DaemonIpcServerInner,
 }
 
+fn validate_agent_runtime_request(request: &DaemonIpcRequest) -> Result<(), DaemonError> {
+    match request.agent_runtime.as_ref() {
+        Some(identity) => crate::agent_runtime::validate_identity(identity),
+        None if crate::agent_runtime::method_requires_identity(&request.method) => {
+            Err(DaemonError::State {
+                code: "agent_runtime_mismatch",
+                message:
+                    "Agent proxy runtime identity is missing; restart Clumsies and the Agent host"
+                        .to_owned(),
+            })
+        }
+        None => Ok(()),
+    }
+}
+
 impl DaemonIpcServer {
     pub fn start(
         service_name: impl Into<String>,
@@ -550,6 +621,7 @@ mod platform {
     pub fn call(
         service_name: &str,
         _request: DaemonIpcRequest,
+        _timeout: Duration,
     ) -> Result<DaemonIpcResponse, DaemonError> {
         Err(DaemonError::Ipc(format!(
             "local daemon IPC is only implemented on macOS; requested XPC Mach service {service_name}"
@@ -625,40 +697,115 @@ mod platform {
         fn xpc_dictionary_get_string(xdict: XpcObject, key: *const c_char) -> *const c_char;
 
         fn xpc_get_type(object: XpcObject) -> XpcType;
+        fn xpc_retain(object: XpcObject) -> XpcObject;
         fn xpc_release(object: XpcObject);
     }
 
     pub fn call(
         service_name: &str,
         request: DaemonIpcRequest,
+        timeout: Duration,
     ) -> Result<DaemonIpcResponse, DaemonError> {
-        let service_name = CString::new(service_name)
-            .map_err(|error| DaemonError::Ipc(format!("invalid XPC service name: {error}")))?;
-        let connection = unsafe {
-            XpcConnectionHandle::new(xpc_connection_create_mach_service(
-                service_name.as_ptr(),
-                ptr::null_mut(),
-                0,
-            ))?
+        let service_name = service_name.to_owned();
+        let request_json = serde_json::to_string(&request)?;
+        let (connection_sender, connection_receiver) = std::sync::mpsc::sync_channel(1);
+        let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let service_name = match CString::new(service_name) {
+                Ok(service_name) => service_name,
+                Err(error) => {
+                    let error = format!("invalid XPC service name: {error}");
+                    let _ = connection_sender.send(Err(error.clone()));
+                    let _ = result_sender.send(Err(error));
+                    return;
+                }
+            };
+            let connection = match unsafe {
+                XpcConnectionHandle::new(xpc_connection_create_mach_service(
+                    service_name.as_ptr(),
+                    ptr::null_mut(),
+                    0,
+                ))
+            } {
+                Ok(connection) => connection,
+                Err(error) => {
+                    let error = error.to_string();
+                    let _ = connection_sender.send(Err(error.clone()));
+                    let _ = result_sender.send(Err(error));
+                    return;
+                }
+            };
+            let handler = RcBlock::new(|_event: XpcObject| {});
+            unsafe {
+                xpc_connection_set_event_handler(
+                    connection.as_ptr(),
+                    RcBlock::as_ptr(&handler).cast(),
+                );
+                xpc_connection_activate(connection.as_ptr());
+            }
+            let parent_reference = unsafe { xpc_retain(connection.as_ptr()) } as usize;
+            if connection_sender.send(Ok(parent_reference)).is_err() {
+                unsafe { xpc_release(parent_reference as XpcObject) };
+                return;
+            }
+            let result = (|| -> Result<String, String> {
+                let message = xpc_dictionary_with_json(REQUEST_JSON_KEY, &request_json)
+                    .map_err(|error| error.to_string())?;
+                let reply = unsafe {
+                    XpcOwnedObject::new(xpc_connection_send_message_with_reply_sync(
+                        connection.as_ptr(),
+                        message.as_ptr(),
+                    ))
+                    .map_err(|error| error.to_string())?
+                };
+                if unsafe { object_type(reply.as_ptr()) } == unsafe { xpc_error_type() } {
+                    return Err("XPC returned an error object".to_owned());
+                }
+                xpc_dictionary_string(reply.as_ptr(), RESPONSE_JSON_KEY)
+                    .map_err(|error| error.to_string())
+            })();
+            let _ = result_sender.send(result);
+        });
+        let started = std::time::Instant::now();
+        let connection_address = match connection_receiver.recv_timeout(timeout) {
+            Ok(Ok(connection_address)) => connection_address,
+            Ok(Err(error)) => return Err(DaemonError::Ipc(error)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err(DaemonError::Ipc(format!(
+                    "XPC connection setup timed out after {} ms",
+                    timeout.as_millis()
+                )));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DaemonError::Ipc(
+                    "XPC connection setup channel disconnected".to_owned(),
+                ));
+            }
         };
-        let handler = RcBlock::new(|_event: XpcObject| {});
-        unsafe {
-            xpc_connection_set_event_handler(connection.as_ptr(), RcBlock::as_ptr(&handler).cast());
-            xpc_connection_activate(connection.as_ptr());
+        let remaining = timeout.saturating_sub(started.elapsed());
+        let response = result_receiver.recv_timeout(remaining);
+        if matches!(response, Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+            unsafe { xpc_connection_cancel(connection_address as XpcConnection) };
         }
-
-        let message =
-            xpc_dictionary_with_json(REQUEST_JSON_KEY, &serde_json::to_string(&request)?)?;
-        let reply = unsafe {
-            XpcOwnedObject::new(xpc_connection_send_message_with_reply_sync(
-                connection.as_ptr(),
-                message.as_ptr(),
-            ))?
+        unsafe { xpc_release(connection_address as XpcObject) };
+        let response_json = match response {
+            Ok(Ok(response_json)) => response_json,
+            Ok(Err(error)) => return Err(DaemonError::Ipc(error)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Cancelling a connection wakes an in-flight synchronous XPC
+                // reply wait with an error object. The helper thread keeps the
+                // blocking C call off the Hook/MCP protocol thread.
+                return Err(DaemonError::Ipc(format!(
+                    "XPC request timed out after {} ms",
+                    timeout.as_millis()
+                )));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DaemonError::Ipc(
+                    "XPC reply channel disconnected".to_owned(),
+                ));
+            }
         };
-        if unsafe { object_type(reply.as_ptr()) } == unsafe { xpc_error_type() } {
-            return Err(DaemonError::Ipc("XPC returned an error object".to_owned()));
-        }
-        let response_json = xpc_dictionary_string(reply.as_ptr(), RESPONSE_JSON_KEY)?;
         serde_json::from_str(&response_json).map_err(DaemonError::from)
     }
 
@@ -739,7 +886,10 @@ mod platform {
     ) -> Result<String, DaemonError> {
         let request_json = xpc_dictionary_string(message, REQUEST_JSON_KEY)?;
         let request: DaemonIpcRequest = serde_json::from_str(&request_json)?;
-        let response = runtime.block_on(service.dispatch(request));
+        let response = match validate_agent_runtime_request(&request) {
+            Ok(()) => runtime.block_on(service.dispatch(request)),
+            Err(error) => DaemonIpcResponse::from_result(Err(error)),
+        };
         serde_json::to_string(&response).map_err(DaemonError::from)
     }
 
@@ -856,6 +1006,91 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_requests_keep_the_legacy_envelope_shape() {
+        let request: DaemonIpcRequest =
+            serde_json::from_str(r#"{"method":"health","payload":{}}"#).unwrap();
+        assert_eq!(request.agent_runtime, None);
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"method": "health", "payload": {}})
+        );
+    }
+
+    #[test]
+    fn agent_client_marks_every_prepared_request() {
+        let identity = crate::agent_runtime::current_identity();
+        let client = DaemonIpcClient::for_agent_runtime("ai.clumsies.test", identity.clone());
+
+        for request in [
+            DaemonIpcRequest::empty("health"),
+            DaemonIpcRequest::new("resolve_project_binding", serde_json::json!({})),
+            DaemonIpcRequest::new("activate_memory", serde_json::json!({})),
+        ] {
+            assert_eq!(
+                client.prepare_request(request).agent_runtime,
+                Some(identity.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn every_agent_method_rejects_a_missing_or_stale_runtime_marker() {
+        let stale = AgentRuntimeIdentity {
+            protocol_revision: crate::agent_runtime::AGENT_RUNTIME_PROTOCOL_REVISION,
+            build_id: "stale-test-build".to_owned(),
+        };
+        for method in [
+            "resolve_project_binding",
+            "activate_memory",
+            "load_memory",
+            "store_draft_operation",
+            "record_agent_run_event",
+            "list_issue_board",
+            "get_issue_detail",
+            "get_issue",
+            "export_issue",
+            "create_issue",
+            "update_issue",
+            "start_issue_work",
+            "pause_issue",
+            "resume_issue",
+            "request_issue_closure",
+            "unclaim_issue",
+        ] {
+            let missing = DaemonIpcRequest::empty(method);
+            assert!(matches!(
+                validate_agent_runtime_request(&missing),
+                Err(DaemonError::State {
+                    code: "agent_runtime_mismatch",
+                    ..
+                })
+            ));
+            let mut stale_request = DaemonIpcRequest::empty(method);
+            stale_request.agent_runtime = Some(stale.clone());
+            assert!(matches!(
+                validate_agent_runtime_request(&stale_request),
+                Err(DaemonError::State {
+                    code: "agent_runtime_mismatch",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn unmarked_health_and_desktop_aliases_remain_available() {
+        for method in [
+            "health",
+            "desktop_store_draft_operation",
+            "desktop_list_issue_board",
+            "desktop_get_issue_detail",
+            "desktop_unclaim_issue",
+        ] {
+            assert!(validate_agent_runtime_request(&DaemonIpcRequest::empty(method)).is_ok());
+        }
+    }
 
     #[test]
     fn missing_mach_service_returns_an_ipc_error() {
