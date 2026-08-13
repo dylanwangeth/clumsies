@@ -560,7 +560,13 @@ private struct ProjectLocalSetupSettings: View {
                             workspaceRoot: repository.workspaceRoot,
                             current: current
                         )
-                        adapters = try await store.projectAgentAdapters(repository.projectId)
+                        // Installing the first Adapter can normalize a historical
+                        // symlink-based binding to its canonical filesystem path.
+                        // Refresh both collections so the toggle compares the two
+                        // daemon-owned records using the same workspace identity.
+                        async let refreshedBindings = store.projectBindings(repository.projectId)
+                        async let refreshedAdapters = store.projectAgentAdapters(repository.projectId)
+                        (bindings, adapters) = try await (refreshedBindings, refreshedAdapters)
                         errorMessage = nil
                     } catch {
                         errorMessage = error.localizedDescription

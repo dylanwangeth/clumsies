@@ -13,8 +13,8 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 use uuid::Uuid;
 
 use crate::{
-    DaemonError, DaemonState, canonical_server_url, canonical_workspace_directory,
-    project_binding_from_row,
+    DaemonError, DaemonState, canonical_binding_root, canonical_server_url,
+    canonical_workspace_directory, project_binding_from_row,
 };
 
 #[cfg(target_os = "macos")]
@@ -1798,6 +1798,8 @@ pub(crate) async fn install(
     let project_id = required_value("project_id", request.project_id)?;
     let workspace_root = canonical_workspace_directory(&request.workspace_root)?;
     let server_url = canonical_server_url(&state.project_config().server_url)?;
+    normalize_empty_binding_alias(&state.inner.pool, &server_url, &workspace_root, &project_id)
+        .await?;
     recover_pending_fs_op_for_adapter(
         &state.inner.pool,
         &server_url,
@@ -1982,6 +1984,128 @@ async fn ensure_binding(
             "This repository is bound to a different Project.",
         ));
     }
+    Ok(())
+}
+
+/// Rekeys a historical binding whose stored lexical path now resolves to the
+/// canonical workspace path used by adapter filesystem transactions.
+///
+/// Adapter journals and their foreign key deliberately use one exact workspace
+/// key. Moving an occupied binding would also require rebasing its manifests
+/// and absolute hook commands, so this narrow repair is allowed only before the
+/// first daemon-owned adapter (and before any pending filesystem transaction).
+async fn normalize_empty_binding_alias(
+    pool: &SqlitePool,
+    server_url: &str,
+    workspace_root: &Path,
+    project_id: &str,
+) -> Result<(), DaemonError> {
+    let canonical_workspace = workspace_root.display().to_string();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let rows = sqlx::query(
+        "SELECT server_url, workspace_root, project_id, revision, created_at, updated_at
+         FROM project_bindings
+         WHERE server_url = $1",
+    )
+    .bind(server_url)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut equivalents = rows
+        .iter()
+        .map(project_binding_from_row)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|binding| canonical_binding_root(&binding.workspace_root) == workspace_root)
+        .collect::<Vec<_>>();
+    equivalents.sort_by(|left, right| left.workspace_root.cmp(&right.workspace_root));
+
+    if equivalents.len() > 1 {
+        return Err(state_error(
+            "project_binding_changed",
+            "More than one stored Project binding resolves to this repository. Remove the duplicate binding before installing a Coding Agent integration.",
+        ));
+    }
+    let Some(binding) = equivalents.pop() else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    if binding.project_id != project_id {
+        return Err(state_error(
+            "project_binding_changed",
+            "This repository is bound to a different Project.",
+        ));
+    }
+    if binding.workspace_root == canonical_workspace {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    let adapter_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM project_agent_adapters
+         WHERE server_url = $1 AND workspace_root = $2",
+    )
+    .bind(server_url)
+    .bind(&binding.workspace_root)
+    .fetch_one(&mut *tx)
+    .await?;
+    let pending_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM adapter_fs_ops
+         WHERE server_url = $1 AND workspace_root = $2",
+    )
+    .bind(server_url)
+    .bind(&binding.workspace_root)
+    .fetch_one(&mut *tx)
+    .await?;
+    if adapter_count != 0 || pending_count != 0 {
+        return Err(state_error(
+            "project_agent_adapter_recovery_required",
+            "This repository moved after a Coding Agent integration was installed. Remove or recover the existing integration before changing its stored path.",
+        ));
+    }
+
+    let inserted = sqlx::query(
+        "INSERT INTO project_bindings (
+             server_url, workspace_root, project_id, revision, created_at, updated_at
+         )
+         SELECT server_url, $3, project_id, revision, created_at, updated_at
+         FROM project_bindings
+         WHERE server_url = $1 AND workspace_root = $2
+           AND project_id = $4 AND revision = $5",
+    )
+    .bind(server_url)
+    .bind(&binding.workspace_root)
+    .bind(&canonical_workspace)
+    .bind(project_id)
+    .bind(binding.revision)
+    .execute(&mut *tx)
+    .await?;
+    if inserted.rows_affected() != 1 {
+        return Err(state_error(
+            "project_binding_changed",
+            "The Project binding changed while its repository path was being normalized.",
+        ));
+    }
+    let deleted = sqlx::query(
+        "DELETE FROM project_bindings
+         WHERE server_url = $1 AND workspace_root = $2
+           AND project_id = $3 AND revision = $4",
+    )
+    .bind(server_url)
+    .bind(&binding.workspace_root)
+    .bind(project_id)
+    .bind(binding.revision)
+    .execute(&mut *tx)
+    .await?;
+    if deleted.rows_affected() != 1 {
+        return Err(state_error(
+            "project_binding_changed",
+            "The Project binding changed while its repository path was being normalized.",
+        ));
+    }
+    tx.commit().await?;
     Ok(())
 }
 
