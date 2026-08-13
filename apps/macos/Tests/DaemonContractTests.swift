@@ -893,6 +893,94 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertTrue(loaded.resources[0].contentLoaded)
     }
 
+    func testReviewCommentContractCarriesVersionAndAnchor() throws {
+        let request = CreateReviewCommentRequest(
+            body: "Please tighten this sentence.",
+            expectedReviewVersion: 7,
+            anchorPath: "notes/a.md",
+            anchorLine: 12
+        )
+        let requestData = try JSONCoding.encoder().encode(request)
+        let requestObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestData) as? [String: Any]
+        )
+
+        XCTAssertEqual(requestObject["body"] as? String, "Please tighten this sentence.")
+        XCTAssertEqual(requestObject["expected_review_version"] as? Int, 7)
+        XCTAssertEqual(requestObject["anchor_path"] as? String, "notes/a.md")
+        XCTAssertEqual(requestObject["anchor_line"] as? Int, 12)
+
+        let response = """
+        {
+          "comment_id": "comment-1",
+          "review_id": "review-1",
+          "author": {
+            "user_id": "reviewer-1",
+            "email": "reviewer@example.com",
+            "display_name": "Reviewer",
+            "avatar_url": null,
+            "role": "member"
+          },
+          "body": "Please tighten this sentence.",
+          "anchor_path": "notes/a.md",
+          "anchor_line": 12,
+          "review_version": 8,
+          "created_at": "2026-08-06T01:00:00Z"
+        }
+        """
+        let comment = try JSONCoding.decoder().decode(
+            ReviewComment.self,
+            from: Data(response.utf8)
+        )
+
+        XCTAssertEqual(comment.anchorPath, "notes/a.md")
+        XCTAssertEqual(comment.anchorLine, 12)
+        XCTAssertEqual(comment.reviewVersion, 8)
+    }
+
+    func testReviewMetadataDecodesLegacyPayloadWithoutDecisionAuditFields() throws {
+        let json = """
+        {
+          "review_id": "review-legacy",
+          "project_id": "project-1",
+          "draft_id": "draft-1",
+          "author": {
+            "user_id": "author-1",
+            "email": "author@example.com",
+            "display_name": null,
+            "avatar_url": null,
+            "role": "member"
+          },
+          "title": "Legacy review",
+          "description": "Created before decision audit metadata.",
+          "status": "approved",
+          "version": 2,
+          "decision_body": "Looks good.",
+          "approved_result_hash": "sha256:approved",
+          "coordination": {
+            "freshness": "current",
+            "current_commit_id": "commit-1",
+            "has_upstream_resource_changes": false,
+            "reconciliation": "clean",
+            "candidate_id": null
+          },
+          "created_at": "2026-08-05T00:00:00Z",
+          "updated_at": "2026-08-05T01:00:00Z"
+        }
+        """
+
+        let metadata = try JSONCoding.decoder().decode(
+            ReviewMetadata.self,
+            from: Data(json.utf8)
+        )
+        let record = WorkspaceLoader.mapReview(metadata)
+
+        XCTAssertNil(metadata.decidedBy)
+        XCTAssertNil(metadata.decidedAt)
+        XCTAssertNil(record.decidedBy)
+        XCTAssertNil(record.decidedAt)
+    }
+
     func testReviewChangeSourcesUseCommitTreeAndDraftOperation() throws {
         let resource = ServerDraftResourceReference(scope: "project", kind: .context, id: "context-1", path: "notes/a.md")
         let detail = ReviewDetail(
@@ -907,6 +995,8 @@ final class DaemonContractTests: XCTestCase {
                 version: 3,
                 decisionBody: nil,
                 approvedResultHash: nil,
+                decidedBy: nil,
+                decidedAt: nil,
                 coordination: coordination(
                     freshness: .behind,
                     currentCommitId: "commit-current",
@@ -956,6 +1046,7 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(sources.currentContent, "Current body")
         XCTAssertEqual(sources.draftContent, "Draft body")
         XCTAssertEqual(sources.resolutionContent, "Draft body")
+        XCTAssertEqual(sources.proposedPath, "notes/a.md")
         XCTAssertTrue(sources.operationLabels.isEmpty)
         let mapped = WorkspaceLoader.mapReview(detail)
         XCTAssertEqual(mapped.freshness, .behind)
@@ -1000,6 +1091,7 @@ final class DaemonContractTests: XCTestCase {
 
         XCTAssertEqual(sources.operationLabels, ["Rename to notes/b.md"])
         XCTAssertEqual(sources.draftContent, "Draft body")
+        XCTAssertEqual(sources.proposedPath, "notes/b.md")
     }
 
     func testRuleDraftRenderingPreservesMarkdown() {
@@ -1013,7 +1105,7 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
-    func testReviewListMetadataMapsWithoutLoadingReviewDetail() {
+    func testReviewListMetadataMapsWithoutLoadingReviewDetail() throws {
         let metadata = ReviewMetadata(
             reviewId: "review-1",
             projectId: "project-1",
@@ -1031,6 +1123,14 @@ final class DaemonContractTests: XCTestCase {
             version: 1,
             decisionBody: nil,
             approvedResultHash: nil,
+            decidedBy: UserReference(
+                userId: "reviewer-1",
+                email: "reviewer@example.com",
+                displayName: "Reviewer",
+                avatarUrl: nil,
+                role: "member"
+            ),
+            decidedAt: "2026-08-06T01:00:00Z",
             coordination: DraftCoordination(
                 freshness: .current,
                 currentCommitId: "commit-1",
@@ -1048,6 +1148,21 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(review.title, "Split diff UI example")
         XCTAssertEqual(review.freshness, .current)
         XCTAssertEqual(review.currentCommitId, "commit-1")
+        XCTAssertEqual(review.decidedBy?.userId, "reviewer-1")
+        XCTAssertEqual(review.decidedBy?.displayName, "Reviewer")
+        XCTAssertEqual(review.decidedAt, "2026-08-06T01:00:00Z")
+
+        let encoded = try JSONCoding.encoder().encode(metadata)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        let decidedBy = try XCTUnwrap(object["decided_by"] as? [String: Any])
+        XCTAssertEqual(decidedBy["user_id"] as? String, "reviewer-1")
+        XCTAssertEqual(object["decided_at"] as? String, "2026-08-06T01:00:00Z")
+
+        let decoded = try JSONCoding.decoder().decode(ReviewMetadata.self, from: encoded)
+        XCTAssertEqual(decoded.decidedBy?.displayName, "Reviewer")
+        XCTAssertEqual(decoded.decidedAt, "2026-08-06T01:00:00Z")
     }
 
     func testCommitPayloadDecodesInternalProjectSelectionTreeEntry() throws {
@@ -1108,6 +1223,123 @@ final class DaemonContractTests: XCTestCase {
         }
     }
 
+    func testReviewCommentPlacementKeepsCurrentFileThreadsOnTheirExactLine() {
+        let author = UserReference(
+            userId: "reviewer-1",
+            email: "reviewer@example.com",
+            displayName: "Reviewer",
+            avatarUrl: nil,
+            role: "member"
+        )
+        func comment(
+            _ id: String,
+            path: String?,
+            line: Int?,
+            version: Int = 3
+        ) -> ReviewComment {
+            ReviewComment(
+                commentId: id,
+                reviewId: "review-1",
+                author: author,
+                body: id,
+                createdAt: "2026-08-11T00:00:00Z",
+                anchorPath: path,
+                anchorLine: line,
+                reviewVersion: version
+            )
+        }
+        let general = comment("general", path: nil, line: nil)
+        let inline = comment("inline", path: "context/review.md", line: 7)
+        let priorPath = comment("prior", path: "context/old-review.md", line: 7)
+        let priorVersion = comment(
+            "prior-version",
+            path: "context/review.md",
+            line: 7,
+            version: 2
+        )
+        let missingLine = comment("missing-line", path: "context/review.md", line: 99)
+
+        let placement = ReviewCommentPlacement.resolve(
+            comments: [general, inline, priorPath, priorVersion, missingLine],
+            activePath: "context/review.md",
+            renderableLines: [7, 8],
+            minimumInlineVersion: 3
+        )
+
+        XCTAssertEqual(placement.general.map(\.id), ["general"])
+        XCTAssertEqual(placement.byLine[7]?.map(\.id), ["inline"])
+        XCTAssertEqual(
+            placement.unplaced.map(\.id),
+            ["prior", "prior-version", "missing-line"]
+        )
+        XCTAssertNil(placement.byLine[1])
+    }
+
+    func testReviewCommentPlacementAccountsForDecisionOnlyVersionChanges() {
+        XCTAssertEqual(
+            ReviewCommentPlacement.minimumInlineVersion(reviewVersion: 4, status: "open"),
+            4
+        )
+        XCTAssertEqual(
+            ReviewCommentPlacement.minimumInlineVersion(reviewVersion: 4, status: "approved"),
+            3
+        )
+        XCTAssertEqual(
+            ReviewCommentPlacement.minimumInlineVersion(reviewVersion: 4, status: "rejected"),
+            3
+        )
+        XCTAssertEqual(
+            ReviewCommentPlacement.minimumInlineVersion(reviewVersion: 5, status: "merged"),
+            3
+        )
+    }
+
+    func testUnifiedDiffRevealsUnchangedContextContainingAnchoredComments() {
+        let content = (1...12).map { "line \($0)" }.joined(separator: "\n")
+        let model = SplitDiffModel.make(original: content, modified: content)
+
+        XCTAssertTrue(UnifiedDiffPresentation(model: model).blocks.isEmpty)
+
+        let presentation = UnifiedDiffPresentation(
+            model: model,
+            anchoredLines: [8]
+        )
+        let anchoredLine = presentation.blocks
+            .flatMap(\.lines)
+            .first { $0.commentAnchorLine == 8 }
+
+        XCTAssertNotNil(anchoredLine)
+        XCTAssertTrue(presentation.blocks.contains { block in
+            guard case .hunk = block.kind else { return false }
+            return block.lines.contains { $0.commentAnchorLine == 8 }
+        })
+    }
+
+    func testUnifiedDiffSplitsLargeOmissionAroundAnchoredComment() throws {
+        let originalLines = (1...50).map { "line \($0)" }
+        var modifiedLines = originalLines
+        modifiedLines[1] = "changed line 2"
+        let model = SplitDiffModel.make(
+            original: originalLines.joined(separator: "\n"),
+            modified: modifiedLines.joined(separator: "\n")
+        )
+
+        let presentation = UnifiedDiffPresentation(
+            model: model,
+            anchoredLines: [40]
+        )
+        let commentHunk = try XCTUnwrap(presentation.blocks.first { block in
+            guard case .hunk = block.kind else { return false }
+            return block.lines.contains { $0.commentAnchorLine == 40 }
+        })
+
+        XCTAssertLessThanOrEqual(commentHunk.lines.count, 7)
+        XCTAssertFalse(presentation.blocks.contains { block in
+            guard case .omission = block.kind else { return false }
+            return block.lines.contains { $0.commentAnchorLine == 40 }
+        })
+    }
+
     func testSplitDiffAlignsReplacementRows() {
         let model = SplitDiffModel.make(original: "one\ntwo", modified: "one\nthree")
 
@@ -1120,6 +1352,37 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(model.rows[1].modified?.text, "three")
         XCTAssertEqual(model.rows[1].original?.lineNumber, 2)
         XCTAssertEqual(model.rows[1].modified?.lineNumber, 2)
+    }
+
+    func testUnifiedDiffExpandsReplacementIntoRemovalAndInsertion() {
+        let model = SplitDiffModel.make(original: "one\ntwo", modified: "one\nthree")
+        let presentation = UnifiedDiffPresentation(model: model)
+        let changed = presentation.blocks
+            .flatMap(\.lines)
+            .filter { $0.kind != .context }
+
+        XCTAssertEqual(changed.map(\.kind), [.removal, .insertion])
+        XCTAssertEqual(changed.map(\.text), ["two", "three"])
+        XCTAssertEqual(changed[0].oldLineNumber, 2)
+        XCTAssertNil(changed[0].commentAnchorLine)
+        XCTAssertEqual(changed[1].newLineNumber, 2)
+        XCTAssertEqual(changed[1].commentAnchorLine, 2)
+    }
+
+    func testUnifiedDiffKeepsDistantContextInCollapsedOmissionBlock() {
+        let original = (1...20).map { "line \($0)" }.joined(separator: "\n")
+        var modifiedLines = (1...20).map { "line \($0)" }
+        modifiedLines[1] = "changed 2"
+        modifiedLines[18] = "changed 19"
+
+        let presentation = UnifiedDiffPresentation(model: SplitDiffModel.make(
+            original: original,
+            modified: modifiedLines.joined(separator: "\n")
+        ))
+
+        XCTAssertEqual(presentation.blocks.count, 3)
+        XCTAssertEqual(presentation.blocks[1].kind, .omission)
+        XCTAssertGreaterThan(presentation.blocks[1].lines.count, 0)
     }
 
     func testSplitDiffTreatsEmptyContentAsNoLines() {
@@ -1485,6 +1748,8 @@ final class DaemonContractTests: XCTestCase {
                 version: 1,
                 decisionBody: nil,
                 approvedResultHash: nil,
+                decidedBy: nil,
+                decidedAt: nil,
                 coordination: coordination(),
                 createdAt: timestamp,
                 updatedAt: timestamp

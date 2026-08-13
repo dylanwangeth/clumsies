@@ -89,7 +89,9 @@ enum WorkspaceColumnLayout: Equatable {
     case sidebarContentDetail
 
     init(section: WorkspaceSection) {
-        self = (section == .issues || section == .reviews) ? .sidebarDetail : .sidebarContentDetail
+        self = section == .issues || section == .reviews
+            ? .sidebarDetail
+            : .sidebarContentDetail
     }
 }
 
@@ -102,29 +104,34 @@ struct WorkspaceView: View {
     let onOpenSettings: () -> Void
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
+    let loadsReviewDetail: Bool
     @StateObject private var issueBoardModel: IssueBoardModel
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
+    @State private var reviewSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
     @State private var confirmsBundleDeletion = false
     @State private var showsSyncIssuePopover = false
     @State private var showsUnlinkedActivity = false
     @State private var showsIssueWorkflowHelp = false
     @State private var issueNavigationPath: [IssueBoardRoute] = []
-    @FocusState private var issueSearchFocused: Bool
     @State private var reviewNavigationPath: [ReviewRoute] = []
+    @FocusState private var issueSearchFocused: Bool
     @State private var reviewStatusFilter: ReviewStatusFilter = .open
+    @State private var pendingReviewToolbarAction: ReviewMenuAction?
 
     init(
         store: WorkspaceStore,
         onOpenSettings: @escaping () -> Void,
         onOpenDiagnostics: @escaping (DiagnosticsDestination) -> Void,
-        onShowLogs: @escaping () -> Void
+        onShowLogs: @escaping () -> Void,
+        loadsReviewDetail: Bool = true
     ) {
         self.store = store
         self.onOpenSettings = onOpenSettings
         self.onOpenDiagnostics = onOpenDiagnostics
         self.onShowLogs = onShowLogs
+        self.loadsReviewDetail = loadsReviewDetail
         _issueBoardModel = StateObject(wrappedValue: IssueBoardModel(daemon: store.daemon))
     }
 
@@ -461,7 +468,7 @@ struct WorkspaceView: View {
     }
 
     private var reviewsWorkspace: some View {
-        NavigationSplitView(columnVisibility: $issueSplitVisibility) {
+        NavigationSplitView(columnVisibility: $reviewSplitVisibility) {
             GlobalSidebar(
                 store: store,
                 onOpenSettings: onOpenSettings,
@@ -474,44 +481,319 @@ struct WorkspaceView: View {
                 ReviewListPage(
                     store: store,
                     reviews: filteredReviews,
-                    statusFilter: $reviewStatusFilter,
-                    onOpen: { review in
-                        reviewNavigationPath = [ReviewRoute(reviewId: review.id)]
-                    }
+                    statusFilter: $reviewStatusFilter
                 )
                 .navigationDestination(for: ReviewRoute.self) { route in
                     ReviewDetailPage(
                         store: store,
                         reviewId: route.reviewId,
-                        orderedReviews: filteredReviews,
-                        onNavigateToReview: { reviewId in
-                            reviewNavigationPath = [ReviewRoute(reviewId: reviewId)]
-                        }
+                        loadsRemoteContent: loadsReviewDetail
                     )
+                    .toolbar {
+                        reviewDetailToolbarContent
+                    }
                 }
             }
             .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
                 if reviewNavigationPath.isEmpty {
-                    ToolbarItem(placement: .primaryAction) {
-                        ReviewStatusFilterControl(
-                            reviews: store.reviews,
-                            selection: $reviewStatusFilter
-                        )
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible, placement: .automatic)
                     }
+
+                    reviewUtilityToolbarContent(hasLeadingActions: false)
                 }
             }
         }
+        .onAppear {
+            store.showsProjectSettings = false
+            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .detailOnly
+            if reviewSplitVisibility != target {
+                reviewSplitVisibility = target
+            }
+
+            if let routedReviewId = reviewNavigationPath.last?.reviewId,
+               !store.reviews.contains(where: { $0.id == routedReviewId }) {
+                reviewNavigationPath.removeAll()
+            }
+            if reviewNavigationPath.isEmpty,
+               let reviewId = store.selectedReviewId,
+               store.reviews.contains(where: { $0.id == reviewId }) {
+                reviewNavigationPath = [ReviewRoute(reviewId: reviewId)]
+            }
+        }
+        .onChange(of: reviewSplitVisibility) { _, visibility in
+            let expanded = visibility != .detailOnly
+            if store.sidebarExpanded != expanded {
+                store.sidebarExpanded = expanded
+            }
+        }
+        .onChange(of: store.sidebarExpanded) { _, expanded in
+            let target: NavigationSplitViewVisibility = expanded ? .all : .detailOnly
+            if reviewSplitVisibility != target {
+                reviewSplitVisibility = target
+            }
+        }
+        .onChange(of: reviewNavigationPath) { _, path in
+            let reviewId = path.last?.reviewId
+            if store.selectedReviewId != reviewId {
+                store.selectedReviewId = reviewId
+            }
+            if reviewId == nil {
+                store.reviewDecisionReadiness = nil
+                pendingReviewToolbarAction = nil
+            }
+        }
         .onChange(of: store.selectedReviewId) { _, reviewId in
-            guard store.selectedSection == .reviews, let reviewId else { return }
+            guard store.selectedSection == .reviews else { return }
+            guard let reviewId else {
+                if !reviewNavigationPath.isEmpty {
+                    reviewNavigationPath.removeAll()
+                }
+                return
+            }
             guard reviewNavigationPath.last?.reviewId != reviewId else { return }
             guard store.reviews.contains(where: { $0.id == reviewId }) else { return }
             reviewNavigationPath = [ReviewRoute(reviewId: reviewId)]
+        }
+        .onChange(of: syncToolbarPresentation) { _, presentation in
+            if presentation == nil || presentation?.isSyncing == true {
+                showsSyncIssuePopover = false
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                await store.refreshSyncStatus()
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
+        }
+        .alert(
+            "Clumsies",
+            isPresented: Binding(
+                get: { store.errorMessage != nil },
+                set: { if !$0 { store.errorMessage = nil } }
+            )
+        ) {
+            Button("OK") { store.errorMessage = nil }
+        } message: {
+            Text(store.errorMessage ?? "")
+                .textSelection(.enabled)
+        }
+        .sheet(isPresented: $store.showsProjectCreation) {
+            ProjectCreationSheet(store: store)
         }
     }
 
     private var filteredReviews: [ReviewRecord] {
         store.reviews.filter { reviewStatusFilter.matches($0) }
+    }
+
+    private var selectedReviewForToolbar: ReviewRecord? {
+        guard let reviewId = store.selectedReviewId else { return nil }
+        return store.reviews.first { $0.id == reviewId }
+    }
+
+    private var hasReviewDecisionToolbarAction: Bool {
+        guard let review = selectedReviewForToolbar else { return false }
+        switch review.status {
+        case "open":
+            return true
+        case "approved":
+            return ReviewMenuAction.merge.isAvailable(
+                for: review,
+                canMergeReviews: store.canMergeReviews,
+                isAuthor: store.isReviewAuthor(review)
+            )
+        case "rejected":
+            return store.isReviewAuthor(review)
+        default:
+            return false
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var reviewDetailToolbarContent: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.flexible, placement: .automatic)
+        }
+
+        if let review = selectedReviewForToolbar,
+           hasReviewDecisionToolbarAction {
+            if review.status == "open" {
+                ToolbarItem(id: "review.reject", placement: .automatic) {
+                    Button {
+                        performReviewToolbarAction(.reject)
+                    } label: {
+                        reviewToolbarActionLabel(
+                            systemImage: "xmark",
+                            isPending: pendingReviewToolbarAction == .reject
+                        )
+                    }
+                    .disabled(
+                        pendingReviewToolbarAction != nil
+                            || !store.canPerformReviewMenuAction(.reject)
+                    )
+                    .help(review.freshness == .behind
+                        ? "Review the latest shared changes before deciding"
+                        : "Reject this Review")
+                    .accessibilityLabel("Reject Review")
+                    .accessibilityIdentifier("review-toolbar-reject")
+                }
+
+                ToolbarItem(id: "review.approve", placement: .automatic) {
+                    Button {
+                        performReviewToolbarAction(.approve)
+                    } label: {
+                        reviewToolbarActionLabel(
+                            systemImage: "checkmark",
+                            isPending: pendingReviewToolbarAction == .approve
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        pendingReviewToolbarAction != nil
+                            || !store.canPerformReviewMenuAction(.approve)
+                    )
+                    .help(review.freshness == .behind
+                        ? "Review the latest shared changes before deciding"
+                        : "Approve this Review")
+                    .accessibilityLabel("Approve Review")
+                    .accessibilityIdentifier("review-toolbar-approve")
+                }
+            } else if ReviewMenuAction.merge.isAvailable(
+                for: review,
+                canMergeReviews: store.canMergeReviews,
+                isAuthor: store.isReviewAuthor(review)
+            ) {
+                ToolbarItem(id: "review.merge", placement: .automatic) {
+                    Button {
+                        performReviewToolbarAction(.merge)
+                    } label: {
+                        reviewToolbarActionLabel(
+                            systemImage: "arrow.triangle.merge",
+                            isPending: pendingReviewToolbarAction == .merge
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        pendingReviewToolbarAction != nil
+                            || !store.canPerformReviewMenuAction(.merge)
+                    )
+                    .help("Merge the approved changes")
+                    .accessibilityLabel("Merge Review")
+                    .accessibilityIdentifier("review-toolbar-merge")
+                }
+            } else if review.status == "rejected", store.isReviewAuthor(review) {
+                ToolbarItem(id: "review.resubmit", placement: .automatic) {
+                    Button {
+                        performReviewToolbarAction(.resubmit)
+                    } label: {
+                        reviewToolbarActionLabel(
+                            systemImage: "arrow.clockwise",
+                            isPending: pendingReviewToolbarAction == .resubmit
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        pendingReviewToolbarAction != nil
+                            || !store.canPerformReviewMenuAction(.resubmit)
+                    )
+                    .help("Resubmit this Review")
+                    .accessibilityLabel("Resubmit Review")
+                    .accessibilityIdentifier("review-toolbar-resubmit")
+                }
+            }
+        }
+
+        reviewUtilityToolbarContent(hasLeadingActions: hasReviewDecisionToolbarAction)
+    }
+
+    @ToolbarContentBuilder
+    private func reviewUtilityToolbarContent(hasLeadingActions: Bool) -> some ToolbarContent {
+        if #available(macOS 26.0, *),
+           syncToolbarPresentation != nil,
+           hasLeadingActions {
+            ToolbarSpacer(.fixed, placement: .automatic)
+        }
+
+        if let syncToolbarPresentation {
+            ToolbarItem(id: "review.sync", placement: .automatic) {
+                switch syncToolbarPresentation {
+                case .syncing:
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 24, height: 24)
+                        .help(syncToolbarPresentation.label)
+                        .accessibilityLabel(syncToolbarPresentation.label)
+                        .accessibilityIdentifier("review-toolbar-sync")
+                case .failed, .unavailable, .stale:
+                    Button {
+                        showsSyncIssuePopover.toggle()
+                    } label: {
+                        Image(systemName: syncToolbarPresentation.symbolName)
+                            .foregroundStyle(syncToolbarPresentation.tint)
+                    }
+                    .help(syncToolbarPresentation.label)
+                    .accessibilityLabel(syncToolbarPresentation.label)
+                    .accessibilityIdentifier("review-toolbar-sync")
+                    .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
+                        SyncIssuePopover(
+                            presentation: syncToolbarPresentation,
+                            store: store,
+                            isPresented: $showsSyncIssuePopover
+                        )
+                    }
+                }
+            }
+        }
+
+        if #available(macOS 26.0, *),
+           syncToolbarPresentation != nil || hasLeadingActions {
+            ToolbarSpacer(.fixed, placement: .automatic)
+        }
+
+        ToolbarItem(id: "review.search", placement: .automatic) {
+            Button {
+                store.showsGlobalSearch.toggle()
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .help("Search Reviews")
+            .accessibilityLabel("Search Reviews")
+            .accessibilityIdentifier("review-toolbar-search")
+            .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
+                WorkspaceSearchPopover(
+                    store: store,
+                    results: searchResults,
+                    onOpen: open
+                )
+            }
+        }
+    }
+
+    private func performReviewToolbarAction(_ action: ReviewMenuAction) {
+        guard pendingReviewToolbarAction == nil else { return }
+        pendingReviewToolbarAction = action
+        Task {
+            defer { pendingReviewToolbarAction = nil }
+            await store.performReviewMenuAction(action)
+        }
+    }
+
+    private func reviewToolbarActionLabel(systemImage: String, isPending: Bool) -> some View {
+        ZStack {
+            Image(systemName: systemImage)
+                .opacity(isPending ? 0 : 1)
+            if isPending {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .frame(width: 16, height: 16)
     }
 
     private var issuesWorkspace: some View {
@@ -868,6 +1150,7 @@ struct WorkspaceView: View {
             store.selectedBundleId = bundle.id
         case .review(let review):
             store.selectedSection = .reviews
+            reviewStatusFilter = ReviewStatusFilter(rawValue: review.status) ?? .all
             store.selectedReviewId = review.id
         }
         store.searchQuery = ""

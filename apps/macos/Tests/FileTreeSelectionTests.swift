@@ -3,6 +3,23 @@ import XCTest
 @testable import Clumsies
 
 final class FileTreeSelectionTests: XCTestCase {
+    func testSharedPathTreeBuildsDirectoriesForReviewAndMemoryNavigators() throws {
+        let roots = PathTreeNode.build([
+            PathTreeItem(id: "review-file", path: "context/guides/review.md"),
+            PathTreeItem(id: "memory-file", path: "context/notes.md"),
+        ])
+
+        let context = try XCTUnwrap(roots.first)
+        XCTAssertEqual(context.id, "directory:context")
+        XCTAssertEqual(context.name, "context")
+        XCTAssertEqual(PathTreeNode.firstItemId(in: roots), "review-file")
+        XCTAssertEqual(
+            PathTreeNode.directoryIds(in: roots),
+            ["directory:context", "directory:context/guides"]
+        )
+        XCTAssertNotNil(PathTreeNode.node(withId: "review-file", in: roots)?.item)
+    }
+
     func testPlainDirectoryClickSelectsAndTogglesDirectory() {
         let result = FileTreeSelectionInteraction.directoryClick(
             nodeId: "directory:design",

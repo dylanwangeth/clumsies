@@ -178,6 +178,8 @@ struct ReviewRecord: Identifiable, Hashable, Sendable {
     let version: Int
     let decisionBody: String?
     let approvedResultHash: String?
+    let decidedBy: UserReference?
+    let decidedAt: String?
     let freshness: DraftFreshness
     let reconciliation: DraftReconciliationStatus
     let reconciliationCandidateId: String?
@@ -190,6 +192,7 @@ struct ReviewChangeSources: Sendable {
     let currentContent: String?
     let draftContent: String?
     let resolutionContent: String?
+    let proposedPath: String?
     let operationLabels: [String]
 }
 

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import Clumsies
 
@@ -7,7 +9,7 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSection.issues.title, "Kanban")
     }
 
-    func testIssuesAndReviewsUseSidebarAndDetailWhileOtherSectionsKeepThreeColumns() {
+    func testReviewsAndKanbanUseSidebarWithPushNavigatedDetail() {
         XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
         XCTAssertEqual(WorkspaceColumnLayout(section: .reviews), .sidebarDetail)
 
@@ -24,38 +26,263 @@ final class WorkspaceNavigationTests: XCTestCase {
     }
 
     func testReviewStatusFilterMatchesByStatus() {
-        func record(status: String) -> ReviewRecord {
-            ReviewRecord(
-                id: UUID().uuidString,
-                projectId: "prj",
-                draftId: "draft",
-                title: "T",
-                description: "",
-                author: UserReference(
-                    userId: "u",
-                    email: "u@example.com",
-                    displayName: nil,
-                    avatarUrl: nil,
-                    role: "member"
-                ),
-                status: status,
-                version: 1,
-                decisionBody: nil,
-                approvedResultHash: nil,
-                freshness: .current,
-                reconciliation: .clean,
-                reconciliationCandidateId: nil,
-                currentCommitId: nil,
-                updatedAt: "2026-08-09T00:00:00Z"
-            )
-        }
-
         let all = ReviewStatusFilter.allCases
-        let open = record(status: "open")
+        let open = reviewRecord(status: "open")
         XCTAssertTrue(ReviewStatusFilter.open.matches(open))
         XCTAssertFalse(ReviewStatusFilter.approved.matches(open))
         XCTAssertTrue(ReviewStatusFilter.all.matches(open))
+        XCTAssertEqual(ReviewStatusFilter.open.count(in: [open]), 1)
+        XCTAssertEqual(ReviewStatusFilter.approved.count(in: [open]), 0)
+        XCTAssertEqual(ReviewStatusFilter.all.count(in: [open]), 1)
         XCTAssertEqual(all.count, 5)
+    }
+
+    func testReviewQueueStatePrioritizesDecisionBlockersAndViewerAction() {
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(
+                    status: "merged",
+                    freshness: .behind,
+                    reconciliation: .conflicts
+                ),
+                isAuthor: false,
+                canMerge: true
+            ),
+            .init(
+                title: "Merged",
+                symbolName: "arrow.triangle.merge",
+                tone: .neutral,
+                isQueueSignal: false
+            )
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(
+                    status: "open",
+                    freshness: .behind,
+                    reconciliation: .conflicts
+                ),
+                isAuthor: false,
+                canMerge: false
+            ).title,
+            "Conflicts"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "open", reconciliation: .conflicts),
+                isAuthor: false,
+                canMerge: false
+            ).title,
+            "Needs Review"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "approved", freshness: .behind),
+                isAuthor: false,
+                canMerge: true
+            ).title,
+            "Out of Date"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "approved", freshness: .behind),
+                isAuthor: true,
+                canMerge: true
+            ).title,
+            "Update Required"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "open"),
+                isAuthor: false,
+                canMerge: false
+            ).title,
+            "Needs Review"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "approved", approvedResultHash: "result"),
+                isAuthor: false,
+                canMerge: true
+            ).title,
+            "Ready to Merge"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "approved"),
+                isAuthor: false,
+                canMerge: true
+            ).title,
+            "Approved"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "rejected"),
+                isAuthor: true,
+                canMerge: false
+            ).title,
+            "Resubmit"
+        )
+        XCTAssertEqual(
+            ReviewQueueStatePresentation.resolve(
+                review: reviewRecord(status: "rejected"),
+                isAuthor: false,
+                canMerge: false
+            ).title,
+            "Awaiting Author"
+        )
+    }
+
+    func testReviewDecisionReadinessIsBoundToTheRenderedVersion() {
+        let reviewId = "review-versioned"
+        let rendered = reviewRecord(status: "open", id: reviewId, version: 7)
+        let readiness = ReviewDecisionReadiness(review: rendered)
+
+        XCTAssertTrue(readiness.matches(rendered))
+        XCTAssertFalse(readiness.matches(reviewRecord(
+            status: "open",
+            id: reviewId,
+            version: 8
+        )))
+        XCTAssertFalse(readiness.matches(reviewRecord(
+            status: "open",
+            freshness: .behind,
+            id: reviewId,
+            version: 7,
+            currentCommitId: "commit-new"
+        )))
+    }
+
+    func testMergeActionRequiresAnImmutableApprovedResult() {
+        XCTAssertFalse(ReviewMenuAction.merge.isAvailable(
+            for: reviewRecord(status: "approved"),
+            canMergeReviews: true,
+            isAuthor: false
+        ))
+        XCTAssertFalse(ReviewMenuAction.merge.isAvailable(
+            for: reviewRecord(status: "approved", approvedResultHash: ""),
+            canMergeReviews: true,
+            isAuthor: false
+        ))
+        XCTAssertTrue(ReviewMenuAction.merge.isAvailable(
+            for: reviewRecord(status: "approved", approvedResultHash: "sha256:result"),
+            canMergeReviews: true,
+            isAuthor: false
+        ))
+    }
+
+    func testReviewListContentStateDistinguishesLoadingAndEmptyQueues() {
+        XCTAssertEqual(
+            ReviewListContentState.resolve(phase: .launching, totalCount: 0, visibleCount: 0),
+            .loading
+        )
+        XCTAssertEqual(
+            ReviewListContentState.resolve(phase: .loading, totalCount: 0, visibleCount: 0),
+            .loading
+        )
+        XCTAssertEqual(
+            ReviewListContentState.resolve(phase: .ready, totalCount: 0, visibleCount: 0),
+            .empty
+        )
+        XCTAssertEqual(
+            ReviewListContentState.resolve(phase: .ready, totalCount: 2, visibleCount: 0),
+            .filteredEmpty
+        )
+        XCTAssertEqual(
+            ReviewListContentState.resolve(phase: .loading, totalCount: 2, visibleCount: 1),
+            .content
+        )
+    }
+
+    @available(macOS 26.0, *)
+    func testReviewToolbarOwnershipAcrossListAndOpenDetail() throws {
+        let store = WorkspaceStore()
+        let review = reviewRecord(status: "open")
+        store.replaceReview(with: review)
+        store.selectedSection = .reviews
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 700),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+
+        let hostingView = NSHostingView(rootView: WorkspaceView(
+            store: store,
+            onOpenSettings: {},
+            onOpenDiagnostics: { _ in },
+            onShowLogs: {},
+            loadsReviewDetail: false
+        ))
+        hostingView.sceneBridgingOptions = .all
+        window.contentView = hostingView
+        let previousKeyWindow = NSApp.keyWindow
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.close()
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+
+        let filterIdentifier = NSToolbarItem.Identifier("review.filter")
+        let searchIdentifier = NSToolbarItem.Identifier("review.search")
+        let deadline = Date().addingTimeInterval(1)
+        var items: [NSToolbarItem] = []
+        var foundReviewItems = false
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            items = window.toolbar?.items ?? []
+            foundReviewItems = items.contains { $0.itemIdentifier == filterIdentifier }
+                && items.contains { $0.itemIdentifier == searchIdentifier }
+        } while Date() < deadline && !foundReviewItems
+
+        let identifiers = items.map(\.itemIdentifier)
+        _ = try XCTUnwrap(identifiers.firstIndex(of: filterIdentifier))
+        _ = try XCTUnwrap(identifiers.firstIndex(of: searchIdentifier))
+        let listToolbarDiagnostics = items.map { item -> String in
+            let frame = item.view.map { $0.convert($0.bounds, to: nil) }
+            return "\(item.itemIdentifier.rawValue)=\(String(describing: frame))"
+        }.joined(separator: ", ")
+
+        let filterItem = try XCTUnwrap(items.first { $0.itemIdentifier == filterIdentifier })
+        let searchItem = try XCTUnwrap(items.first { $0.itemIdentifier == searchIdentifier })
+        let filterView = try XCTUnwrap(filterItem.view)
+        let searchView = try XCTUnwrap(searchItem.view)
+        let filterFrame = filterView.convert(filterView.bounds, to: nil)
+        let searchFrame = searchView.convert(searchView.bounds, to: nil)
+        XCTAssertLessThan(filterFrame.maxX, searchFrame.minX, listToolbarDiagnostics)
+        XCTAssertLessThan(filterFrame.midX, window.frame.width / 2, listToolbarDiagnostics)
+        XCTAssertGreaterThan(searchFrame.midX, window.frame.width / 2, listToolbarDiagnostics)
+
+        store.selectedReviewId = review.id
+
+        let approveIdentifier = NSToolbarItem.Identifier("review.approve")
+        let rejectIdentifier = NSToolbarItem.Identifier("review.reject")
+        let detailDeadline = Date().addingTimeInterval(1)
+        var detailIdentifiers: [NSToolbarItem.Identifier] = []
+        var foundDetailItems = false
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            detailIdentifiers = window.toolbar?.items.map(\.itemIdentifier) ?? []
+            foundDetailItems = detailIdentifiers.contains(approveIdentifier)
+                && detailIdentifiers.contains(rejectIdentifier)
+                && detailIdentifiers.contains(searchIdentifier)
+                && !detailIdentifiers.contains(filterIdentifier)
+        } while Date() < detailDeadline && !foundDetailItems
+
+        XCTAssertTrue(detailIdentifiers.contains(approveIdentifier), toolbarDiagnostics(window))
+        XCTAssertTrue(detailIdentifiers.contains(rejectIdentifier), toolbarDiagnostics(window))
+        XCTAssertTrue(detailIdentifiers.contains(searchIdentifier), toolbarDiagnostics(window))
+        XCTAssertFalse(detailIdentifiers.contains(filterIdentifier), toolbarDiagnostics(window))
+    }
+
+    func testReviewDetailRouteCarriesOnlyTheStableReviewId() {
+        let route = ReviewRoute(reviewId: "review-0123456789abcdef")
+
+        XCTAssertEqual(route.reviewId, "review-0123456789abcdef")
     }
 
     func testIssueDetailRouteCarriesOnlyTheGlobalIssueId() {
@@ -195,4 +422,48 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
         return MemoryListItem(id: resource.id, resource: resource, draft: nil, inherited: false)
     }
+
+    private func reviewRecord(
+        status: String,
+        freshness: DraftFreshness = .current,
+        reconciliation: DraftReconciliationStatus = .clean,
+        approvedResultHash: String? = nil,
+        id: String = UUID().uuidString,
+        version: Int = 1,
+        currentCommitId: String? = nil
+    ) -> ReviewRecord {
+        ReviewRecord(
+            id: id,
+            projectId: "prj",
+            draftId: "draft",
+            title: "Review title",
+            description: "",
+            author: UserReference(
+                userId: "u",
+                email: "u@example.com",
+                displayName: "Reviewer",
+                avatarUrl: nil,
+                role: "member"
+            ),
+            status: status,
+            version: version,
+            decisionBody: nil,
+            approvedResultHash: approvedResultHash,
+            decidedBy: nil,
+            decidedAt: nil,
+            freshness: freshness,
+            reconciliation: reconciliation,
+            reconciliationCandidateId: nil,
+            currentCommitId: currentCommitId,
+            updatedAt: "2026-08-09T00:00:00Z"
+        )
+    }
+
+    private func toolbarDiagnostics(_ window: NSWindow) -> String {
+        (window.toolbar?.items ?? []).map { item -> String in
+            let frame = item.view.map { $0.convert($0.bounds, to: nil) }
+            return "\(item.itemIdentifier.rawValue)=\(String(describing: frame))"
+        }.joined(separator: ", ")
+    }
+
 }

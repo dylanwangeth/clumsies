@@ -237,6 +237,8 @@ struct ReviewMetadata: Codable, Identifiable, Hashable, Sendable {
     let version: Int
     let decisionBody: String?
     let approvedResultHash: String?
+    let decidedBy: UserReference?
+    let decidedAt: String?
     let coordination: DraftCoordination
     let createdAt: String
     let updatedAt: String
@@ -252,6 +254,7 @@ struct ReviewComment: Codable, Identifiable, Hashable, Sendable {
     let createdAt: String
     let anchorPath: String?
     let anchorLine: Int?
+    let reviewVersion: Int
 }
 
 struct ServerDraftResourceReference: Codable, Hashable, Sendable {
@@ -390,11 +393,18 @@ struct CreateReviewSubmissionRequest: Codable, Sendable {
 
 struct CreateReviewCommentRequest: Codable, Sendable {
     let body: String
+    let expectedReviewVersion: Int
     let anchorPath: String?
     let anchorLine: Int?
 
-    init(body: String, anchorPath: String? = nil, anchorLine: Int? = nil) {
+    init(
+        body: String,
+        expectedReviewVersion: Int,
+        anchorPath: String? = nil,
+        anchorLine: Int? = nil
+    ) {
         self.body = body
+        self.expectedReviewVersion = expectedReviewVersion
         self.anchorPath = anchorPath
         self.anchorLine = anchorLine
     }

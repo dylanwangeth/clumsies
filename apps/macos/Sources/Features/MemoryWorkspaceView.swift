@@ -451,34 +451,20 @@ private struct FileTreeRow: View {
     }
 
     private var rowContent: some View {
-        HStack(spacing: 6) {
-            if let item {
-                FileSymbolView(path: item.document.path)
-            } else {
-                Image(systemName: isExpanded ? "folder.fill" : "folder")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14)
-            }
-
-            Text(entry.node.name)
-                .font(.system(size: 12.5, weight: .regular))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(titleColor)
-
-            Spacer(minLength: 4)
-
+        PathTreeRowLabel(
+            name: entry.node.name,
+            path: item?.document.path,
+            depth: entry.depth,
+            isDirectory: item == nil,
+            isExpanded: isExpanded,
+            titleColor: titleColor
+        ) {
             SharedUpdateIndicator(
                 freshness: item?.draft?.freshness,
                 hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
                 reconciliation: item?.draft?.reconciliation
             )
         }
-        .padding(.leading, CGFloat(entry.depth) * 13 + 5)
-        .padding(.trailing, 7)
-        .frame(maxWidth: .infinity, minHeight: 25, maxHeight: 25, alignment: .leading)
-        .contentShape(Rectangle())
         .help(item?.inherited == true ? "Inherited from Hub" : entry.node.name)
     }
 
@@ -569,38 +555,31 @@ struct FileTreeNode: Identifiable {
     let item: MemoryListItem?
     let children: [FileTreeNode]?
 
-    private struct Entry {
-        let item: MemoryListItem
-        let components: ArraySlice<String>
-    }
-
     static func build(_ items: [MemoryListItem]) -> [FileTreeNode] {
-        let entries = items.map { item in
+        var itemsById: [String: MemoryListItem] = [:]
+        let pathItems = items.map { item in
+            itemsById[item.id] = item
             var components = item.document.path.split(separator: "/").map(String.init)
             if item.kind == .workflows, components.first == "workflow", components.count > 1 {
                 components.removeFirst()
             }
-            return Entry(item: item, components: components[...])
+            return PathTreeItem(
+                id: item.id,
+                path: components.joined(separator: "/"),
+                fallbackName: item.document.title
+            )
         }
-        return build(entries, prefix: "")
-    }
 
-    private static func build(_ entries: [Entry], prefix: String) -> [FileTreeNode] {
-        let groups = Dictionary(grouping: entries) { $0.components.first ?? $0.item.document.title }
-        return groups.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { name in
-            let group = groups[name] ?? []
-            if let file = group.first(where: { $0.components.count <= 1 }) {
-                return .init(
-                    id: file.item.id,
-                    name: name,
-                    item: file.item,
-                    children: nil
-                )
-            }
-            let path = prefix.isEmpty ? name : "\(prefix)/\(name)"
-            let descendants = group.map { Entry(item: $0.item, components: $0.components.dropFirst()) }
-            return .init(id: "directory:\(path)", name: name, item: nil, children: build(descendants, prefix: path))
+        func convert(_ node: PathTreeNode) -> FileTreeNode {
+            FileTreeNode(
+                id: node.id,
+                name: node.name,
+                item: node.item.flatMap { itemsById[$0.id] },
+                children: node.children.map { $0.map(convert) }
+            )
         }
+
+        return PathTreeNode.build(pathItems).map(convert)
     }
 
     static func directoryIds(in nodes: [FileTreeNode]) -> Set<String> {
