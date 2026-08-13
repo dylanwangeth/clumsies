@@ -117,6 +117,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(toggleSidebar(_:)) {
             menuItem.title = store.sidebarExpanded ? "Hide Sidebar" : "Show Sidebar"
         }
+        if menuItem.action == #selector(approveReview(_:)) {
+            return store.canPerformReviewMenuAction(.approve)
+        }
+        if menuItem.action == #selector(rejectReview(_:)) {
+            return store.canPerformReviewMenuAction(.reject)
+        }
+        if menuItem.action == #selector(mergeReview(_:)) {
+            return store.canPerformReviewMenuAction(.merge)
+        }
+        if menuItem.action == #selector(resubmitReview(_:)) {
+            return store.canPerformReviewMenuAction(.resubmit)
+        }
         return true
     }
 
@@ -467,6 +479,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sidebar.target = self
         viewItem.submenu = viewMenu
 
+        let reviewItem = NSMenuItem()
+        mainMenu.addItem(reviewItem)
+        let reviewMenu = NSMenu(title: "Review")
+        let approve = reviewMenu.addItem(
+            withTitle: "Approve",
+            action: #selector(approveReview(_:)),
+            keyEquivalent: "a"
+        )
+        approve.keyEquivalentModifierMask = [.command, .option]
+        approve.target = self
+        let reject = reviewMenu.addItem(
+            withTitle: "Reject",
+            action: #selector(rejectReview(_:)),
+            keyEquivalent: "r"
+        )
+        reject.keyEquivalentModifierMask = [.command, .option]
+        reject.target = self
+        reviewMenu.addItem(.separator())
+        let merge = reviewMenu.addItem(
+            withTitle: "Merge",
+            action: #selector(mergeReview(_:)),
+            keyEquivalent: "m"
+        )
+        merge.keyEquivalentModifierMask = [.command, .option]
+        merge.target = self
+        let resubmit = reviewMenu.addItem(
+            withTitle: "Resubmit",
+            action: #selector(resubmitReview(_:)),
+            keyEquivalent: "u"
+        )
+        resubmit.keyEquivalentModifierMask = [.command, .option]
+        resubmit.target = self
+        reviewItem.submenu = reviewMenu
+
         let windowItem = NSMenuItem()
         mainMenu.addItem(windowItem)
         let windowMenu = NSMenu(title: "Window")
@@ -516,6 +562,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func toggleSidebar(_ sender: Any?) {
         store.sidebarExpanded.toggle()
         mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func approveReview(_ sender: Any?) {
+        Task { await store.performReviewMenuAction(.approve) }
+    }
+
+    @objc private func rejectReview(_ sender: Any?) {
+        Task { await store.performReviewMenuAction(.reject) }
+    }
+
+    @objc private func mergeReview(_ sender: Any?) {
+        Task { await store.performReviewMenuAction(.merge) }
+    }
+
+    @objc private func resubmitReview(_ sender: Any?) {
+        Task { await store.performReviewMenuAction(.resubmit) }
     }
 }
 

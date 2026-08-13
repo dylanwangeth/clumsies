@@ -97,6 +97,54 @@ enum ReviewRequestError: LocalizedError, Sendable {
     }
 }
 
+enum ReviewMenuAction: Sendable, Equatable {
+    case approve
+    case reject
+    case merge
+    case resubmit
+
+    func isAvailable(
+        for review: ReviewRecord,
+        canMergeReviews: Bool,
+        isAuthor: Bool
+    ) -> Bool {
+        switch self {
+        case .approve, .reject:
+            return review.status == "open"
+        case .merge:
+            return review.status == "approved"
+                && review.approvedResultHash?.isEmpty == false
+                && canMergeReviews
+        case .resubmit:
+            return review.status == "rejected" && isAuthor
+        }
+    }
+}
+
+struct ReviewDecisionReadiness: Equatable, Sendable {
+    let reviewId: String
+    let reviewVersion: Int
+    let status: String
+    let approvedResultHash: String?
+    let freshness: DraftFreshness
+    let reconciliation: DraftReconciliationStatus
+    let currentCommitId: String?
+
+    init(review: ReviewRecord) {
+        reviewId = review.id
+        reviewVersion = review.version
+        status = review.status
+        approvedResultHash = review.approvedResultHash
+        freshness = review.freshness
+        reconciliation = review.reconciliation
+        currentCommitId = review.currentCommitId
+    }
+
+    func matches(_ review: ReviewRecord) -> Bool {
+        self == ReviewDecisionReadiness(review: review)
+    }
+}
+
 enum ProjectSetupError: LocalizedError, Sendable {
     case noRepositories
     case bundledAgentRuntimeMissing
@@ -188,6 +236,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var navigationForwardStack: [String] = []
     @Published var pendingDocumentCommand: DocumentSessionCommand?
     @Published var pendingReviewReconciliationId: String?
+    @Published var reviewDecisionReadiness: ReviewDecisionReadiness?
     @Published var documentReconciliationToolbarState: DocumentReconciliationToolbarState?
     @Published private(set) var loadingResourceIds: Set<String> = []
     @Published private(set) var loadingProjectId: String?
@@ -276,6 +325,55 @@ final class WorkspaceStore: ObservableObject {
 
     var selectedReview: ReviewRecord? {
         reviews.first { $0.id == selectedReviewId } ?? reviews.first
+    }
+
+    func canPerformReviewMenuAction(_ action: ReviewMenuAction) -> Bool {
+        guard phase == .ready,
+              selectedSection == .reviews,
+              let selectedReviewId,
+              let review = reviews.first(where: { $0.id == selectedReviewId }),
+              reviewDecisionReadiness?.matches(review) == true,
+              review.freshness == .current else {
+            return false
+        }
+        return action.isAvailable(
+            for: review,
+            canMergeReviews: canMergeReviews,
+            isAuthor: isReviewAuthor(review)
+        )
+    }
+
+    func performReviewMenuAction(_ action: ReviewMenuAction) async {
+        guard canPerformReviewMenuAction(action),
+              let selectedReviewId,
+              let review = reviews.first(where: { $0.id == selectedReviewId }),
+              let readiness = reviewDecisionReadiness else { return }
+        reviewDecisionReadiness = nil
+        do {
+            switch action {
+            case .approve:
+                try await decide(review, decision: "approved", note: "")
+            case .reject:
+                try await decide(review, decision: "rejected", note: "")
+            case .merge:
+                try await merge(review)
+            case .resubmit:
+                let detail = try await reviewDetail(review.id)
+                if detail.draft.coordination.freshness == .behind {
+                    pendingReviewReconciliationId = review.id
+                } else {
+                    try await resubmit(review, detail: detail)
+                }
+            }
+        } catch {
+            if self.selectedReviewId == selectedReviewId,
+               selectedSection == .reviews,
+               let currentReview = reviews.first(where: { $0.id == selectedReviewId }),
+               readiness.matches(currentReview) {
+                reviewDecisionReadiness = readiness
+            }
+            errorMessage = error.localizedDescription
+        }
     }
 
     var visibleMemoryItems: [MemoryListItem] {
@@ -1426,11 +1524,21 @@ final class WorkspaceStore: ObservableObject {
         try await server.get("/api/v1/reviews/\(reviewId)")
     }
 
-    func addComment(_ body: String, to review: ReviewRecord) async throws {
+    func addComment(
+        _ body: String,
+        to review: ReviewRecord,
+        anchorPath: String? = nil,
+        anchorLine: Int? = nil
+    ) async throws {
         let _: ReviewComment = try await server.send(
             method: "POST",
             path: "/api/v1/reviews/\(review.id)/comments",
-            body: CreateReviewCommentRequest(body: body)
+            body: CreateReviewCommentRequest(
+                body: body,
+                expectedReviewVersion: review.version,
+                anchorPath: anchorPath,
+                anchorLine: anchorLine
+            )
         )
         try await refreshReview(review.id)
     }
@@ -1579,7 +1687,10 @@ final class WorkspaceStore: ObservableObject {
         ))
         syncStatusAvailable = true
         selectedBundleId = selectedBundleId ?? bundles.first?.id
-        selectedReviewId = selectedReviewId ?? reviews.first?.id
+        if let selectedReviewId,
+           !reviews.contains(where: { $0.id == selectedReviewId }) {
+            self.selectedReviewId = nil
+        }
         if projects.isEmpty {
             selectedSection = .local
             showsProjectSettings = false
@@ -1773,7 +1884,7 @@ final class WorkspaceStore: ObservableObject {
         replaceReview(with: WorkspaceLoader.mapReview(detail))
     }
 
-    private func replaceReview(with review: ReviewRecord) {
+    func replaceReview(with review: ReviewRecord) {
         if let index = reviews.firstIndex(where: { $0.id == review.id }) {
             reviews[index] = review
         } else {
@@ -2393,6 +2504,8 @@ struct WorkspaceLoader: Sendable {
             version: metadata.version,
             decisionBody: metadata.decisionBody,
             approvedResultHash: metadata.approvedResultHash,
+            decidedBy: metadata.decidedBy,
+            decidedAt: metadata.decidedAt,
             freshness: metadata.coordination.freshness,
             reconciliation: metadata.coordination.reconciliation,
             reconciliationCandidateId: metadata.coordination.candidateId,
@@ -2440,6 +2553,7 @@ struct WorkspaceLoader: Sendable {
             currentContent: commitResourceText(current, resource: detail.draft.resource),
             draftContent: draftContent,
             resolutionContent: resolutionContent,
+            proposedPath: finalPath,
             operationLabels: operationLabels
         )
     }
