@@ -43,6 +43,64 @@ struct ReviewRoute: Hashable {
     let reviewId: String
 }
 
+struct ReviewToolbarOwnership: Equatable {
+    enum Surface: Equatable {
+        case list
+        case detail
+    }
+
+    enum Item: Equatable {
+        case filter
+        case decision(ReviewMenuAction)
+        case search
+    }
+
+    let surface: Surface
+    let items: [Item]
+
+    static func resolve(
+        surface: Surface,
+        review: ReviewRecord?,
+        canMergeReviews: Bool,
+        isAuthor: Bool
+    ) -> Self {
+        guard surface == .detail else {
+            return .init(surface: .list, items: [.filter, .search])
+        }
+
+        let actions = review.map { review in
+            [
+                ReviewMenuAction.reject,
+                .approve,
+                .merge,
+                .resubmit,
+            ].filter {
+                $0.isAvailable(
+                    for: review,
+                    canMergeReviews: canMergeReviews,
+                    isAuthor: isAuthor
+                )
+            }
+        } ?? []
+
+        return .init(
+            surface: .detail,
+            items: actions.map(Item.decision) + [.search]
+        )
+    }
+
+    func contains(_ item: Item) -> Bool {
+        items.contains(item)
+    }
+
+    var hasDecisionActions: Bool {
+        items.contains {
+            if case .decision = $0 { return true }
+            return false
+        }
+    }
+}
+
 struct ReviewStatusFilterControl: View {
     let reviews: [ReviewRecord]
     @Binding var selection: ReviewStatusFilter
@@ -77,6 +135,7 @@ struct ReviewListPage: View {
     @ObservedObject var store: WorkspaceStore
     let reviews: [ReviewRecord]
     @Binding var statusFilter: ReviewStatusFilter
+    let toolbarOwnership: ReviewToolbarOwnership
 
     var body: some View {
         Group {
@@ -129,11 +188,13 @@ struct ReviewListPage: View {
         }
         .navigationTitle("Reviews")
         .toolbar {
-            ToolbarItem(id: "review.filter", placement: .navigation) {
-                ReviewStatusFilterControl(
-                    reviews: store.reviews,
-                    selection: $statusFilter
-                )
+            if toolbarOwnership.contains(.filter) {
+                ToolbarItem(id: "review.filter", placement: .navigation) {
+                    ReviewStatusFilterControl(
+                        reviews: store.reviews,
+                        selection: $statusFilter
+                    )
+                }
             }
         }
     }

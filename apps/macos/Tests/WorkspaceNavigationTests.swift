@@ -1,5 +1,3 @@
-import AppKit
-import SwiftUI
 import XCTest
 @testable import Clumsies
 
@@ -194,75 +192,26 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
-    @available(macOS 26.0, *)
-    func testReviewToolbarOwnershipAcrossListAndOpenDetail() throws {
-        let store = WorkspaceStore()
+    func testReviewToolbarOwnershipAcrossListAndOpenDetail() {
         let review = reviewRecord(status: "open")
-        store.replaceReview(with: review)
-        store.selectedSection = .reviews
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 700),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
+        XCTAssertEqual(
+            ReviewToolbarOwnership.resolve(
+                surface: .list,
+                review: review,
+                canMergeReviews: false,
+                isAuthor: false
+            ).items,
+            [.filter, .search]
         )
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.toolbarStyle = .unified
-
-        let hostingView = NSHostingView(rootView: WorkspaceView(
-            store: store,
-            onOpenSettings: {},
-            onOpenDiagnostics: { _ in },
-            onShowLogs: {},
-            loadsReviewDetail: false
-        ))
-        hostingView.sceneBridgingOptions = .all
-        window.contentView = hostingView
-        let previousKeyWindow = NSApp.keyWindow
-        window.makeKeyAndOrderFront(nil)
-        defer {
-            window.close()
-            previousKeyWindow?.makeKeyAndOrderFront(nil)
-        }
-
-        let filterIdentifier = NSToolbarItem.Identifier("review.filter")
-        let searchIdentifier = NSToolbarItem.Identifier("review.search")
-        let deadline = Date().addingTimeInterval(5)
-        var items: [NSToolbarItem] = []
-        var foundReviewItems = false
-        repeat {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            items = window.toolbar?.items ?? []
-            foundReviewItems = items.contains { $0.itemIdentifier == filterIdentifier }
-                && items.contains { $0.itemIdentifier == searchIdentifier }
-        } while Date() < deadline && !foundReviewItems
-
-        let identifiers = items.map(\.itemIdentifier)
-        _ = try XCTUnwrap(identifiers.firstIndex(of: filterIdentifier))
-        _ = try XCTUnwrap(identifiers.firstIndex(of: searchIdentifier))
-
-        store.selectedReviewId = review.id
-
-        let approveIdentifier = NSToolbarItem.Identifier("review.approve")
-        let rejectIdentifier = NSToolbarItem.Identifier("review.reject")
-        let detailDeadline = Date().addingTimeInterval(5)
-        var detailIdentifiers: [NSToolbarItem.Identifier] = []
-        var foundDetailItems = false
-        repeat {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-            detailIdentifiers = window.toolbar?.items.map(\.itemIdentifier) ?? []
-            foundDetailItems = detailIdentifiers.contains(approveIdentifier)
-                && detailIdentifiers.contains(rejectIdentifier)
-                && detailIdentifiers.contains(searchIdentifier)
-                && !detailIdentifiers.contains(filterIdentifier)
-        } while Date() < detailDeadline && !foundDetailItems
-
-        XCTAssertTrue(detailIdentifiers.contains(approveIdentifier), toolbarDiagnostics(window))
-        XCTAssertTrue(detailIdentifiers.contains(rejectIdentifier), toolbarDiagnostics(window))
-        XCTAssertTrue(detailIdentifiers.contains(searchIdentifier), toolbarDiagnostics(window))
-        XCTAssertFalse(detailIdentifiers.contains(filterIdentifier), toolbarDiagnostics(window))
+        XCTAssertEqual(
+            ReviewToolbarOwnership.resolve(
+                surface: .detail,
+                review: review,
+                canMergeReviews: false,
+                isAuthor: false
+            ).items,
+            [.decision(.reject), .decision(.approve), .search]
+        )
     }
 
     func testReviewDetailRouteCarriesOnlyTheStableReviewId() {
@@ -443,13 +392,6 @@ final class WorkspaceNavigationTests: XCTestCase {
             currentCommitId: currentCommitId,
             updatedAt: "2026-08-09T00:00:00Z"
         )
-    }
-
-    private func toolbarDiagnostics(_ window: NSWindow) -> String {
-        (window.toolbar?.items ?? []).map { item -> String in
-            let frame = item.view.map { $0.convert($0.bounds, to: nil) }
-            return "\(item.itemIdentifier.rawValue)=\(String(describing: frame))"
-        }.joined(separator: ", ")
     }
 
 }

@@ -481,7 +481,8 @@ struct WorkspaceView: View {
                 ReviewListPage(
                     store: store,
                     reviews: filteredReviews,
-                    statusFilter: $reviewStatusFilter
+                    statusFilter: $reviewStatusFilter,
+                    toolbarOwnership: reviewToolbarOwnership
                 )
                 .navigationDestination(for: ReviewRoute.self) { route in
                     ReviewDetailPage(
@@ -490,13 +491,15 @@ struct WorkspaceView: View {
                         loadsRemoteContent: loadsReviewDetail
                     )
                     .toolbar {
-                        reviewDetailToolbarContent
+                        if reviewToolbarOwnership.surface == .detail {
+                            reviewDetailToolbarContent
+                        }
                     }
                 }
             }
             .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
-                if reviewNavigationPath.isEmpty {
+                if reviewToolbarOwnership.surface == .list {
                     if #available(macOS 26.0, *) {
                         ToolbarSpacer(.flexible, placement: .automatic)
                     }
@@ -592,27 +595,19 @@ struct WorkspaceView: View {
         store.reviews.filter { reviewStatusFilter.matches($0) }
     }
 
+    private var reviewToolbarOwnership: ReviewToolbarOwnership {
+        let review = selectedReviewForToolbar
+        return .resolve(
+            surface: reviewNavigationPath.isEmpty ? .list : .detail,
+            review: review,
+            canMergeReviews: store.canMergeReviews,
+            isAuthor: review.map(store.isReviewAuthor) ?? false
+        )
+    }
+
     private var selectedReviewForToolbar: ReviewRecord? {
         guard let reviewId = store.selectedReviewId else { return nil }
         return store.reviews.first { $0.id == reviewId }
-    }
-
-    private var hasReviewDecisionToolbarAction: Bool {
-        guard let review = selectedReviewForToolbar else { return false }
-        switch review.status {
-        case "open":
-            return true
-        case "approved":
-            return ReviewMenuAction.merge.isAvailable(
-                for: review,
-                canMergeReviews: store.canMergeReviews,
-                isAuthor: store.isReviewAuthor(review)
-            )
-        case "rejected":
-            return store.isReviewAuthor(review)
-        default:
-            return false
-        }
     }
 
     @ToolbarContentBuilder
@@ -621,9 +616,8 @@ struct WorkspaceView: View {
             ToolbarSpacer(.flexible, placement: .automatic)
         }
 
-        if let review = selectedReviewForToolbar,
-           hasReviewDecisionToolbarAction {
-            if review.status == "open" {
+        if let review = selectedReviewForToolbar {
+            if reviewToolbarOwnership.contains(.decision(.reject)) {
                 ToolbarItem(id: "review.reject", placement: .automatic) {
                     Button {
                         performReviewToolbarAction(.reject)
@@ -643,7 +637,9 @@ struct WorkspaceView: View {
                     .accessibilityLabel("Reject Review")
                     .accessibilityIdentifier("review-toolbar-reject")
                 }
+            }
 
+            if reviewToolbarOwnership.contains(.decision(.approve)) {
                 ToolbarItem(id: "review.approve", placement: .automatic) {
                     Button {
                         performReviewToolbarAction(.approve)
@@ -664,11 +660,9 @@ struct WorkspaceView: View {
                     .accessibilityLabel("Approve Review")
                     .accessibilityIdentifier("review-toolbar-approve")
                 }
-            } else if ReviewMenuAction.merge.isAvailable(
-                for: review,
-                canMergeReviews: store.canMergeReviews,
-                isAuthor: store.isReviewAuthor(review)
-            ) {
+            }
+
+            if reviewToolbarOwnership.contains(.decision(.merge)) {
                 ToolbarItem(id: "review.merge", placement: .automatic) {
                     Button {
                         performReviewToolbarAction(.merge)
@@ -687,7 +681,9 @@ struct WorkspaceView: View {
                     .accessibilityLabel("Merge Review")
                     .accessibilityIdentifier("review-toolbar-merge")
                 }
-            } else if review.status == "rejected", store.isReviewAuthor(review) {
+            }
+
+            if reviewToolbarOwnership.contains(.decision(.resubmit)) {
                 ToolbarItem(id: "review.resubmit", placement: .automatic) {
                     Button {
                         performReviewToolbarAction(.resubmit)
@@ -709,7 +705,7 @@ struct WorkspaceView: View {
             }
         }
 
-        reviewUtilityToolbarContent(hasLeadingActions: hasReviewDecisionToolbarAction)
+        reviewUtilityToolbarContent(hasLeadingActions: reviewToolbarOwnership.hasDecisionActions)
     }
 
     @ToolbarContentBuilder
@@ -756,21 +752,23 @@ struct WorkspaceView: View {
             ToolbarSpacer(.fixed, placement: .automatic)
         }
 
-        ToolbarItem(id: "review.search", placement: .automatic) {
-            Button {
-                store.showsGlobalSearch.toggle()
-            } label: {
-                Image(systemName: "magnifyingglass")
-            }
-            .help("Search Reviews")
-            .accessibilityLabel("Search Reviews")
-            .accessibilityIdentifier("review-toolbar-search")
-            .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
-                WorkspaceSearchPopover(
-                    store: store,
-                    results: searchResults,
-                    onOpen: open
-                )
+        if reviewToolbarOwnership.contains(.search) {
+            ToolbarItem(id: "review.search", placement: .automatic) {
+                Button {
+                    store.showsGlobalSearch.toggle()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .help("Search Reviews")
+                .accessibilityLabel("Search Reviews")
+                .accessibilityIdentifier("review-toolbar-search")
+                .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
+                    WorkspaceSearchPopover(
+                        store: store,
+                        results: searchResults,
+                        onOpen: open
+                    )
+                }
             }
         }
     }
