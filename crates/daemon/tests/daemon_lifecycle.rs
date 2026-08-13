@@ -3110,6 +3110,93 @@ async fn project_bindings_resolve_when_the_workspace_root_is_replaced_by_a_symli
     assert_eq!(resolved.project_id, "prj_moved");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn adapter_install_normalizes_an_empty_binding_after_a_workspace_symlink_move() {
+    let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let workspaces = tempfile::tempdir().unwrap();
+    let moved_volume = workspaces.path().join("volume");
+    let canonical_root = moved_volume.join("repository");
+    std::fs::create_dir_all(&canonical_root).unwrap();
+    let alias_parent = workspaces.path().join("workspace");
+    let bound_root = alias_parent.join("repository");
+    std::fs::create_dir_all(&bound_root).unwrap();
+
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}/");
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: config.project.server_url.clone(),
+        access_token: "test-token".to_owned(),
+        refresh_token: None,
+    }));
+    let state = common::initialize_daemon(config, credential_store).await;
+    let service = DaemonIpcService::new(state);
+    service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: bound_root.display().to_string(),
+            project_id: "prj_moved_adapter".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    std::fs::remove_dir_all(&alias_parent).unwrap();
+    std::os::unix::fs::symlink(&moved_volume, &alias_parent).unwrap();
+
+    let helper = signed_runtime_binary(daemon_root.path());
+    let installed = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_moved_adapter".to_owned(),
+            workspace_root: bound_root.display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            runtime_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    let canonical_root = std::fs::canonicalize(&canonical_root).unwrap();
+    assert_eq!(
+        installed.workspace_root,
+        canonical_root.display().to_string()
+    );
+
+    let bindings = service
+        .list_project_bindings(DaemonProjectBindingListRequest {
+            project_id: "prj_moved_adapter".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(bindings.items.len(), 1);
+    assert_eq!(
+        bindings.items[0].workspace_root,
+        canonical_root.display().to_string()
+    );
+
+    service
+        .remove_project_agent_adapter(DaemonProjectAgentAdapterRemoveRequest {
+            workspace_root: bound_root.display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            expected_revision: installed.revision,
+        })
+        .await
+        .unwrap();
+    let removed = service
+        .remove_project_binding(DaemonProjectBindingRemoveRequest {
+            workspace_root: bound_root.display().to_string(),
+            expected_revision: bindings.items[0].revision,
+        })
+        .await
+        .unwrap();
+    assert!(removed.removed);
+}
+
 #[tokio::test]
 async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_then_be_removed() {
     let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
