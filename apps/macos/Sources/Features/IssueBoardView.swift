@@ -439,6 +439,7 @@ struct IssueBoardView: View {
                             onCopyExternalReference: copyExternalReference,
                             onGate: applyGate,
                             onUnclaim: unclaim,
+                            onResume: resume,
                             onArchive: { remove(.archive, issue: $0) },
                             onDelete: { pendingDeletion = $0 }
                         )
@@ -482,6 +483,19 @@ struct IssueBoardView: View {
                 if selectedIssueId == issue.id {
                     selectedIssueId = nil
                 }
+            } catch {
+                mutationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func resume(_ issue: IssueBoardCard) {
+        guard mutatingIssueId == nil else { return }
+        mutatingIssueId = issue.id
+        Task {
+            defer { mutatingIssueId = nil }
+            do {
+                try await model.resume(issue)
             } catch {
                 mutationError = error.localizedDescription
             }
@@ -532,6 +546,7 @@ struct IssueDetailView: View {
     @ObservedObject var model: IssueBoardModel
     var onGate: ((IssueGateAction, IssueBoardCard) -> Void)?
     var onUnclaim: ((IssueBoardCard) -> Void)?
+    var onResume: ((IssueBoardCard) -> Void)?
     var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
     var onArchive: ((IssueBoardCard) -> Void)?
     var onDelete: ((IssueBoardCard) -> Void)?
@@ -572,6 +587,11 @@ struct IssueDetailView: View {
             case .todo:
                 EmptyView()
             case .inProgress, .paused:
+                if let onResume, issue.boardState == .paused {
+                    Button("Resume", systemImage: "play.fill") {
+                        onResume(issue)
+                    }
+                }
                 if let onUnclaim {
                     Button("Release to Todo", systemImage: "arrow.uturn.backward") {
                         onUnclaim(issue)
@@ -665,6 +685,7 @@ private struct IssueBoardColumn: View {
     let onCopyExternalReference: (IssueExternalReference) -> Void
     let onGate: (IssueGateAction, IssueBoardCard) -> Void
     let onUnclaim: (IssueBoardCard) -> Void
+    let onResume: (IssueBoardCard) -> Void
     let onArchive: (IssueBoardCard) -> Void
     let onDelete: (IssueBoardCard) -> Void
 
@@ -762,6 +783,11 @@ private struct IssueBoardColumn: View {
                             case .todo:
                                 deleteButton(issue)
                             case .inProgress, .paused:
+                                if issue.boardState == .paused {
+                                    Button("Resume", systemImage: "play.fill") {
+                                        onResume(issue)
+                                    }
+                                }
                                 Button("Release to Todo", systemImage: "arrow.uturn.backward") {
                                     onUnclaim(issue)
                                 }

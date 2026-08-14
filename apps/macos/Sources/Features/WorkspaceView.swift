@@ -449,6 +449,15 @@ struct WorkspaceView: View {
                     }
                 }
             },
+            onResume: { issue in
+                Task {
+                    do {
+                        try await issueBoardModel.resume(issue)
+                    } catch {
+                        store.errorMessage = error.localizedDescription
+                    }
+                }
+            },
             onToggleVerificationStep: { issue, index, completed in
                 Task {
                     do {

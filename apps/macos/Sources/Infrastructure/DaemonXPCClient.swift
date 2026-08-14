@@ -198,6 +198,10 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "desktop_unclaim_issue", payload: request)
     }
 
+    func resumeIssue(_ request: ResumeIssueRequest) async throws -> IssueWorkflowMutationResponse {
+        try await call(method: "desktop_resume_issue", payload: request)
+    }
+
     func removeIssue(_ request: RemoveIssueRequest) async throws -> IssueRemovalResponse {
         try await call(method: "remove_issue", payload: request)
     }

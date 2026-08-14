@@ -712,7 +712,17 @@ struct UnclaimIssueRequest: Codable, Equatable, Sendable {
     let projectId: String
     let issueKey: String
     let expectedRevision: Int
-    let runId: String
+    /// AgentRun releasing its own Issue; nil for a human (desktop) release of
+    /// a Paused or abandoned In Progress Issue back to Todo.
+    let runId: String?
+}
+
+struct ResumeIssueRequest: Codable, Equatable, Sendable {
+    let projectId: String
+    let issueKey: String
+    let takeover: Bool
+    /// AgentRun resuming the Issue; nil for a human (desktop) resume.
+    let runId: String?
 }
 
 struct VerificationStep: Codable, Equatable, Hashable, Sendable {
@@ -733,6 +743,15 @@ struct IssueMutationResponse: Codable, Equatable, Sendable {
     let boardState: IssueBoardState
     let revision: Int
     let updatedAt: String
+}
+
+struct IssueWorkflowMutationResponse: Codable, Equatable, Sendable {
+    let issueId: String
+    let issueKey: String
+    let boardState: IssueBoardState
+    let stateRevision: Int
+    let stateUpdatedAt: String
+    let run: AgentRun?
 }
 
 struct RemoveIssueRequest: Codable, Equatable, Sendable {
