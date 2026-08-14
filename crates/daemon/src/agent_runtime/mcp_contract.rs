@@ -606,7 +606,7 @@ impl KanbanInput {
                 validate_issue_key(&input.issue_key)?;
                 Ok(AgentRuntimeRequest::ResumeIssue(ResumeIssueRequest {
                     project_id: project_id.to_owned(),
-                    run_id: input.run_id,
+                    run_id: Some(input.run_id),
                     issue_key: input.issue_key,
                     takeover: input.takeover,
                 }))
@@ -644,7 +644,7 @@ impl KanbanInput {
                     project_id: project_id.to_owned(),
                     issue_key: input.issue_key,
                     expected_revision: input.expected_revision,
-                    run_id: input.run_id,
+                    run_id: Some(input.run_id),
                 }))
             }
             KanbanOperation::ExportIssue(input) => {

@@ -1087,6 +1087,7 @@ mod tests {
             "desktop_list_issue_board",
             "desktop_get_issue_detail",
             "desktop_unclaim_issue",
+            "desktop_resume_issue",
         ] {
             assert!(validate_agent_runtime_request(&DaemonIpcRequest::empty(method)).is_ok());
         }

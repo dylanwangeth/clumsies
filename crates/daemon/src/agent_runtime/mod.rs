@@ -171,6 +171,7 @@ mod tests {
             "desktop_list_issue_board",
             "desktop_get_issue_detail",
             "desktop_unclaim_issue",
+            "desktop_resume_issue",
         ] {
             assert!(!super::method_requires_identity(method), "{method}");
         }

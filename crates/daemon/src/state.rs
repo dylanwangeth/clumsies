@@ -1966,7 +1966,7 @@ impl DaemonIpcService {
             "pause_issue" => {
                 dispatch_async!(self, request.payload, pause_issue_work)
             }
-            "resume_issue" => {
+            "resume_issue" | "desktop_resume_issue" => {
                 dispatch_async!(self, request.payload, resume_issue_work)
             }
             "search_index_status" => {

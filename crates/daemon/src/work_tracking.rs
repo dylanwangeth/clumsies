@@ -434,7 +434,10 @@ pub struct PauseIssueRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ResumeIssueRequest {
     pub project_id: String,
-    pub run_id: String,
+    /// Agent path: the AgentRun resuming the Issue. Human (desktop) path:
+    /// omit to resume a Paused Issue without an AgentRun binding.
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub issue_key: String,
     #[serde(default)]
     pub takeover: bool,
@@ -551,7 +554,11 @@ pub struct UnclaimIssueRequest {
     pub project_id: String,
     pub issue_key: String,
     pub expected_revision: i64,
-    pub run_id: String,
+    /// Agent path: the AgentRun releasing its own Issue. Human (desktop)
+    /// path: omit to release a Paused or abandoned In Progress Issue back to
+    /// Todo without an AgentRun binding (refused while an active run works it).
+    #[serde(default)]
+    pub run_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -593,7 +600,10 @@ pub struct IssueWorkflowMutationResponse {
     pub board_state: IssueBoardState,
     pub state_revision: i64,
     pub state_updated_at: String,
-    pub run: AgentRun,
+    /// Bound AgentRun for agent-driven transitions; None for human (desktop)
+    /// transitions without a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<AgentRun>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1313,7 +1323,7 @@ pub(crate) async fn start_issue_work(
     )
     .await?;
     tx.commit().await?;
-    Ok(issue_workflow_mutation_response(run, &issue))
+    Ok(issue_workflow_mutation_response(Some(run), &issue))
 }
 
 pub(crate) async fn request_issue_closure(
@@ -1363,7 +1373,7 @@ pub(crate) async fn request_issue_closure(
         && current_issue.closure_summary == request.summary;
     if is_idempotent {
         tx.commit().await?;
-        return Ok(issue_workflow_mutation_response(run, &current_issue));
+        return Ok(issue_workflow_mutation_response(Some(run), &current_issue));
     }
     match request.expected_revision {
         Some(expected_revision) => ensure_revision(&run, expected_revision)?,
@@ -1417,7 +1427,7 @@ pub(crate) async fn request_issue_closure(
     )
     .await?;
     tx.commit().await?;
-    Ok(issue_workflow_mutation_response(run, &issue))
+    Ok(issue_workflow_mutation_response(Some(run), &issue))
 }
 
 /// Pauses an In Progress Issue held by the given run, moving it to Paused.
@@ -1460,23 +1470,23 @@ pub(crate) async fn pause_issue_work(
     )
     .await?;
     tx.commit().await?;
-    Ok(issue_workflow_mutation_response(run, &issue))
+    Ok(issue_workflow_mutation_response(Some(run), &issue))
 }
 
-/// Resumes a Paused Issue. The caller must be the run that paused it
-/// (changed_by_run_id) or must explicitly take it over.
+/// Resumes a Paused Issue. The agent path requires the run that paused it
+/// (changed_by_run_id) or an explicit takeover; the human (desktop) path
+/// omits the run and resumes without an AgentRun binding.
 pub(crate) async fn resume_issue_work(
     pool: &SqlitePool,
     request: ResumeIssueRequest,
 ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
     validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
-    validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
+    if let Some(run_id) = request.run_id.as_deref() {
+        validate_required("run_id", run_id, MAX_IDENTIFIER_BYTES)?;
+    }
     let issue_number = parse_issue_reference(&request.issue_key)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let (now, _) = db_clock(&mut tx).await?;
-    let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
-        .await?
-        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
     let current_issue = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
@@ -1485,46 +1495,87 @@ pub(crate) async fn resume_issue_work(
             "ISSUE-{issue_number:03} is not Paused"
         )));
     }
-    // Resume requires the pausing run or an explicit takeover.
-    let is_owner = current_issue.changed_by_run_id.as_deref() == Some(run.run_id.as_str());
-    if !is_owner && !request.takeover {
-        return Err(run_conflict(format!(
-            "ISSUE-{issue_number:03} was paused by AgentRun {}; resume it with that run or pass takeover=true",
-            current_issue.changed_by_run_id.as_deref().unwrap_or("?")
-        )));
-    }
-    // Resuming must not create a second In Progress Issue for the same session.
-    if let Some(session_key) = run.host_session_id.as_deref() {
-        let held_issue: Option<i64> = sqlx::query_scalar(
-            "SELECT n.issue_number
-             FROM agent_runs r
-             JOIN native_issues n
-               ON n.project_id = r.project_id AND n.issue_number = r.issue_number
-             WHERE r.project_id = $1
-               AND r.host_session_id = $3
-               AND r.phase = 'running'
-               AND r.lease_expires_at > $4
-               AND n.status = 'in_progress'
-             ORDER BY n.issue_number LIMIT 1",
-        )
-        .bind(&request.project_id)
-        .bind(&run.run_id)
-        .bind(session_key)
-        .bind(&now)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(held_issue) = held_issue {
-            return Err(run_conflict(format!(
-                "this session is already working on ISSUE-{held_issue:03} (In Progress); pause it before resuming ISSUE-{issue_number:03}"
-            )));
+    let run = match request.run_id.as_deref() {
+        Some(run_id) => {
+            let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, run_id)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+            // Resume requires the pausing run or an explicit takeover.
+            let is_owner = current_issue.changed_by_run_id.as_deref() == Some(run.run_id.as_str());
+            if !is_owner && !request.takeover {
+                return Err(run_conflict(format!(
+                    "ISSUE-{issue_number:03} was paused by AgentRun {}; resume it with that run or pass takeover=true",
+                    current_issue.changed_by_run_id.as_deref().unwrap_or("?")
+                )));
+            }
+            // Resuming must not create a second In Progress Issue for the same session.
+            if let Some(session_key) = run.host_session_id.as_deref() {
+                let held_issue: Option<i64> = sqlx::query_scalar(
+                    "SELECT n.issue_number
+                     FROM agent_runs r
+                     JOIN native_issues n
+                       ON n.project_id = r.project_id AND n.issue_number = r.issue_number
+                     WHERE r.project_id = $1
+                       AND r.host_session_id = $3
+                       AND r.phase = 'running'
+                       AND r.lease_expires_at > $4
+                       AND n.status = 'in_progress'
+                     ORDER BY n.issue_number LIMIT 1",
+                )
+                .bind(&request.project_id)
+                .bind(&run.run_id)
+                .bind(session_key)
+                .bind(&now)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(held_issue) = held_issue {
+                    return Err(run_conflict(format!(
+                        "this session is already working on ISSUE-{held_issue:03} (In Progress); pause it before resuming ISSUE-{issue_number:03}"
+                    )));
+                }
+            }
+            Some(run)
         }
-    }
+        None => {
+            // Human (desktop) path: resume without an AgentRun. Refuse while
+            // another AgentRun is still actively working this Issue.
+            let active_runs: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agent_runs
+                 WHERE project_id = $1 AND issue_number = $2
+                   AND phase = 'running' AND lease_expires_at > $3",
+            )
+            .bind(&request.project_id)
+            .bind(issue_number)
+            .bind(&now)
+            .fetch_one(&mut *tx)
+            .await?;
+            if active_runs > 0 {
+                return Err(run_conflict(format!(
+                    "ISSUE-{issue_number:03} is being worked on by {active_runs} active AgentRun(s); resume it from that session"
+                )));
+            }
+            // Unbind stale (ended) run bindings left on this Issue so the
+            // board reflects that no AgentRun holds it anymore.
+            sqlx::query(
+                "UPDATE agent_runs
+                 SET issue_number = NULL, revision = revision + 1, last_seen_at = $3
+                 WHERE project_id = $1 AND issue_number = $2
+                   AND NOT (phase = 'running' AND lease_expires_at > $3)",
+            )
+            .bind(&request.project_id)
+            .bind(issue_number)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            None
+        }
+    };
     let issue = set_native_issue_state_tx(
         &mut tx,
         &request.project_id,
         issue_number,
         IssueBoardState::InProgress,
-        Some(&run.run_id),
+        run.as_ref().map(|run| run.run_id.as_str()),
         None,
         &now,
     )
@@ -1871,23 +1922,16 @@ pub(crate) async fn unclaim_issue(
     request: UnclaimIssueRequest,
 ) -> Result<IssueMutationResponse, DaemonError> {
     validate_required("project_id", &request.project_id, MAX_IDENTIFIER_BYTES)?;
-    validate_required("run_id", &request.run_id, MAX_IDENTIFIER_BYTES)?;
+    if let Some(run_id) = request.run_id.as_deref() {
+        validate_required("run_id", run_id, MAX_IDENTIFIER_BYTES)?;
+    }
     let issue_number = parse_issue_reference(&request.issue_key)?;
     validate_revision(request.expected_revision)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, &request.run_id)
-        .await?
-        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {}", request.run_id)))?;
     let current = load_native_issue_tx(&mut tx, &request.project_id, issue_number)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
     ensure_issue_revision(&current, request.expected_revision)?;
-    if run.issue_number != Some(issue_number) {
-        return Err(run_conflict(format!(
-            "AgentRun {} is not bound to ISSUE-{issue_number:03}",
-            run.run_id
-        )));
-    }
     if !matches!(
         current.board_state,
         IssueBoardState::InProgress | IssueBoardState::Paused
@@ -1898,12 +1942,55 @@ pub(crate) async fn unclaim_issue(
         )));
     }
     let (now, _) = db_clock(&mut tx).await?;
+    if let Some(run_id) = request.run_id.as_deref() {
+        // Agent path: the releasing run must exist and be bound to this Issue.
+        let run = load_agent_run_for_project_tx(&mut tx, &request.project_id, run_id)
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+        if run.issue_number != Some(issue_number) {
+            return Err(run_conflict(format!(
+                "AgentRun {} is not bound to ISSUE-{issue_number:03}",
+                run.run_id
+            )));
+        }
+        let mut run = run;
+        run.issue_number = None;
+        run.revision += 1;
+        run.last_seen_at = now.clone();
+        update_run(&mut tx, &run).await?;
+    } else {
+        // Human (desktop) path: release without an AgentRun. Refuse while any
+        // AgentRun is still actively working this Issue so a human cannot
+        // yank work out from under a live session.
+        let active_runs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_runs
+             WHERE project_id = $1 AND issue_number = $2
+               AND phase = 'running' AND lease_expires_at > $3",
+        )
+        .bind(&request.project_id)
+        .bind(issue_number)
+        .bind(&now)
+        .fetch_one(&mut *tx)
+        .await?;
+        if active_runs > 0 {
+            return Err(run_conflict(format!(
+                "ISSUE-{issue_number:03} is being worked on by {active_runs} active AgentRun(s); release it from that session"
+            )));
+        }
+        // Unbind stale (ended) run bindings left on this Issue.
+        sqlx::query(
+            "UPDATE agent_runs
+             SET issue_number = NULL, revision = revision + 1, last_seen_at = $3
+             WHERE project_id = $1 AND issue_number = $2
+               AND NOT (phase = 'running' AND lease_expires_at > $3)",
+        )
+        .bind(&request.project_id)
+        .bind(issue_number)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+    }
     let revision = current.revision + 1;
-    let mut run = run;
-    run.issue_number = None;
-    run.revision += 1;
-    run.last_seen_at = now.clone();
-    update_run(&mut tx, &run).await?;
     sqlx::query(
         "UPDATE native_issues
          SET status = 'todo', revision = $3, changed_by_run_id = NULL,
@@ -3226,7 +3313,7 @@ async fn bind_unlinked_children(
 }
 
 fn issue_workflow_mutation_response(
-    run: AgentRun,
+    run: Option<AgentRun>,
     issue: &NativeIssue,
 ) -> IssueWorkflowMutationResponse {
     IssueWorkflowMutationResponse {
@@ -4940,7 +5027,7 @@ mod tests {
         let started_work = start_issue_work(&pool, request.clone()).await.unwrap();
         assert_eq!(started_work.issue_key, "ISSUE-003");
         assert_eq!(started_work.board_state, IssueBoardState::InProgress);
-        assert_eq!(started_work.run.issue_number, Some(3));
+        assert_eq!(started_work.run.as_ref().unwrap().issue_number, Some(3));
         assert_eq!(
             load_agent_run(&pool, &child.run_id)
                 .await
@@ -4952,7 +5039,10 @@ mod tests {
 
         let repeated = start_issue_work(&pool, request).await.unwrap();
         assert_eq!(repeated.state_revision, started_work.state_revision);
-        assert_eq!(repeated.run.revision, started_work.run.revision);
+        assert_eq!(
+            repeated.run.as_ref().unwrap().revision,
+            started_work.run.as_ref().unwrap().revision
+        );
 
         let error = start_issue_work(
             &pool,
@@ -4960,7 +5050,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some(started.run_id),
                 issue_key: "ISSUE-004".to_owned(),
-                expected_revision: Some(started_work.run.revision),
+                expected_revision: Some(started_work.run.as_ref().unwrap().revision),
                 session_id: None,
             },
         )
@@ -5271,12 +5361,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let started_run_id = started.run.run_id.clone();
+        let started_run_id = started.run.as_ref().unwrap().run_id.clone();
         let paused = pause_issue_work(
             &pool,
             PauseIssueRequest {
                 project_id: "project-1".to_owned(),
-                run_id: started.run.run_id.clone(),
+                run_id: started.run.as_ref().unwrap().run_id.clone(),
                 issue_key: first.issue_key.clone(),
             },
         )
@@ -5304,7 +5394,7 @@ mod tests {
             &pool,
             PauseIssueRequest {
                 project_id: "project-1".to_owned(),
-                run_id: started_third.run.run_id.clone(),
+                run_id: started_third.run.as_ref().unwrap().run_id.clone(),
                 issue_key: third.issue_key.clone(),
             },
         )
@@ -5316,7 +5406,7 @@ mod tests {
             &pool,
             ResumeIssueRequest {
                 project_id: "project-1".to_owned(),
-                run_id: started_run_id,
+                run_id: Some(started_run_id),
                 issue_key: first.issue_key.clone(),
                 takeover: false,
             },
@@ -5330,7 +5420,7 @@ mod tests {
             &pool,
             PauseIssueRequest {
                 project_id: "project-1".to_owned(),
-                run_id: started.run.run_id.clone(),
+                run_id: started.run.as_ref().unwrap().run_id.clone(),
                 issue_key: second.issue_key.clone(),
             },
         )
@@ -5417,7 +5507,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cards[0].changed_by_run_id.as_deref(),
-            Some(started.run.run_id.as_str())
+            Some(started.run.as_ref().unwrap().run_id.as_str())
         );
     }
 
@@ -6871,8 +6961,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(closure.board_state, IssueBoardState::InReview);
-        assert_eq!(closure.run.host, AgentRunHost::Codex);
-        assert_eq!(closure.run.issue_number, Some(3));
+        assert_eq!(closure.run.as_ref().unwrap().host, AgentRunHost::Codex);
+        assert_eq!(closure.run.as_ref().unwrap().issue_number, Some(3));
     }
 
     #[tokio::test]
@@ -6910,7 +7000,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 issue_key: "ISSUE-003".to_owned(),
                 expected_revision: started.state_revision,
-                run_id: run.run_id.clone(),
+                run_id: Some(run.run_id.clone()),
             },
         )
         .await
@@ -6954,7 +7044,274 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 issue_key: "ISSUE-003".to_owned(),
                 expected_revision: 1,
-                run_id: run.run_id,
+                run_id: Some(run.run_id),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            DaemonError::State {
+                code: "agent_run_conflict",
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn unclaim_without_run_releases_paused_issue_back_to_todo() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_unclaim_start",
+                Some("root:manual-unclaim"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let _started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let paused = pause_issue_work(
+            &pool,
+            PauseIssueRequest {
+                project_id: "project-1".to_owned(),
+                run_id: run.run_id.clone(),
+                issue_key: "ISSUE-003".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(paused.board_state, IssueBoardState::Paused);
+
+        // The pausing session ends; the run stays bound but is no longer active.
+        record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_unclaim_stop",
+                Some("root:manual-unclaim"),
+                AgentRunEventType::Ended,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let released = unclaim_issue(
+            &pool,
+            UnclaimIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: paused.state_revision,
+                run_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(released.board_state, IssueBoardState::Todo);
+        let unbound = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        assert_eq!(unbound.issue_number, None);
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(board[0].board_state, IssueBoardState::Todo);
+        assert!(board[0].changed_by_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn unclaim_without_run_rejects_while_an_active_run_works_the_issue() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_unclaim_active",
+                Some("root:manual-unclaim-active"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = unclaim_issue(
+            &pool,
+            UnclaimIssueRequest {
+                project_id: "project-1".to_owned(),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: started.state_revision,
+                run_id: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            DaemonError::State {
+                code: "agent_run_conflict",
+                ..
+            }
+        ));
+        let still_bound = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        assert_eq!(still_bound.issue_number, Some(3));
+    }
+
+    #[tokio::test]
+    async fn resume_without_run_resumes_paused_issue() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_resume_start",
+                Some("root:manual-resume"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let _started = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        pause_issue_work(
+            &pool,
+            PauseIssueRequest {
+                project_id: "project-1".to_owned(),
+                run_id: run.run_id.clone(),
+                issue_key: "ISSUE-003".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_resume_stop",
+                Some("root:manual-resume"),
+                AgentRunEventType::Ended,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let resumed = resume_issue_work(
+            &pool,
+            ResumeIssueRequest {
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                issue_key: "ISSUE-003".to_owned(),
+                takeover: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.board_state, IssueBoardState::InProgress);
+        assert!(resumed.run.is_none());
+        let unbound = load_agent_run(&pool, &run.run_id).await.unwrap().unwrap();
+        assert_eq!(unbound.issue_number, None);
+        let board = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(board[0].board_state, IssueBoardState::InProgress);
+        assert!(board[0].changed_by_run_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_without_run_rejects_while_the_pausing_run_is_still_active() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let run = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_manual_resume_active",
+                Some("root:manual-resume-active"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(run.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(run.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        // Pause without ending the run: the session still holds the Issue.
+        pause_issue_work(
+            &pool,
+            PauseIssueRequest {
+                project_id: "project-1".to_owned(),
+                run_id: run.run_id.clone(),
+                issue_key: "ISSUE-003".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = resume_issue_work(
+            &pool,
+            ResumeIssueRequest {
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                issue_key: "ISSUE-003".to_owned(),
+                takeover: false,
             },
         )
         .await
