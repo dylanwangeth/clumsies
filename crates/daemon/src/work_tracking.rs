@@ -217,6 +217,10 @@ pub enum AgentRunHost {
     /// opencode plugin-hook integration (event plugin + daemon bridge).
     #[serde(rename = "opencode")]
     Opencode,
+    /// DeepSeek Harness (dsh) web sessions; runs are issued by a dsh-side
+    /// client plugin forwarding lifecycle events to the daemon hook proxy.
+    #[serde(rename = "dsh")]
+    Dsh,
 }
 
 impl AgentRunHost {
@@ -227,6 +231,7 @@ impl AgentRunHost {
             Self::Manual => "manual",
             Self::Zed => "zed",
             Self::Opencode => "opencode",
+            Self::Dsh => "dsh",
         }
     }
 
@@ -237,6 +242,7 @@ impl AgentRunHost {
             "manual" => Ok(Self::Manual),
             "zed" => Ok(Self::Zed),
             "opencode" => Ok(Self::Opencode),
+            "dsh" => Ok(Self::Dsh),
             value => Err(corrupt_run(format!("unknown AgentRun host {value}"))),
         }
     }
@@ -810,7 +816,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             run_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
             issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
-            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode')),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh')),
             host_run_key TEXT NOT NULL,
             host_session_id TEXT,
             parent_run_id TEXT REFERENCES agent_runs(run_id),
@@ -4879,6 +4885,70 @@ mod tests {
         assert_eq!(after_stop.outcome, None);
         assert_eq!(after_stop.end_reason.as_deref(), Some(HOOK_END_REASON));
         assert_eq!(after_stop.summary, None);
+        assert_eq!(after_stop.run_id, started.run_id);
+    }
+
+    #[tokio::test]
+    async fn dsh_hook_run_can_bind_and_release_an_issue() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+        let request =
+            |event_id: &str, host_run_key: Option<&str>, event_type: AgentRunEventType| {
+                RecordAgentRunEventRequest {
+                    event_id: event_id.to_owned(),
+                    project_id: "project-1".to_owned(),
+                    host: AgentRunHost::Dsh,
+                    host_run_key: host_run_key.map(str::to_owned),
+                    event_type,
+                    source: AgentRunEventSource::Hook,
+                    host_session_id: Some("ds-session-1".to_owned()),
+                    parent_run_id: None,
+                    parent_host_run_key: None,
+                    kind: if event_type == AgentRunEventType::SessionEnded {
+                        None
+                    } else {
+                        Some(AgentRunKind::Root)
+                    },
+                    issue_key: None,
+                    outcome: None,
+                    display_label: None,
+                    summary: None,
+                    occurred_at: None,
+                }
+            };
+        let started = record_agent_run_event(
+            &pool,
+            request("dsh_start", Some("root:turn-1"), AgentRunEventType::Started),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        assert_eq!(started.host, AgentRunHost::Dsh);
+
+        let claimed = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(started.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(started.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(claimed.board_state, IssueBoardState::InProgress);
+
+        let after_stop = record_agent_run_event(
+            &pool,
+            request("dsh_stop", Some("root:turn-1"), AgentRunEventType::Ended),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        assert_eq!(after_stop.phase, AgentRunPhase::Ended);
         assert_eq!(after_stop.run_id, started.run_id);
     }
 
