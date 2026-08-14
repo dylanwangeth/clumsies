@@ -22,6 +22,7 @@ final class IssueBoardModel: ObservableObject {
     typealias GateApplier = @Sendable (ApplyIssueGateRequest) async throws -> IssueMutationResponse
     typealias VerificationStepToggler = @Sendable (SetVerificationStepCompletedRequest) async throws -> IssueMutationResponse
     typealias UnclaimApplier = @Sendable (UnclaimIssueRequest) async throws -> IssueMutationResponse
+    typealias ResumeApplier = @Sendable (ResumeIssueRequest) async throws -> IssueWorkflowMutationResponse
     typealias RemovalApplier = @Sendable (RemoveIssueRequest) async throws -> IssueRemovalResponse
 
     @Published private(set) var response: IssueBoardResponse?
@@ -43,6 +44,7 @@ final class IssueBoardModel: ObservableObject {
     private let gateApplier: GateApplier
     private let verificationStepToggler: VerificationStepToggler
     private let unclaimApplier: UnclaimApplier
+    private let resumeApplier: ResumeApplier
     private let removalApplier: RemovalApplier
     private var generation = UUID()
     private var activeRequestGeneration: UUID?
@@ -63,6 +65,9 @@ final class IssueBoardModel: ObservableObject {
         unclaimApplier = { request in
             try await daemon.unclaimIssue(request)
         }
+        resumeApplier = { request in
+            try await daemon.resumeIssue(request)
+        }
         removalApplier = { request in
             try await daemon.removeIssue(request)
         }
@@ -74,6 +79,7 @@ final class IssueBoardModel: ObservableObject {
         gateApplier: @escaping GateApplier = { _ in throw IssueBoardModelError.unexpectedIssue },
         verificationStepToggler: @escaping VerificationStepToggler = { _ in throw IssueBoardModelError.unexpectedIssue },
         unclaimApplier: @escaping UnclaimApplier = { _ in throw IssueBoardModelError.unexpectedIssue },
+        resumeApplier: @escaping ResumeApplier = { _ in throw IssueBoardModelError.unexpectedIssue },
         removalApplier: @escaping RemovalApplier = { _ in throw IssueBoardModelError.unexpectedIssue }
     ) {
         self.loader = loader
@@ -81,6 +87,7 @@ final class IssueBoardModel: ObservableObject {
         self.gateApplier = gateApplier
         self.verificationStepToggler = verificationStepToggler
         self.unclaimApplier = unclaimApplier
+        self.resumeApplier = resumeApplier
         self.removalApplier = removalApplier
     }
 
@@ -181,15 +188,29 @@ final class IssueBoardModel: ObservableObject {
     }
 
     func unclaim(_ issue: IssueBoardCard) async throws {
-        guard let runId = issue.activeRuns.first?.runId else {
-            throw IssueBoardModelError.unexpectedIssue
-        }
+        // Agent-held Issues are released by their active run; a Paused or
+        // abandoned Issue (no active run) is released by the human, which the
+        // daemon accepts without a run id.
+        let runId = issue.activeRuns.first?.runId
         _ = try await unclaimApplier(
             .init(
                 projectId: issue.projectId,
                 issueKey: issue.issueKey,
                 expectedRevision: issue.stateRevision,
                 runId: runId
+            )
+        )
+        detailByIssueId[issue.id] = nil
+        await refresh()
+    }
+
+    func resume(_ issue: IssueBoardCard) async throws {
+        _ = try await resumeApplier(
+            .init(
+                projectId: issue.projectId,
+                issueKey: issue.issueKey,
+                takeover: false,
+                runId: nil
             )
         )
         detailByIssueId[issue.id] = nil
