@@ -4921,7 +4921,7 @@ async fn create_project_commit(
         + 1;
     let mut entries = Vec::new();
     let project_rows = sqlx::query(
-        "SELECT resource_id, resource_kind, path, name, body
+        "SELECT resource_id, resource_kind, path, name, body, description
          FROM resources
          WHERE scope = 'project' AND project_id = $1 AND status = 'active'
          ORDER BY resource_kind, path",
@@ -4935,7 +4935,7 @@ async fn create_project_commit(
     }
 
     let selected_rows = sqlx::query(
-        "SELECT r.resource_id, r.resource_kind, r.path, r.name, r.body
+        "SELECT r.resource_id, r.resource_kind, r.path, r.name, r.body, r.description
          FROM project_org_resource_selections s
          JOIN resources r ON r.resource_id = s.resource_id
          WHERE s.project_id = $1 AND r.status = 'active'
@@ -4994,7 +4994,7 @@ async fn create_org_commit(
     .unwrap_or(0)
         + 1;
     let rows = sqlx::query(
-        "SELECT resource_id, resource_kind, path, name, body
+        "SELECT resource_id, resource_kind, path, name, body, description
          FROM resources
          WHERE scope = 'org' AND org_id = $1 AND status = 'active'
          ORDER BY resource_kind, path",
@@ -5192,7 +5192,7 @@ async fn load_commit_payload(
 
     let item_rows = sqlx::query(
         "SELECT e.item_id, e.resource_kind, e.scope, e.project_id, e.path, e.blob_id,
-                e.source, b.content
+                e.source, e.description, b.content
          FROM tree_entries e
          JOIN blobs b ON b.blob_id = e.blob_id
          WHERE e.tree_id = $1

@@ -1218,6 +1218,7 @@ async fn cached_resource_entry(
     })?;
     let tree: ServerTree = serde_json::from_str(&tree_json)?;
     let expected_kind = match resource_kind {
+        "memory" => ServerTreeEntryKind::Memory,
         "context" => ServerTreeEntryKind::Context,
         "rule" => ServerTreeEntryKind::Rule,
         "workflow" => ServerTreeEntryKind::Workflow,

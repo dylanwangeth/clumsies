@@ -2105,8 +2105,11 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
         selection_after_workflow_delete.revision,
         selection.revision + 1
     );
-    assert!(selection_after_workflow_delete.memories.is_empty());
     assert_eq!(selection_after_workflow_delete.memories.len(), 1);
+    assert_eq!(
+        selection_after_workflow_delete.memories[0].memory_id,
+        rule_id
+    );
 
     let delete_rule = delete_resource_draft(
         &service,

@@ -34,9 +34,6 @@ ALTER TABLE resources
 ALTER TABLE resources
     DROP COLUMN context_kind;
 
-ALTER TABLE resources
-    DROP COLUMN applies_when;
-
 DROP TABLE IF EXISTS workflow_steps;
 
 -- Unified path namespace: the old unique indexes keyed (org_id, resource_kind,

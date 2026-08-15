@@ -3752,7 +3752,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
             .unwrap()
             .starts_with("daemon_")
     );
-    assert_eq!(requests[0]["resource"]["kind"], "memory");
+    assert!(requests[0]["resource"].get("kind").is_none());
     assert_eq!(requests[0]["resource"]["path"], "docs/sync.md");
     assert_eq!(requests[0]["operations"][0]["action"], "create");
     assert_eq!(
@@ -5336,7 +5336,6 @@ async fn fake_get_draft(
                 "base_commit_id": null,
                 "resource": {
                     "scope": "project",
-                    "kind": "memory",
                     "id": null,
                     "path": "docs/remote.md"
                 },
@@ -5344,7 +5343,6 @@ async fn fake_get_draft(
                     "action": "create",
                     "resource": {
                         "scope": "project",
-                        "kind": "memory",
                         "id": null,
                         "path": "docs/remote.md"
                     },
@@ -5415,7 +5413,6 @@ async fn fake_stale_draft(
             "base_commit_id": null,
             "resource": {
                 "scope": "project",
-                "kind": "memory",
                 "id": null,
                 "path": "docs/remote.md"
             },
@@ -5568,7 +5565,6 @@ async fn fake_conflicted_draft(
                 "base_commit_id": COMMIT_B,
                 "resource": {
                     "scope": "project",
-                    "kind": "memory",
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
@@ -5590,7 +5586,6 @@ async fn fake_conflicted_draft(
                     "action": "update",
                     "resource": {
                         "scope": "project",
-                        "kind": "memory",
                         "id": "ctx_conflict",
                         "path": "docs/conflict.md"
                     },
@@ -5610,7 +5605,6 @@ async fn fake_conflicted_draft(
             "base_commit_id": COMMIT_A,
             "resource": {
                 "scope": "project",
-                "kind": "memory",
                 "id": "ctx_conflict",
                 "path": "docs/conflict.md"
             },
@@ -5632,7 +5626,6 @@ async fn fake_conflicted_draft(
                 "action": "update",
                 "resource": {
                     "scope": "project",
-                    "kind": "memory",
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
