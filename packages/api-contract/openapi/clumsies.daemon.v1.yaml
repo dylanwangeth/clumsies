@@ -884,8 +884,6 @@ components:
           type: string
         description:
           type: string
-        description_excerpt:
-          type: string
         external_references:
           type: array
           maxItems: 16
