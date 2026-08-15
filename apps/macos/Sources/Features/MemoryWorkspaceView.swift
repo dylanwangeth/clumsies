@@ -17,7 +17,7 @@ struct MemoryMainPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if store.selectedSection == .local, store.activeProject?.isLoaded == false {
+            if let project = store.activeProject, !project.isLoaded {
                 ProjectPreparationView(store: store)
             } else if !store.visibleTabs.isEmpty {
                 DocumentTabStrip(
@@ -87,26 +87,24 @@ private struct EmptyWorkspaceView: View {
 private struct EmptyMemoryCollectionView: View {
     @ObservedObject var store: WorkspaceStore
 
+    private var scope: MemoryScope {
+        store.activeProjectId == nil ? .org : .project
+    }
+
     var body: some View {
         ContentUnavailableView {
-            Label("No \(store.selectedKind.title)", systemImage: "doc")
+            Label("No Memory", systemImage: "doc")
         } description: {
-            Text("Create the first \(store.selectedKind.singularTitle.lowercased()) here.")
+            Text("Create the first memory here.")
         } actions: {
-            Button("New \(store.selectedKind.singularTitle)") {
+            Button("New Memory") {
                 Task {
-                    await store.createMemory(
-                        kind: store.selectedKind,
-                        scope: store.selectedSection == .hub ? .org : .project
-                    )
+                    await store.createMemory(kind: store.selectedKind, scope: scope)
                 }
             }
             .keyboardShortcut(.defaultAction)
             .disabled(
-                !store.canCreateMemory(
-                    kind: store.selectedKind,
-                    scope: store.selectedSection == .hub ? .org : .project
-                )
+                !store.canCreateMemory(kind: store.selectedKind, scope: scope)
             )
         }
     }
@@ -304,7 +302,7 @@ private struct FileTreeView: View {
     private func fileTreeMenu(for nodeIds: Set<String>) -> some View {
         let targetItems = FileTreeNode.items(in: roots, selectedNodeIds: nodeIds)
         let singleItem = targetItems.count == 1 ? targetItems.first : nil
-        let hubItems = targetItems.filter { $0.scope == .org }
+        let addableItems = targetItems.filter { $0.scope == .org && !$0.inherited }
         let removableItems = targetItems.filter(\.inherited)
 
         if let singleItem {
@@ -320,15 +318,15 @@ private struct FileTreeView: View {
             Divider()
         }
 
-        if store.selectedSection == .hub, !hubItems.isEmpty {
-            Menu(addToLocalTitle(count: hubItems.count)) {
+        if !addableItems.isEmpty {
+            Menu(addToLocalTitle(count: addableItems.count)) {
                 if store.projects.isEmpty {
                     Button("No Projects") {}
                         .disabled(true)
                 } else {
                     ForEach(store.projects) { project in
                         Button(project.name) {
-                            addToLocal(hubItems, projectId: project.id)
+                            addToLocal(addableItems, projectId: project.id)
                         }
                     }
                 }
@@ -336,7 +334,7 @@ private struct FileTreeView: View {
             .disabled(!store.canManageOrgSelection || store.projects.isEmpty)
         }
 
-        if store.selectedSection == .local, !removableItems.isEmpty {
+        if !removableItems.isEmpty {
             Button(removeFromLocalTitle(count: removableItems.count)) {
                 removeFromLocal(removableItems)
             }
@@ -344,15 +342,10 @@ private struct FileTreeView: View {
         }
 
         if let singleItem {
-            if store.selectedSection == .hub && !hubItems.isEmpty
-                || store.selectedSection == .local && !removableItems.isEmpty {
+            if !addableItems.isEmpty || !removableItems.isEmpty {
                 Divider()
             }
-            if singleItem.inherited {
-                Button("Open in Hub") {
-                    Task { await store.reveal(singleItem) }
-                }
-            } else {
+            if !singleItem.inherited {
                 Button("Rename…") { beginRenaming(singleItem) }
             }
             if let draft = singleItem.draft {
@@ -368,18 +361,18 @@ private struct FileTreeView: View {
         }
 
         if targetItems.isEmpty {
-            Button("New \(store.selectedKind.singularTitle)") {
+            Button("New Memory") {
                 Task {
                     await store.createMemory(
                         kind: store.selectedKind,
-                        scope: store.selectedSection == .hub ? .org : .project
+                        scope: store.activeProjectId == nil ? .org : .project
                     )
                 }
             }
             .disabled(
                 !store.canCreateMemory(
                     kind: store.selectedKind,
-                    scope: store.selectedSection == .hub ? .org : .project
+                    scope: store.activeProjectId == nil ? .org : .project
                 )
             )
         }

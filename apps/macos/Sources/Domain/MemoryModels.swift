@@ -1,8 +1,7 @@
 import Foundation
 
 enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
-    case hub
-    case local
+    case memory
     case issues
     case bundles
     case reviews
@@ -11,8 +10,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .hub: "Hub"
-        case .local: "Local"
+        case .memory: "Memory"
         case .issues: "Kanban"
         case .bundles: "Bundles"
         case .reviews: "Reviews"
@@ -21,8 +19,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
 
     var symbol: String {
         switch self {
-        case .hub: "cloud"
-        case .local: "macbook.and.ipod"
+        case .memory: "brain"
         case .issues: "rectangle.3.group"
         case .bundles: "shippingbox"
         case .reviews: "checkmark.bubble"
@@ -231,7 +228,9 @@ struct WorkbenchTab: Identifiable, Hashable, Sendable {
 
     func isVisible(in section: WorkspaceSection, projectId: String?) -> Bool {
         guard self.section == section else { return false }
-        guard section == .local else { return true }
-        return self.projectId == projectId
+        guard section == .memory else { return true }
+        // Org-scope (Hub) tabs stay visible regardless of the active project;
+        // project-scope tabs are only visible while their project is active.
+        return self.projectId == nil || self.projectId == projectId
     }
 }

@@ -233,7 +233,7 @@ final class DocumentTabStripTests: XCTestCase {
         mode: WorkbenchTabMode = .source
     ) -> WorkbenchTab {
         WorkbenchTab(
-            section: .local,
+            section: .memory,
             projectId: "project-1",
             itemId: itemId,
             mode: mode,
