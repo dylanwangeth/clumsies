@@ -7,8 +7,8 @@ use serde::Serialize;
 use server::api::{
     AccessTokenKind, AccessTokenListResponse, AdminOrg, AdminProject, AdminProjectListResponse,
     AuditEventListResponse, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
-    DeleteResult, Member, MemberListResponse, MemberStatus, OidcProviderStatus, OrgRole,
-    ProjectMember, ProjectMemberListResponse, ProjectRole, UpdateAdminOrgRequest,
+    DeleteResult, Member, MemberListResponse, MemberStatus, MemoryExport, OidcProviderStatus,
+    OrgRole, ProjectMember, ProjectMemberListResponse, ProjectRole, UpdateAdminOrgRequest,
     UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use tower::ServiceExt;
@@ -553,4 +553,216 @@ where
 {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+async fn seed_memory(
+    pool: &sqlx::PgPool,
+    org_id: &str,
+    memory_id: &str,
+    project_id: Option<&str>,
+    scope: &str,
+    path: &str,
+    name: &str,
+    description: &str,
+) {
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, revision, content_hash, body, description
+         )
+         VALUES ($1, $2, $3, $4, 'memory', $5, $6, 'active', 1, $7, $8, $9)",
+    )
+    .bind(memory_id)
+    .bind(org_id)
+    .bind(project_id)
+    .bind(scope)
+    .bind(path)
+    .bind(name)
+    .bind("a".repeat(64))
+    .bind(format!("# {name}\n\nBody of {path}."))
+    .bind(description)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// ISSUE-012 migration tooling: the admin memory-export must capture every
+/// identity family (legacy ctx_/rul_ ids verbatim, native issues/ paths),
+/// descriptions, active drafts with their operations, org selections and
+/// personal bundles — the data the migration verification compares against.
+#[tokio::test]
+async fn memory_export_contains_verifiable_full_state() {
+    let postgres = common::migrated_postgres().await;
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Default",
+    )
+    .await;
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+
+    let org_memory_id = "ctx_legacy_org_policy";
+    let project_memory_id = "rul_legacy_project_rule";
+    let issue_memory_id = "mem_native_issue";
+    seed_memory(
+        &postgres.pool,
+        &bootstrap.org_id,
+        org_memory_id,
+        None,
+        "org",
+        "context/org-policy.md",
+        "Org Policy",
+        "Org-wide policy memory",
+    )
+    .await;
+    seed_memory(
+        &postgres.pool,
+        &bootstrap.org_id,
+        project_memory_id,
+        Some(&bootstrap.project_id),
+        "project",
+        "rules/project-rule.md",
+        "Project Rule",
+        "Project rule memory",
+    )
+    .await;
+    seed_memory(
+        &postgres.pool,
+        &bootstrap.org_id,
+        issue_memory_id,
+        Some(&bootstrap.project_id),
+        "project",
+        "issues/ISSUE-012.md",
+        "Issue 12",
+        "Issue 12 memory",
+    )
+    .await;
+
+    sqlx::query(
+        "INSERT INTO drafts (
+            draft_id, project_id, author_user_id, title, description, resource_scope,
+            resource_kind, status, version, daemon_installation_id
+         )
+         VALUES ($1, $2, $3, $4, $5, 'project', 'memory', 'open', 3, 'daemon-export-test')",
+    )
+    .bind("draft_export_1")
+    .bind(&bootstrap.project_id)
+    .bind(&bootstrap.user_id)
+    .bind("Export draft")
+    .bind("Draft description")
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO draft_operations (
+            operation_id, draft_id, action, resource_scope, resource_kind, target_id,
+            path, new_path, content
+         )
+         VALUES
+            ('op_export_1', 'draft_export_1', 'create', 'project', 'memory',
+             NULL, 'rules/new.md', NULL,
+             '{\"description\": \"New memory\", \"content\": \"# New\"}'::jsonb),
+            ('op_export_2', 'draft_export_1', 'update', 'project', 'memory',
+             'rul_legacy_project_rule', 'rules/project-rule.md', NULL,
+             '{\"content\": \"# Updated\"}'::jsonb)",
+    )
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO project_org_selection_states (project_id) VALUES ($1)
+         ON CONFLICT (project_id) DO NOTHING",
+    )
+    .bind(&bootstrap.project_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_org_resource_selections (project_id, resource_id)
+         VALUES ($1, $2)",
+    )
+    .bind(&bootstrap.project_id)
+    .bind(org_memory_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO personal_bundles (bundle_id, owner_user_id, name, description, revision)
+         VALUES ('bundle_export_1', $1, 'Export bundle', 'Bundle description', 2)",
+    )
+    .bind(&bootstrap.user_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO personal_bundle_items (bundle_id, resource_id, position)
+         VALUES ('bundle_export_1', $1, 0), ('bundle_export_1', $2, 1)",
+    )
+    .bind(org_memory_id)
+    .bind(project_memory_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    let export: MemoryExport = get_json(app.clone(), "/api/v1/admin/memory-export").await;
+    assert_eq!(export.org_id, bootstrap.org_id);
+
+    assert_eq!(export.memories.len(), 3, "{:#?}", export.memories);
+    let org_memory = export
+        .memories
+        .iter()
+        .find(|item| item.memory_id == org_memory_id)
+        .expect("legacy ctx_ id emitted verbatim");
+    assert_eq!(org_memory.scope, "org");
+    assert_eq!(org_memory.path, "context/org-policy.md");
+    assert_eq!(org_memory.description, "Org-wide policy memory");
+    let project_memory = export
+        .memories
+        .iter()
+        .find(|item| item.memory_id == project_memory_id)
+        .expect("legacy rul_ id emitted verbatim");
+    assert_eq!(project_memory.scope, "project");
+    assert_eq!(
+        project_memory.project_id.as_deref(),
+        Some(bootstrap.project_id.as_str())
+    );
+    assert_eq!(project_memory.description, "Project rule memory");
+    let issue_memory = export
+        .memories
+        .iter()
+        .find(|item| item.memory_id == issue_memory_id)
+        .expect("native issue path captured");
+    assert_eq!(issue_memory.path, "issues/ISSUE-012.md");
+    assert_eq!(issue_memory.status, "active");
+
+    assert_eq!(export.drafts.len(), 1, "{:#?}", export.drafts);
+    let draft = &export.drafts[0];
+    assert_eq!(draft.draft_id, "draft_export_1");
+    assert_eq!(draft.title, "Export draft");
+    assert_eq!(draft.description, "Draft description");
+    assert_eq!(draft.version, 3);
+    assert_eq!(draft.operations.len(), 2);
+    assert_eq!(draft.operations[0]["action"], "create");
+    assert_eq!(draft.operations[0]["content"]["description"], "New memory");
+    assert_eq!(draft.operations[1]["target_id"], "rul_legacy_project_rule");
+
+    assert_eq!(export.selections.len(), 1);
+    assert_eq!(export.selections[0].project_id, bootstrap.project_id);
+    assert_eq!(
+        export.selections[0].resource_ids,
+        vec![org_memory_id.to_owned()]
+    );
+
+    assert_eq!(export.bundles.len(), 1);
+    assert_eq!(export.bundles[0].name, "Export bundle");
+    assert_eq!(export.bundles[0].owner_user_id, bootstrap.user_id);
+    assert_eq!(
+        export.bundles[0].resource_ids,
+        vec![org_memory_id.to_owned(), project_memory_id.to_owned()]
+    );
 }

@@ -18,6 +18,7 @@ use crate::api::{
     DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
     DraftReconciliationStatus, DraftResourceContent, DraftResourceRef, DraftStatus, DraftSyncState,
     DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MemoryDetail,
+    MemoryExport, MemoryExportBundle, MemoryExportDraft, MemoryExportItem, MemoryExportSelection,
     MemoryListResponse, MemoryMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
     PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
     PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
@@ -914,6 +915,157 @@ impl ServerRepository {
             .collect::<Result<Vec<_>, ServerError>>()?;
         let (items, page_info) = admin_page(items, offset, limit);
         Ok(AuditEventListResponse { items, page_info })
+    }
+
+    pub async fn export_memory_state(&self, org_id: &str) -> Result<MemoryExport, ServerError> {
+        let memories = sqlx::query(
+            "SELECT resource_id, scope, project_id, path, name, description, status,
+                    content_hash, body, updated_at
+             FROM resources
+             WHERE org_id = $1 AND status = 'active'
+             ORDER BY scope, path, resource_id",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let memories = memories
+            .iter()
+            .map(|row| {
+                Ok(MemoryExportItem {
+                    memory_id: row.try_get("resource_id")?,
+                    scope: row.try_get("scope")?,
+                    project_id: row.try_get("project_id")?,
+                    path: row.try_get("path")?,
+                    name: row.try_get("name")?,
+                    description: row.try_get("description")?,
+                    status: row.try_get("status")?,
+                    content_hash: row.try_get("content_hash")?,
+                    body: row.try_get("body")?,
+                    updated_at: row
+                        .try_get::<time::OffsetDateTime, _>("updated_at")?
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .map_err(|e| {
+                            ServerError::InvalidRequest(format!("invalid timestamp: {e}"))
+                        })?,
+                })
+            })
+            .collect::<Result<Vec<_>, ServerError>>()?;
+
+        let draft_rows = sqlx::query(
+            "SELECT d.draft_id, d.project_id, d.title, d.description, d.resource_scope,
+                    d.target_id, d.path, d.status, d.version
+             FROM drafts d
+             JOIN projects p ON p.project_id = d.project_id
+             WHERE p.org_id = $1
+             ORDER BY d.updated_at DESC",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut drafts = Vec::with_capacity(draft_rows.len());
+        for row in draft_rows {
+            let draft_id: String = row.try_get("draft_id")?;
+            let operations = sqlx::query(
+                "SELECT operation_id, action, resource_scope, resource_kind,
+                        target_id, path, new_path, content
+                 FROM draft_operations
+                 WHERE draft_id = $1
+                 ORDER BY operation_id",
+            )
+            .bind(&draft_id)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|operation_row| {
+                let action: String = operation_row.try_get("action")?;
+                let resource_scope: String = operation_row.try_get("resource_scope")?;
+                let resource_kind: String = operation_row.try_get("resource_kind")?;
+                let target_id: Option<String> = operation_row.try_get("target_id")?;
+                let path: Option<String> = operation_row.try_get("path")?;
+                let new_path: Option<String> = operation_row.try_get("new_path")?;
+                let content: Option<serde_json::Value> = operation_row.try_get("content")?;
+                Ok(serde_json::json!({
+                    "action": action,
+                    "resource_scope": resource_scope,
+                    "resource_kind": resource_kind,
+                    "target_id": target_id,
+                    "path": path,
+                    "new_path": new_path,
+                    "content": content,
+                }))
+            })
+            .collect::<Result<Vec<_>, ServerError>>()?;
+            drafts.push(MemoryExportDraft {
+                draft_id,
+                project_id: row.try_get("project_id")?,
+                title: row.try_get("title")?,
+                description: row.try_get("description")?,
+                resource_scope: row.try_get("resource_scope")?,
+                target_id: row.try_get("target_id")?,
+                path: row.try_get("path")?,
+                status: row.try_get("status")?,
+                version: row.try_get("version")?,
+                operations,
+            });
+        }
+
+        let selections = sqlx::query(
+            "SELECT s.project_id, s.revision,
+                    coalesce(array_agg(sr.resource_id ORDER BY sr.resource_id)
+                             FILTER (WHERE sr.resource_id IS NOT NULL), '{}') AS resource_ids
+             FROM project_org_selection_states s
+             LEFT JOIN project_org_resource_selections sr ON sr.project_id = s.project_id
+             JOIN projects p ON p.project_id = s.project_id
+             WHERE p.org_id = $1
+             GROUP BY s.project_id, s.revision",
+        )
+        .bind(org_id)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(MemoryExportSelection {
+                project_id: row.try_get("project_id")?,
+                resource_ids: row.try_get::<Vec<String>, _>("resource_ids")?,
+                revision: row.try_get("revision")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ServerError>>()?;
+
+        let bundles = sqlx::query(
+            "SELECT b.bundle_id, b.owner_user_id, b.name, b.description, b.revision,
+                    coalesce(array_agg(bi.resource_id ORDER BY bi.position)
+                             FILTER (WHERE bi.resource_id IS NOT NULL), '{}') AS resource_ids
+             FROM personal_bundles b
+             LEFT JOIN personal_bundle_items bi ON bi.bundle_id = b.bundle_id
+             GROUP BY b.bundle_id
+             ORDER BY b.bundle_id",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(MemoryExportBundle {
+                bundle_id: row.try_get("bundle_id")?,
+                owner_user_id: row.try_get("owner_user_id")?,
+                name: row.try_get("name")?,
+                description: row.try_get("description")?,
+                resource_ids: row.try_get::<Vec<String>, _>("resource_ids")?,
+                revision: row.try_get("revision")?,
+            })
+        })
+        .collect::<Result<Vec<_>, ServerError>>()?;
+
+        Ok(MemoryExport {
+            org_id: org_id.to_owned(),
+            exported_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|e| ServerError::InvalidRequest(format!("invalid timestamp: {e}")))?,
+            memories,
+            drafts,
+            selections,
+            bundles,
+        })
     }
 
     pub async fn create_project(

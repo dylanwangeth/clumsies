@@ -24,8 +24,17 @@ UPDATE resources
 SET description = name
 WHERE description = '';
 
+-- Rewrite every legacy kind value to 'memory'. The old CHECK must be
+-- dropped first: it only admits rule/context/workflow, so rewriting rows
+-- while it is still in place would violate it. The narrowed CHECK added
+-- afterwards then validates cleanly on live databases. Identity
+-- (resource_id) is preserved; only the kind label is unified.
 ALTER TABLE resources
     DROP CONSTRAINT resources_resource_kind_check;
+
+UPDATE resources
+SET resource_kind = 'memory'
+WHERE resource_kind IN ('rule', 'context', 'workflow');
 
 ALTER TABLE resources
     ADD CONSTRAINT resources_resource_kind_check
@@ -50,8 +59,15 @@ CREATE UNIQUE INDEX resources_project_path_idx
     WHERE scope = 'project' AND status = 'active';
 
 -- Tree entries: only 'memory' resources and the system selection entry.
+-- Legacy kind values in historical Commit payloads are rewritten so the
+-- narrowed CHECK validates on live databases (the baseline Commit is
+-- regenerated from effective state afterwards).
 ALTER TABLE tree_entries
     DROP CONSTRAINT tree_entries_resource_kind_check;
+
+UPDATE tree_entries
+SET resource_kind = 'memory'
+WHERE resource_kind IN ('rule', 'context', 'workflow', 'metaprompt');
 
 ALTER TABLE tree_entries
     ADD CONSTRAINT tree_entries_resource_kind_check
@@ -63,9 +79,14 @@ ALTER TABLE tree_entries
 ALTER TABLE tree_entries
     ADD COLUMN description TEXT NOT NULL DEFAULT '';
 
--- Drafts and draft operations carry a single Memory kind.
+-- Drafts and draft operations carry a single Memory kind; legacy kind
+-- values are rewritten so the narrowed CHECKs validate on live databases.
 ALTER TABLE drafts
     DROP CONSTRAINT drafts_resource_kind_check;
+
+UPDATE drafts
+SET resource_kind = 'memory'
+WHERE resource_kind IN ('rule', 'context', 'workflow', 'metaprompt');
 
 ALTER TABLE drafts
     ADD CONSTRAINT drafts_resource_kind_check
@@ -73,6 +94,10 @@ ALTER TABLE drafts
 
 ALTER TABLE draft_operations
     DROP CONSTRAINT draft_operations_resource_kind_check;
+
+UPDATE draft_operations
+SET resource_kind = 'memory'
+WHERE resource_kind IN ('rule', 'context', 'workflow', 'metaprompt');
 
 ALTER TABLE draft_operations
     ADD CONSTRAINT draft_operations_resource_kind_check

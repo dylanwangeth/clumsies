@@ -135,12 +135,22 @@ Memory {
 ## Migration
 
 1. Generate a repeatable, verifiable neutral export covering: effective
-   Memory bodies, title/path, scope/project, description (backfilled),
-   status, provenance, active Drafts, Project/Org relations, and native
-   Issues that must be preserved.
+   Memory bodies, title/path, description (backfilled), status, provenance,
+   active Drafts, Project/Org relations, and native Issues that must be
+   preserved. This is implemented as the org-admin endpoint
+   `GET /api/v1/admin/memory-export`, which emits every Memory (including
+   `issues/` paths), all Drafts with their raw operations, Project org
+   selections and personal bundles. IDs are emitted verbatim, so the export
+   doubles as the `old_id -> memory_id` identity map; the exported
+   `content_hash` is the byte-level comparison key.
 2. Take a full database backup (PostgreSQL dump and daemon SQLite copy).
 3. Import into the new schema; verify counts, content hashes, description,
    scope/project relations, active Drafts, and preserved native Issues.
+   `dev/memory-migration-verify.sh check <before.json> <after.json>` compares
+   two exports (identity set, per-memory hash/scope/description, draft,
+   selection and bundle counts, draft operation count) and fails loudly on
+   any discrepancy; `dev/memory-migration-verify.sh fetch` pulls the export
+   from a live server with an org-admin bearer token.
 4. Emit an `old_id -> memory_id` map; any unmigrated or conflicting object is
    reported explicitly.
 5. Archive old Commit history offline; generate and verify a new baseline
