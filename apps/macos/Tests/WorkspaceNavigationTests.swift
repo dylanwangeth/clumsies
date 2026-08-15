@@ -210,7 +210,7 @@ final class WorkspaceNavigationTests: XCTestCase {
                 canMergeReviews: false,
                 isAuthor: false
             ).items,
-            [.decision(.reject), .decision(.approve), .search]
+            [.decision(.reject), .decision(.approve)]
         )
     }
 
