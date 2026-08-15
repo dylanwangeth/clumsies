@@ -206,33 +206,25 @@ struct ProjectUnavailableView: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        if store.projects.isEmpty {
-            ContentUnavailableView {
-                Label("No Projects", systemImage: "folder")
-            } description: {
-                if store.canManageProjects {
-                    Text("Create a Project to start organizing local memory.")
-                } else {
-                    Text("Ask an organization administrator to grant you access to a Project.")
+        ContentUnavailableView {
+            Label("No Projects", systemImage: "folder")
+        } description: {
+            if store.canManageProjects {
+                Text("Create a Project to start organizing local memory.")
+            } else {
+                Text("Ask an organization administrator to grant you access to a Project.")
+            }
+        } actions: {
+            if store.canManageProjects {
+                Button("New Project…") {
+                    store.presentProjectCreation()
                 }
-            } actions: {
-                if store.canManageProjects {
-                    Button("New Project…") {
-                        store.presentProjectCreation()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Refresh") {
-                        Task { await store.reload() }
-                    }
+                .keyboardShortcut(.defaultAction)
+            } else {
+                Button("Refresh") {
+                    Task { await store.reload() }
                 }
             }
-        } else {
-            ContentUnavailableView(
-                "Select a Project",
-                systemImage: "folder",
-                description: Text("Choose a Project from Local.")
-            )
         }
     }
 }

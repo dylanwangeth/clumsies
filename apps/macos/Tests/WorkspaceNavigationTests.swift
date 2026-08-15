@@ -7,13 +7,16 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSection.issues.title, "Kanban")
     }
 
+    func testMemoryWorkspaceTitleIsMemory() {
+        XCTAssertEqual(WorkspaceSection.memory.title, "Memory")
+    }
+
     func testReviewsAndKanbanUseSidebarWithPushNavigatedDetail() {
         XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
         XCTAssertEqual(WorkspaceColumnLayout(section: .reviews), .sidebarDetail)
 
         for section in [
-            WorkspaceSection.hub,
-            .local,
+            WorkspaceSection.memory,
             .bundles,
         ] {
             XCTAssertEqual(
@@ -270,13 +273,13 @@ final class WorkspaceNavigationTests: XCTestCase {
 
     func testNavigationHistoryUsesTheVisibleTabWhenStoredActiveTabIsFromAnotherScope() {
         let store = WorkspaceStore()
-        let hiddenHubTab = tab(itemId: "hub", section: .hub)
-        let firstLocalTab = tab(itemId: "local-first", section: .local, projectId: "project")
-        let secondLocalTab = tab(itemId: "local-second", section: .local, projectId: "project")
-        store.tabs = [hiddenHubTab, firstLocalTab, secondLocalTab]
-        store.selectedSection = .local
+        let hiddenTab = tab(itemId: "other-project", section: .memory, projectId: "other-project")
+        let firstLocalTab = tab(itemId: "local-first", section: .memory, projectId: "project")
+        let secondLocalTab = tab(itemId: "local-second", section: .memory, projectId: "project")
+        store.tabs = [hiddenTab, firstLocalTab, secondLocalTab]
+        store.selectedSection = .memory
         store.activeProjectId = "project"
-        store.activeTabId = hiddenHubTab.id
+        store.activeTabId = hiddenTab.id
 
         store.selectTab(firstLocalTab)
         store.goBack()
@@ -330,7 +333,7 @@ final class WorkspaceNavigationTests: XCTestCase {
 
     private func tab(
         itemId: String,
-        section: WorkspaceSection = .hub,
+        section: WorkspaceSection = .memory,
         projectId: String? = nil
     ) -> WorkbenchTab {
         WorkbenchTab(

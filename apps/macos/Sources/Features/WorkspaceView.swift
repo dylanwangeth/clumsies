@@ -149,7 +149,7 @@ struct WorkspaceView: View {
     }
 
     private var showsDocumentTabs: Bool {
-        (store.selectedSection == .hub || store.selectedSection == .local)
+        store.selectedSection == .memory
             && !store.visibleTabs.isEmpty
             && !store.showsProjectSettings
     }
@@ -328,11 +328,6 @@ struct WorkspaceView: View {
                             }
 
                             Menu {
-                                if item.inherited {
-                                    Button("Open in Hub") {
-                                        Task { await store.reveal(item) }
-                                    }
-                                }
                                 if let draft = item.draft, draft.status == .open {
                                     Button("Request Review") {
                                         store.pendingDocumentCommand = .requestReview(
@@ -401,7 +396,7 @@ struct WorkspaceView: View {
             Task { await store.prepareWorkspaceIndex(includeContent: true) }
         }
         .onChange(of: store.selectedSection) { _, section in
-            if section != .local {
+            if section != .memory {
                 store.showsProjectSettings = false
             }
         }
@@ -629,8 +624,7 @@ struct WorkspaceView: View {
 
     private var workspaceSearchPrompt: String {
         switch store.selectedSection {
-        case .hub: "Search Hub"
-        case .local: "Search Local"
+        case .memory: "Search Memory"
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
@@ -1038,39 +1032,20 @@ struct WorkspaceView: View {
     @ToolbarContentBuilder
     private var navigationToolbarContent: some ToolbarContent {
         switch store.selectedSection {
-        case .hub, .local:
+        case .memory:
             ToolbarItem(placement: .navigation) {
-                ToolbarFilterMenu(selectionTitle: store.selectedKind.title) {
-                    ForEach(MemoryKind.allCases) { kind in
-                        Toggle(
-                            isOn: Binding(
-                                get: { store.selectedKind == kind },
-                                set: { isSelected in
-                                    guard isSelected else { return }
-                                    store.selectedKind = kind
-                                }
-                            )
-                        ) {
-                            Label(kind.title, systemImage: kind.symbol)
-                        }
-                    }
-                }
-                .help("Memory Type: \(store.selectedKind.title)")
-                .accessibilityLabel("Memory Type Filter")
-                .accessibilityValue(store.selectedKind.title)
+                MemoryProjectFilter(store: store)
             }
 
-            if store.selectedSection == .local {
-                ToolbarItem {
-                    Button {
-                        store.showsProjectSettings.toggle()
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .disabled(store.activeProjectId == nil)
-                    .help("Project Settings")
-                    .accessibilityLabel("Project Settings")
+            ToolbarItem {
+                Button {
+                    store.showsProjectSettings.toggle()
+                } label: {
+                    Image(systemName: "gearshape")
                 }
+                .disabled(store.activeProjectId == nil)
+                .help("Project Settings")
+                .accessibilityLabel("Project Settings")
             }
         case .bundles:
             ToolbarItem {
@@ -1096,7 +1071,7 @@ struct WorkspaceView: View {
     @ViewBuilder
     private var navigator: some View {
         switch store.selectedSection {
-        case .hub, .local:
+        case .memory:
             MemoryNavigator(store: store)
         case .bundles:
             BundleNavigator(store: store)
@@ -1110,10 +1085,10 @@ struct WorkspaceView: View {
     @ViewBuilder
     private var detail: some View {
         switch store.selectedSection {
-        case .hub, .local:
-            if store.selectedSection == .local, store.activeProjectId == nil {
+        case .memory:
+            if store.projects.isEmpty, !store.resources.contains(where: { $0.scope == .org }) {
                 ProjectUnavailableView(store: store)
-            } else if store.selectedSection == .local, store.showsProjectSettings {
+            } else if store.showsProjectSettings, store.activeProjectId != nil {
                 ProjectSettingsView(store: store)
             } else {
                 MemoryMainPane(store: store)
@@ -1145,15 +1120,12 @@ struct WorkspaceView: View {
         guard !needle.isEmpty else { return [] }
         var entries: [SearchEntry] = []
         switch store.selectedSection {
-        case .hub:
-            entries = memorySearchEntries(needle: needle) { $0.scope == .org }
-        case .local:
-            let inheritedIds = store.activeProject?.selectedOrgResourceIds ?? []
+        case .memory:
             entries = memorySearchEntries(needle: needle) { item in
-                if item.scope == .project {
-                    return item.projectId == store.activeProjectId
+                if item.scope == .org {
+                    return true
                 }
-                return inheritedIds.contains(item.id)
+                return item.projectId == store.activeProjectId
             }
         case .bundles:
             for bundle in store.bundles
@@ -1256,6 +1228,39 @@ private struct IssueProjectFilter: View {
     }
 }
 
+private struct MemoryProjectFilter: View {
+    @ObservedObject var store: WorkspaceStore
+
+    var body: some View {
+        ToolbarFilterMenu(
+            selectionTitle: store.activeProject?.name ?? "Hub",
+            isLoading: store.loadingProjectId != nil
+        ) {
+            if store.projects.isEmpty {
+                Button("No Projects") {}
+                    .disabled(true)
+            } else {
+                ForEach(store.projects) { project in
+                    Button {
+                        guard project.id != store.activeProjectId else { return }
+                        Task { await store.selectProject(project.id) }
+                    } label: {
+                        if project.id == store.activeProjectId {
+                            Label(project.name, systemImage: "checkmark")
+                        } else {
+                            Text(project.name)
+                        }
+                    }
+                    .disabled(store.loadingProjectId != nil)
+                }
+            }
+        }
+        .help("Filter Memory by Project")
+        .accessibilityLabel("Project Filter")
+        .accessibilityValue(store.activeProject?.name ?? "Hub")
+    }
+}
+
 private extension SyncToolbarPresentation {
     var tint: Color {
         switch self {
@@ -1345,8 +1350,7 @@ private struct WorkspaceSearchPopover: View {
 
     private var searchPrompt: String {
         switch store.selectedSection {
-        case .hub: "Search Hub"
-        case .local: "Search Local"
+        case .memory: "Search Memory"
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
@@ -1427,81 +1431,12 @@ private struct GlobalSidebar: View {
     let onOpenSettings: () -> Void
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
-    @State private var localExpanded = true
 
     var body: some View {
         List(selection: selection) {
             Section {
-                SidebarDestinationLabel(section: .hub)
-                    .tag(GlobalSidebarDestination.section(.hub))
-
-                HStack(spacing: 4) {
-                    Button {
-                        store.selectedSection = .local
-                        store.selectedItemId = nil
-                        withAnimation(.snappy(duration: 0.16)) {
-                            localExpanded.toggle()
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: WorkspaceSection.local.symbol)
-                                .frame(width: 16)
-                            Text(WorkspaceSection.local.title)
-                            Spacer(minLength: 8)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .focusEffectDisabled()
-
-                    if store.canManageProjects {
-                        Button {
-                            store.presentProjectCreation()
-                        } label: {
-                            Image(systemName: "plus")
-                                .frame(width: 16, height: 16, alignment: .center)
-                        }
-                        .buttonStyle(.plain)
-                        .focusEffectDisabled()
-                        .frame(width: 20, height: 20, alignment: .center)
-                        .contentShape(Rectangle())
-                        .help("New Project")
-                        .accessibilityLabel("New Project")
-                    }
-                }
-                .tag(GlobalSidebarDestination.section(.local))
-
-                if localExpanded {
-                    ForEach(store.projects) { project in
-                        HStack {
-                            Text(project.name)
-                                .lineLimit(1)
-                            Spacer()
-                            if store.loadingProjectId == project.id {
-                                ProgressView()
-                                    .controlSize(.mini)
-                            } else if store.drafts.contains(where: {
-                                $0.projectId == project.id
-                                    && $0.status != .discarded
-                                    && $0.status != .merged
-                                    && $0.freshness == .behind
-                            }) {
-                                DraftBaseBehindIndicator()
-                            }
-                        }
-                        .padding(.leading, 24)
-                        .tag(GlobalSidebarDestination.project(project.id))
-                        .accessibilityLabel(project.name)
-                        .contextMenu {
-                            Button("Project Settings…") {
-                                Task {
-                                    await store.selectProject(project.id)
-                                    store.showsProjectSettings = true
-                                }
-                            }
-                        }
-                    }
-                }
+                SidebarDestinationLabel(section: .memory)
+                    .tag(GlobalSidebarDestination.section(.memory))
 
                 SidebarDestinationLabel(section: .issues)
                     .tag(GlobalSidebarDestination.section(.issues))
@@ -1555,22 +1490,12 @@ private struct GlobalSidebar: View {
 
     private var selection: Binding<GlobalSidebarDestination?> {
         Binding(
-            get: {
-                if store.selectedSection == .local, let projectId = store.activeProjectId {
-                    return .project(projectId)
-                }
-                return .section(store.selectedSection)
-            },
+            get: { .section(store.selectedSection) },
             set: { destination in
                 guard let destination else { return }
-                switch destination {
-                case .section(let section):
+                if case .section(let section) = destination {
                     store.selectedSection = section
                     store.selectedItemId = nil
-                case .project(let projectId):
-                    store.selectedSection = .local
-                    store.showsProjectSettings = false
-                    Task { await store.selectProject(projectId) }
                 }
             }
         )
@@ -1594,7 +1519,6 @@ private struct SidebarDestinationLabel: View {
 
 private enum GlobalSidebarDestination: Hashable {
     case section(WorkspaceSection)
-    case project(String)
 }
 
 private struct SearchEntry: Identifiable {
@@ -1619,7 +1543,6 @@ private struct SearchEntry: Identifiable {
             destination: .memory(item)
         )
     }
-
     static func bundle(_ bundle: PersonalBundle) -> Self {
         .init(
             id: "bundle:\(bundle.id)",

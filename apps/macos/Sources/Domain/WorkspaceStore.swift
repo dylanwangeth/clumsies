@@ -218,7 +218,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var legacyAgentAdapterInspectionWarning: String?
 
     @Published var activeProjectId: String?
-    @Published var selectedSection: WorkspaceSection = .hub
+    @Published var selectedSection: WorkspaceSection = .memory
     @Published var selectedKind: MemoryKind = .context
     @Published var selectedItemId: String?
     @Published var selectedBundleId: String?
@@ -380,29 +380,26 @@ final class WorkspaceStore: ObservableObject {
     var visibleMemoryItems: [MemoryListItem] {
         let authoritative: [MemoryResource]
         switch selectedSection {
-        case .hub:
-            authoritative = resources.filter { $0.scope == .org && $0.kind == selectedKind }
-        case .local:
+        case .memory:
+            // Unified Memory: org-scope (Hub) memories are always visible;
+            // the active project's project-scope memories are merged in.
+            let orgResources = resources.filter { $0.scope == .org }
             let projectResources = resources.filter {
-                $0.scope == .project && $0.projectId == activeProjectId && $0.kind == selectedKind
+                $0.scope == .project && $0.projectId == activeProjectId
             }
-            let inheritedIds = activeProject?.selectedOrgResourceIds ?? []
-            let inherited = resources.filter {
-                $0.scope == .org && $0.kind == selectedKind && inheritedIds.contains($0.id)
-            }
-            authoritative = projectResources + inherited
+            authoritative = orgResources + projectResources
         case .issues, .bundles, .reviews:
             return []
         }
 
         let activeDrafts = drafts.filter { draft in
-            guard draft.status != .discarded && draft.status != .merged && draft.kind == selectedKind else {
+            guard draft.status != .discarded && draft.status != .merged else {
                 return false
             }
-            if selectedSection == .hub {
-                return draft.scope == .org
+            if draft.scope == .org {
+                return true
             }
-            return draft.scope == .project && draft.projectId == activeProjectId
+            return draft.projectId == activeProjectId
         }
         let draftByTarget = Dictionary(
             activeDrafts.compactMap { draft in draft.targetId.map { ($0, draft) } },
@@ -413,7 +410,9 @@ final class WorkspaceStore: ObservableObject {
                 id: resource.id,
                 resource: resource,
                 draft: draftByTarget[resource.id],
-                inherited: resource.scope == .org && selectedSection == .local
+                inherited: resource.scope == .org
+                    && activeProjectId != nil
+                    && (activeProject?.selectedOrgResourceIds.contains(resource.id) ?? false)
             )
         }
         items.append(contentsOf: activeDrafts.filter { $0.targetId == nil }.map {
@@ -534,7 +533,7 @@ final class WorkspaceStore: ObservableObject {
                 }
             }
         }
-        selectedSection = .local
+        selectedSection = .memory
         showsProjectSettings = false
         await selectProject(created.id)
     }
@@ -763,7 +762,7 @@ final class WorkspaceStore: ObservableObject {
         let resolvedMode = mode ?? (item.supportsMarkdownPreview ? .preview : .source)
         let tab = WorkbenchTab(
             section: selectedSection,
-            projectId: selectedSection == .local ? (item.projectId ?? activeProjectId) : nil,
+            projectId: item.projectId,
             itemId: item.id,
             mode: resolvedMode,
             title: item.document.title
@@ -781,7 +780,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func reveal(_ item: MemoryListItem) async {
-        selectedSection = item.scope == .org ? .hub : .local
+        selectedSection = .memory
         selectedKind = item.kind
         if let projectId = item.projectId {
             await selectProject(projectId)
@@ -798,7 +797,9 @@ final class WorkspaceStore: ObservableObject {
                 id: resource.id,
                 resource: resource,
                 draft: draft,
-                inherited: tab.section == .local && resource.scope == .org
+                inherited: resource.scope == .org
+                    && activeProjectId != nil
+                    && (activeProject?.selectedOrgResourceIds.contains(resource.id) ?? false)
             )
         }
         if let draft = drafts.first(where: { $0.id == tab.itemId }) {
@@ -1697,7 +1698,7 @@ final class WorkspaceStore: ObservableObject {
             self.selectedReviewId = nil
         }
         if projects.isEmpty {
-            selectedSection = .local
+            selectedSection = .memory
             showsProjectSettings = false
             tabs = []
             activeTabId = nil

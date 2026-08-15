@@ -1430,16 +1430,16 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertTrue(workflow.supportsMarkdownPreview)
     }
 
-    func testLocalWorkbenchTabsAreScopedToTheirProject() {
+    func testProjectWorkbenchTabsAreScopedToTheirProject() {
         let firstProjectTab = WorkbenchTab(
-            section: .local,
+            section: .memory,
             projectId: "project-1",
             itemId: "context-1",
             mode: .source,
             title: "Context"
         )
         let secondProjectTab = WorkbenchTab(
-            section: .local,
+            section: .memory,
             projectId: "project-2",
             itemId: "context-1",
             mode: .source,
@@ -1447,23 +1447,21 @@ final class DaemonContractTests: XCTestCase {
         )
 
         XCTAssertNotEqual(firstProjectTab.id, secondProjectTab.id)
-        XCTAssertTrue(firstProjectTab.isVisible(in: .local, projectId: "project-1"))
-        XCTAssertFalse(firstProjectTab.isVisible(in: .local, projectId: "project-2"))
-        XCTAssertFalse(firstProjectTab.isVisible(in: .hub, projectId: "project-1"))
+        XCTAssertTrue(firstProjectTab.isVisible(in: .memory, projectId: "project-1"))
+        XCTAssertFalse(firstProjectTab.isVisible(in: .memory, projectId: "project-2"))
     }
 
-    func testHubWorkbenchTabsDoNotDependOnTheActiveProject() {
+    func testOrgWorkbenchTabsDoNotDependOnTheActiveProject() {
         let tab = WorkbenchTab(
-            section: .hub,
+            section: .memory,
             projectId: nil,
             itemId: "rule-1",
             mode: .source,
             title: "Rule"
         )
 
-        XCTAssertTrue(tab.isVisible(in: .hub, projectId: "project-1"))
-        XCTAssertTrue(tab.isVisible(in: .hub, projectId: "project-2"))
-        XCTAssertFalse(tab.isVisible(in: .local, projectId: "project-1"))
+        XCTAssertTrue(tab.isVisible(in: .memory, projectId: "project-1"))
+        XCTAssertTrue(tab.isVisible(in: .memory, projectId: "project-2"))
     }
 
     func testReplacingRulePrimaryTextReplacesMarkdown() {
