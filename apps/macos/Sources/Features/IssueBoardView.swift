@@ -8,8 +8,8 @@ import SwiftUI
 enum BoardColumn: CaseIterable, Identifiable {
     case todo
     case inProgress
-    case abandoned
     case inReview
+    case abandoned
     case done
 
     var id: Self { self }
