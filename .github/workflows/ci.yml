@@ -18,6 +18,8 @@ jobs:
         run: |
           bash -n deploy/server/*.sh
           shellcheck deploy/server/*.sh
+          bash -n deploy/site.sh
+          shellcheck deploy/site.sh
           bash deploy/server/server-release-test.sh
 
       - name: Check Agent runtime archive boundary

@@ -71,6 +71,8 @@ services:
       - "443:443/udp"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/docs:/srv/docs:ro
+      - /srv/www:/srv/www:ro
       - clumsies-caddy-data:/data
       - clumsies-caddy-config:/config
     networks:

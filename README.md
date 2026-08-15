@@ -78,7 +78,7 @@ organization's OIDC provider. The macOS app talks to the local daemon, which
 owns automatic draft synchronization and authenticated Server transport.
 
 For the self-hosted configuration, see the
-[deployment guide](https://lilhammerfun.github.io/clumsies/guides/deploy-for-an-org/).
+[deployment guide](https://docs.clumsies.ai/guides/deploy-for-an-org/).
 
 The former Zig CLI/TUI/MCP implementation is retained only as an explicit
 [archive](archive/zig-cli/README.md). It is not built, released, installed, or
