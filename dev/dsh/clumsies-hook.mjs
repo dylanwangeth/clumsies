@@ -16,9 +16,15 @@
 // turn_id embeds the session id so a fresh session never collides with an
 // older session's run key.
 //
-// Note: the payload must reach the hook proxy via stdin, so we use spawn()
-// and write the JSON ourselves — async execFile() has no input option and
-// the child would block on stdin forever.
+// Notes:
+// - The payload must reach the hook proxy via stdin, so we use spawn() and
+//   write the JSON ourselves — async execFile() has no input option and the
+//   child would block on stdin forever.
+// - A turn interrupted by the next prompt may never emit turn/end (dsh does
+//   not close cancelled turns). The plugin tracks the open turn per session
+//   and, on the next turn/start, first closes the stale run with a Stop so
+//   no dsh run stays 'running' until the daemon's lease reaper.
+// - Diagnostics are opt-in via CLUMSIES_HOOK_LOG (default: off).
 
 import { spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
@@ -26,9 +32,10 @@ import { appendFileSync } from 'node:fs'
 const BIN = process.env.CLUMSIES_BIN
   || '/Users/weiwang/Applications/Clumsies.app/Contents/Resources/clumsiesd'
 const FALLBACK_CWD = process.env.CLUMSIES_HOOK_CWD || process.cwd()
-const LOG = process.env.CLUMSIES_HOOK_LOG || '/tmp/clumsies-hook.log'
+const LOG = process.env.CLUMSIES_HOOK_LOG || ''
 
 function log(line) {
+  if (!LOG) return
   try { appendFileSync(LOG, `[${new Date().toISOString()}] ${line}\n`) } catch { /* never block */ }
 }
 
@@ -56,6 +63,9 @@ export default {
   name: 'clumsies-hook',
   apply(ctx) {
     log('plugin loaded, bin=' + BIN)
+    /** Open (unclosed) turn id per root session, for interrupted-turn repair. */
+    const openTurns = new Map()
+
     const emit = (session, event) => {
       const header = session?.header ?? session
       log('session/event type=' + (event?.type ?? '?') + ' session=' + (header?.id ?? '?'))
@@ -67,21 +77,30 @@ export default {
       switch (event?.type) {
         case 'turn/start': {
           const turn = event.data?.turn ?? '?'
+          const turnId = sessionId + ':t' + turn
+          const stale = openTurns.get(sessionId)
+          if (stale && stale !== turnId) {
+            log('repair stale turn ' + stale)
+            forward({ hook_event_name: 'Stop', session_id: sessionId, turn_id: stale, cwd })
+          }
+          openTurns.set(sessionId, turnId)
           forward({
             hook_event_name: 'UserPromptSubmit',
             session_id: sessionId,
-            turn_id: sessionId + ':t' + turn,
+            turn_id: turnId,
             cwd,
           })
           break
         }
         case 'turn/end': {
           const turn = event.data?.turn ?? '?'
+          const turnId = sessionId + ':t' + turn
+          openTurns.delete(sessionId)
           const failed = event.data?.reason?.kind === 'error'
           forward({
             hook_event_name: failed ? 'StopFailure' : 'Stop',
             session_id: sessionId,
-            turn_id: sessionId + ':t' + turn,
+            turn_id: turnId,
             cwd,
             ...(failed ? { error: 'turn-failed' } : {}),
           })
@@ -96,9 +115,21 @@ export default {
       if (!header || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) {
         return
       }
+      const sessionId = header.id ?? 'unknown'
+      const stale = openTurns.get(sessionId)
+      if (stale) {
+        log('session disposed with open turn ' + stale)
+        forward({
+          hook_event_name: 'Stop',
+          session_id: sessionId,
+          turn_id: stale,
+          cwd: header.cwd ?? FALLBACK_CWD,
+        })
+        openTurns.delete(sessionId)
+      }
       forward({
         hook_event_name: 'SessionEnd',
-        session_id: header.id ?? 'unknown',
+        session_id: sessionId,
         cwd: header.cwd ?? FALLBACK_CWD,
       })
     })
