@@ -81,7 +81,8 @@ export default withMermaid(
               text: "Core model",
               items: [
                 { text: "Hub", link: "/artifact" },
-                { text: "Project", link: "/workspace" }
+                { text: "Project", link: "/workspace" },
+                { text: "Unified Memory model", link: "/unified-memory-model" }
               ]
             },
             {
