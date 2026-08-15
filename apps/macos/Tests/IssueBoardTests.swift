@@ -1072,13 +1072,13 @@ final class IssueBoardLayoutTests: XCTestCase {
     func testBoardColumnsPlaceStaleIssuesInTheAbandonedBucket() {
         XCTAssertEqual(
             BoardColumn.allCases,
-            [.todo, .inProgress, .abandoned, .inReview, .done]
+            [.todo, .inProgress, .inReview, .abandoned, .done]
         )
         XCTAssertEqual(BoardColumn.allCases.map(\.title), [
             "Todo",
             "In Progress",
-            "Abandoned",
             "In Review",
+            "Abandoned",
             "Done",
         ])
         XCTAssertNil(BoardColumn.abandoned.state)
