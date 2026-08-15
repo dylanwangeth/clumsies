@@ -2065,38 +2065,15 @@ components:
         new_text:
           type: string
     DaemonDraftContent:
-      oneOf:
-        - $ref: "#/components/schemas/DaemonContextDraftContent"
-        - $ref: "#/components/schemas/DaemonRuleDraftContent"
-        - $ref: "#/components/schemas/DaemonWorkflowDraftContent"
-    DaemonContextDraftContent:
       type: object
-      required: [kind, content]
+      required: [content]
       properties:
-        kind:
-          type: string
-          enum: [context]
-        content:
-          type: string
-    DaemonRuleDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [rule]
+        description:
+          type: [string, "null"]
+          description: Optional semantic summary updated with the content.
         content:
           type: string
           minLength: 1
-    DaemonWorkflowDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [workflow]
-        content:
-          type: string
     DaemonRenameDraftOperation:
       type: object
       required: [id, new_path]
@@ -2159,7 +2136,7 @@ components:
       enum: [idle, queued, syncing, retrying, degraded, failed]
     DaemonDraftResourceKind:
       type: string
-      enum: [context, rule, workflow]
+      enum: [memory]
     DaemonDraftScope:
       type: string
       enum: [org, project]
