@@ -886,6 +886,15 @@ private struct IssueCard: View {
                 .multilineTextAlignment(.leading)
                 .help(issue.title)
 
+            if !issue.descriptionExcerpt.isEmpty {
+                Text(issue.descriptionExcerpt)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .help(issue.description)
+            }
+
             if !externalReferences.items.isEmpty {
                 IssueExternalReferencesSummary(presentation: externalReferences)
             }
