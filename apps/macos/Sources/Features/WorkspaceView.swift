@@ -1233,9 +1233,23 @@ private struct MemoryProjectFilter: View {
 
     var body: some View {
         ToolbarFilterMenu(
-            selectionTitle: store.activeProject?.name ?? "Hub",
+            selectionTitle: store.activeProject?.name ?? "Org",
             isLoading: store.loadingProjectId != nil
         ) {
+            Button {
+                store.showOrgMemory()
+            } label: {
+                if store.activeProjectId == nil {
+                    Label("Org", systemImage: "checkmark")
+                } else {
+                    Label("Org", systemImage: "building.2")
+                }
+            }
+
+            if !store.projects.isEmpty {
+                Divider()
+            }
+
             if store.projects.isEmpty {
                 Button("No Projects") {}
                     .disabled(true)
@@ -1257,7 +1271,7 @@ private struct MemoryProjectFilter: View {
         }
         .help("Filter Memory by Project")
         .accessibilityLabel("Project Filter")
-        .accessibilityValue(store.activeProject?.name ?? "Hub")
+        .accessibilityValue(store.activeProject?.name ?? "Org")
     }
 }
 
