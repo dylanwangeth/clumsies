@@ -788,7 +788,6 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let lifecycle: IssueLifecycle
     let title: String
     let description: String
-    let descriptionExcerpt: String
     let externalReferences: [IssueExternalReference]
     let foundAt: String?
     let createdAt: String?
@@ -833,7 +832,6 @@ extension IssueBoardCard {
         case lifecycle
         case title
         case description
-        case descriptionExcerpt
         case externalReferences
         case foundAt
         case createdAt
@@ -872,10 +870,6 @@ extension IssueBoardCard {
         lifecycle = try container.decode(IssueLifecycle.self, forKey: .lifecycle)
         title = try container.decode(String.self, forKey: .title)
         description = try container.decode(String.self, forKey: .description)
-        descriptionExcerpt = try container.decodeIfPresent(
-            String.self,
-            forKey: .descriptionExcerpt
-        ) ?? description
         externalReferences = try container.decodeIfPresent(
             [IssueExternalReference].self,
             forKey: .externalReferences
