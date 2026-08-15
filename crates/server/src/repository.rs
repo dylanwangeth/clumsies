@@ -8,27 +8,26 @@ use uuid::Uuid;
 use crate::api::{
     AccessTokenKind, AccessTokenListResponse, AccessTokenMeta, AdminOrg, AdminProject,
     AdminProjectListResponse, AuditEvent, AuditEventListResponse, Blob, Commit, CommitListResponse,
-    CommitPayload, CommitScope, CommitStateResponse, ContextDetail, ContextListResponse,
-    ContextMeta, CreateDraftRebaseRequest, CreateDraftReconciliationCandidateRequest,
-    CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
-    CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, CreateReviewSubmissionRequest, DeleteResult, Draft, DraftCoordination,
-    DraftDetail, DraftEvent, DraftEventListResponse, DraftEventType, DraftFreshness,
-    DraftListResponse, DraftOperation, DraftOperationAction, DraftOperationBatchRequest,
-    DraftOperationBatchResponse, DraftOperationInput, DraftRebaseResult,
-    DraftReconciliationCandidate, DraftReconciliationStatus, DraftResourceContent,
-    DraftResourceKind, DraftResourceRef, DraftStatus, DraftSyncState, DraftSyncStatus, MeResponse,
-    Member, MemberListResponse, MemberStatus, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
+    CommitPayload, CommitScope, CommitStateResponse, CreateDraftRebaseRequest,
+    CreateDraftReconciliationCandidateRequest, CreateDraftRequest, CreateMemberRequest,
+    CreateProjectMemberRequest, CreateProjectRequest, CreateReviewCommentRequest,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    CreateReviewSubmissionRequest, DeleteResult, Draft, DraftCoordination, DraftDetail, DraftEvent,
+    DraftEventListResponse, DraftEventType, DraftFreshness, DraftListResponse, DraftOperation,
+    DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
+    DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
+    DraftReconciliationStatus, DraftResourceContent, DraftResourceRef, DraftStatus, DraftSyncState,
+    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MemoryDetail,
+    MemoryListResponse, MemoryMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
     PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
     PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
     ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole,
     ReconciliationCandidateStatus, ReconciliationConflict, ReconciliationConflictKind,
     ReconciliationResourceState, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
     ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
-    ReviewMergeResult, ReviewStatus, RuleDetail, RuleListResponse, RuleMeta, Tree, TreeEntry,
-    TreeEntryKind, TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef, WorkflowDetail,
-    WorkflowListResponse, WorkflowMeta,
+    ReviewMergeResult, ReviewStatus, Tree, TreeEntry, TreeEntryKind, TreeEntryScope,
+    TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest, UpdateMemberRequest,
+    UpdateProjectMemberRequest, UpdateProjectRequest, UserRef,
 };
 use crate::auth::AuthPrincipal;
 
@@ -1155,23 +1154,21 @@ impl ServerRepository {
         path: &str,
         body: &str,
     ) -> Result<String, ServerError> {
-        let resource_id = prefixed_id(DraftResourceKind::Context.resource_id_prefix());
+        let resource_id = prefixed_id("mem");
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO resources (
                 resource_id, org_id, project_id, scope, resource_kind, path, name,
-                status, revision, content_hash, body, context_kind
+                status, revision, content_hash, body
              )
-             VALUES ($1, $2, NULL, 'org', $3, $4, $5, 'active', 1, $6, $7, $8)",
+             VALUES ($1, $2, NULL, 'org', 'memory', $3, $4, 'active', 1, $5, $6)",
         )
         .bind(&resource_id)
         .bind(org_id)
-        .bind(DraftResourceKind::Context.as_str())
         .bind(path)
         .bind(name_from_path(path))
         .bind(content_hash(body))
         .bind(body)
-        .bind(context_kind_for(DraftResourceKind::Context))
         .execute(&mut *tx)
         .await?;
         let parent_commit_id = current_org_ref(&mut tx, org_id).await?;
@@ -1255,27 +1252,8 @@ impl ServerRepository {
             &mut tx,
             project_id,
             &org_id,
-            "rule",
             next_revision,
-            &request.rule_ids,
-        )
-        .await?;
-        insert_project_org_selection_items(
-            &mut tx,
-            project_id,
-            &org_id,
-            "context",
-            next_revision,
-            &request.context_ids,
-        )
-        .await?;
-        insert_project_org_selection_items(
-            &mut tx,
-            project_id,
-            &org_id,
-            "workflow",
-            next_revision,
-            &request.workflow_ids,
+            &request.resource_ids,
         )
         .await?;
         update_project_org_selection_revision(&mut tx, project_id, next_revision).await?;
@@ -1308,16 +1286,7 @@ impl ServerRepository {
         .bind(request.description.as_deref().unwrap_or_default())
         .execute(&mut *tx)
         .await?;
-        insert_bundle_items(&mut tx, &bundle_id, org_id, "rule", &request.rule_ids).await?;
-        insert_bundle_items(&mut tx, &bundle_id, org_id, "context", &request.context_ids).await?;
-        insert_bundle_items(
-            &mut tx,
-            &bundle_id,
-            org_id,
-            "workflow",
-            &request.workflow_ids,
-        )
-        .await?;
+        insert_bundle_items(&mut tx, &bundle_id, org_id, &request.resource_ids).await?;
         tx.commit().await?;
         self.get_personal_bundle(owner_user_id, &bundle_id).await
     }
@@ -1330,9 +1299,7 @@ impl ServerRepository {
             "SELECT
                 b.bundle_id, b.owner_user_id, b.name, b.description, b.revision,
                 b.created_at, b.updated_at,
-                count(*) FILTER (WHERE i.resource_kind = 'rule') AS rule_count,
-                count(*) FILTER (WHERE i.resource_kind = 'context') AS context_count,
-                count(*) FILTER (WHERE i.resource_kind = 'workflow') AS workflow_count
+                count(i.resource_id) AS resource_count
              FROM personal_bundles b
              LEFT JOIN personal_bundle_items i ON i.bundle_id = b.bundle_id
              WHERE b.owner_user_id = $1
@@ -1408,18 +1375,7 @@ impl ServerRepository {
         .execute(&mut *tx)
         .await?;
 
-        replace_bundle_items_if_present(&mut tx, bundle_id, org_id, "rule", request.rule_ids)
-            .await?;
-        replace_bundle_items_if_present(&mut tx, bundle_id, org_id, "context", request.context_ids)
-            .await?;
-        replace_bundle_items_if_present(
-            &mut tx,
-            bundle_id,
-            org_id,
-            "workflow",
-            request.workflow_ids,
-        )
-        .await?;
+        replace_bundle_items_if_present(&mut tx, bundle_id, org_id, request.resource_ids).await?;
         let detail = load_personal_bundle_detail(&mut tx, bundle_id).await?;
         tx.commit().await?;
         Ok(detail)
@@ -1461,124 +1417,42 @@ impl ServerRepository {
         })
     }
 
-    pub async fn list_org_rules(&self, org_id: &str) -> Result<RuleListResponse, ServerError> {
-        Ok(RuleListResponse {
-            items: list_rule_meta(&self.pool, "org", Some(org_id), None).await?,
+    pub async fn list_org_memories(&self, org_id: &str) -> Result<MemoryListResponse, ServerError> {
+        Ok(MemoryListResponse {
+            items: list_memory_meta(&self.pool, "org", Some(org_id), None).await?,
             page_info: page_info(),
         })
     }
 
-    pub async fn list_project_rules(
+    pub async fn list_project_memories(
         &self,
         project_id: &str,
-    ) -> Result<RuleListResponse, ServerError> {
-        Ok(RuleListResponse {
-            items: list_rule_meta(&self.pool, "project", None, Some(project_id)).await?,
+    ) -> Result<MemoryListResponse, ServerError> {
+        Ok(MemoryListResponse {
+            items: list_memory_meta(&self.pool, "project", None, Some(project_id)).await?,
             page_info: page_info(),
         })
     }
 
-    pub async fn get_org_rule(
+    pub async fn get_org_memory(
         &self,
         org_id: &str,
-        rule_id: &str,
-    ) -> Result<RuleDetail, ServerError> {
+        memory_id: &str,
+    ) -> Result<MemoryDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
-        let detail = load_rule_detail(&mut tx, rule_id, "org", Some(org_id), None).await?;
+        let detail = load_memory_detail(&mut tx, memory_id, "org", Some(org_id), None).await?;
         tx.commit().await?;
         Ok(detail)
     }
 
-    pub async fn get_project_rule(
+    pub async fn get_project_memory(
         &self,
         project_id: &str,
-        rule_id: &str,
-    ) -> Result<RuleDetail, ServerError> {
-        let mut tx = self.pool.begin().await?;
-        let detail = load_rule_detail(&mut tx, rule_id, "project", None, Some(project_id)).await?;
-        tx.commit().await?;
-        Ok(detail)
-    }
-
-    pub async fn list_org_context(&self, org_id: &str) -> Result<ContextListResponse, ServerError> {
-        Ok(ContextListResponse {
-            items: list_context_meta(&self.pool, "org", Some(org_id), None).await?,
-            page_info: page_info(),
-        })
-    }
-
-    pub async fn list_project_context(
-        &self,
-        project_id: &str,
-    ) -> Result<ContextListResponse, ServerError> {
-        Ok(ContextListResponse {
-            items: list_context_meta(&self.pool, "project", None, Some(project_id)).await?,
-            page_info: page_info(),
-        })
-    }
-
-    pub async fn get_org_context(
-        &self,
-        org_id: &str,
-        context_id: &str,
-    ) -> Result<ContextDetail, ServerError> {
-        let mut tx = self.pool.begin().await?;
-        let detail = load_context_detail(&mut tx, context_id, "org", Some(org_id), None).await?;
-        tx.commit().await?;
-        Ok(detail)
-    }
-
-    pub async fn get_project_context(
-        &self,
-        project_id: &str,
-        context_id: &str,
-    ) -> Result<ContextDetail, ServerError> {
+        memory_id: &str,
+    ) -> Result<MemoryDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
         let detail =
-            load_context_detail(&mut tx, context_id, "project", None, Some(project_id)).await?;
-        tx.commit().await?;
-        Ok(detail)
-    }
-
-    pub async fn list_org_workflows(
-        &self,
-        org_id: &str,
-    ) -> Result<WorkflowListResponse, ServerError> {
-        Ok(WorkflowListResponse {
-            items: list_workflow_meta(&self.pool, "org", Some(org_id), None).await?,
-            page_info: page_info(),
-        })
-    }
-
-    pub async fn list_project_workflows(
-        &self,
-        project_id: &str,
-    ) -> Result<WorkflowListResponse, ServerError> {
-        Ok(WorkflowListResponse {
-            items: list_workflow_meta(&self.pool, "project", None, Some(project_id)).await?,
-            page_info: page_info(),
-        })
-    }
-
-    pub async fn get_org_workflow(
-        &self,
-        org_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowDetail, ServerError> {
-        let mut tx = self.pool.begin().await?;
-        let detail = load_workflow_detail(&mut tx, workflow_id, "org", Some(org_id), None).await?;
-        tx.commit().await?;
-        Ok(detail)
-    }
-
-    pub async fn get_project_workflow(
-        &self,
-        project_id: &str,
-        workflow_id: &str,
-    ) -> Result<WorkflowDetail, ServerError> {
-        let mut tx = self.pool.begin().await?;
-        let detail =
-            load_workflow_detail(&mut tx, workflow_id, "project", None, Some(project_id)).await?;
+            load_memory_detail(&mut tx, memory_id, "project", None, Some(project_id)).await?;
         tx.commit().await?;
         Ok(detail)
     }
@@ -1630,7 +1504,7 @@ impl ServerRepository {
         .bind(&request.title)
         .bind(request.description.as_deref().unwrap_or_default())
         .bind(request.resource.scope.as_str())
-        .bind(request.resource.kind.as_str())
+        .bind("memory")
         .bind(&request.base_commit_id)
         .bind(&request.resource.id)
         .bind(&request.resource.path)
@@ -2908,26 +2782,19 @@ fn validate_draft_operation_resource(
     operation: &DraftOperationInput,
 ) -> Result<(), ServerError> {
     validate_draft_resource(draft_resource)?;
-    if operation.resource.scope != draft_resource.scope
-        || operation.resource.kind != draft_resource.kind
-    {
+    if operation.resource.scope != draft_resource.scope {
         return Err(ServerError::InvalidRequest(
-            "one draft cannot mix resource scopes or kinds".to_owned(),
+            "one draft cannot mix resource scopes".to_owned(),
         ));
     }
     if let Some(content) = operation.content.as_ref() {
-        if content.kind() != operation.resource.kind {
-            return Err(ServerError::InvalidRequest(
-                "draft content kind does not match its resource".to_owned(),
-            ));
-        }
         validate_draft_content_shape(content)?;
     }
     if let Some(path) = operation.resource.path.as_deref() {
-        validate_resource_path(operation.resource.kind.as_str(), path)?;
+        validate_resource_path(path)?;
     }
     if let Some(path) = operation.new_path.as_deref() {
-        validate_resource_path(operation.resource.kind.as_str(), path)?;
+        validate_resource_path(path)?;
     }
     let valid = match operation.action {
         DraftOperationAction::Create => {
@@ -2978,34 +2845,28 @@ fn validate_new_resource_draft_operations(
 }
 
 fn validate_draft_content_shape(content: &DraftResourceContent) -> Result<(), ServerError> {
-    match content {
-        DraftResourceContent::Rule { content } => validate_rule_content(content),
-        DraftResourceContent::Context { .. } | DraftResourceContent::Workflow { .. } => Ok(()),
-    }
-}
-
-fn validate_draft_resource(resource: &DraftResourceRef) -> Result<(), ServerError> {
-    if let Some(path) = resource.path.as_deref() {
-        validate_resource_path(resource.kind.as_str(), path)?;
+    if content.content.trim().is_empty() {
+        return Err(ServerError::InvalidRequest(
+            "memory content must not be empty".to_owned(),
+        ));
     }
     Ok(())
 }
 
-fn validate_resource_path(resource_kind: &str, path: &str) -> Result<(), ServerError> {
+fn validate_draft_resource(resource: &DraftResourceRef) -> Result<(), ServerError> {
+    if let Some(path) = resource.path.as_deref() {
+        validate_resource_path(path)?;
+    }
+    Ok(())
+}
+
+fn validate_resource_path(path: &str) -> Result<(), ServerError> {
     if !is_normalized_relative_path(path) {
         return Err(ServerError::InvalidRequest(format!(
             "resource path is not a portable normalized relative path: {path}"
         )));
     }
-    match resource_kind {
-        "workflow" if !path.starts_with("workflow/") => Err(ServerError::InvalidRequest(
-            "workflow path must use the workflow/ namespace".to_owned(),
-        )),
-        "rule" if path.to_ascii_lowercase().starts_with("workflow/") => Err(
-            ServerError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
-        ),
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 fn is_normalized_relative_path(path: &str) -> bool {
@@ -3043,14 +2904,8 @@ fn reserved_numbered_name(stem: &str, prefix: &str) -> bool {
         .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
 }
 
-fn materialization_output_path(resource_kind: &str, path: &str) -> Result<String, ServerError> {
-    match resource_kind {
-        "context" => Ok(format!("cache/context/{path}")),
-        "rule" | "workflow" => Ok(format!("cache/rule/{path}")),
-        other => Err(ServerError::InvalidRequest(format!(
-            "unknown materialized resource kind: {other}"
-        ))),
-    }
+fn materialization_output_path(path: &str) -> Result<String, ServerError> {
+    Ok(format!("cache/memory/{path}"))
 }
 
 fn insert_materialization_path(
@@ -3097,13 +2952,12 @@ async fn insert_draft_operation(
             operation_id, draft_id, action, resource_scope, resource_kind, target_id, path,
             new_path, content
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         VALUES ($1, $2, $3, $4, 'memory', $5, $6, $7, $8)",
     )
     .bind(&operation_id)
     .bind(draft_id)
     .bind(input.action.as_str())
     .bind(input.resource.scope.as_str())
-    .bind(input.resource.kind.as_str())
     .bind(&input.resource.id)
     .bind(&input.resource.path)
     .bind(&input.new_path)
@@ -3140,7 +2994,6 @@ async fn append_draft_operation_in_tx(
     let version: i64 = row.try_get("version")?;
     let draft_resource = DraftResourceRef {
         scope: resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?,
-        kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
         id: None,
         path: None,
     };
@@ -3267,7 +3120,6 @@ async fn insert_bundle_items(
     tx: &mut Transaction<'_, Postgres>,
     bundle_id: &str,
     org_id: &str,
-    resource_kind: &str,
     resource_ids: &[String],
 ) -> Result<(), ServerError> {
     for (position, resource_id) in resource_ids.iter().enumerate() {
@@ -3276,14 +3128,12 @@ async fn insert_bundle_items(
                 SELECT 1
                 FROM resources
                 WHERE resource_id = $1
-                  AND resource_kind = $2
-                  AND org_id = $3
+                  AND org_id = $2
                   AND scope = 'org'
                   AND status = 'active'
             )",
         )
         .bind(resource_id)
-        .bind(resource_kind)
         .bind(org_id)
         .fetch_one(&mut **tx)
         .await?;
@@ -3292,13 +3142,12 @@ async fn insert_bundle_items(
         }
         sqlx::query(
             "INSERT INTO personal_bundle_items (
-                bundle_id, resource_id, resource_kind, position
+                bundle_id, resource_id, position
              )
-             VALUES ($1, $2, $3, $4)",
+             VALUES ($1, $2, $3)",
         )
         .bind(bundle_id)
         .bind(resource_id)
-        .bind(resource_kind)
         .bind(position as i32)
         .execute(&mut **tx)
         .await?;
@@ -3310,19 +3159,14 @@ async fn replace_bundle_items_if_present(
     tx: &mut Transaction<'_, Postgres>,
     bundle_id: &str,
     org_id: &str,
-    resource_kind: &str,
     resource_ids: Option<Vec<String>>,
 ) -> Result<(), ServerError> {
     if let Some(resource_ids) = resource_ids {
-        sqlx::query(
-            "DELETE FROM personal_bundle_items
-             WHERE bundle_id = $1 AND resource_kind = $2",
-        )
-        .bind(bundle_id)
-        .bind(resource_kind)
-        .execute(&mut **tx)
-        .await?;
-        insert_bundle_items(tx, bundle_id, org_id, resource_kind, &resource_ids).await?;
+        sqlx::query("DELETE FROM personal_bundle_items WHERE bundle_id = $1")
+            .bind(bundle_id)
+            .execute(&mut **tx)
+            .await?;
+        insert_bundle_items(tx, bundle_id, org_id, &resource_ids).await?;
     }
     Ok(())
 }
@@ -3364,7 +3208,6 @@ async fn insert_project_org_selection_items(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
     org_id: &str,
-    resource_kind: &str,
     revision: i64,
     resource_ids: &[String],
 ) -> Result<(), ServerError> {
@@ -3380,14 +3223,12 @@ async fn insert_project_org_selection_items(
                 SELECT 1
                 FROM resources
                 WHERE resource_id = $1
-                  AND resource_kind = $2
-                  AND org_id = $3
+                  AND org_id = $2
                   AND scope = 'org'
                   AND status = 'active'
             )",
         )
         .bind(resource_id)
-        .bind(resource_kind)
         .bind(org_id)
         .fetch_one(&mut **tx)
         .await?;
@@ -3417,9 +3258,7 @@ async fn load_personal_bundle_detail(
         "SELECT
             b.bundle_id, b.owner_user_id, b.name, b.description, b.revision,
             b.created_at, b.updated_at,
-            count(*) FILTER (WHERE i.resource_kind = 'rule') AS rule_count,
-            count(*) FILTER (WHERE i.resource_kind = 'context') AS context_count,
-            count(*) FILTER (WHERE i.resource_kind = 'workflow') AS workflow_count
+            count(i.resource_id) AS resource_count
          FROM personal_bundles b
          LEFT JOIN personal_bundle_items i ON i.bundle_id = b.bundle_id
          WHERE b.bundle_id = $1
@@ -3432,77 +3271,42 @@ async fn load_personal_bundle_detail(
 
     let rows = sqlx::query(
         "SELECT
-            r.resource_id, r.resource_kind, r.scope, r.project_id, r.path, r.name,
-            r.status, r.content_hash, r.context_kind, octet_length(r.body) AS size,
-            r.updated_at
+            r.resource_id, r.scope, r.project_id, r.path, r.name, r.description,
+            r.status, r.content_hash, r.updated_at
          FROM personal_bundle_items i
          JOIN resources r ON r.resource_id = i.resource_id
          WHERE i.bundle_id = $1 AND r.status = 'active'
-         ORDER BY i.position, r.resource_kind, r.path",
+         ORDER BY i.position, r.path",
     )
     .bind(bundle_id)
     .fetch_all(&mut **tx)
     .await?;
 
-    let mut rules = Vec::new();
-    let mut context = Vec::new();
-    let mut workflows = Vec::new();
-    for row in rows {
-        match row.try_get::<String, _>("resource_kind")?.as_str() {
-            "rule" => rules.push(rule_meta_from_row(&row)?),
-            "context" => context.push(context_meta_from_row(&row)?),
-            "workflow" => workflows.push(workflow_meta_from_row(&row)?),
-            other => {
-                return Err(ServerError::InvalidRequest(format!(
-                    "unknown bundle resource kind: {other}"
-                )));
-            }
-        }
-    }
+    let memories = rows
+        .iter()
+        .map(memory_meta_from_row)
+        .collect::<Result<_, _>>()?;
 
     let bundle = personal_bundle_meta_from_row(&bundle_row)?;
     Ok(PersonalBundleDetail {
         etag: etag(bundle.revision),
         bundle,
-        rules,
-        context,
-        workflows,
+        memories,
     })
 }
 
-async fn list_rule_meta(
+async fn list_memory_meta(
     pool: &PgPool,
     scope: &str,
     org_id: Option<&str>,
     project_id: Option<&str>,
-) -> Result<Vec<RuleMeta>, ServerError> {
-    let rows = list_resource_rows(pool, "rule", scope, org_id, project_id).await?;
-    rows.iter().map(rule_meta_from_row).collect()
-}
-
-async fn list_context_meta(
-    pool: &PgPool,
-    scope: &str,
-    org_id: Option<&str>,
-    project_id: Option<&str>,
-) -> Result<Vec<ContextMeta>, ServerError> {
-    let rows = list_resource_rows(pool, "context", scope, org_id, project_id).await?;
-    rows.iter().map(context_meta_from_row).collect()
-}
-
-async fn list_workflow_meta(
-    pool: &PgPool,
-    scope: &str,
-    org_id: Option<&str>,
-    project_id: Option<&str>,
-) -> Result<Vec<WorkflowMeta>, ServerError> {
-    let rows = list_resource_rows(pool, "workflow", scope, org_id, project_id).await?;
-    rows.iter().map(workflow_meta_from_row).collect()
+) -> Result<Vec<MemoryMeta>, ServerError> {
+    let rows = list_resource_rows(pool, scope, org_id, project_id).await?;
+    rows.iter().map(memory_meta_from_row).collect()
 }
 
 async fn list_resource_rows(
     pool: &PgPool,
-    kind: &str,
     scope: &str,
     org_id: Option<&str>,
     project_id: Option<&str>,
@@ -3510,14 +3314,13 @@ async fn list_resource_rows(
     let rows = if let Some(project_id) = project_id {
         sqlx::query(
             "SELECT
-                resource_id, resource_kind, scope, project_id, path, name, status,
-                content_hash, context_kind, octet_length(body) AS size, updated_at
+                resource_id, scope, project_id, path, name, description, status,
+                content_hash, updated_at
              FROM resources
-             WHERE resource_kind = $1 AND scope = $2 AND project_id = $3 AND status = 'active'
+             WHERE scope = $1 AND project_id = $2 AND status = 'active'
              ORDER BY path
              LIMIT 200",
         )
-        .bind(kind)
         .bind(scope)
         .bind(project_id)
         .fetch_all(pool)
@@ -3525,14 +3328,13 @@ async fn list_resource_rows(
     } else if let Some(org_id) = org_id {
         sqlx::query(
             "SELECT
-                resource_id, resource_kind, scope, project_id, path, name, status,
-                content_hash, context_kind, octet_length(body) AS size, updated_at
+                resource_id, scope, project_id, path, name, description, status,
+                content_hash, updated_at
              FROM resources
-             WHERE resource_kind = $1 AND scope = $2 AND org_id = $3 AND status = 'active'
+             WHERE scope = $1 AND org_id = $2 AND status = 'active'
              ORDER BY path
              LIMIT 200",
         )
-        .bind(kind)
         .bind(scope)
         .bind(org_id)
         .fetch_all(pool)
@@ -3545,60 +3347,25 @@ async fn list_resource_rows(
     Ok(rows)
 }
 
-async fn load_rule_detail(
+async fn load_memory_detail(
     tx: &mut Transaction<'_, Postgres>,
-    rule_id: &str,
+    memory_id: &str,
     scope: &str,
     org_id: Option<&str>,
     project_id: Option<&str>,
-) -> Result<RuleDetail, ServerError> {
-    let row = load_resource_detail_row(tx, rule_id, "rule", scope, org_id, project_id).await?;
-    let rule = rule_meta_from_row(&row)?;
-    Ok(RuleDetail {
+) -> Result<MemoryDetail, ServerError> {
+    let row = load_resource_detail_row(tx, memory_id, scope, org_id, project_id).await?;
+    let memory = memory_meta_from_row(&row)?;
+    Ok(MemoryDetail {
         content: row.try_get("body")?,
         etag: etag(row.try_get("revision")?),
-        rule,
-    })
-}
-
-async fn load_context_detail(
-    tx: &mut Transaction<'_, Postgres>,
-    context_id: &str,
-    scope: &str,
-    org_id: Option<&str>,
-    project_id: Option<&str>,
-) -> Result<ContextDetail, ServerError> {
-    let row =
-        load_resource_detail_row(tx, context_id, "context", scope, org_id, project_id).await?;
-    let context = context_meta_from_row(&row)?;
-    Ok(ContextDetail {
-        content: row.try_get("body")?,
-        etag: etag(row.try_get("revision")?),
-        context,
-    })
-}
-
-async fn load_workflow_detail(
-    tx: &mut Transaction<'_, Postgres>,
-    workflow_id: &str,
-    scope: &str,
-    org_id: Option<&str>,
-    project_id: Option<&str>,
-) -> Result<WorkflowDetail, ServerError> {
-    let row =
-        load_resource_detail_row(tx, workflow_id, "workflow", scope, org_id, project_id).await?;
-    let workflow = workflow_meta_from_row(&row)?;
-    Ok(WorkflowDetail {
-        content: row.try_get("body")?,
-        etag: etag(row.try_get("revision")?),
-        workflow,
+        memory,
     })
 }
 
 async fn load_resource_detail_row(
     tx: &mut Transaction<'_, Postgres>,
     resource_id: &str,
-    kind: &str,
     scope: &str,
     org_id: Option<&str>,
     project_id: Option<&str>,
@@ -3606,19 +3373,15 @@ async fn load_resource_detail_row(
     let row = if let Some(project_id) = project_id {
         sqlx::query(
             "SELECT
-                resource_id, resource_kind, scope, project_id, path, name, status,
-                revision, content_hash, body, context_kind,
-                octet_length(body) AS size,
-                updated_at
+                resource_id, scope, project_id, path, name, description, status,
+                revision, content_hash, body, updated_at
              FROM resources
              WHERE resource_id = $1
-               AND resource_kind = $2
-               AND scope = $3
-               AND project_id = $4
+               AND scope = $2
+               AND project_id = $3
                AND status = 'active'",
         )
         .bind(resource_id)
-        .bind(kind)
         .bind(scope)
         .bind(project_id)
         .fetch_optional(&mut **tx)
@@ -3626,19 +3389,15 @@ async fn load_resource_detail_row(
     } else if let Some(org_id) = org_id {
         sqlx::query(
             "SELECT
-                resource_id, resource_kind, scope, project_id, path, name, status,
-                revision, content_hash, body, context_kind,
-                octet_length(body) AS size,
-                updated_at
+                resource_id, scope, project_id, path, name, description, status,
+                revision, content_hash, body, updated_at
              FROM resources
              WHERE resource_id = $1
-               AND resource_kind = $2
-               AND scope = $3
-               AND org_id = $4
+               AND scope = $2
+               AND org_id = $3
                AND status = 'active'",
         )
         .bind(resource_id)
-        .bind(kind)
         .bind(scope)
         .bind(org_id)
         .fetch_optional(&mut **tx)
@@ -3659,9 +3418,7 @@ fn personal_bundle_meta_from_row(
         owner_user_id: row.try_get("owner_user_id")?,
         name: row.try_get("name")?,
         description: row.try_get("description")?,
-        rule_count: row.try_get::<i64, _>("rule_count")?,
-        context_count: row.try_get::<i64, _>("context_count")?,
-        workflow_count: row.try_get::<i64, _>("workflow_count")?,
+        resource_count: row.try_get::<i64, _>("resource_count")?,
         revision: row.try_get("revision")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -3691,43 +3448,14 @@ fn draft_event_from_row(row: &sqlx::postgres::PgRow) -> Result<DraftEvent, Serve
     })
 }
 
-fn rule_meta_from_row(row: &sqlx::postgres::PgRow) -> Result<RuleMeta, ServerError> {
-    Ok(RuleMeta {
-        rule_id: row.try_get("resource_id")?,
+fn memory_meta_from_row(row: &sqlx::postgres::PgRow) -> Result<MemoryMeta, ServerError> {
+    Ok(MemoryMeta {
+        memory_id: row.try_get("resource_id")?,
         scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
         project_id: row.try_get("project_id")?,
         path: row.try_get("path")?,
         name: row.try_get("name")?,
-        content_hash: row.try_get("content_hash")?,
-        status: resource_status(row.try_get::<String, _>("status")?.as_str())?,
-        updated_at: row.try_get("updated_at")?,
-    })
-}
-
-fn context_meta_from_row(row: &sqlx::postgres::PgRow) -> Result<ContextMeta, ServerError> {
-    Ok(ContextMeta {
-        context_id: row.try_get("resource_id")?,
-        scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
-        project_id: row.try_get("project_id")?,
-        kind: context_kind(
-            row.try_get::<Option<String>, _>("context_kind")?
-                .as_deref()
-                .unwrap_or("file"),
-        )?,
-        path: row.try_get("path")?,
-        content_hash: row.try_get("content_hash")?,
-        size: row.try_get::<i32, _>("size")? as i64,
-        updated_at: row.try_get("updated_at")?,
-    })
-}
-
-fn workflow_meta_from_row(row: &sqlx::postgres::PgRow) -> Result<WorkflowMeta, ServerError> {
-    Ok(WorkflowMeta {
-        workflow_id: row.try_get("resource_id")?,
-        scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
-        project_id: row.try_get("project_id")?,
-        path: row.try_get("path")?,
-        name: row.try_get("name")?,
+        description: row.try_get("description")?,
         content_hash: row.try_get("content_hash")?,
         status: resource_status(row.try_get::<String, _>("status")?.as_str())?,
         updated_at: row.try_get("updated_at")?,
@@ -3784,7 +3512,6 @@ async fn load_draft_detail(
     let resource_scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
     let resource = DraftResourceRef {
         scope: resource_scope,
-        kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
         id: row.try_get("target_id")?,
         path: row.try_get("path")?,
     };
@@ -3940,9 +3667,6 @@ async fn load_draft_operations(
                         scope: resource_scope(
                             row.try_get::<String, _>("resource_scope")?.as_str(),
                         )?,
-                        kind: draft_resource_kind(
-                            row.try_get::<String, _>("resource_kind")?.as_str(),
-                        )?,
                         id: row.try_get("target_id")?,
                         path: row.try_get("path")?,
                     },
@@ -3959,28 +3683,22 @@ async fn load_draft_operations(
 }
 
 fn content_text(content: &DraftResourceContent) -> &str {
-    match content {
-        DraftResourceContent::Context { content }
-        | DraftResourceContent::Rule { content }
-        | DraftResourceContent::Workflow { content } => content,
-    }
+    &content.content
 }
 
-fn content_for_kind(kind: DraftResourceKind, content: String) -> DraftResourceContent {
-    match kind {
-        DraftResourceKind::Context => DraftResourceContent::Context { content },
-        DraftResourceKind::Rule => DraftResourceContent::Rule { content },
-        DraftResourceKind::Workflow => DraftResourceContent::Workflow { content },
+fn content_for_kind(
+    _kind: &str,
+    content: String,
+    description: Option<String>,
+) -> DraftResourceContent {
+    DraftResourceContent {
+        description,
+        content,
     }
 }
 
 fn tree_entry_matches_kind(entry: &TreeEntry, resource: &DraftResourceRef) -> bool {
-    let kind_matches = matches!(
-        (entry.kind, resource.kind),
-        (TreeEntryKind::Context, DraftResourceKind::Context)
-            | (TreeEntryKind::Rule, DraftResourceKind::Rule)
-            | (TreeEntryKind::Workflow, DraftResourceKind::Workflow)
-    );
+    let kind_matches = matches!(entry.kind, TreeEntryKind::Memory);
     let scope_matches = matches!(
         (entry.scope, resource.scope),
         (TreeEntryScope::Org, ResourceScope::Org)
@@ -4034,11 +3752,10 @@ async fn resource_state_at_commit(
         exists: true,
         resource: DraftResourceRef {
             scope: resource.scope,
-            kind: resource.kind,
             id: Some(entry.id.clone()),
             path: entry.path.clone(),
         },
-        content: Some(content_for_kind(resource.kind, blob.content.clone())),
+        content: Some(content_for_kind("memory", blob.content.clone(), None)),
     })
 }
 
@@ -4227,7 +3944,7 @@ fn merge_resource_states(
         Some(ReconciliationResourceState {
             exists: true,
             resource,
-            content: merged_text.map(|content| content_for_kind(current.resource.kind, content)),
+            content: merged_text.map(|content| content_for_kind("memory", content, None)),
         }),
         Vec::new(),
     )
@@ -4310,7 +4027,6 @@ async fn draft_result_state(
     let operations = load_draft_operations(tx, draft_id).await?;
     let resource = DraftResourceRef {
         scope: resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?,
-        kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
         id: row.try_get("target_id")?,
         path: row.try_get("path")?,
     };
@@ -4409,7 +4125,6 @@ async fn create_reconciliation_candidate_in_tx(
     invalidate_draft_candidates(tx, draft_id).await?;
     let resource = DraftResourceRef {
         scope,
-        kind: draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?,
         id: row.try_get("target_id")?,
         path: row.try_get("path")?,
     };
@@ -4638,8 +4353,6 @@ async fn apply_draft_rebase_in_tx(
         }
     };
     if resolved_state.resource.scope != scope
-        || resolved_state.resource.kind
-            != draft_resource_kind(row.try_get::<String, _>("resource_kind")?.as_str())?
         || (resolved_state.exists && resolved_state.content.is_none())
     {
         return Err(ServerError::InvalidRequest(
@@ -4915,11 +4628,6 @@ fn materialize_draft_operations(
 
     let mut materialized = first.input.clone();
     for operation in operations.iter().skip(1) {
-        if operation.input.resource.kind != materialized.resource.kind {
-            return Err(ServerError::InvalidRequest(
-                "one draft cannot create multiple resource kinds".to_owned(),
-            ));
-        }
         match operation.input.action {
             DraftOperationAction::Create => {
                 materialized.resource.path = operation.input.resource.path.clone();
@@ -4944,14 +4652,8 @@ fn merge_draft_contents(
     base: Option<DraftResourceContent>,
     update: Option<DraftResourceContent>,
 ) -> Result<Option<DraftResourceContent>, ServerError> {
-    match (base, update) {
-        (Some(base), Some(update)) if base.kind() != update.kind() => {
-            Err(ServerError::InvalidRequest(
-                "draft update content kind does not match its create operation".to_owned(),
-            ))
-        }
-        (_, update) => Ok(update),
-    }
+    let _ = base;
+    Ok(update)
 }
 
 async fn apply_resource_operation(
@@ -4970,25 +4672,23 @@ async fn apply_resource_operation(
             let content = operation.content.as_ref().ok_or_else(|| {
                 ServerError::InvalidRequest("create operation requires content".to_owned())
             })?;
-            let prepared = prepare_resource_content(operation.resource.kind, path, content, None)?;
-            let resource_id = prefixed_id(operation.resource.kind.resource_id_prefix());
+            let prepared = prepare_resource_content(path, content, None)?;
+            let resource_id = prefixed_id("mem");
             sqlx::query(
                 "INSERT INTO resources (
                     resource_id, org_id, project_id, scope, resource_kind, path, name,
-                    status, revision, content_hash, body, context_kind
+                    status, revision, content_hash, body
                  )
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', 1, $8, $9, $10)",
+                 VALUES ($1, $2, $3, $4, 'memory', $5, $6, 'active', 1, $7, $8)",
             )
             .bind(&resource_id)
             .bind(&org_id)
             .bind(resource_project_id)
             .bind(scope.as_str())
-            .bind(operation.resource.kind.as_str())
             .bind(path)
             .bind(&prepared.name)
             .bind(content_hash(&prepared.body))
             .bind(&prepared.body)
-            .bind(context_kind_for(operation.resource.kind))
             .execute(&mut **tx)
             .await?;
         }
@@ -4998,12 +4698,7 @@ async fn apply_resource_operation(
             let content = operation.content.as_ref().ok_or_else(|| {
                 ServerError::InvalidRequest("update operation requires content".to_owned())
             })?;
-            let prepared = prepare_resource_content(
-                operation.resource.kind,
-                &resource.path,
-                content,
-                Some(&resource),
-            )?;
+            let prepared = prepare_resource_content(&resource.path, content, Some(&resource))?;
             sqlx::query(
                 "UPDATE resources
                  SET name = $2, body = $3, content_hash = $4, revision = revision + 1,
@@ -5059,24 +4754,11 @@ struct PreparedResourceContent {
 }
 
 fn prepare_resource_content(
-    kind: DraftResourceKind,
     path: &str,
     content: &DraftResourceContent,
     existing: Option<&TargetResource>,
 ) -> Result<PreparedResourceContent, ServerError> {
-    if content.kind() != kind {
-        return Err(ServerError::InvalidRequest(
-            "draft content kind does not match its resource".to_owned(),
-        ));
-    }
-    let body = match content {
-        DraftResourceContent::Context { content }
-        | DraftResourceContent::Rule { content }
-        | DraftResourceContent::Workflow { content } => content,
-    };
-    if kind == DraftResourceKind::Rule {
-        validate_rule_content(body)?;
-    }
+    let body = &content.content;
     Ok(PreparedResourceContent {
         name: existing
             .map(|resource| resource.name.clone())
@@ -5160,15 +4842,6 @@ async fn refresh_projects_for_org_resource_changes(
     Ok(())
 }
 
-fn validate_rule_content(content: &str) -> Result<(), ServerError> {
-    if content.trim().is_empty() {
-        return Err(ServerError::InvalidRequest(
-            "rule content must not be empty".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 async fn validate_project_effective_memory(
     tx: &mut Transaction<'_, Postgres>,
     project_id: &str,
@@ -5206,7 +4879,7 @@ async fn validate_project_effective_memory(
                )
              )
            )
-         ORDER BY r.resource_kind, r.path, r.resource_id",
+         ORDER BY r.path, r.resource_id",
     )
     .bind(project_id)
     .bind(org_id)
@@ -5215,10 +4888,9 @@ async fn validate_project_effective_memory(
     let mut output_paths = BTreeMap::new();
     for row in rows {
         let resource_id: String = row.try_get("resource_id")?;
-        let resource_kind: String = row.try_get("resource_kind")?;
         let path: String = row.try_get("path")?;
-        validate_resource_path(&resource_kind, &path)?;
-        let output_path = materialization_output_path(&resource_kind, &path)?;
+        validate_resource_path(&path)?;
+        let output_path = materialization_output_path(&path)?;
         insert_materialization_path(
             &mut output_paths,
             &resource_id,
@@ -5361,8 +5033,8 @@ fn validate_tree_materialization_paths(entries: &[PendingTreeEntry]) -> Result<(
                 entry.item_id
             ))
         })?;
-        validate_resource_path(&entry.resource_kind, path)?;
-        let output_path = materialization_output_path(&entry.resource_kind, path)?;
+        validate_resource_path(path)?;
+        let output_path = materialization_output_path(path)?;
         insert_materialization_path(&mut paths, &entry.item_id, &output_path, "Commit Tree")?;
     }
     Ok(())
@@ -5379,7 +5051,7 @@ async fn pending_resource_entry(
     let body: String = row.try_get("body")?;
     let resource_kind: String = row.try_get("resource_kind")?;
     let path: String = row.try_get("path")?;
-    validate_resource_path(&resource_kind, &path)?;
+    validate_resource_path(&path)?;
     match resource_kind.as_str() {
         "context" | "rule" | "workflow" => {}
         other => {
@@ -5599,71 +5271,25 @@ async fn load_project_org_selection(
 
     let rows = sqlx::query(
         "SELECT
-            r.resource_id, r.resource_kind, r.scope, r.project_id, r.path, r.name,
-            r.status, r.content_hash, r.context_kind, octet_length(r.body) AS size,
-            r.updated_at
+            r.resource_id, r.scope, r.project_id, r.path, r.name, r.description,
+            r.status, r.content_hash, r.updated_at
          FROM project_org_resource_selections s
          JOIN resources r ON r.resource_id = s.resource_id
          WHERE s.project_id = $1 AND r.status = 'active'
-         ORDER BY r.resource_kind, r.path",
+         ORDER BY r.path",
     )
     .bind(project_id)
     .fetch_all(&mut **tx)
     .await?;
 
-    let mut rules = Vec::new();
-    let mut context = Vec::new();
-    let mut workflows = Vec::new();
-    for row in rows {
-        let kind: String = row.try_get("resource_kind")?;
-        match kind.as_str() {
-            "rule" => rules.push(crate::api::RuleMeta {
-                rule_id: row.try_get("resource_id")?,
-                scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
-                project_id: row.try_get("project_id")?,
-                path: row.try_get("path")?,
-                name: row.try_get("name")?,
-                content_hash: row.try_get("content_hash")?,
-                status: resource_status(row.try_get::<String, _>("status")?.as_str())?,
-                updated_at: row.try_get("updated_at")?,
-            }),
-            "context" => context.push(crate::api::ContextMeta {
-                context_id: row.try_get("resource_id")?,
-                scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
-                project_id: row.try_get("project_id")?,
-                kind: context_kind(
-                    row.try_get::<Option<String>, _>("context_kind")?
-                        .as_deref()
-                        .unwrap_or("file"),
-                )?,
-                path: row.try_get("path")?,
-                content_hash: row.try_get("content_hash")?,
-                size: row.try_get::<i32, _>("size")? as i64,
-                updated_at: row.try_get("updated_at")?,
-            }),
-            "workflow" => workflows.push(crate::api::WorkflowMeta {
-                workflow_id: row.try_get("resource_id")?,
-                scope: resource_scope(row.try_get::<String, _>("scope")?.as_str())?,
-                project_id: row.try_get("project_id")?,
-                path: row.try_get("path")?,
-                name: row.try_get("name")?,
-                content_hash: row.try_get("content_hash")?,
-                status: resource_status(row.try_get::<String, _>("status")?.as_str())?,
-                updated_at: row.try_get("updated_at")?,
-            }),
-            other => {
-                return Err(ServerError::InvalidRequest(format!(
-                    "unknown selected resource kind: {other}"
-                )));
-            }
-        }
-    }
+    let memories = rows
+        .iter()
+        .map(memory_meta_from_row)
+        .collect::<Result<_, _>>()?;
 
     Ok(ProjectOrgSelection {
         project_id: project_id.to_owned(),
-        rules,
-        context,
-        workflows,
+        memories,
         revision,
     })
 }
@@ -5687,7 +5313,6 @@ async fn load_target_resource(
              FROM resources
              WHERE resource_id = $1 AND org_id = $2 AND scope = $3
                AND (($3 = 'org' AND project_id IS NULL) OR project_id = $4)
-               AND resource_kind = $5
                AND status = 'active'
              FOR UPDATE",
         )
@@ -5695,7 +5320,6 @@ async fn load_target_resource(
         .bind(org_id)
         .bind(resource.scope.as_str())
         .bind(project_id)
-        .bind(resource.kind.as_str())
         .fetch_optional(&mut **tx)
         .await?
     } else if let Some(path) = resource.path.as_deref() {
@@ -5704,15 +5328,13 @@ async fn load_target_resource(
              FROM resources
              WHERE org_id = $1 AND scope = $2
                AND (($2 = 'org' AND project_id IS NULL) OR project_id = $3)
-               AND resource_kind = $4
-               AND path = $5
+               AND path = $4
                AND status = 'active'
              FOR UPDATE",
         )
         .bind(org_id)
         .bind(resource.scope.as_str())
         .bind(project_id)
-        .bind(resource.kind.as_str())
         .bind(path)
         .fetch_optional(&mut **tx)
         .await?
@@ -6389,24 +6011,6 @@ fn name_from_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
-fn context_kind_for(kind: DraftResourceKind) -> Option<&'static str> {
-    match kind {
-        DraftResourceKind::Context => Some("file"),
-        DraftResourceKind::Rule | DraftResourceKind::Workflow => None,
-    }
-}
-
-fn draft_resource_kind(value: &str) -> Result<DraftResourceKind, ServerError> {
-    match value {
-        "context" => Ok(DraftResourceKind::Context),
-        "rule" => Ok(DraftResourceKind::Rule),
-        "workflow" => Ok(DraftResourceKind::Workflow),
-        other => Err(ServerError::InvalidRequest(format!(
-            "unknown resource kind: {other}"
-        ))),
-    }
-}
-
 fn resource_scope(value: &str) -> Result<crate::api::ResourceScope, ServerError> {
     match value {
         "org" => Ok(crate::api::ResourceScope::Org),
@@ -6424,18 +6028,6 @@ fn resource_status(value: &str) -> Result<crate::api::ResourceStatus, ServerErro
         "archived" => Ok(crate::api::ResourceStatus::Archived),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown resource status: {other}"
-        ))),
-    }
-}
-
-fn context_kind(value: &str) -> Result<crate::api::ContextKind, ServerError> {
-    match value {
-        "file" => Ok(crate::api::ContextKind::File),
-        "note" => Ok(crate::api::ContextKind::Note),
-        "decision" => Ok(crate::api::ContextKind::Decision),
-        "reference" => Ok(crate::api::ContextKind::Reference),
-        other => Err(ServerError::InvalidRequest(format!(
-            "unknown context kind: {other}"
         ))),
     }
 }
@@ -6548,9 +6140,10 @@ fn access_token_kind(value: &str) -> Result<AccessTokenKind, ServerError> {
 
 fn tree_entry_kind(value: &str) -> Result<TreeEntryKind, ServerError> {
     match value {
-        "rule" => Ok(TreeEntryKind::Rule),
-        "context" => Ok(TreeEntryKind::Context),
-        "workflow" => Ok(TreeEntryKind::Workflow),
+        // Legacy kinds from archived pre-unification Commits stay decodable
+        // so archived history can still be read; the unified runtime only
+        // writes 'memory' and the system 'project_org_selection' entry.
+        "rule" | "context" | "workflow" | "memory" => Ok(TreeEntryKind::Memory),
         "project_org_selection" => Ok(TreeEntryKind::ProjectOrgSelection),
         other => Err(ServerError::InvalidRequest(format!(
             "unknown tree entry kind: {other}"
@@ -6589,7 +6182,7 @@ mod tests {
     fn pending_context_entry(id: &str, path: &str) -> PendingTreeEntry {
         PendingTreeEntry {
             item_id: id.to_owned(),
-            resource_kind: "context".to_owned(),
+            resource_kind: "memory".to_owned(),
             scope: "project".to_owned(),
             project_id: Some("prj_test".to_owned()),
             path: Some(path.to_owned()),
@@ -6607,11 +6200,11 @@ mod tests {
             exists,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
-                id: exists.then(|| "ctx_test".to_owned()),
+                id: exists.then(|| "mem_test".to_owned()),
                 path: Some(path.to_owned()),
             },
-            content: content.map(|content| DraftResourceContent::Context {
+            content: content.map(|content| DraftResourceContent {
+                description: None,
                 content: content.to_owned(),
             }),
         }
@@ -6638,10 +6231,28 @@ mod tests {
     }
 
     #[test]
-    fn rule_content_must_not_be_blank() {
-        assert!(validate_rule_content("").is_err());
-        assert!(validate_rule_content("  \n").is_err());
-        assert!(validate_rule_content("# Testing\n\nRun focused tests.").is_ok());
+    fn memory_content_must_not_be_blank() {
+        assert!(
+            validate_draft_content_shape(&DraftResourceContent {
+                description: None,
+                content: String::new(),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_draft_content_shape(&DraftResourceContent {
+                description: None,
+                content: "  \n".to_owned(),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_draft_content_shape(&DraftResourceContent {
+                description: None,
+                content: "# Testing\n\nRun focused tests.".to_owned(),
+            })
+            .is_ok()
+        );
     }
 
     #[test]
@@ -6655,8 +6266,8 @@ mod tests {
 
     #[test]
     fn resource_paths_follow_the_portable_file_contract() {
-        assert!(validate_resource_path("context", "spec/API.md").is_ok());
-        assert!(validate_resource_path("workflow", "workflow/CODING").is_ok());
+        assert!(validate_resource_path("spec/API.md").is_ok());
+        assert!(validate_resource_path("workflow/CODING").is_ok());
         for path in [
             "../outside.md",
             "spec//API.md",
@@ -6665,12 +6276,10 @@ mod tests {
             "spec/API\\draft.md",
         ] {
             assert!(
-                validate_resource_path("context", path).is_err(),
+                validate_resource_path(path).is_err(),
                 "path should be rejected: {path}"
             );
         }
-        assert!(validate_resource_path("rule", "Workflow/CODING").is_err());
-        assert!(validate_resource_path("workflow", "workflows/CODING").is_err());
     }
 
     #[test]

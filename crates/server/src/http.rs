@@ -141,18 +141,10 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         patch: update_personal_bundle,
         delete: delete_personal_bundle,
     };
-    "/api/v1/org/rules" => { get: list_org_rules };
-    "/api/v1/org/rules/{rule_id}" => { get: get_org_rule };
-    "/api/v1/org/context" => { get: list_org_context };
-    "/api/v1/org/context/{context_id}" => { get: get_org_context };
-    "/api/v1/org/workflows" => { get: list_org_workflows };
-    "/api/v1/org/workflows/{workflow_id}" => { get: get_org_workflow };
-    "/api/v1/projects/{project_id}/rules" => { get: list_project_rules };
-    "/api/v1/projects/{project_id}/rules/{rule_id}" => { get: get_project_rule };
-    "/api/v1/projects/{project_id}/context" => { get: list_project_context };
-    "/api/v1/projects/{project_id}/context/{context_id}" => { get: get_project_context };
-    "/api/v1/projects/{project_id}/workflows" => { get: list_project_workflows };
-    "/api/v1/projects/{project_id}/workflows/{workflow_id}" => { get: get_project_workflow };
+    "/api/v1/org/memories" => { get: list_org_memories };
+    "/api/v1/org/memories/{memory_id}" => { get: get_org_memory };
+    "/api/v1/projects/{project_id}/memories" => { get: list_project_memories };
+    "/api/v1/projects/{project_id}/memories/{memory_id}" => { get: get_project_memory };
     "/api/v1/projects/{project_id}/org-selections" => {
         get: get_project_org_selection,
         put: replace_project_org_selection,
@@ -1272,94 +1264,50 @@ async fn delete_personal_bundle(
     ))
 }
 
-async fn list_org_rules(
+async fn list_org_memories(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
-) -> Result<Json<crate::api::RuleListResponse>, HttpError> {
-    Ok(Json(
-        state.repository.list_org_rules(&principal.org_id).await?,
-    ))
-}
-
-async fn get_org_rule(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(rule_id): Path<String>,
-) -> Result<Json<crate::api::RuleDetail>, HttpError> {
+) -> Result<Json<crate::api::MemoryListResponse>, HttpError> {
     Ok(Json(
         state
             .repository
-            .get_org_rule(&principal.org_id, &rule_id)
+            .list_org_memories(&principal.org_id)
             .await?,
     ))
 }
 
-async fn list_org_context(
+async fn get_org_memory(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
-) -> Result<Json<crate::api::ContextListResponse>, HttpError> {
-    Ok(Json(
-        state.repository.list_org_context(&principal.org_id).await?,
-    ))
-}
-
-async fn get_org_context(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(context_id): Path<String>,
-) -> Result<Json<crate::api::ContextDetail>, HttpError> {
+    Path(memory_id): Path<String>,
+) -> Result<Json<crate::api::MemoryDetail>, HttpError> {
     Ok(Json(
         state
             .repository
-            .get_org_context(&principal.org_id, &context_id)
+            .get_org_memory(&principal.org_id, &memory_id)
             .await?,
     ))
 }
 
-async fn list_org_workflows(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-) -> Result<Json<crate::api::WorkflowListResponse>, HttpError> {
-    Ok(Json(
-        state
-            .repository
-            .list_org_workflows(&principal.org_id)
-            .await?,
-    ))
-}
-
-async fn get_org_workflow(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(workflow_id): Path<String>,
-) -> Result<Json<crate::api::WorkflowDetail>, HttpError> {
-    Ok(Json(
-        state
-            .repository
-            .get_org_workflow(&principal.org_id, &workflow_id)
-            .await?,
-    ))
-}
-
-async fn list_project_rules(
+async fn list_project_memories(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
     Path(project_id): Path<String>,
-) -> Result<Json<crate::api::RuleListResponse>, HttpError> {
+) -> Result<Json<crate::api::MemoryListResponse>, HttpError> {
     state
         .repository
         .ensure_project_member(&principal, &project_id)
         .await?;
     Ok(Json(
-        state.repository.list_project_rules(&project_id).await?,
+        state.repository.list_project_memories(&project_id).await?,
     ))
 }
 
-async fn get_project_rule(
+async fn get_project_memory(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, rule_id)): Path<(String, String)>,
-) -> Result<Json<crate::api::RuleDetail>, HttpError> {
+    Path((project_id, memory_id)): Path<(String, String)>,
+) -> Result<Json<crate::api::MemoryDetail>, HttpError> {
     state
         .repository
         .ensure_project_member(&principal, &project_id)
@@ -1367,69 +1315,7 @@ async fn get_project_rule(
     Ok(Json(
         state
             .repository
-            .get_project_rule(&project_id, &rule_id)
-            .await?,
-    ))
-}
-
-async fn list_project_context(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-) -> Result<Json<crate::api::ContextListResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state.repository.list_project_context(&project_id).await?,
-    ))
-}
-
-async fn get_project_context(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, context_id)): Path<(String, String)>,
-) -> Result<Json<crate::api::ContextDetail>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .get_project_context(&project_id, &context_id)
-            .await?,
-    ))
-}
-
-async fn list_project_workflows(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-) -> Result<Json<crate::api::WorkflowListResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state.repository.list_project_workflows(&project_id).await?,
-    ))
-}
-
-async fn get_project_workflow(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, workflow_id)): Path<(String, String)>,
-) -> Result<Json<crate::api::WorkflowDetail>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .get_project_workflow(&project_id, &workflow_id)
+            .get_project_memory(&project_id, &memory_id)
             .await?,
     ))
 }
