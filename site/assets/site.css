@@ -23,6 +23,7 @@ body {
   background:
     radial-gradient(circle at 50% -10%, rgba(55, 61, 72, 0.07), transparent 42%),
     repeating-linear-gradient(90deg, rgba(35, 40, 47, 0.025) 0, rgba(35, 40, 47, 0.025) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(0deg, rgba(35, 40, 47, 0.016) 0, rgba(35, 40, 47, 0.016) 1px, transparent 1px, transparent 32px),
     var(--bg);
 }
 
