@@ -113,8 +113,23 @@ final class IssueBoardModel: ObservableObject {
         let needle = searchNeedle
         return issues.filter { issue in
             issue.boardState == state
+                && !(state == .inProgress && issue.isStale)
                 && (needle.isEmpty || issue.matches(query: needle))
                 && (!showsStaleOnly || issue.isStale)
+                && (!showsBlockedOnly || issue.blocked)
+                && (!showsExternalIssuesOnly || issue.hasExternalReference(kind: .issue))
+                && (!showsPullRequestsOnly || issue.hasExternalReference(kind: .pullRequest))
+        }
+    }
+
+    /// Issues whose claim silently died: still In Progress but with no active
+    /// AgentRun and no activity for 24 hours. They form the Abandoned column;
+    /// before taking one over, verify what the previous handler left behind.
+    var abandonedIssues: [IssueBoardCard] {
+        let needle = searchNeedle
+        return issues.filter { issue in
+            issue.isStale
+                && (needle.isEmpty || issue.matches(query: needle))
                 && (!showsBlockedOnly || issue.blocked)
                 && (!showsExternalIssuesOnly || issue.hasExternalReference(kind: .issue))
                 && (!showsPullRequestsOnly || issue.hasExternalReference(kind: .pullRequest))
