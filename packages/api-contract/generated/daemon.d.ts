@@ -808,20 +808,9 @@ export interface components {
             old_text: string;
             new_text: string;
         };
-        DaemonDraftContent: components["schemas"]["DaemonContextDraftContent"] | components["schemas"]["DaemonRuleDraftContent"] | components["schemas"]["DaemonWorkflowDraftContent"];
-        DaemonContextDraftContent: {
-            /** @enum {string} */
-            kind: "context";
-            content: string;
-        };
-        DaemonRuleDraftContent: {
-            /** @enum {string} */
-            kind: "rule";
-            content: string;
-        };
-        DaemonWorkflowDraftContent: {
-            /** @enum {string} */
-            kind: "workflow";
+        DaemonDraftContent: {
+            /** @description Optional semantic summary updated with the content. */
+            description?: string | null;
             content: string;
         };
         DaemonRenameDraftOperation: {
@@ -857,7 +846,7 @@ export interface components {
         /** @enum {string} */
         SyncState: "idle" | "queued" | "syncing" | "retrying" | "degraded" | "failed";
         /** @enum {string} */
-        DaemonDraftResourceKind: "context" | "rule" | "workflow";
+        DaemonDraftResourceKind: "memory";
         /** @enum {string} */
         DaemonDraftScope: "org" | "project";
         /** @enum {string} */

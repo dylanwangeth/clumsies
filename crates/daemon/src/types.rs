@@ -1035,7 +1035,6 @@ pub(crate) enum ServerDraftOperationAction {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ServerDraftResourceRef {
     pub(crate) scope: DaemonDraftScope,
-    pub(crate) kind: DaemonDraftResourceKind,
     pub(crate) id: Option<String>,
     pub(crate) path: Option<String>,
 }

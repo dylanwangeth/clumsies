@@ -791,7 +791,7 @@ pub(crate) async fn mark_batch_operation_synced(
 
 pub(crate) fn map_daemon_operation_to_server(
     scope: DaemonDraftScope,
-    resource: DaemonDraftResourceKind,
+    _resource: DaemonDraftResourceKind,
     operation: &DaemonDraftOperation,
 ) -> Result<Option<ServerDraftOperationInput>, DaemonError> {
     if let Some(create) = &operation.create {
@@ -799,7 +799,6 @@ pub(crate) fn map_daemon_operation_to_server(
             action: ServerDraftOperationAction::Create,
             resource: ServerDraftResourceRef {
                 scope,
-                kind: resource,
                 id: None,
                 path: Some(create.path.clone()),
             },
@@ -821,7 +820,6 @@ pub(crate) fn map_daemon_operation_to_server(
             action: ServerDraftOperationAction::Update,
             resource: ServerDraftResourceRef {
                 scope,
-                kind: resource,
                 id: Some(update.id.clone()),
                 path: None,
             },
@@ -834,7 +832,6 @@ pub(crate) fn map_daemon_operation_to_server(
             action: ServerDraftOperationAction::Rename,
             resource: ServerDraftResourceRef {
                 scope,
-                kind: resource,
                 id: Some(rename.id.clone()),
                 path: None,
             },
@@ -847,7 +844,6 @@ pub(crate) fn map_daemon_operation_to_server(
             action: ServerDraftOperationAction::Delete,
             resource: ServerDraftResourceRef {
                 scope,
-                kind: resource,
                 id: Some(delete.id.clone()),
                 path: None,
             },
@@ -1102,7 +1098,7 @@ pub(crate) async fn project_server_draft(
         .bind(detail.draft.coordination.reconciliation.as_str())
         .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())
-        .bind(detail.draft.resource.kind.as_str())
+        .bind(DaemonDraftResourceKind::Memory.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
         .bind(detail.draft.status.as_str())
@@ -1131,7 +1127,7 @@ pub(crate) async fn project_server_draft(
         .bind(detail.draft.coordination.reconciliation.as_str())
         .bind(&detail.draft.coordination.candidate_id)
         .bind(detail.draft.resource.scope.as_str())
-        .bind(detail.draft.resource.kind.as_str())
+        .bind(DaemonDraftResourceKind::Memory.as_str())
         .bind(&detail.draft.resource.id)
         .bind(&detail.draft.resource.path)
         .bind(detail.draft.status.as_str())
@@ -1188,9 +1184,7 @@ pub(crate) async fn project_server_draft(
         .collect::<Result<Vec<_>, DaemonError>>()?;
 
     for server_operation in &detail.operations {
-        if server_operation.resource.scope != detail.draft.resource.scope
-            || server_operation.resource.kind != detail.draft.resource.kind
-        {
+        if server_operation.resource.scope != detail.draft.resource.scope {
             return Err(DaemonError::Server(format!(
                 "Server operation {} does not match draft {} resource",
                 server_operation.operation_id, detail.draft.draft_id
@@ -1238,7 +1232,7 @@ pub(crate) async fn project_server_draft(
         .bind(format!("server_{}", server_operation.operation_id))
         .bind(&local_draft_id)
         .bind(&server_operation.operation_id)
-        .bind(detail.draft.resource.kind.as_str())
+        .bind(DaemonDraftResourceKind::Memory.as_str())
         .bind(serde_json::to_string(&operation)?)
         .bind(&server_operation.created_at)
         .execute(&mut **tx)

@@ -2534,46 +2534,60 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         daemon_installation_id: "daemon_paths".to_owned(),
         project_id: bootstrap.project_id.clone(),
         base_commit_id: None,
-        title: "Invalid Workflow path".to_owned(),
+        title: "Valid memory under workflow namespace".to_owned(),
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
             id: None,
-            path: Some("workflows/invalid".to_owned()),
+            path: Some("workflows/valid".to_owned()),
         },
         operations: vec![DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
                 id: None,
-                path: Some("workflows/invalid".to_owned()),
+                path: Some("workflows/valid".to_owned()),
             },
             content: Some(DraftResourceContent {
                 description: None,
-                content: "# Invalid Workflow".to_owned(),
+                content: "# Valid Workflow".to_owned(),
             }),
             new_path: None,
         }],
     };
+    // The unified Memory model no longer reserves the workflow/ namespace:
+    // any normalized relative path is a valid memory path.
     assert_eq!(
         post_response(app.clone(), "/api/v1/drafts", &invalid_workflow)
             .await
             .status(),
-        StatusCode::BAD_REQUEST
+        StatusCode::OK
     );
 
     let invalid_empty_draft = CreateDraftRequest {
         daemon_installation_id: "daemon_paths".to_owned(),
         project_id: bootstrap.project_id.clone(),
         base_commit_id: None,
-        title: "Invalid empty Workflow draft".to_owned(),
+        title: "Invalid empty memory draft".to_owned(),
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
             id: None,
-            path: Some("workflows/empty".to_owned()),
+            path: Some("memories/empty".to_owned()),
         },
-        operations: Vec::new(),
+        operations: vec![DraftOperationInput {
+            action: DraftOperationAction::Create,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Project,
+                id: None,
+                path: Some("memories/empty".to_owned()),
+            },
+            content: Some(DraftResourceContent {
+                description: None,
+                content: "   ".to_owned(),
+            }),
+            new_path: None,
+        }],
     };
     assert_eq!(
         post_response(app.clone(), "/api/v1/drafts", &invalid_empty_draft)
@@ -2646,11 +2660,13 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         StatusCode::BAD_REQUEST
     );
 
+    // Only the valid unified memory draft from the first block was created;
+    // the blank-content and non-normalized-path drafts were rejected.
     let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drafts")
         .fetch_one(&postgres.pool)
         .await
         .unwrap();
-    assert_eq!(draft_count, 0);
+    assert_eq!(draft_count, 1);
 }
 
 #[tokio::test]
@@ -2732,7 +2748,7 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .tree
         .entries
         .iter()
-        .find(|entry| entry.kind == TreeEntryKind::Memory)
+        .find(|entry| entry.path.as_deref() == Some("rules/coding"))
         .expect("rule Commit should contain the Rule");
     let rule_id = rule_entry.id.clone();
     let rule: MemoryDetail = get_json(
@@ -2826,7 +2842,7 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .tree
         .entries
         .iter()
-        .find(|entry| entry.kind == TreeEntryKind::Memory)
+        .find(|entry| entry.path.as_deref() == Some("workflow/coding"))
         .expect("workflow Commit should contain the Workflow");
     let workflow: MemoryDetail = get_json(
         app,
