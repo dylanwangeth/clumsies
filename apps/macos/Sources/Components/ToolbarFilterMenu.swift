@@ -24,6 +24,8 @@ struct ToolbarFilterMenu<MenuContent: View>: View {
                 if isLoading {
                     ProgressView()
                         .controlSize(.mini)
+                } else {
+                    Image(systemName: "line.3.horizontal.decrease")
                 }
 
                 Text(selectionTitle)
