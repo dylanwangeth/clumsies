@@ -226,6 +226,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var searchQuery = ""
     @Published var showsGlobalSearch = false
     @Published var issueSearchFocusToken = UUID()
+    @Published var reviewSearchFocusToken = UUID()
     @Published var showsProjectCreation = false
     @Published var showsProjectSettings = false
     @Published var sidebarExpanded = true
@@ -706,6 +707,10 @@ final class WorkspaceStore: ObservableObject {
 
     func focusIssueSearch() {
         issueSearchFocusToken = UUID()
+    }
+
+    func focusReviewSearch() {
+        reviewSearchFocusToken = UUID()
     }
 
     func prepareWorkspaceIndex(includeContent: Bool) async {

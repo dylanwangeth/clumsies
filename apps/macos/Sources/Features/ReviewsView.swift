@@ -85,7 +85,7 @@ struct ReviewToolbarOwnership: Equatable {
 
         return .init(
             surface: .detail,
-            items: actions.map(Item.decision) + [.search]
+            items: actions.map(Item.decision)
         )
     }
 

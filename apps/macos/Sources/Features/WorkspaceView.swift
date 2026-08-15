@@ -116,7 +116,9 @@ struct WorkspaceView: View {
     @State private var showsIssueWorkflowHelp = false
     @State private var issueNavigationPath: [IssueBoardRoute] = []
     @State private var reviewNavigationPath: [ReviewRoute] = []
-    @FocusState private var issueSearchFocused: Bool
+    @State private var issueSearchFocusRequest = 0
+    @State private var reviewSearchQuery = ""
+    @State private var reviewSearchFocusRequest = 0
     @State private var reviewStatusFilter: ReviewStatusFilter = .open
     @State private var pendingReviewToolbarAction: ReviewMenuAction?
 
@@ -279,21 +281,6 @@ struct WorkspaceView: View {
                             }
                         }
 
-                        Button {
-                            store.showsGlobalSearch.toggle()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .help("Search")
-                        .accessibilityLabel("Search")
-                        .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
-                            WorkspaceSearchPopover(
-                                store: store,
-                                results: searchResults,
-                                onOpen: open
-                            )
-                        }
-
                         if showsDocumentTabs, let item = store.currentItem {
                             if let state = documentReconciliationState {
                                 if state.isLoading || state.isUpdating {
@@ -363,6 +350,25 @@ struct WorkspaceView: View {
                             .menuIndicator(.hidden)
                             .help("Document Actions")
                             .accessibilityLabel("Document Actions")
+                        }
+
+                        ClassicSearchField(
+                            text: $store.searchQuery,
+                            prompt: workspaceSearchPrompt,
+                            accessibilityIdentifier: "workspace-toolbar-search",
+                            accessibilityHelp: "Search across the current workspace",
+                            onFocusChange: { focused in
+                                if focused {
+                                    store.showsGlobalSearch = true
+                                }
+                            }
+                        )
+                        .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
+                            WorkspaceSearchPopover(
+                                store: store,
+                                results: searchResults,
+                                onOpen: open
+                            )
                         }
                     }
                 }
@@ -556,6 +562,10 @@ struct WorkspaceView: View {
                 pendingReviewToolbarAction = nil
             }
         }
+        .onChange(of: store.reviewSearchFocusToken) { _, _ in
+            reviewNavigationPath.removeAll()
+            reviewSearchFocusRequest += 1
+        }
         .onChange(of: store.selectedReviewId) { _, reviewId in
             guard store.selectedSection == .reviews else { return }
             guard let reviewId else {
@@ -600,8 +610,24 @@ struct WorkspaceView: View {
         }
     }
 
+    private var workspaceSearchPrompt: String {
+        switch store.selectedSection {
+        case .hub: "Search Hub"
+        case .local: "Search Local"
+        case .bundles: "Search Bundles"
+        case .reviews: "Search Reviews"
+        case .issues: "Search Issues"
+        }
+    }
+
     private var filteredReviews: [ReviewRecord] {
-        store.reviews.filter { reviewStatusFilter.matches($0) }
+        let byStatus = store.reviews.filter { reviewStatusFilter.matches($0) }
+        let needle = reviewSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        guard !needle.isEmpty else { return byStatus }
+        return byStatus.filter {
+            "\($0.title) \($0.description) \($0.author.email) \($0.status)"
+                .localizedLowercase.contains(needle)
+        }
     }
 
     private var reviewToolbarOwnership: ReviewToolbarOwnership {
@@ -762,22 +788,14 @@ struct WorkspaceView: View {
         }
 
         if reviewToolbarOwnership.contains(.search) {
-            ToolbarItem(id: "review.search", placement: .automatic) {
-                Button {
-                    store.showsGlobalSearch.toggle()
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-                .help("Search Reviews")
-                .accessibilityLabel("Search Reviews")
-                .accessibilityIdentifier("review-toolbar-search")
-                .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
-                    WorkspaceSearchPopover(
-                        store: store,
-                        results: searchResults,
-                        onOpen: open
-                    )
-                }
+            ToolbarItem(id: "review.search", placement: .primaryAction) {
+                ClassicSearchField(
+                    text: $reviewSearchQuery,
+                    prompt: "Search Reviews",
+                    accessibilityIdentifier: "review-toolbar-search",
+                    accessibilityHelp: "Search Reviews by title, description or author",
+                    focusToken: reviewSearchFocusRequest
+                )
             }
         }
     }
@@ -834,11 +852,6 @@ struct WorkspaceView: View {
                     }
 
                     ToolbarItemGroup(placement: .primaryAction) {
-                        IssueSearchField(
-                            text: $issueBoardModel.searchQuery,
-                            isFocused: $issueSearchFocused
-                        )
-
                         Toggle(isOn: $issueBoardModel.showsStaleOnly) {
                             Label("Stale", systemImage: "clock.badge.exclamationmark")
                         }
@@ -912,6 +925,14 @@ struct WorkspaceView: View {
                                 }
                             }
                         }
+
+                        ClassicSearchField(
+                            text: $issueBoardModel.searchQuery,
+                            prompt: "Search Issues",
+                            accessibilityIdentifier: "issue-toolbar-search",
+                            accessibilityHelp: "Search only the Issues on this board",
+                            focusToken: issueSearchFocusRequest
+                        )
                     }
                 }
             }
@@ -924,7 +945,7 @@ struct WorkspaceView: View {
             }
         }
         .onChange(of: store.issueSearchFocusToken) { _, _ in
-            issueSearchFocused = true
+            issueSearchFocusRequest += 1
         }
         .onChange(of: issueSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
@@ -1205,46 +1226,6 @@ private struct IssueProjectFilter: View {
         .help("Filter Kanban by Project")
         .accessibilityLabel("Project Filter")
         .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
-    }
-}
-
-private struct IssueSearchField: View {
-    @Binding var text: String
-    @FocusState.Binding var isFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search Issues", text: $text)
-                .textFieldStyle(.plain)
-                .focused($isFocused)
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .help("Clear search")
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .frame(width: 190)
-        .background(
-            Color(nsColor: .textBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 6)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-        }
-        .accessibilityLabel("Search Issues")
-        .accessibilityHint("Search only the Issues on this board")
     }
 }
 

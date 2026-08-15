@@ -24,6 +24,7 @@
 		43BA80CE66E7645FE1289DAD /* MemoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBFD932255E9B3EF5C7BCF35 /* MemoryModels.swift */; };
 		47AC97FF423BEDDD532DE639 /* SoftwareUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64C5934380C2CA476EA20D42 /* SoftwareUpdateController.swift */; };
 		4D0F2A84C1396679AB6D9601 /* DaemonModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB1752C4FFEB4FF7D4E8C14C /* DaemonModels.swift */; };
+		50B2905F57000E5DE123D668 /* ClassicSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B2DE143CAD3774B8548689 /* ClassicSearchField.swift */; };
 		5A82C529BBA6689E300760FF /* FileTreeSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65F12B107D78DBB96A122599 /* FileTreeSelectionTests.swift */; };
 		603640F6B13F940ACD8445BD /* JSONCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6ABC405480198DD68F37918 /* JSONCoding.swift */; };
 		6242A4726CA51495F419DEDA /* DocumentTabStripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D653D21BD58E9D24450141A /* DocumentTabStripTests.swift */; };
@@ -72,6 +73,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		05B2DE143CAD3774B8548689 /* ClassicSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClassicSearchField.swift; sourceTree = "<group>"; };
 		0D1A76BE67F6B85156A3330C /* WorkspaceNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNavigationTests.swift; sourceTree = "<group>"; };
 		0D653D21BD58E9D24450141A /* DocumentTabStripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentTabStripTests.swift; sourceTree = "<group>"; };
 		18CAC580523AC687B94FA4C9 /* MemoryWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryWorkspaceView.swift; sourceTree = "<group>"; };
@@ -150,6 +152,7 @@
 		070EFA753C7735CD6F13AB05 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				05B2DE143CAD3774B8548689 /* ClassicSearchField.swift */,
 				ED8B574ED4DAF0CF09DEE6C6 /* DocumentTabStrip.swift */,
 				9E825BC0050556CC6498B7B6 /* ExternalLinkText.swift */,
 				E3B9632C578719E6E8E78DDD /* FileSymbolCatalog.swift */,
@@ -394,6 +397,7 @@
 				06CBBD4CFE8160627E3DAEAE /* AppDelegate.swift in Sources */,
 				27D27351210746ADB09517AD /* AuthenticationClient.swift in Sources */,
 				F12498C396FD62EFD4716267 /* BundlesView.swift in Sources */,
+				50B2905F57000E5DE123D668 /* ClassicSearchField.swift in Sources */,
 				8EEDC302E3D01C71C36A4250 /* ClumsiesIdentifiers.swift in Sources */,
 				6FC1A304E65B976D0DBF22E9 /* DaemonBootstrapController.swift in Sources */,
 				4D0F2A84C1396679AB6D9601 /* DaemonModels.swift in Sources */,
