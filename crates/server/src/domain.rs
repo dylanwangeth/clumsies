@@ -40,45 +40,10 @@ pub enum ResourceScope {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum ResourceKind {
-    Rule,
-    Context,
-    Workflow,
-}
-
-impl ResourceKind {
-    pub fn id_prefix(self) -> &'static str {
-        match self {
-            Self::Rule => "rul",
-            Self::Context => "ctx",
-            Self::Workflow => "wfl",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum DraftResourceKind {
-    Context,
-    Rule,
-    Workflow,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum ResourceStatus {
     Active,
     Deprecated,
     Archived,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextKind {
-    File,
-    Note,
-    Decision,
-    Reference,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,14 +52,13 @@ pub struct ResourceRecord {
     pub org_id: String,
     pub project_id: Option<String>,
     pub scope: ResourceScope,
-    pub kind: ResourceKind,
     pub path: String,
     pub name: String,
+    pub description: String,
     pub status: ResourceStatus,
     pub revision: i64,
     pub content_hash: String,
     pub body: String,
-    pub context_kind: Option<ContextKind>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -102,9 +66,7 @@ pub struct ResourceRecord {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectOrgSelection {
     pub project_id: String,
-    pub rule_ids: Vec<String>,
-    pub context_ids: Vec<String>,
-    pub workflow_ids: Vec<String>,
+    pub resource_ids: Vec<String>,
     pub revision: i64,
     pub updated_at: OffsetDateTime,
 }
@@ -115,9 +77,7 @@ pub struct PersonalBundle {
     pub owner_user_id: String,
     pub name: String,
     pub description: String,
-    pub rule_ids: Vec<String>,
-    pub context_ids: Vec<String>,
-    pub workflow_ids: Vec<String>,
+    pub resource_ids: Vec<String>,
     pub revision: i64,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -144,17 +104,14 @@ pub enum DraftOperationAction {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftResourceRef {
     pub scope: ResourceScope,
-    pub kind: DraftResourceKind,
     pub id: Option<String>,
     pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DraftResourceContent {
-    Context { content: String },
-    Rule { content: String },
-    Workflow { content: String },
+pub struct DraftResourceContent {
+    pub description: Option<String>,
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,20 +227,8 @@ pub enum TreeEntrySource {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeEntryKind {
-    Rule,
-    Context,
-    Workflow,
+    Memory,
     ProjectOrgSelection,
-}
-
-impl From<ResourceKind> for TreeEntryKind {
-    fn from(kind: ResourceKind) -> Self {
-        match kind {
-            ResourceKind::Rule => Self::Rule,
-            ResourceKind::Context => Self::Context,
-            ResourceKind::Workflow => Self::Workflow,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,7 +281,5 @@ pub struct CreatePersonalBundleRequest {
     pub owner_user_id: String,
     pub name: String,
     pub description: String,
-    pub rule_ids: Vec<String>,
-    pub context_ids: Vec<String>,
-    pub workflow_ids: Vec<String>,
+    pub resource_ids: Vec<String>,
 }

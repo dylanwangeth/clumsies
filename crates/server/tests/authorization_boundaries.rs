@@ -3,8 +3,7 @@ mod common;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use server::api::{
-    CreateDraftRequest, CreateProjectRequest, DraftDetail, DraftResourceKind, DraftResourceRef,
-    ResourceScope,
+    CreateDraftRequest, CreateProjectRequest, DraftDetail, DraftResourceRef, ResourceScope,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -60,7 +59,6 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
                         description: None,
                         resource: DraftResourceRef {
                             scope: ResourceScope::Project,
-                            kind: DraftResourceKind::Context,
                             id: None,
                             path: Some("context/private.md".to_owned()),
                         },
@@ -140,7 +138,6 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
                         description: None,
                         resource: DraftResourceRef {
                             scope: ResourceScope::Org,
-                            kind: DraftResourceKind::Context,
                             id: None,
                             path: Some("context/org.md".to_owned()),
                         },

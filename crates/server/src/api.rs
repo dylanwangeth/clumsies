@@ -408,20 +408,14 @@ pub struct PersonalBundleRequest {
     pub name: String,
     pub description: Option<String>,
     #[serde(default)]
-    pub rule_ids: Vec<String>,
-    #[serde(default)]
-    pub context_ids: Vec<String>,
-    #[serde(default)]
-    pub workflow_ids: Vec<String>,
+    pub resource_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PersonalBundleUpdateRequest {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub rule_ids: Option<Vec<String>>,
-    pub context_ids: Option<Vec<String>>,
-    pub workflow_ids: Option<Vec<String>>,
+    pub resource_ids: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -433,9 +427,7 @@ pub struct PersonalBundleListResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PersonalBundleDetail {
     pub bundle: PersonalBundleMeta,
-    pub rules: Vec<RuleMeta>,
-    pub context: Vec<ContextMeta>,
-    pub workflows: Vec<WorkflowMeta>,
+    pub memories: Vec<MemoryMeta>,
     pub etag: String,
 }
 
@@ -445,9 +437,7 @@ pub struct PersonalBundleMeta {
     pub owner_user_id: String,
     pub name: String,
     pub description: String,
-    pub rule_count: i64,
-    pub context_count: i64,
-    pub workflow_count: i64,
+    pub resource_count: i64,
     pub revision: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -460,14 +450,6 @@ pub struct PersonalBundleMeta {
 pub enum ResourceScope {
     Org,
     Project,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum DraftResourceKind {
-    Context,
-    Rule,
-    Workflow,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -523,17 +505,15 @@ pub enum DraftOperationAction {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftResourceRef {
     pub scope: ResourceScope,
-    pub kind: DraftResourceKind,
     pub id: Option<String>,
     pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DraftResourceContent {
-    Context { content: String },
-    Rule { content: String },
-    Workflow { content: String },
+pub struct DraftResourceContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -903,9 +883,7 @@ pub enum TreeEntrySource {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TreeEntryKind {
-    Rule,
-    Context,
-    Workflow,
+    Memory,
     ProjectOrgSelection,
 }
 
@@ -978,103 +956,37 @@ pub struct CommitPayload {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectOrgSelection {
     pub project_id: String,
-    pub rules: Vec<RuleMeta>,
-    pub context: Vec<ContextMeta>,
-    pub workflows: Vec<WorkflowMeta>,
+    pub memories: Vec<MemoryMeta>,
     pub revision: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplaceProjectOrgSelectionRequest {
     #[serde(default)]
-    pub rule_ids: Vec<String>,
-    #[serde(default)]
-    pub context_ids: Vec<String>,
-    #[serde(default)]
-    pub workflow_ids: Vec<String>,
+    pub resource_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuleListResponse {
-    pub items: Vec<RuleMeta>,
+pub struct MemoryListResponse {
+    pub items: Vec<MemoryMeta>,
     pub page_info: PageInfo,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextListResponse {
-    pub items: Vec<ContextMeta>,
-    pub page_info: PageInfo,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowListResponse {
-    pub items: Vec<WorkflowMeta>,
-    pub page_info: PageInfo,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuleDetail {
-    pub rule: RuleMeta,
+pub struct MemoryDetail {
+    pub memory: MemoryMeta,
     pub content: String,
     pub etag: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextDetail {
-    pub context: ContextMeta,
-    pub content: String,
-    pub etag: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowDetail {
-    pub workflow: WorkflowMeta,
-    pub content: String,
-    pub etag: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuleMeta {
-    pub rule_id: String,
+pub struct MemoryMeta {
+    pub memory_id: String,
     pub scope: ResourceScope,
     pub project_id: Option<String>,
     pub path: String,
     pub name: String,
-    pub content_hash: String,
-    pub status: ResourceStatus,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextMeta {
-    pub context_id: String,
-    pub scope: ResourceScope,
-    pub project_id: Option<String>,
-    pub kind: ContextKind,
-    pub path: String,
-    pub content_hash: String,
-    pub size: i64,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextKind {
-    File,
-    Note,
-    Decision,
-    Reference,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkflowMeta {
-    pub workflow_id: String,
-    pub scope: ResourceScope,
-    pub project_id: Option<String>,
-    pub path: String,
-    pub name: String,
+    pub description: String,
     pub content_hash: String,
     pub status: ResourceStatus,
     #[serde(with = "time::serde::rfc3339")]
@@ -1091,34 +1003,6 @@ pub struct CommitListResponse {
 pub struct PageInfo {
     pub next_cursor: Option<String>,
     pub has_more: bool,
-}
-
-impl DraftResourceKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Context => "context",
-            Self::Rule => "rule",
-            Self::Workflow => "workflow",
-        }
-    }
-
-    pub fn resource_id_prefix(self) -> &'static str {
-        match self {
-            Self::Context => "ctx",
-            Self::Rule => "rul",
-            Self::Workflow => "wfl",
-        }
-    }
-}
-
-impl DraftResourceContent {
-    pub fn kind(&self) -> DraftResourceKind {
-        match self {
-            Self::Context { .. } => DraftResourceKind::Context,
-            Self::Rule { .. } => DraftResourceKind::Rule,
-            Self::Workflow { .. } => DraftResourceKind::Workflow,
-        }
-    }
 }
 
 impl ResourceScope {

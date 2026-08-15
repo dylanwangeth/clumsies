@@ -4,20 +4,19 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde::Serialize;
 use server::api::{
-    CommitListResponse, CommitPayload, CommitStateResponse, ContextDetail, ContextListResponse,
-    CreateDraftRebaseRequest, CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
+    CommitListResponse, CommitPayload, CommitStateResponse, CreateDraftRebaseRequest,
+    CreateDraftRequest, CreateProjectRequest, CreateReviewCommentRequest,
     CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     CreateReviewSubmissionRequest, DeleteResult, DraftDetail, DraftEventListResponse,
     DraftEventType, DraftFreshness, DraftListResponse, DraftOperationAction,
     DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationBatchResponse,
     DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
-    DraftReconciliationStatus, DraftResourceContent, DraftResourceKind, DraftResourceRef,
-    DraftStatus, MeResponse, PersonalBundleDetail, PersonalBundleRequest,
+    DraftReconciliationStatus, DraftResourceContent, DraftResourceRef, DraftStatus, MeResponse,
+    MemoryDetail, MemoryListResponse, PersonalBundleDetail, PersonalBundleRequest,
     PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
     ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
     ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
-    ReviewMergeResult, ReviewStatus, RuleDetail, TreeEntryKind, UpdateDraftRequest,
-    UpdateProjectRequest, WorkflowDetail,
+    ReviewMergeResult, ReviewStatus, TreeEntryKind, UpdateDraftRequest, UpdateProjectRequest,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -37,14 +36,14 @@ async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
     .await;
     let resource = DraftResourceRef {
         scope: ResourceScope::Project,
-        kind: DraftResourceKind::Rule,
         id: None,
         path: Some("rules/new-rule.md".to_owned()),
     };
     let create = DraftOperationInput {
         action: DraftOperationAction::Create,
         resource: resource.clone(),
-        content: Some(DraftResourceContent::Rule {
+        content: Some(DraftResourceContent {
+            description: None,
             content: "# New rule".to_owned(),
         }),
         new_path: None,
@@ -209,14 +208,12 @@ async fn draft_review_merge_produces_project_commit() {
         ),
         0,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: Vec::new(),
-            workflow_ids: Vec::new(),
+            resource_ids: Vec::new(),
         },
     )
     .await;
     assert_eq!(empty_selection.revision, 1);
-    assert!(empty_selection.context.is_empty());
+    assert!(empty_selection.memories.is_empty());
 
     let deleted_project: DeleteResult = delete_json_with_if_match(
         app.clone(),
@@ -226,9 +223,9 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert!(deleted_project.deleted);
 
-    let org_context: ContextDetail = get_json(
+    let org_context: MemoryDetail = get_json(
         app.clone(),
-        &format!("/api/v1/org/context/{org_context_id}"),
+        &format!("/api/v1/org/memories/{org_context_id}"),
     )
     .await;
     assert_eq!(
@@ -236,19 +233,19 @@ async fn draft_review_merge_produces_project_commit() {
         "# Org Policy\n\nPrefer concise answers."
     );
 
-    let org_context_page: ContextListResponse = get_json(app.clone(), "/api/v1/org/context").await;
+    let org_context_page: MemoryListResponse = get_json(app.clone(), "/api/v1/org/memories").await;
     assert_eq!(org_context_page.items.len(), 2);
     assert!(
         org_context_page
             .items
             .iter()
-            .any(|item| item.context_id == org_context_id)
+            .any(|item| item.memory_id == org_context_id)
     );
     assert!(
         org_context_page
             .items
             .iter()
-            .any(|item| item.context_id == org_reference_id)
+            .any(|item| item.memory_id == org_reference_id)
     );
 
     let org_selection: ProjectOrgSelection = get_json(
@@ -256,21 +253,19 @@ async fn draft_review_merge_produces_project_commit() {
         &format!("/api/v1/projects/{project_id}/org-selections"),
     )
     .await;
-    assert_eq!(org_selection.context.len(), 1);
+    assert_eq!(org_selection.memories.len(), 1);
 
     let org_selection: ProjectOrgSelection = put_json_with_if_match(
         app.clone(),
         &format!("/api/v1/projects/{project_id}/org-selections"),
         org_selection.revision,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![org_context_id.clone(), org_reference_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![org_context_id.clone(), org_reference_id.clone()],
         },
     )
     .await;
     assert_eq!(org_selection.revision, 2);
-    assert_eq!(org_selection.context.len(), 2);
+    assert_eq!(org_selection.memories.len(), 2);
 
     let (commit_state, initial_head_etag): (CommitStateResponse, String) = get_json_with_etag(
         app.clone(),
@@ -296,7 +291,6 @@ async fn draft_review_merge_produces_project_commit() {
             description: Some("First project context entry".to_owned()),
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -328,7 +322,6 @@ async fn draft_review_merge_produces_project_commit() {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -348,7 +341,6 @@ async fn draft_review_merge_produces_project_commit() {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -383,7 +375,6 @@ async fn draft_review_merge_produces_project_commit() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context/batch.md".to_owned()),
             },
@@ -404,7 +395,6 @@ async fn draft_review_merge_produces_project_commit() {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
                         scope: ResourceScope::Project,
-                        kind: DraftResourceKind::Context,
                         id: None,
                         path: Some("context/batch.md".to_owned()),
                     },
@@ -552,9 +542,9 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert!(!current_commit_state.update_available);
 
-    let project_context_page: ContextListResponse = get_json(
+    let project_context_page: MemoryListResponse = get_json(
         app.clone(),
-        &format!("/api/v1/projects/{project_id}/context"),
+        &format!("/api/v1/projects/{project_id}/memories"),
     )
     .await;
     assert_eq!(project_context_page.items.len(), 1);
@@ -565,9 +555,7 @@ async fn draft_review_merge_produces_project_commit() {
         &PersonalBundleRequest {
             name: "Invalid project memory".to_owned(),
             description: None,
-            rule_ids: Vec::new(),
-            context_ids: vec![project_context_page.items[0].context_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![project_context_page.items[0].memory_id.clone()],
         },
     )
     .await;
@@ -579,13 +567,11 @@ async fn draft_review_merge_produces_project_commit() {
         &PersonalBundleRequest {
             name: "Daily context".to_owned(),
             description: Some("A personal bundle of selected context".to_owned()),
-            rule_ids: Vec::new(),
-            context_ids: vec![org_context_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![org_context_id.clone()],
         },
     )
     .await;
-    assert_eq!(bundle.context.len(), 1);
+    assert_eq!(bundle.memories.len(), 1);
     let bundle: PersonalBundleDetail = patch_json_with_if_match(
         app.clone(),
         &format!("/api/v1/me/bundles/{}", bundle.bundle.bundle_id),
@@ -593,20 +579,18 @@ async fn draft_review_merge_produces_project_commit() {
         &PersonalBundleUpdateRequest {
             name: Some("Focused context".to_owned()),
             description: Some("Updated personal bundle".to_owned()),
-            rule_ids: None,
-            context_ids: Some(vec![org_reference_id.clone()]),
-            workflow_ids: None,
+            resource_ids: Some(vec![org_reference_id.clone()]),
         },
     )
     .await;
     assert_eq!(bundle.bundle.revision, 2);
-    assert_eq!(bundle.context[0].context_id, org_reference_id);
+    assert_eq!(bundle.memories[0].memory_id, org_reference_id);
     let bundle: PersonalBundleDetail = get_json(
         app.clone(),
         &format!("/api/v1/me/bundles/{}", bundle.bundle.bundle_id),
     )
     .await;
-    assert_eq!(bundle.context[0].context_id, org_reference_id);
+    assert_eq!(bundle.memories[0].memory_id, org_reference_id);
     let deleted_bundle: DeleteResult = delete_json_with_if_match(
         app.clone(),
         &format!("/api/v1/me/bundles/{}", bundle.bundle.bundle_id),
@@ -693,13 +677,11 @@ async fn draft_review_merge_produces_project_commit() {
         &format!("/api/v1/projects/{project_id}/org-selections"),
         2,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![org_context_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![org_context_id.clone()],
         },
     )
     .await;
-    assert_eq!(current_selection.context.len(), 1);
+    assert_eq!(current_selection.memories.len(), 1);
 
     let commit: CommitPayload = get_json(app, &format!("/api/v1/commits/{commit_id}")).await;
     assert_eq!(
@@ -725,9 +707,9 @@ async fn draft_review_merge_produces_project_commit() {
     let selection = commit
         .project_org_selection
         .expect("project commit should include org selection");
-    assert_eq!(selection.context.len(), 2);
-    assert_eq!(selection.context[0].context_id, org_context_id);
-    assert_eq!(selection.context[1].context_id, org_reference_id);
+    assert_eq!(selection.memories.len(), 2);
+    assert_eq!(selection.memories[0].memory_id, org_context_id);
+    assert_eq!(selection.memories[1].memory_id, org_reference_id);
 }
 
 #[tokio::test]
@@ -767,7 +749,6 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Org,
-                kind: DraftResourceKind::Context,
                 id: Some(context_id.clone()),
                 path: None,
             },
@@ -775,7 +756,6 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
                 action: DraftOperationAction::Update,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Context,
                     id: Some(context_id.clone()),
                     path: None,
                 },
@@ -807,8 +787,8 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
     .await;
     let commit_id = merge.commit_id.unwrap();
 
-    let updated: ContextDetail =
-        get_json(app.clone(), &format!("/api/v1/org/context/{context_id}")).await;
+    let updated: MemoryDetail =
+        get_json(app.clone(), &format!("/api/v1/org/memories/{context_id}")).await;
     assert_eq!(updated.content, "# Shared\n\nAfter review.");
     let (org_state, org_ref_etag): (CommitStateResponse, String) =
         get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
@@ -853,9 +833,7 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
         &primary_selection_uri,
         0,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![context_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![context_id.clone()],
         },
     )
     .await;
@@ -879,9 +857,7 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
         &secondary_selection_uri,
         0,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: Vec::new(),
-            workflow_ids: Vec::new(),
+            resource_ids: Vec::new(),
         },
     )
     .await;
@@ -900,7 +876,6 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Org,
-                kind: DraftResourceKind::Context,
                 id: Some(context_id.clone()),
                 path: None,
             },
@@ -909,7 +884,6 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
                     action: DraftOperationAction::Update,
                     resource: DraftResourceRef {
                         scope: ResourceScope::Org,
-                        kind: DraftResourceKind::Context,
                         id: Some(context_id.clone()),
                         path: None,
                     },
@@ -920,7 +894,6 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
                     action: DraftOperationAction::Rename,
                     resource: DraftResourceRef {
                         scope: ResourceScope::Org,
-                        kind: DraftResourceKind::Context,
                         id: Some(context_id.clone()),
                         path: None,
                     },
@@ -956,7 +929,7 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
     let selection_after_update: ProjectOrgSelection =
         get_json(app.clone(), &primary_selection_uri).await;
     assert_eq!(selection_after_update.revision, selected.revision);
-    assert_eq!(selection_after_update.context.len(), 1);
+    assert_eq!(selection_after_update.memories.len(), 1);
 
     let old_payload: CommitPayload =
         get_json(app.clone(), &format!("/api/v1/commits/{primary_before_id}")).await;
@@ -1010,7 +983,6 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Org,
-                kind: DraftResourceKind::Context,
                 id: Some(context_id.clone()),
                 path: None,
             },
@@ -1018,7 +990,6 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
                 action: DraftOperationAction::Delete,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Context,
                     id: Some(context_id.clone()),
                     path: None,
                 },
@@ -1044,7 +1015,7 @@ async fn selected_org_context_changes_rebuild_only_affected_project_commits() {
         selection_after_delete.revision,
         selection_after_update.revision + 1
     );
-    assert!(selection_after_delete.context.is_empty());
+    assert!(selection_after_delete.memories.is_empty());
     let primary_after_delete: CommitStateResponse = get_json(app.clone(), &primary_state_uri).await;
     let primary_after_delete_id = primary_after_delete.reference.commit_id.unwrap();
     assert_ne!(primary_after_delete_id, primary_after_id);
@@ -1088,9 +1059,7 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
         &bootstrap.project_id,
         0,
         ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![context_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![context_id.clone()],
         },
     )
     .await
@@ -1113,7 +1082,6 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
                 description: None,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Context,
                     id: None,
                     path: Some("context/collision.md".to_owned()),
                 },
@@ -1121,7 +1089,6 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
                         scope: ResourceScope::Project,
-                        kind: DraftResourceKind::Context,
                         id: None,
                         path: Some("context/collision.md".to_owned()),
                     },
@@ -1192,7 +1159,6 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
                 description: None,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Org,
-                    kind: DraftResourceKind::Context,
                     id: Some(context_id.clone()),
                     path: None,
                 },
@@ -1200,7 +1166,6 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
                     action: DraftOperationAction::Rename,
                     resource: DraftResourceRef {
                         scope: ResourceScope::Org,
-                        kind: DraftResourceKind::Context,
                         id: Some(context_id.clone()),
                         path: None,
                     },
@@ -1269,10 +1234,10 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     assert_eq!(org_head_after, org_head_before);
     assert_eq!(project_head_after, project_head_before);
     assert_eq!(
-        repo.get_org_context(&bootstrap.org_id, &context_id)
+        repo.get_org_memory(&bootstrap.org_id, &context_id)
             .await
             .unwrap()
-            .context
+            .memory
             .path,
         "context/shared.md"
     );
@@ -1334,7 +1299,6 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context/review-lifecycle.md".to_owned()),
             },
@@ -1342,7 +1306,6 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Context,
                     id: None,
                     path: Some("context/review-lifecycle.md".to_owned()),
                 },
@@ -1917,9 +1880,9 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         event.draft_id == stale.draft_id && event.event_type == DraftEventType::Rebased
     }));
 
-    let context: ContextListResponse = get_json(
+    let context: MemoryListResponse = get_json(
         app.clone(),
-        &format!("/api/v1/projects/{project_id}/context"),
+        &format!("/api/v1/projects/{project_id}/memories"),
     )
     .await;
     assert_eq!(context.items.len(), 1);
@@ -2040,8 +2003,8 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     )
     .await;
     assert!(merge.commit_id.is_some());
-    let context: ContextListResponse =
-        get_json(app, &format!("/api/v1/projects/{project_id}/context")).await;
+    let context: MemoryListResponse =
+        get_json(app, &format!("/api/v1/projects/{project_id}/memories")).await;
     assert_eq!(context.items.len(), 3);
 }
 
@@ -2061,7 +2024,6 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
 
     let resource = DraftResourceRef {
         scope: ResourceScope::Project,
-        kind: DraftResourceKind::Context,
         id: None,
         path: Some("context/coordination.md".to_owned()),
     };
@@ -2137,7 +2099,6 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
         .clone();
     let existing_resource = DraftResourceRef {
         scope: ResourceScope::Project,
-        kind: DraftResourceKind::Context,
         id: Some(resource_id.clone()),
         path: None,
     };
@@ -2448,8 +2409,8 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
     sqlx::query(
         "INSERT INTO resources (
             resource_id, org_id, project_id, scope, resource_kind, path, name,
-            status, content_hash, body, context_kind
-         ) VALUES ($1, $2, $3, 'project', 'context', $4, $5, 'active', $6, $7, 'file')",
+            status, content_hash, body
+         ) VALUES ($1, $2, $3, 'project', 'memory', $4, $5, 'active', $6, $7)",
     )
     .bind("ctx_project_shared")
     .bind(&bootstrap.org_id)
@@ -2468,8 +2429,8 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         sqlx::query(
             "INSERT INTO resources (
                 resource_id, org_id, project_id, scope, resource_kind, path, name,
-                status, content_hash, body, context_kind
-             ) VALUES ($1, $2, $3, 'project', 'context', $4, $5, 'active', $6, $7, 'file')",
+                status, content_hash, body
+             ) VALUES ($1, $2, $3, 'project', 'memory', $4, $5, 'active', $6, $7)",
         )
         .bind(resource_id)
         .bind(&bootstrap.org_id)
@@ -2498,9 +2459,7 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
             &selection_uri,
             before.revision,
             &ReplaceProjectOrgSelectionRequest {
-                rule_ids: Vec::new(),
-                context_ids: vec![collision_id],
-                workflow_ids: Vec::new(),
+                resource_ids: vec![collision_id],
             },
         )
         .await;
@@ -2519,9 +2478,7 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         &selection_uri,
         before.revision,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec!["ctx_unknown".to_owned()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec!["ctx_unknown".to_owned()],
         },
     )
     .await;
@@ -2529,7 +2486,7 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
 
     let after_failures: ProjectOrgSelection = get_json(app.clone(), &selection_uri).await;
     assert_eq!(after_failures.revision, before.revision);
-    assert!(after_failures.context.is_empty());
+    assert!(after_failures.memories.is_empty());
     let state_after_failures: CommitStateResponse = get_json(
         app.clone(),
         &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
@@ -2545,9 +2502,7 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         &selection_uri,
         before.revision,
         &ReplaceProjectOrgSelectionRequest {
-            rule_ids: Vec::new(),
-            context_ids: vec![valid_id.clone()],
-            workflow_ids: Vec::new(),
+            resource_ids: vec![valid_id.clone()],
         },
     )
     .await;
@@ -2583,7 +2538,6 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
-            kind: DraftResourceKind::Workflow,
             id: None,
             path: Some("workflows/invalid".to_owned()),
         },
@@ -2591,11 +2545,11 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Workflow,
                 id: None,
                 path: Some("workflows/invalid".to_owned()),
             },
-            content: Some(DraftResourceContent::Workflow {
+            content: Some(DraftResourceContent {
+                description: None,
                 content: "# Invalid Workflow".to_owned(),
             }),
             new_path: None,
@@ -2616,7 +2570,6 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
-            kind: DraftResourceKind::Workflow,
             id: None,
             path: Some("workflows/empty".to_owned()),
         },
@@ -2637,7 +2590,6 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
-            kind: DraftResourceKind::Rule,
             id: None,
             path: Some("rules/empty".to_owned()),
         },
@@ -2645,11 +2597,11 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Rule,
                 id: None,
                 path: Some("rules/empty".to_owned()),
             },
-            content: Some(DraftResourceContent::Rule {
+            content: Some(DraftResourceContent {
+                description: None,
                 content: "  ".to_owned(),
             }),
             new_path: None,
@@ -2670,7 +2622,6 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         description: None,
         resource: DraftResourceRef {
             scope: ResourceScope::Project,
-            kind: DraftResourceKind::Context,
             id: None,
             path: Some("context//invalid.md".to_owned()),
         },
@@ -2678,11 +2629,11 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some("context//invalid.md".to_owned()),
             },
-            content: Some(DraftResourceContent::Context {
+            content: Some(DraftResourceContent {
+                description: None,
                 content: "# Invalid".to_owned(),
             }),
             new_path: None,
@@ -2733,7 +2684,6 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Rule,
                 id: None,
                 path: Some("rules/coding".to_owned()),
             },
@@ -2741,11 +2691,10 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Rule,
                     id: None,
                     path: Some("rules/coding".to_owned()),
                 },
-                content: Some(DraftResourceContent::Rule {
+                content: Some(DraftResourceContent { description: None,
                     content: "# Coding discipline\n\nApply while changing production code.\n\nRun the focused tests before committing.\n\nTags: coding, quality"
                         .to_owned(),
                 }),
@@ -2783,15 +2732,15 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .tree
         .entries
         .iter()
-        .find(|entry| entry.kind == TreeEntryKind::Rule)
+        .find(|entry| entry.kind == TreeEntryKind::Memory)
         .expect("rule Commit should contain the Rule");
     let rule_id = rule_entry.id.clone();
-    let rule: RuleDetail = get_json(
+    let rule: MemoryDetail = get_json(
         app.clone(),
-        &format!("/api/v1/projects/{project_id}/rules/{rule_id}"),
+        &format!("/api/v1/projects/{project_id}/memories/{rule_id}"),
     )
     .await;
-    assert_eq!(rule.rule.name, "coding");
+    assert_eq!(rule.memory.name, "coding");
     assert_eq!(
         rule.content,
         "# Coding discipline\n\nApply while changing production code.\n\nRun the focused tests before committing.\n\nTags: coding, quality"
@@ -2819,7 +2768,6 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Workflow,
                 id: None,
                 path: Some("workflow/coding".to_owned()),
             },
@@ -2827,11 +2775,10 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Workflow,
                     id: None,
                     path: Some("workflow/coding".to_owned()),
                 },
-                content: Some(DraftResourceContent::Workflow {
+                content: Some(DraftResourceContent { description: None,
                     content: format!(
                         "# Coding workflow\n\nPrepare a production change.\n\n- Apply rule `{rule_id}`.\n- Summarize verification evidence."
                     ),
@@ -2879,17 +2826,17 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .tree
         .entries
         .iter()
-        .find(|entry| entry.kind == TreeEntryKind::Workflow)
+        .find(|entry| entry.kind == TreeEntryKind::Memory)
         .expect("workflow Commit should contain the Workflow");
-    let workflow: WorkflowDetail = get_json(
+    let workflow: MemoryDetail = get_json(
         app,
         &format!(
-            "/api/v1/projects/{project_id}/workflows/{}",
+            "/api/v1/projects/{project_id}/memories/{}",
             workflow_entry.id
         ),
     )
     .await;
-    assert_eq!(workflow.workflow.name, "coding");
+    assert_eq!(workflow.memory.name, "coding");
     assert_eq!(
         workflow.content,
         format!(
@@ -2905,17 +2852,14 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
 }
 
 fn context_draft_content(content: &str) -> Option<DraftResourceContent> {
-    Some(DraftResourceContent::Context {
+    Some(DraftResourceContent {
+        description: None,
         content: content.to_owned(),
     })
 }
 
 fn content_text_for_test(content: &DraftResourceContent) -> &str {
-    match content {
-        DraftResourceContent::Context { content }
-        | DraftResourceContent::Rule { content }
-        | DraftResourceContent::Workflow { content } => content,
-    }
+    &content.content
 }
 
 async fn create_review_for_draft(app: axum::Router, draft: &DraftDetail) -> ReviewDetail {
@@ -2976,7 +2920,6 @@ async fn create_approved_context_review(
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: None,
                 path: Some(path.to_owned()),
             },
@@ -2984,7 +2927,6 @@ async fn create_approved_context_review(
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Context,
                     id: None,
                     path: Some(path.to_owned()),
                 },
@@ -3334,7 +3276,6 @@ async fn review_comments_support_line_anchors() {
             description: None,
             resource: DraftResourceRef {
                 scope: ResourceScope::Project,
-                kind: DraftResourceKind::Context,
                 id: Some(resource_id.clone()),
                 path: None,
             },
@@ -3342,7 +3283,6 @@ async fn review_comments_support_line_anchors() {
                 action: DraftOperationAction::Rename,
                 resource: DraftResourceRef {
                     scope: ResourceScope::Project,
-                    kind: DraftResourceKind::Context,
                     id: Some(resource_id),
                     path: None,
                 },
