@@ -205,6 +205,66 @@ pub struct AdminOrg {
     pub updated_at: OffsetDateTime,
 }
 
+/// Neutral, verifiable export of the org's effective Memory state for the
+/// ISSUE-012 migration: every Memory (including native Issues under
+/// issues/ paths), active Drafts, Project org selections and personal
+/// bundles. IDs are emitted as-is so the export doubles as the
+/// old_id -> memory_id identity map (identity is preserved).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryExport {
+    pub org_id: String,
+    pub exported_at: String,
+    pub memories: Vec<MemoryExportItem>,
+    pub drafts: Vec<MemoryExportDraft>,
+    pub selections: Vec<MemoryExportSelection>,
+    pub bundles: Vec<MemoryExportBundle>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryExportItem {
+    pub memory_id: String,
+    pub scope: String,
+    pub project_id: Option<String>,
+    pub path: String,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub content_hash: String,
+    pub body: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryExportDraft {
+    pub draft_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub resource_scope: String,
+    pub target_id: Option<String>,
+    pub path: Option<String>,
+    pub status: String,
+    pub version: i64,
+    pub operations: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryExportSelection {
+    pub project_id: String,
+    pub resource_ids: Vec<String>,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryExportBundle {
+    pub bundle_id: String,
+    pub owner_user_id: String,
+    pub name: String,
+    pub description: String,
+    pub resource_ids: Vec<String>,
+    pub revision: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateAdminOrgRequest {
     pub name: Option<String>,

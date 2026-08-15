@@ -470,6 +470,22 @@ paths:
                 $ref: "#/components/schemas/AuditEventListResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/admin/memory-export:
+    get:
+      operationId: exportOrgMemoryState
+      summary: >-
+        Export the org's effective Memory state (memories including issues/,
+        drafts, org selections, bundles) with IDs verbatim as the identity map
+        for the unified Memory migration.
+      responses:
+        "200":
+          description: Neutral, verifiable Memory state export.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryExport"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/admin/health:
     get:
       operationId: getAdminHealth
@@ -897,6 +913,123 @@ components:
         created_at:
           type: string
           format: date-time
+    MemoryExport:
+      type: object
+      required: [org_id, exported_at, memories, drafts, selections, bundles]
+      properties:
+        org_id:
+          type: string
+        exported_at:
+          type: string
+          format: date-time
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryExportItem"
+        drafts:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryExportDraft"
+        selections:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryExportSelection"
+        bundles:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryExportBundle"
+    MemoryExportItem:
+      type: object
+      required:
+        [memory_id, scope, path, name, description, status, content_hash, body, updated_at]
+      properties:
+        memory_id:
+          type: string
+          description: >-
+            Legacy ctx_/rul_/wfl_ or new mem_ id, emitted verbatim so the export
+            doubles as the old_id -> memory_id identity map.
+        scope:
+          type: string
+          enum: [org, project]
+        project_id:
+          type: [string, "null"]
+        path:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, deprecated, archived]
+        content_hash:
+          type: string
+        body:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    MemoryExportDraft:
+      type: object
+      required: [draft_id, project_id, title, description, resource_scope, status, version, operations]
+      properties:
+        draft_id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        resource_scope:
+          type: string
+          enum: [org, project]
+        target_id:
+          type: [string, "null"]
+        path:
+          type: [string, "null"]
+        status:
+          type: string
+        version:
+          type: integer
+          format: int64
+        operations:
+          type: array
+          description: Raw draft_operations rows (action, scope, kind, ids, content) as JSON.
+          items:
+            type: object
+    MemoryExportSelection:
+      type: object
+      required: [project_id, resource_ids, revision]
+      properties:
+        project_id:
+          type: string
+        resource_ids:
+          type: array
+          items:
+            type: string
+        revision:
+          type: integer
+          format: int64
+    MemoryExportBundle:
+      type: object
+      required: [bundle_id, owner_user_id, name, description, resource_ids, revision]
+      properties:
+        bundle_id:
+          type: string
+        owner_user_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        resource_ids:
+          type: array
+          items:
+            type: string
+        revision:
+          type: integer
+          format: int64
     AdminHealth:
       type: object
       required: [status, version, database, schema, commit_service, oidc]

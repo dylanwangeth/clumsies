@@ -296,6 +296,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/memory-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export the org's effective Memory state (memories including issues/, drafts, org selections, bundles) with IDs verbatim as the identity map for the unified Memory migration. */
+        get: operations["exportOrgMemoryState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/health": {
         parameters: {
             query?: never;
@@ -480,6 +497,61 @@ export interface components {
             target_id: string | null;
             /** Format: date-time */
             created_at: string;
+        };
+        MemoryExport: {
+            org_id: string;
+            /** Format: date-time */
+            exported_at: string;
+            memories: components["schemas"]["MemoryExportItem"][];
+            drafts: components["schemas"]["MemoryExportDraft"][];
+            selections: components["schemas"]["MemoryExportSelection"][];
+            bundles: components["schemas"]["MemoryExportBundle"][];
+        };
+        MemoryExportItem: {
+            /** @description Legacy ctx_/rul_/wfl_ or new mem_ id, emitted verbatim so the export doubles as the old_id -> memory_id identity map. */
+            memory_id: string;
+            /** @enum {string} */
+            scope: "org" | "project";
+            project_id?: string | null;
+            path: string;
+            name: string;
+            description: string;
+            /** @enum {string} */
+            status: "active" | "deprecated" | "archived";
+            content_hash: string;
+            body: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        MemoryExportDraft: {
+            draft_id: string;
+            project_id: string;
+            title: string;
+            description: string;
+            /** @enum {string} */
+            resource_scope: "org" | "project";
+            target_id?: string | null;
+            path?: string | null;
+            status: string;
+            /** Format: int64 */
+            version: number;
+            /** @description Raw draft_operations rows (action, scope, kind, ids, content) as JSON. */
+            operations: Record<string, never>[];
+        };
+        MemoryExportSelection: {
+            project_id: string;
+            resource_ids: string[];
+            /** Format: int64 */
+            revision: number;
+        };
+        MemoryExportBundle: {
+            bundle_id: string;
+            owner_user_id: string;
+            name: string;
+            description: string;
+            resource_ids: string[];
+            /** Format: int64 */
+            revision: number;
         };
         AdminHealth: {
             /** @enum {string} */
@@ -1206,6 +1278,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEventListResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    exportOrgMemoryState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Neutral, verifiable Memory state export. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryExport"];
                 };
             };
             default: components["responses"]["Error"];

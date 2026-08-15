@@ -121,6 +121,7 @@ define_routes!(admin_routes, ADMIN_OPERATIONS, {
     "/api/v1/admin/tokens" => { get: list_admin_tokens };
     "/api/v1/admin/tokens/{token_id}" => { delete: delete_admin_token };
     "/api/v1/admin/audit-events" => { get: list_admin_audit_events };
+    "/api/v1/admin/memory-export" => { get: export_org_memory_state };
 });
 
 define_routes!(protected_routes, PROTECTED_OPERATIONS, {
@@ -930,6 +931,23 @@ async fn list_admin_audit_events(
         state
             .repository
             .list_admin_audit_events(&principal.org_id, page.offset, page.limit)
+            .await?,
+    ))
+}
+
+/// ISSUE-012 migration tooling: neutral, verifiable export of the org's
+/// effective Memory state (memories incl. issues/ paths, drafts, org
+/// selections, bundles). IDs are emitted verbatim so the export doubles
+/// as the old_id -> memory_id identity map.
+async fn export_org_memory_state(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+) -> Result<Json<crate::api::MemoryExport>, HttpError> {
+    require_org_admin(&principal)?;
+    Ok(Json(
+        state
+            .repository
+            .export_memory_state(&principal.org_id)
             .await?,
     ))
 }
