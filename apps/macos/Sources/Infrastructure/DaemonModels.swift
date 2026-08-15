@@ -651,6 +651,16 @@ enum AgentRunHost: String, Codable, Hashable, Sendable {
     case manual
     case zed
     case opencode
+    /// DeepSeek Harness web sessions (hook-issued runs).
+    case dsh
+    /// Host added by a newer daemon than this app build; the board must keep
+    /// decoding instead of failing the whole payload.
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentRunHost(rawValue: raw) ?? .unknown
+    }
 }
 
 enum AgentRunKind: String, Codable, Hashable, Sendable {
