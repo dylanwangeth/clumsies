@@ -1736,19 +1736,6 @@ enum ServerTreeEntryKind {
     ProjectOrgSelection,
 }
 
-impl ServerTreeEntryKind {
-    /// The unified runtime kind. Archived Commits may still carry the
-    /// legacy rule/context/workflow values; all of them are Memory.
-    fn as_memory_kind(self) -> DaemonDraftResourceKind {
-        match self {
-            Self::Rule | Self::Context | Self::Workflow | Self::Memory => {
-                DaemonDraftResourceKind::Memory
-            }
-            Self::ProjectOrgSelection => DaemonDraftResourceKind::Memory,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ServerTreeEntryScope {

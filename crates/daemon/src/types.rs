@@ -719,10 +719,6 @@ impl DaemonDraftContent {
         }
     }
 
-    pub(crate) fn resource_kind(&self) -> DaemonDraftResourceKind {
-        DaemonDraftResourceKind::Memory
-    }
-
     pub(crate) fn validate(&self) -> Result<(), DaemonError> {
         if self.content.trim().is_empty() {
             return Err(DaemonError::InvalidRequest(
