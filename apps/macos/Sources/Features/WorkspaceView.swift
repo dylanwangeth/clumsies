@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+extension ToolbarItemPlacement {
+    /// Pins toolbar content to the trailing edge on both macOS 14 (where
+    /// `.primaryAction` is trailing) and macOS 26 Liquid Glass (where
+    /// primary-action items render centered and the trailing edge is reached
+    /// with `.automatic` items pushed by a `ToolbarSpacer(.flexible)`).
+    static var trailingPinned: ToolbarItemPlacement {
+        if #available(macOS 26.0, *) { return .automatic }
+        return .primaryAction
+    }
+}
+
 enum SyncToolbarPresentation: Equatable {
     case syncing(changeCount: Int)
     case failed(changeCount: Int, message: String?)
@@ -234,7 +245,7 @@ struct WorkspaceView: View {
                         ToolbarSpacer(.flexible)
                     }
 
-                    ToolbarItemGroup {
+                    ToolbarItemGroup(placement: .trailingPinned) {
                         if store.selectedSection == .bundles, store.selectedBundle != nil {
                             Button {
                                 showsBundleResourcePicker = true
@@ -353,7 +364,11 @@ struct WorkspaceView: View {
                         }
                     }
 
-                    ToolbarItem(id: "workspace.search", placement: .primaryAction) {
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .automatic)
+                    }
+
+                    ToolbarItem(id: "workspace.search", placement: .trailingPinned) {
                         ClassicSearchField(
                             text: $store.searchQuery,
                             prompt: workspaceSearchPrompt,
@@ -790,7 +805,7 @@ struct WorkspaceView: View {
         }
 
         if reviewToolbarOwnership.contains(.search) {
-            ToolbarItem(id: "review.search", placement: .primaryAction) {
+            ToolbarItem(id: "review.search", placement: .trailingPinned) {
                 ClassicSearchField(
                     text: $reviewSearchQuery,
                     prompt: "Search Reviews",
@@ -853,7 +868,11 @@ struct WorkspaceView: View {
                         IssueProjectFilter(store: store)
                     }
 
-                    ToolbarItemGroup(placement: .primaryAction) {
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.flexible, placement: .automatic)
+                    }
+
+                    ToolbarItemGroup(placement: .trailingPinned) {
                         Toggle(isOn: $issueBoardModel.showsStaleOnly) {
                             Label("Stale", systemImage: "clock.badge.exclamationmark")
                         }
@@ -929,7 +948,11 @@ struct WorkspaceView: View {
                         }
                     }
 
-                    ToolbarItem(id: "issue.search", placement: .primaryAction) {
+                    if #available(macOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .automatic)
+                    }
+
+                    ToolbarItem(id: "issue.search", placement: .trailingPinned) {
                         ClassicSearchField(
                             text: $issueBoardModel.searchQuery,
                             prompt: "Search Issues",
