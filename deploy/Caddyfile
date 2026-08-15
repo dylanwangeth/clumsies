@@ -1,4 +1,4 @@
-{$CLUMSIES_PUBLIC_ORIGIN} {
+app.clumsies.ai {
 	encode zstd gzip
 
 	header {
@@ -9,4 +9,34 @@
 	}
 
 	reverse_proxy server:8080
+}
+
+docs.clumsies.ai {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	root * /srv/docs
+	try_files {path} {path}/ {path}.html /404.html
+	file_server
+}
+
+clumsies.ai {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	root * /srv/www
+	try_files {path} {path}/ /index.html
+	file_server
 }

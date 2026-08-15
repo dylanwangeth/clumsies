@@ -8,7 +8,7 @@ export default withMermaid(
     lang: "en-US",
     title: "clumsies",
     description: "Persistent, observable, and collaborative context infrastructure that coexists with agents' self-managed memory.",
-    base: process.env.GITHUB_ACTIONS ? "/clumsies/" : "/",
+    base: "/",
     appearance: true,
     cleanUrls: true,
     lastUpdated: true,

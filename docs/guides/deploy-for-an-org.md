@@ -185,6 +185,27 @@ encrypted off-host storage appropriate to the installing organization and test
 restoration from that copy; do not place database dumps in the source
 repository or ordinary GitHub Actions artifacts.
 
+## Documentation site
+
+The docs site (`docs.clumsies.ai`) and the official site (`clumsies.ai`) are
+static sites served by the same Caddy instance from `/srv/docs` and `/srv/www`
+respectively (see `deploy/Caddyfile`). They live in this repository: the
+VitePress sources under `docs/`, the official site under `site/` (plain
+HTML/CSS, no build step).
+
+Deploy them with:
+
+```bash
+deploy/site.sh          # ssh target defaults to "aliyun"
+deploy/site.sh my-host  # or pass an explicit ssh target
+```
+
+The script builds the VitePress site, syncs both static roots with `rsync`,
+updates `deploy/Caddyfile` and `compose.production.yml` on the target, and
+recreates the Caddy container to pick up new mounts. DNS for
+`docs.clumsies.ai` and `clumsies.ai` must point at the server; Caddy provisions
+TLS certificates automatically.
+
 ## Operations
 
 ```bash
