@@ -351,7 +351,9 @@ struct WorkspaceView: View {
                             .help("Document Actions")
                             .accessibilityLabel("Document Actions")
                         }
+                    }
 
+                    ToolbarItem(id: "workspace.search", placement: .primaryAction) {
                         ClassicSearchField(
                             text: $store.searchQuery,
                             prompt: workspaceSearchPrompt,
@@ -925,7 +927,9 @@ struct WorkspaceView: View {
                                 }
                             }
                         }
+                    }
 
+                    ToolbarItem(id: "issue.search", placement: .primaryAction) {
                         ClassicSearchField(
                             text: $issueBoardModel.searchQuery,
                             prompt: "Search Issues",
