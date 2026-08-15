@@ -16,7 +16,7 @@ use server::api::{
     PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
     ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
     ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
-    ReviewMergeResult, ReviewStatus, TreeEntryKind, UpdateDraftRequest, UpdateProjectRequest,
+    ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
