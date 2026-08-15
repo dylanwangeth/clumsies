@@ -167,15 +167,15 @@ export interface paths {
         patch: operations["updatePersonalBundle"];
         trace?: never;
     };
-    "/api/v1/org/rules": {
+    "/api/v1/org/memories": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List organization rules. */
-        get: operations["listOrgRules"];
+        /** List organization memories. */
+        get: operations["listOrgMemories"];
         put?: never;
         post?: never;
         delete?: never;
@@ -184,17 +184,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/org/rules/{rule_id}": {
+    "/api/v1/org/memories/{memory_id}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                rule_id: components["parameters"]["RuleId"];
+                memory_id: components["parameters"]["MemoryId"];
             };
             cookie?: never;
         };
-        /** Read an organization rule. */
-        get: operations["getOrgRule"];
+        /** Read an organization memory. */
+        get: operations["getOrgMemory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -203,79 +203,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/org/context": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List organization context entries. */
-        get: operations["listOrgContext"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/org/context/{context_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                context_id: components["parameters"]["ContextId"];
-            };
-            cookie?: never;
-        };
-        /** Read an organization context entry. */
-        get: operations["getOrgContext"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/org/workflows": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List organization workflows. */
-        get: operations["listOrgWorkflows"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/org/workflows/{workflow_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                workflow_id: components["parameters"]["WorkflowId"];
-            };
-            cookie?: never;
-        };
-        /** Read an organization workflow. */
-        get: operations["getOrgWorkflow"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/rules": {
+    "/api/v1/projects/{project_id}/memories": {
         parameters: {
             query?: never;
             header?: never;
@@ -284,8 +212,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** List project rules. */
-        get: operations["listProjectRules"];
+        /** List project memories. */
+        get: operations["listProjectMemories"];
         put?: never;
         post?: never;
         delete?: never;
@@ -294,96 +222,18 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/projects/{project_id}/rules/{rule_id}": {
+    "/api/v1/projects/{project_id}/memories/{memory_id}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 project_id: components["parameters"]["ProjectId"];
-                rule_id: components["parameters"]["RuleId"];
+                memory_id: components["parameters"]["MemoryId"];
             };
             cookie?: never;
         };
-        /** Read a project rule. */
-        get: operations["getProjectRule"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/context": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        /** List project context entries. */
-        get: operations["listProjectContext"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/context/{context_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-                context_id: components["parameters"]["ContextId"];
-            };
-            cookie?: never;
-        };
-        /** Read a project context entry. */
-        get: operations["getProjectContext"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/workflows": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        /** List project workflows. */
-        get: operations["listProjectWorkflows"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/projects/{project_id}/workflows/{workflow_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-                workflow_id: components["parameters"]["WorkflowId"];
-            };
-            cookie?: never;
-        };
-        /** Read a project workflow. */
-        get: operations["getProjectWorkflow"];
+        /** Read a project memory. */
+        get: operations["getProjectMemory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -828,23 +678,15 @@ export interface components {
         PersonalBundleRequest: {
             name: string;
             description?: string;
-            /** @description Active organization-scoped Rule ids. */
-            rule_ids?: string[];
-            /** @description Active organization-scoped Context ids. */
-            context_ids?: string[];
-            /** @description Active organization-scoped Workflow ids. */
-            workflow_ids?: string[];
+            /** @description Active organization-scoped Memory ids. */
+            resource_ids?: string[];
         };
         /** @description Updates a personal selection of active Hub memory from the current organization. */
         PersonalBundleUpdateRequest: {
             name?: string;
             description?: string;
-            /** @description Active organization-scoped Rule ids. */
-            rule_ids?: string[];
-            /** @description Active organization-scoped Context ids. */
-            context_ids?: string[];
-            /** @description Active organization-scoped Workflow ids. */
-            workflow_ids?: string[];
+            /** @description Active organization-scoped Memory ids. */
+            resource_ids?: string[];
         };
         PersonalBundleListResponse: {
             items: components["schemas"]["PersonalBundleMeta"][];
@@ -852,9 +694,7 @@ export interface components {
         };
         PersonalBundleDetail: {
             bundle: components["schemas"]["PersonalBundleMeta"];
-            rules: components["schemas"]["RuleMeta"][];
-            context: components["schemas"]["ContextMeta"][];
-            workflows: components["schemas"]["WorkflowMeta"][];
+            memories: components["schemas"]["MemoryMeta"][];
             etag: string;
         };
         PersonalBundleMeta: {
@@ -862,46 +702,24 @@ export interface components {
             owner_user_id: string;
             name: string;
             description: string;
-            rule_count: number;
-            context_count: number;
-            workflow_count: number;
+            resource_count: number;
             revision: number;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
         };
-        RuleListResponse: {
-            items: components["schemas"]["RuleMeta"][];
+        MemoryListResponse: {
+            items: components["schemas"]["MemoryMeta"][];
             page_info: components["schemas"]["PageInfo"];
         };
-        ContextListResponse: {
-            items: components["schemas"]["ContextMeta"][];
-            page_info: components["schemas"]["PageInfo"];
-        };
-        WorkflowListResponse: {
-            items: components["schemas"]["WorkflowMeta"][];
-            page_info: components["schemas"]["PageInfo"];
-        };
-        RuleDetail: {
-            rule: components["schemas"]["RuleMeta"];
-            content: string;
-            etag: string;
-        };
-        ContextDetail: {
-            context: components["schemas"]["ContextMeta"];
-            content: string;
-            etag: string;
-        };
-        WorkflowDetail: {
-            workflow: components["schemas"]["WorkflowMeta"];
+        MemoryDetail: {
+            memory: components["schemas"]["MemoryMeta"];
             content: string;
             etag: string;
         };
         ReplaceProjectOrgSelectionRequest: {
-            rule_ids?: string[];
-            context_ids?: string[];
-            workflow_ids?: string[];
+            resource_ids?: string[];
         };
         DraftListResponse: {
             items: components["schemas"]["Draft"][];
@@ -954,26 +772,14 @@ export interface components {
             /** @description Portable normalized relative path used by a rename operation. */
             new_path?: string | null;
         };
-        DraftResourceContent: components["schemas"]["ContextDraftContent"] | components["schemas"]["RuleDraftContent"] | components["schemas"]["WorkflowDraftContent"];
-        ContextDraftContent: {
-            /** @enum {string} */
-            kind: "context";
-            content: string;
-        };
-        RuleDraftContent: {
-            /** @enum {string} */
-            kind: "rule";
-            content: string;
-        };
-        WorkflowDraftContent: {
-            /** @enum {string} */
-            kind: "workflow";
+        DraftResourceContent: {
+            /** @description Optional semantic summary updated with the content. */
+            description?: string | null;
             content: string;
         };
         DraftResourceRef: {
             /** @enum {string} */
             scope: "org" | "project";
-            kind: components["schemas"]["DraftResourceKind"];
             id: string | null;
             /** @description Portable normalized relative resource path using slash separators. */
             path: string | null;
@@ -1155,35 +961,14 @@ export interface components {
             commit_id: string | null;
             applied_operation_count: number;
         };
-        RuleMeta: {
-            rule_id: string;
+        MemoryMeta: {
+            memory_id: string;
             scope: components["schemas"]["ResourceScope"];
             project_id: string | null;
             path: string;
             name: string;
-            content_hash: string;
-            status: components["schemas"]["ResourceStatus"];
-            /** Format: date-time */
-            updated_at: string;
-        };
-        ContextMeta: {
-            context_id: string;
-            scope: components["schemas"]["ResourceScope"];
-            project_id: string | null;
-            /** @enum {string} */
-            kind: "file" | "note" | "decision" | "reference";
-            path: string;
-            content_hash: string;
-            size: number;
-            /** Format: date-time */
-            updated_at: string;
-        };
-        WorkflowMeta: {
-            workflow_id: string;
-            scope: components["schemas"]["ResourceScope"];
-            project_id: string | null;
-            path: string;
-            name: string;
+            /** @description Agent-generated semantic summary used for retrieval and quick understanding. */
+            description: string;
             content_hash: string;
             status: components["schemas"]["ResourceStatus"];
             /** Format: date-time */
@@ -1249,9 +1034,7 @@ export interface components {
         };
         ProjectOrgSelection: {
             project_id: string;
-            rules: components["schemas"]["RuleMeta"][];
-            context: components["schemas"]["ContextMeta"][];
-            workflows: components["schemas"]["WorkflowMeta"][];
+            memories: components["schemas"]["MemoryMeta"][];
             revision: number;
         };
         DeleteResult: {
@@ -1301,8 +1084,6 @@ export interface components {
         /** @enum {string} */
         DraftReconciliationStatus: "unknown" | "clean" | "conflicts";
         /** @enum {string} */
-        DraftResourceKind: "context" | "rule" | "workflow";
-        /** @enum {string} */
         DraftOperationAction: "create" | "update" | "rename" | "delete";
         /** @enum {string} */
         ReviewStatus: "open" | "approved" | "rejected" | "merged";
@@ -1326,9 +1107,7 @@ export interface components {
         IfNoneMatch: string;
         ProjectId: string;
         ProjectIdQuery: string;
-        RuleId: string;
-        ContextId: string;
-        WorkflowId: string;
+        MemoryId: string;
         BundleId: string;
         DraftId: string;
         ReviewId: string;
@@ -1731,7 +1510,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    listOrgRules: {
+    listOrgMemories: {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
@@ -1743,38 +1522,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Organization rule page. */
+            /** @description Organization memory page. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RuleListResponse"];
+                    "application/json": components["schemas"]["MemoryListResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getOrgRule: {
+    getOrgMemory: {
         parameters: {
             query?: never;
             header?: {
                 "If-None-Match"?: components["parameters"]["IfNoneMatch"];
             };
             path: {
-                rule_id: components["parameters"]["RuleId"];
+                memory_id: components["parameters"]["MemoryId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Organization rule detail. */
+            /** @description Organization memory detail. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RuleDetail"];
+                    "application/json": components["schemas"]["MemoryDetail"];
                 };
             };
             /** @description ETag matched. */
@@ -1787,119 +1566,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    listOrgContext: {
-        parameters: {
-            query?: {
-                limit?: components["parameters"]["Limit"];
-                cursor?: components["parameters"]["Cursor"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Organization context page. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ContextListResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getOrgContext: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path: {
-                context_id: components["parameters"]["ContextId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Organization context detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ContextDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    listOrgWorkflows: {
-        parameters: {
-            query?: {
-                limit?: components["parameters"]["Limit"];
-                cursor?: components["parameters"]["Cursor"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Organization workflow page. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkflowListResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getOrgWorkflow: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path: {
-                workflow_id: components["parameters"]["WorkflowId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Organization workflow detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkflowDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    listProjectRules: {
+    listProjectMemories: {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
@@ -1913,19 +1580,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Project rule page. */
+            /** @description Project memory page. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RuleListResponse"];
+                    "application/json": components["schemas"]["MemoryListResponse"];
                 };
             };
             default: components["responses"]["Error"];
         };
     };
-    getProjectRule: {
+    getProjectMemory: {
         parameters: {
             query?: never;
             header?: {
@@ -1933,137 +1600,19 @@ export interface operations {
             };
             path: {
                 project_id: components["parameters"]["ProjectId"];
-                rule_id: components["parameters"]["RuleId"];
+                memory_id: components["parameters"]["MemoryId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Project rule detail. */
+            /** @description Project memory detail. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RuleDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    listProjectContext: {
-        parameters: {
-            query?: {
-                limit?: components["parameters"]["Limit"];
-                cursor?: components["parameters"]["Cursor"];
-            };
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Project context page. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ContextListResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getProjectContext: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-                context_id: components["parameters"]["ContextId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Project context detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ContextDetail"];
-                };
-            };
-            /** @description ETag matched. */
-            304: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    listProjectWorkflows: {
-        parameters: {
-            query?: {
-                limit?: components["parameters"]["Limit"];
-                cursor?: components["parameters"]["Cursor"];
-            };
-            header?: never;
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Project workflow page. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkflowListResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getProjectWorkflow: {
-        parameters: {
-            query?: never;
-            header?: {
-                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
-            };
-            path: {
-                project_id: components["parameters"]["ProjectId"];
-                workflow_id: components["parameters"]["WorkflowId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Project workflow detail. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkflowDetail"];
+                    "application/json": components["schemas"]["MemoryDetail"];
                 };
             };
             /** @description ETag matched. */
