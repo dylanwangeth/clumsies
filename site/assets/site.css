@@ -1,0 +1,191 @@
+/* clumsies official site — minimal, quiet, technical */
+:root {
+  --bg: #f3f4f6;
+  --bg-soft: #eaedf1;
+  --ink: #141518;
+  --ink-2: #5b6068;
+  --line: rgba(20, 21, 24, 0.12);
+  --accent: #1d1d1f;
+  --radius: 12px;
+  --font: "Avenir Next", "SF Pro Text", "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(circle at 50% -10%, rgba(55, 61, 72, 0.07), transparent 42%),
+    repeating-linear-gradient(90deg, rgba(35, 40, 47, 0.025) 0, rgba(35, 40, 47, 0.025) 1px, transparent 1px, transparent 32px),
+    var(--bg);
+}
+
+a { color: var(--ink); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.brand:hover { text-decoration: none; }
+
+.brand-mark { color: var(--accent); }
+
+.nav-links {
+  display: flex;
+  gap: 22px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.nav-links a { color: var(--ink-2); }
+.nav-links a:hover { color: var(--ink); text-decoration: none; }
+
+/* Hero */
+.hero {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 96px 24px 72px;
+  text-align: center;
+}
+
+.eyebrow {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 20px;
+}
+
+.hero h1 {
+  font-size: clamp(34px, 5.4vw, 56px);
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  margin-bottom: 22px;
+}
+
+.hero-sub {
+  font-size: 18px;
+  color: var(--ink-2);
+  max-width: 620px;
+  margin: 0 auto 36px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  padding: 11px 22px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.btn:hover { text-decoration: none; transform: translateY(-1px); }
+
+.btn-primary { background: var(--accent); color: #f5f7fa; }
+.btn-primary:hover { background: #0f1012; }
+
+.btn-secondary {
+  background: var(--bg-soft);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.btn-secondary:hover { background: #e2e5ea; }
+
+/* Features */
+.features {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px 24px 72px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 18px;
+}
+
+.feature {
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.feature:hover {
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-2px);
+}
+
+.feature h3 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+
+.feature p { font-size: 14px; color: var(--ink-2); }
+
+/* CTA */
+.cta {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 88px;
+  text-align: center;
+}
+
+.cta h2 {
+  font-size: clamp(26px, 3.6vw, 36px);
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+
+.cta p { color: var(--ink-2); margin-bottom: 26px; }
+
+/* Footer */
+.footer {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 28px 24px 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.footer-links { display: flex; gap: 18px; }
+.footer-links a { color: var(--ink-2); }
+.footer-links a:hover { color: var(--ink); }
+
+@media (max-width: 640px) {
+  .hero { padding-top: 64px; }
+  .nav { padding: 16px 20px; }
+  .nav-links { gap: 14px; }
+}
