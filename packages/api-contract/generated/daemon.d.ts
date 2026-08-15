@@ -347,6 +347,7 @@ export interface components {
             lifecycle: components["schemas"]["IssueLifecycle"];
             title: string;
             description: string;
+            description_excerpt?: string;
             external_references: components["schemas"]["IssueExternalReference"][];
             /** Format: date-time */
             found_at: string | null;
