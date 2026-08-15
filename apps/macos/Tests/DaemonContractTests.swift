@@ -274,10 +274,11 @@ final class DaemonContractTests: XCTestCase {
             baseCommitId: "commit-1",
             projectId: "project-1",
             scope: .project,
-            resource: .rule,
+            resource: .memory,
             op: .update(
-                id: "rule-1",
-                content: .rule(
+                id: "memory-1",
+                content: DaemonDraftContent(
+                    description: nil,
                     content: "# No compatibility shims\n\nMigrate the contract directly."
                 ),
                 description: nil
@@ -289,11 +290,11 @@ final class DaemonContractTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(object["draft_id"] as? String, "draft-1")
         XCTAssertEqual(object["base_commit_id"] as? String, "commit-1")
-        XCTAssertEqual(object["resource"] as? String, "rule")
+        XCTAssertEqual(object["resource"] as? String, "memory")
         let operation = try XCTUnwrap(object["op"] as? [String: Any])
         let update = try XCTUnwrap(operation["update"] as? [String: Any])
         let content = try XCTUnwrap(update["content"] as? [String: Any])
-        XCTAssertEqual(content["kind"] as? String, "rule")
+        XCTAssertNil(content["kind"])
         XCTAssertEqual(
             content["content"] as? String,
             "# No compatibility shims\n\nMigrate the contract directly."
@@ -431,7 +432,7 @@ final class DaemonContractTests: XCTestCase {
 
         XCTAssertEqual(detail.run.status, .succeeded)
         XCTAssertEqual(detail.run.latencies.rerankUs, 70)
-        XCTAssertEqual(detail.candidates.first?.kind, .context)
+        XCTAssertEqual(detail.candidates.first?.kind, .memory)
         XCTAssertEqual(detail.candidates.first?.exclusionReason, .selected)
         XCTAssertEqual(detail.candidates.first?.deltaAction, .add)
     }
@@ -565,7 +566,7 @@ final class DaemonContractTests: XCTestCase {
             reconciliation: .unknown,
             reconciliationCandidateId: nil,
             scope: .project,
-            resourceKind: .context,
+            resourceKind: .memory,
             targetId: nil,
             path: "notes/old.md",
             status: .open,
@@ -575,8 +576,8 @@ final class DaemonContractTests: XCTestCase {
             failedOperationCount: 0
         )
         let operations = [
-            operation(.create(path: "notes/old.md", content: .context(content: "first"), description: nil), id: "op-1"),
-            operation(.update(id: "draft-1", content: .context(content: "second"), description: nil), id: "op-2"),
+            operation(.create(path: "notes/old.md", content: .init(description: nil, content: "first"), description: nil), id: "op-1"),
+            operation(.update(id: "draft-1", content: .init(description: nil, content: "second"), description: nil), id: "op-2"),
             operation(.rename(id: "draft-1", newPath: "notes/new.md", description: nil), id: "op-3"),
         ]
 
@@ -665,8 +666,8 @@ final class DaemonContractTests: XCTestCase {
             reconciliation: .conflicts,
             reconciliationCandidateId: "candidate-1",
             scope: .project,
-            resourceKind: .context,
-            targetId: "context-1",
+            resourceKind: .memory,
+            targetId: "memory-1",
             path: "context/guide.md",
             status: .submitted,
             createdAt: timestamp,
@@ -680,15 +681,15 @@ final class DaemonContractTests: XCTestCase {
                 operations: [
                     operation(
                         .update(
-                            id: "context-1",
-                            content: .context(content: "Draft body"),
+                            id: "memory-1",
+                            content: .init(description: nil, content: "Draft body"),
                             description: nil
                         ),
                         id: "operation-1"
                     )
                 ]
             ),
-            resources: [resource(id: "context-1", kind: .context, path: "context/guide.md")]
+            resources: [resource(id: "memory-1", kind: .context, path: "context/guide.md")]
         )
 
         XCTAssertEqual(draft.baseCommitId, "commit-base")
@@ -820,11 +821,12 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(submissionObject["expected_draft_version"] as? Int, 7)
     }
 
-    func testDraftProjectionPreservesRuleAndWorkflowMarkdown() {
+    func testDraftProjectionPreservesMarkdown() {
         let rule = projectedDraft(
-            kind: .rule,
+            kind: .memory,
             path: "rules/review.md",
-            content: .rule(
+            content: .init(
+                description: nil,
                 content: "# Review carefully\n\nInspect behavior before style."
             )
         )
@@ -832,17 +834,32 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(rule.document.body, "# Review carefully\n\nInspect behavior before style.")
 
         let workflow = projectedDraft(
-            kind: .workflow,
+            kind: .memory,
             path: "workflow/review.md",
-            content: .workflow(content: "# Review\n\nReview a change.\n\n- Run focused tests.")
+            content: .init(
+                description: nil,
+                content: "# Review\n\nReview a change.\n\n- Run focused tests."
+            )
         )
         XCTAssertEqual(workflow.document.title, "review")
         XCTAssertEqual(workflow.document.body, "# Review\n\nReview a change.\n\n- Run focused tests.")
     }
 
-    func testUserMaintainedMemoryKindsMatchProductModel() {
+    func testUnifiedMemoryKindContractIsSingleValued() throws {
+        // MemoryKind keeps the legacy cases as UI-level creation defaults.
         XCTAssertEqual(MemoryKind.allCases, [.context, .rules, .workflows])
         XCTAssertEqual(MemoryKind.allCases.map(\.title), ["Context", "Rules", "Workflow"])
+
+        // The daemon/Server contract is a single Memory kind; legacy values
+        // from archived databases and older clients still decode to it.
+        XCTAssertEqual(DaemonResourceKind.memory.rawValue, "memory")
+        for legacy in ["context", "rule", "workflow"] {
+            let decoded = try JSONCoding.decoder().decode(
+                DaemonResourceKind.self,
+                from: Data("\"\(legacy)\"".utf8)
+            )
+            XCTAssertEqual(decoded, .memory)
+        }
     }
 
     func testCachedProjectCheckoutHydratesProjectMemoryWithoutInheritedDuplicates() {
@@ -857,22 +874,23 @@ final class DaemonContractTests: XCTestCase {
                 .init(
                     resourceId: "rule-project",
                     scope: .project,
-                    resourceKind: .rule,
+                    resourceKind: .memory,
                     projectId: "project-1",
                     path: "rules/review.md",
                     contentHash: "sha256:rule",
-                    content: .rule(
+                    content: .init(
+                        description: nil,
                         content: "# Review carefully\n\nInspect behavior before style."
                     )
                 ),
                 .init(
                     resourceId: "context-org",
                     scope: .org,
-                    resourceKind: .context,
+                    resourceKind: .memory,
                     projectId: nil,
                     path: "context/shared.md",
                     contentHash: "sha256:context",
-                    content: .context(content: "Shared context")
+                    content: .init(description: nil, content: "Shared context")
                 ),
             ],
             ready: true
@@ -982,7 +1000,7 @@ final class DaemonContractTests: XCTestCase {
     }
 
     func testReviewChangeSourcesUseCommitTreeAndDraftOperation() throws {
-        let resource = ServerDraftResourceReference(scope: "project", kind: .context, id: "context-1", path: "notes/a.md")
+        let resource = ServerDraftResourceReference(scope: "project", id: "context-1", path: "notes/a.md")
         let detail = ReviewDetail(
             review: ReviewMetadata(
                 reviewId: "review-1",
@@ -1027,7 +1045,7 @@ final class DaemonContractTests: XCTestCase {
                 ServerDraftOperation(
                     action: "update",
                     resource: resource,
-                    content: .context(content: "Draft body"),
+                    content: .init(description: nil, content: "Draft body"),
                     newPath: nil,
                     operationId: "operation-1",
                     createdAt: timestamp
@@ -1057,7 +1075,6 @@ final class DaemonContractTests: XCTestCase {
     func testReviewChangeSourcesPreserveRenameAlongsideContentUpdate() throws {
         let resource = ServerDraftResourceReference(
             scope: "project",
-            kind: .context,
             id: "context-1",
             path: "notes/a.md"
         )
@@ -1075,7 +1092,7 @@ final class DaemonContractTests: XCTestCase {
                 ServerDraftOperation(
                     action: "update",
                     resource: resource,
-                    content: .context(content: "Draft body"),
+                    content: .init(description: nil, content: "Draft body"),
                     newPath: nil,
                     operationId: "operation-2",
                     createdAt: timestamp
@@ -1094,8 +1111,9 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(sources.proposedPath, "notes/b.md")
     }
 
-    func testRuleDraftRenderingPreservesMarkdown() {
-        let content = DaemonDraftContent.rule(
+    func testMemoryDraftRenderingPreservesMarkdown() {
+        let content = DaemonDraftContent(
+            description: nil,
             content: "# No compatibility shims\n\nMigrate the contract directly."
         )
 
@@ -1464,14 +1482,15 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertTrue(tab.isVisible(in: .memory, projectId: "project-2"))
     }
 
-    func testReplacingRulePrimaryTextReplacesMarkdown() {
-        let content = DaemonDraftContent.rule(
+    func testReplacingMemoryPrimaryTextReplacesMarkdown() {
+        let content = DaemonDraftContent(
+            description: nil,
             content: "# Rule name\n\nOld content"
         )
 
         XCTAssertEqual(
             content.replacingPrimaryText(with: "# Rule name\n\nNew content"),
-            .rule(content: "# Rule name\n\nNew content")
+            .init(description: nil, content: "# Rule name\n\nNew content")
         )
     }
 
@@ -1555,7 +1574,7 @@ final class DaemonContractTests: XCTestCase {
     private func operation(_ value: DaemonDraftOperation, id: String) -> DaemonLocalDraftOperation {
         .init(
             localOperationId: id,
-            resourceKind: .context,
+            resourceKind: .memory,
             operation: value,
             source: .desktop,
             syncStatus: .queued,
@@ -1613,7 +1632,7 @@ final class DaemonContractTests: XCTestCase {
             reconciliation: .unknown,
             reconciliationCandidateId: nil,
             scope: .project,
-            resourceKind: .rule,
+            resourceKind: .memory,
             targetId: nil,
             path: "rules/\(id).md",
             status: status,
@@ -1814,12 +1833,13 @@ final class DaemonContractTests: XCTestCase {
                 entries: [
                     .init(
                         id: resource.id ?? "context-1",
-                        type: ServerTreeEntryKind(resource.kind),
+                        type: .memory,
                         scope: resource.scope,
                         projectId: "project-1",
                         path: resource.path,
                         blobId: "blob-\(id)",
-                        source: "project"
+                        source: "project",
+                        description: nil
                     )
                 ]
             ),

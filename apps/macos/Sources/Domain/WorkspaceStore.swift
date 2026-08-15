@@ -1268,11 +1268,7 @@ final class WorkspaceStore: ObservableObject {
         resourceIds: Set<String>
     ) async throws -> ProjectOrgSelection {
         let selected = resources.filter { $0.scope == .org && resourceIds.contains($0.id) }
-        let request = ReplaceProjectOrgSelectionRequest(
-            ruleIds: selected.filter { $0.kind == .rules }.map(\.id),
-            contextIds: selected.filter { $0.kind == .context }.map(\.id),
-            workflowIds: selected.filter { $0.kind == .workflows }.map(\.id)
-        )
+        let request = ReplaceProjectOrgSelectionRequest(resourceIds: selected.map(\.id))
         return try await server.send(
             method: "PUT",
             path: "/api/v1/projects/\(projectId)/org-selections",
@@ -1314,11 +1310,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func projectOrgResourceIds(_ selection: ProjectOrgSelection) -> Set<String> {
-        Set(
-            selection.rules.map(\.ruleId)
-                + selection.context.map(\.contextId)
-                + selection.workflows.map(\.workflowId)
-        )
+        Set(selection.memories.map(\.memoryId))
     }
 
     func createBundle() async {
@@ -1330,9 +1322,7 @@ final class WorkspaceStore: ObservableObject {
                     body: PersonalBundleRequest(
                         name: "Untitled Bundle",
                         description: "",
-                        ruleIds: [],
-                        contextIds: [],
-                        workflowIds: []
+                        resourceIds: []
                     )
                 )
                 let bundle = PersonalBundle(
@@ -1366,9 +1356,7 @@ final class WorkspaceStore: ObservableObject {
             let request = PersonalBundleRequest(
                 name: name,
                 description: description,
-                ruleIds: selected.filter { $0.kind == .rules }.map(\.id),
-                contextIds: selected.filter { $0.kind == .context }.map(\.id),
-                workflowIds: selected.filter { $0.kind == .workflows }.map(\.id)
+                resourceIds: selected.map(\.id)
             )
             let detail: PersonalBundleDetail = try await server.send(
                 method: "PATCH",
@@ -1380,9 +1368,7 @@ final class WorkspaceStore: ObservableObject {
                 id: detail.bundle.bundleId,
                 name: detail.bundle.name,
                 description: detail.bundle.description,
-                resourceIds: detail.rules.map(\.ruleId)
-                    + detail.context.map(\.contextId)
-                    + detail.workflows.map(\.workflowId),
+                resourceIds: detail.memories.map(\.memoryId),
                 revision: detail.bundle.revision,
                 updatedAt: detail.bundle.updatedAt
             )
@@ -1962,14 +1948,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func daemonContent(kind: MemoryKind, document: EditableMemoryDocument) -> DaemonDraftContent {
-        switch kind {
-        case .context:
-            .context(content: document.body)
-        case .rules:
-            .rule(content: document.body)
-        case .workflows:
-            .workflow(content: document.body)
-        }
+        .init(description: nil, content: document.body)
     }
 
     private func validate(kind: MemoryKind, document: EditableMemoryDocument) throws {
@@ -2178,17 +2157,8 @@ struct WorkspaceLoader: Sendable {
         guard !resource.contentLoaded else { return resource }
         let prefix = resource.projectId.map { "/api/v1/projects/\($0)" } ?? "/api/v1/org"
         var loaded = resource
-        switch resource.kind {
-        case .rules:
-            let detail: RuleDetail = try await server.get("\(prefix)/rules/\(resource.id)")
-            loaded.document.body = detail.content
-        case .context:
-            let detail: ContextDetail = try await server.get("\(prefix)/context/\(resource.id)")
-            loaded.document.body = detail.content
-        case .workflows:
-            let detail: WorkflowDetail = try await server.get("\(prefix)/workflows/\(resource.id)")
-            loaded.document.body = detail.content
-        }
+        let detail: MemoryDetail = try await server.get("\(prefix)/memories/\(resource.id)")
+        loaded.document.body = detail.content
         loaded.contentLoaded = true
         return loaded
     }
@@ -2341,11 +2311,7 @@ struct WorkspaceLoader: Sendable {
             name: project.name,
             refCommitId: commit.value.ref.commitId,
             refEtag: etag(from: commit.response),
-            selectedOrgResourceIds: Set(
-                selection.rules.map(\.ruleId)
-                    + selection.context.map(\.contextId)
-                    + selection.workflows.map(\.workflowId)
-            ),
+            selectedOrgResourceIds: Set(selection.memories.map(\.memoryId)),
             orgSelectionRevision: selection.revision,
             isLoaded: true
         )
@@ -2357,95 +2323,14 @@ struct WorkspaceLoader: Sendable {
         refCommitId: String?
     ) async throws -> [MemoryResource] {
         let prefix = projectId.map { "/api/v1/projects/\($0)" } ?? "/api/v1/org"
-        async let rules = loadRules(
-            prefix: prefix,
-            projectId: projectId,
-            projectName: projectName,
-            refCommitId: refCommitId
-        )
-        async let context = loadContext(
-            prefix: prefix,
-            projectId: projectId,
-            projectName: projectName,
-            refCommitId: refCommitId
-        )
-        async let workflows = loadWorkflows(
-            prefix: prefix,
-            projectId: projectId,
-            projectName: projectName,
-            refCommitId: refCommitId
-        )
-        return try await rules + context + workflows
-    }
-
-    private func loadRules(
-        prefix: String,
-        projectId: String?,
-        projectName: String?,
-        refCommitId: String?
-    ) async throws -> [MemoryResource] {
-        let metadataItems: [RuleMetadata] = try await loadAll("\(prefix)/rules")
+        let metadataItems: [MemoryMetadata] = try await loadAll("\(prefix)/memories")
         return metadataItems.map { metadata in
             .init(
-                id: metadata.ruleId,
+                id: metadata.memoryId,
                 scope: projectId == nil ? .org : .project,
                 projectId: projectId,
                 projectName: projectName,
-                kind: .rules,
-                contentHash: metadata.contentHash,
-                updatedAt: metadata.updatedAt,
-                refCommitId: refCommitId,
-                contentLoaded: false,
-                document: .init(
-                    title: metadata.name,
-                    path: metadata.path,
-                    body: ""
-                )
-            )
-        }
-    }
-
-    private func loadContext(
-        prefix: String,
-        projectId: String?,
-        projectName: String?,
-        refCommitId: String?
-    ) async throws -> [MemoryResource] {
-        let metadataItems: [ContextMetadata] = try await loadAll("\(prefix)/context")
-        return metadataItems.map { metadata in
-            .init(
-                id: metadata.contextId,
-                scope: projectId == nil ? .org : .project,
-                projectId: projectId,
-                projectName: projectName,
-                kind: .context,
-                contentHash: metadata.contentHash,
-                updatedAt: metadata.updatedAt,
-                refCommitId: refCommitId,
-                contentLoaded: false,
-                document: .init(
-                    title: title(from: metadata.path),
-                    path: metadata.path,
-                    body: ""
-                )
-            )
-        }
-    }
-
-    private func loadWorkflows(
-        prefix: String,
-        projectId: String?,
-        projectName: String?,
-        refCommitId: String?
-    ) async throws -> [MemoryResource] {
-        let metadataItems: [WorkflowMetadata] = try await loadAll("\(prefix)/workflows")
-        return metadataItems.map { metadata in
-            .init(
-                id: metadata.workflowId,
-                scope: projectId == nil ? .org : .project,
-                projectId: projectId,
-                projectName: projectName,
-                kind: .workflows,
+                kind: .init(.memory),
                 contentHash: metadata.contentHash,
                 updatedAt: metadata.updatedAt,
                 refCommitId: refCommitId,
@@ -2467,9 +2352,7 @@ struct WorkspaceLoader: Sendable {
                 id: metadata.bundleId,
                 name: metadata.name,
                 description: metadata.description,
-                resourceIds: detail.rules.map(\.ruleId)
-                    + detail.context.map(\.contextId)
-                    + detail.workflows.map(\.workflowId),
+                resourceIds: detail.memories.map(\.memoryId),
                 revision: metadata.revision,
                 updatedAt: metadata.updatedAt
             )
@@ -2570,16 +2453,13 @@ struct WorkspaceLoader: Sendable {
     ) throws -> String? {
         guard let payload else { return nil }
         let entry = payload.tree.entries.first { candidate in
-            guard candidate.type == ServerTreeEntryKind(resource.kind) else { return false }
+            guard candidate.type == .memory else { return false }
             if let resourceId = resource.id { return candidate.id == resourceId }
             return candidate.path == resource.path
         }
         guard let entry,
               let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }) else { return nil }
-        switch resource.kind {
-        case .context, .rule, .workflow:
-            return blob.content
-        }
+        return blob.content
     }
 
     static func mapDraft(_ detail: DaemonDraftDetail, resources: [MemoryResource]) -> LocalDraft {
@@ -2636,10 +2516,7 @@ struct WorkspaceLoader: Sendable {
         to document: EditableMemoryDocument
     ) -> EditableMemoryDocument {
         var document = document
-        switch content {
-        case .context(let content), .rule(let content), .workflow(let content):
-            document.body = content
-        }
+        document.body = content.content
         return document
     }
 
