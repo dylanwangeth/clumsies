@@ -2,6 +2,67 @@ import AppKit
 import MarkdownUI
 import SwiftUI
 
+/// The five visible board columns. Abandoned is a derived bucket over
+/// In Progress issues whose claim silently died (board_state == in_progress
+/// and is_stale); the daemon never stores an "abandoned" state.
+enum BoardColumn: CaseIterable, Identifiable {
+    case todo
+    case inProgress
+    case abandoned
+    case inReview
+    case done
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .todo: "Todo"
+        case .inProgress: "In Progress"
+        case .abandoned: "Abandoned"
+        case .inReview: "In Review"
+        case .done: "Done"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .todo: "circle"
+        case .inProgress: "bolt.circle"
+        case .abandoned: "clock.badge.exclamationmark"
+        case .inReview: "checkmark.circle"
+        case .done: "checkmark.circle.fill"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .inProgress: .accentColor
+        case .abandoned: .orange
+        case .done: .green
+        case .todo, .inReview: .secondary
+        }
+    }
+
+    var emptyMessage: String {
+        switch self {
+        case .abandoned: "No abandoned Issues"
+        default: "No Issues"
+        }
+    }
+
+    /// The daemon board state backing this column, or nil for the derived
+    /// Abandoned bucket.
+    var state: IssueBoardState? {
+        switch self {
+        case .todo: .todo
+        case .inProgress: .inProgress
+        case .abandoned: nil
+        case .inReview: .inReview
+        case .done: .done
+        }
+    }
+}
+
 enum IssueBoardLayout {
     static let workspaceMinimumWidth: CGFloat = 920
     static let columnWidth: CGFloat = 268
@@ -9,8 +70,8 @@ enum IssueBoardLayout {
     static let cardSpacing: CGFloat = 10
 
     static var boardContentWidth: CGFloat {
-        CGFloat(IssueBoardState.allCases.count) * columnWidth
-            + CGFloat(IssueBoardState.allCases.count - 1) * columnSpacing
+        CGFloat(BoardColumn.allCases.count) * columnWidth
+            + CGFloat(BoardColumn.allCases.count - 1) * columnSpacing
     }
 
     static func minimumContentHeight(for viewportHeight: CGFloat) -> CGFloat {
@@ -423,14 +484,23 @@ struct IssueBoardView: View {
         .background(.bar)
     }
 
+    private func issues(for column: BoardColumn) -> [IssueBoardCard] {
+        switch column {
+        case .abandoned:
+            model.abandonedIssues
+        default:
+            model.issues(in: column.state ?? .todo)
+        }
+    }
+
     private func board(_ response: IssueBoardResponse) -> some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 HStack(alignment: .top, spacing: IssueBoardLayout.columnSpacing) {
-                    ForEach(IssueBoardState.allCases, id: \.self) { state in
+                    ForEach(BoardColumn.allCases) { column in
                         IssueBoardColumn(
-                            state: state,
-                            issues: model.issues(in: state),
+                            column: column,
+                            issues: issues(for: column),
                             selectedIssueId: $selectedIssueId,
                             mutatingIssueId: mutatingIssueId,
                             onOpenDetails: openDetails,
@@ -675,7 +745,7 @@ struct IssueDetailView: View {
 }
 
 private struct IssueBoardColumn: View {
-    let state: IssueBoardState
+    let column: BoardColumn
     let issues: [IssueBoardCard]
     @Binding var selectedIssueId: String?
     let mutatingIssueId: String?
@@ -692,9 +762,9 @@ private struct IssueBoardColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
-                Image(systemName: state.symbolName)
-                    .foregroundStyle(state.iconColor)
-                Text(state.title)
+                Image(systemName: column.symbolName)
+                    .foregroundStyle(column.iconColor)
+                Text(column.title)
                     .font(.headline)
                 Spacer(minLength: 8)
                 Text(issues.count, format: .number)
@@ -707,7 +777,7 @@ private struct IssueBoardColumn: View {
             Divider()
 
             if issues.isEmpty {
-                Text("No Issues")
+                Text(column.emptyMessage)
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, minHeight: 56, alignment: .center)
@@ -830,7 +900,7 @@ private struct IssueBoardColumn: View {
     }
 
     private func accessibilityLabel(for issue: IssueBoardCard) -> String {
-        var values = [issue.issueKey, issue.title, state.title]
+        var values = [issue.issueKey, issue.title, column.title]
         if let references = IssueExternalReferencePresentation
             .cardPresentation(for: issue.externalReferences)
             .accessibilityLabel {
@@ -865,11 +935,11 @@ private struct IssueCard: View {
                         .controlSize(.mini)
                         .accessibilityLabel("Updating \(issue.issueKey)")
                 }
-                if issue.isStale {
-                    Label("Stale", systemImage: "clock.badge.exclamationmark")
+                if issue.boardState == .paused {
+                    Label("Paused", systemImage: "pause.circle")
                         .font(.caption2)
                         .foregroundStyle(.orange)
-                        .help("No active AgentRun and no activity for more than 24 hours")
+                        .help("Work paused by the handling Agent; resume or take over from the context menu")
                 }
                 if issue.blocked {
                     Label("Blocked", systemImage: "exclamationmark.triangle.fill")
@@ -886,6 +956,10 @@ private struct IssueCard: View {
                 .multilineTextAlignment(.leading)
                 .help(issue.title)
 
+            if !externalReferences.items.isEmpty {
+                IssueExternalReferencesSummary(presentation: externalReferences)
+            }
+
             if !issue.descriptionExcerpt.isEmpty {
                 Text(issue.descriptionExcerpt)
                     .font(.caption)
@@ -895,25 +969,18 @@ private struct IssueCard: View {
                     .help(issue.description)
             }
 
-            Divider()
+            if let handler = primaryHandler {
+                Divider()
 
-            if !externalReferences.items.isEmpty {
-                IssueExternalReferencesSummary(presentation: externalReferences)
-            }
-
-            IssueTimingSummary(issue: issue)
-
-            if !issue.activeRuns.isEmpty {
-                ForEach(Array(issue.activeRuns.prefix(2))) { run in
-                    AgentRunRow(run: run)
+                HStack(spacing: 5) {
+                    AgentRunRow(run: handler)
+                    if extraHandlerCount > 0 {
+                        Text("· +\(extraHandlerCount)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .help(allHandlersHelp)
+                    }
                 }
-                if issue.activeRuns.count > 2 {
-                    Text("\(issue.activeRuns.count - 2) more active")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let latestRun = issue.latestRun {
-                AgentRunRow(run: latestRun)
             }
         }
         .padding(12)
@@ -932,6 +999,29 @@ private struct IssueCard: View {
         .onHover { hovering in
             isHovering = hovering
         }
+    }
+
+    /// The handler shown on the card: the most recent active AgentRun, or
+    /// the latest (usually ended) run when nothing is active. Cards carry no
+    /// run timestamps — the issue lifecycle owns the card's time axis.
+    private var primaryHandler: AgentRun? {
+        issue.activeRuns.first ?? issue.latestRun
+    }
+
+    private var extraHandlerCount: Int {
+        max(0, issue.activeRuns.count - 1)
+    }
+
+    private var allHandlersHelp: String {
+        var runs = issue.activeRuns
+        if let latest = issue.latestRun,
+           !runs.contains(where: { $0.runId == latest.runId })
+        {
+            runs.append(latest)
+        }
+        return runs
+            .map { "\($0.displayName) (\($0.statusTitle))" }
+            .joined(separator: " · ")
     }
 
     private var borderColor: Color {
@@ -993,54 +1083,8 @@ private struct IssueExternalReferencesSummary: View {
     }
 }
 
-private struct IssueTimingSummary: View {
-    let issue: IssueBoardCard
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let items = milestones(relativeTo: context.date)
-            HStack(spacing: 5) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, milestone in
-                    if index > 0 {
-                        Text("·")
-                            .foregroundStyle(.tertiary)
-                    }
-                    Label(milestone.label, systemImage: milestone.symbol)
-                        .help(milestone.help)
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
-    }
-
-    private func milestones(relativeTo now: Date) -> [(label: String, symbol: String, help: String)] {
-        let values: [(value: String?, prefix: String, symbol: String)]
-        switch issue.boardState {
-        case .todo:
-            values = [(issue.createdAt, "Created", "calendar.badge.plus")]
-        case .inProgress, .paused, .inReview:
-            values = [(issue.startedAt, "Opened", "play.circle")]
-        case .done:
-            values = [
-                (issue.startedAt, "Opened", "play.circle"),
-                (issue.closedAt, "Closed", "checkmark.circle")
-            ]
-        }
-        return values.compactMap { milestone in
-            guard let relative = IssueTiming.relativeText(milestone.value, relativeTo: now) else {
-                return nil
-            }
-            return (
-                "\(milestone.prefix) \(relative)",
-                milestone.symbol,
-                IssueTiming.absoluteText(milestone.value) ?? ""
-            )
-        }
-    }
-}
-
+/// A single-line handler row: who (harness) and what state. Cards never
+/// show run timestamps — the issue lifecycle owns the card's time axis.
 private struct AgentRunRow: View {
     let run: AgentRun
 
@@ -1051,22 +1095,27 @@ private struct AgentRunRow: View {
             Text(run.displayName)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            Label(run.statusTitle, systemImage: run.statusSymbolName)
-                .labelStyle(.titleAndIcon)
-                .foregroundStyle(run.statusColor)
-                .lineLimit(1)
-            if let endedAt = run.endedAt,
-               let relative = IssueTiming.relativeText(endedAt, relativeTo: .now)
-            {
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                Text(relative)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
+            AgentRunStatusChip(run: run)
         }
         .font(.caption)
         .help(run.helpText)
+    }
+}
+
+private struct AgentRunStatusChip: View {
+    let run: AgentRun
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: run.statusSymbolName)
+            Text(run.statusTitle)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(run.statusColor)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(run.statusColor.opacity(0.12), in: Capsule())
+        .lineLimit(1)
     }
 }
 
@@ -1273,7 +1322,7 @@ private extension AgentRun {
 
     var statusTitle: String {
         if phase == .running { return "Running" }
-        if isTimedOut { return "Timed Out" }
+        if isTimedOut { return "Lost" }
         if endedByIssueClose { return "Ended" }
         return switch outcome {
         case .completed: "Completed"
@@ -1287,7 +1336,7 @@ private extension AgentRun {
 
     var statusSymbolName: String {
         if phase == .running { return "bolt.circle" }
-        if isTimedOut { return "hourglass.circle" }
+        if isTimedOut { return "antenna.slash" }
         if endedByIssueClose { return "stop.circle" }
         return switch outcome {
         case .completed: "checkmark.circle"
@@ -1304,9 +1353,10 @@ private extension AgentRun {
         if isTimedOut { return .orange }
         if endedByIssueClose { return .secondary }
         return switch outcome {
+        case .completed: .green
         case .failed: .red
         case .blocked, .cancelled, .unknown: .orange
-        case .completed, nil: .secondary
+        case nil: .secondary
         }
     }
 
@@ -1320,6 +1370,12 @@ private extension AgentRun {
         }
         if let endedAt {
             details.append("Ended: \(IssueTiming.absoluteText(endedAt) ?? endedAt)")
+        }
+        if isTimedOut {
+            details.append(
+                "No heartbeat for 24 hours: the Agent session's lease expired, "
+                    + "so it is considered lost (it may have crashed or been killed)"
+            )
         }
         return details.joined(separator: " · ")
     }

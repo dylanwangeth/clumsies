@@ -438,14 +438,17 @@ final class IssueBoardModelTests: XCTestCase {
         XCTAssertFalse(model.isRefreshing)
     }
 
-    func testStaleFilterIsOrthogonalToTheFourBoardStates() async {
+    func testStaleInProgressIssuesBucketIntoTheAbandonedColumn() async {
         let response = makeBoardResponse(projectId: "project-1", isStale: true)
         let model = IssueBoardModel { _ in response }
         await model.loadOnce(projectId: "project-1")
 
-        XCTAssertEqual(model.issues(in: .inProgress).count, 1)
+        XCTAssertTrue(model.issues(in: .inProgress).isEmpty)
+        XCTAssertEqual(model.abandonedIssues.count, 1)
+        XCTAssertEqual(model.abandonedIssues.first?.issueNumber, 1)
         model.showsStaleOnly = true
-        XCTAssertEqual(model.issues(in: .inProgress).count, 1)
+        XCTAssertTrue(model.issues(in: .inProgress).isEmpty)
+        XCTAssertEqual(model.abandonedIssues.count, 1)
         XCTAssertTrue(model.issues(in: .todo).isEmpty)
     }
 
@@ -623,7 +626,8 @@ final class IssueBoardModelTests: XCTestCase {
         model.showsStaleOnly = true
         model.showsExternalIssuesOnly = true
 
-        XCTAssertEqual(model.issues(in: .inProgress).map(\.issueNumber), [1])
+        XCTAssertTrue(model.issues(in: .inProgress).isEmpty)
+        XCTAssertEqual(model.abandonedIssues.map(\.issueNumber), [1])
     }
 
     func testIssueDetailLoadsOnDemandAndIsCachedByContentHash() async throws {
@@ -1063,6 +1067,23 @@ final class IssueBoardLayoutTests: XCTestCase {
             "Done",
         ])
         XCTAssertTrue(IssueBoardState.allCases.allSatisfy { !$0.symbolName.isEmpty })
+    }
+
+    func testBoardColumnsPlaceStaleIssuesInTheAbandonedBucket() {
+        XCTAssertEqual(
+            BoardColumn.allCases,
+            [.todo, .inProgress, .abandoned, .inReview, .done]
+        )
+        XCTAssertEqual(BoardColumn.allCases.map(\.title), [
+            "Todo",
+            "In Progress",
+            "Abandoned",
+            "In Review",
+            "Done",
+        ])
+        XCTAssertNil(BoardColumn.abandoned.state)
+        XCTAssertEqual(BoardColumn.inProgress.state, .inProgress)
+        XCTAssertTrue(BoardColumn.allCases.allSatisfy { !$0.symbolName.isEmpty })
     }
 
     func testReadableColumnsScrollAtTheMinimumWorkspaceWidth() {
