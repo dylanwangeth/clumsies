@@ -33,6 +33,7 @@ scp deploy/Caddyfile "${SSH_TARGET}:${DEPLOY_DIR}/deploy/Caddyfile"
 scp compose.production.yml "${SSH_TARGET}:${DEPLOY_DIR}/compose.production.yml"
 
 echo "==> Recreating Caddy container to pick up new mounts"
+# shellcheck disable=SC2029 # DEPLOY_DIR intentionally expands client-side
 ssh "${SSH_TARGET}" "cd ${DEPLOY_DIR} && docker compose -f compose.production.yml up -d caddy"
 
 echo "==> Verifying locally reachable endpoints"
