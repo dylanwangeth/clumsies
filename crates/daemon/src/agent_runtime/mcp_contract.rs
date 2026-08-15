@@ -990,7 +990,7 @@ fn store_tool_definition() -> Value {
     json!({
         "name": STORE_TOOL_NAME,
         "title": "Store",
-        "description": "Create, update, rename, delete, or discard a local Context, Rule, or Workflow Draft when the user explicitly requests memory maintenance. Issues are native objects managed by the issue tool, not Context documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.",
+        "description": "Create, update, rename, delete, or discard a local Memory Draft when the user explicitly requests memory maintenance. Issues are native objects managed by the issue tool, not Memory documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.",
         "inputSchema": {
             "type": "object",
             "properties": {
