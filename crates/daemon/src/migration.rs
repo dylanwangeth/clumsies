@@ -860,46 +860,109 @@ pub(crate) async fn migrate_local_schema_34_to_35(pool: &SqlitePool) -> Result<(
 /// Adds the `dsh` AgentRun host to the agent_runs CHECK constraint. The
 /// CHECK is enforced at the table level, so the table is rebuilt (copy ->
 /// drop -> rename) exactly like the v28 rebuild that added `opencode`.
+///
+/// Unlike the v28 rebuild, tables created since then (`agent_run_events`,
+/// `native_issues.changed_by_run_id`) hold foreign keys into agent_runs.
+/// With FK enforcement on, DROP TABLE's implicit DELETE either violates
+/// those references or (for ON DELETE CASCADE children) silently deletes
+/// child rows. The rebuild therefore follows SQLite's documented
+/// table-rebuild procedure: disable foreign_keys on the same connection,
+/// rebuild inside a transaction, then re-enable — all on one pooled
+/// connection so the pragma is guaranteed to apply.
 pub(crate) async fn migrate_local_schema_35_to_36(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut tx = pool.begin().await?;
-    let table_sql: Option<String> = sqlx::query_scalar(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
-    if table_sql
-        .as_deref()
-        .is_some_and(|sql| sql.contains("'dsh'"))
-    {
-        tx.commit().await?;
-        return Ok(());
-    }
-    let create_table = "CREATE TABLE agent_runs_v36 (
-        run_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
-        host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh')),
-        host_run_key TEXT NOT NULL,
-        host_session_id TEXT,
-        parent_run_id TEXT REFERENCES agent_runs(run_id),
-        kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
-        phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
-        outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
-        end_reason TEXT,
-        display_label TEXT,
-        summary TEXT,
-        revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-        start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
-        started_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        lease_expires_at TEXT NOT NULL,
-        ended_at TEXT,
-        UNIQUE (project_id, host, host_run_key)
-    )";
-    if table_sql.is_none() {
-        // No agent_runs table at all: create the v36 shape directly.
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        let mut tx = connection.begin().await?;
+        let table_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if table_sql
+            .as_deref()
+            .is_some_and(|sql| sql.contains("'dsh'"))
+        {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let create_table = "CREATE TABLE agent_runs (
+            run_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh')),
+            host_run_key TEXT NOT NULL,
+            host_session_id TEXT,
+            parent_run_id TEXT REFERENCES agent_runs(run_id),
+            kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+            phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+            outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+            end_reason TEXT,
+            display_label TEXT,
+            summary TEXT,
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            ended_at TEXT,
+            UNIQUE (project_id, host, host_run_key)
+        )";
+        if table_sql.is_none() {
+            // No agent_runs table at all: create the v36 shape directly.
+            for statement in [
+                create_table,
+                "CREATE INDEX idx_agent_runs_project_issue_latest
+                 ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
+                "CREATE INDEX idx_agent_runs_running_lease
+                 ON agent_runs (phase, lease_expires_at)",
+                "CREATE INDEX idx_agent_runs_project_session
+                 ON agent_runs (project_id, host, host_session_id, phase)",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        // Rebuild: copy into a staging table with the new CHECK, drop the
+        // original, rename the staging table into place.
+        let staging = "CREATE TABLE agent_runs_v36 (
+            run_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+            host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh')),
+            host_run_key TEXT NOT NULL,
+            host_session_id TEXT,
+            parent_run_id TEXT REFERENCES agent_runs(run_id),
+            kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+            phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+            outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+            end_reason TEXT,
+            display_label TEXT,
+            summary TEXT,
+            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+            start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            ended_at TEXT,
+            UNIQUE (project_id, host, host_run_key)
+        )";
         for statement in [
-            create_table,
+            staging,
+            "INSERT INTO agent_runs_v36 (
+                run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+             )
+             SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                    parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                    revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+             FROM agent_runs",
+            "DROP TABLE agent_runs",
+            "ALTER TABLE agent_runs_v36 RENAME TO agent_runs",
             "CREATE INDEX idx_agent_runs_project_issue_latest
              ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
             "CREATE INDEX idx_agent_runs_running_lease
@@ -910,32 +973,15 @@ pub(crate) async fn migrate_local_schema_35_to_36(pool: &SqlitePool) -> Result<(
             sqlx::query(statement).execute(&mut *tx).await?;
         }
         tx.commit().await?;
-        return Ok(());
+        Ok(())
     }
-    for statement in [
-        create_table,
-        "INSERT INTO agent_runs_v36 (
-            run_id, project_id, issue_number, host, host_run_key, host_session_id,
-            parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
-            revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
-         )
-         SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
-                parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
-                revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
-         FROM agent_runs",
-        "DROP TABLE agent_runs",
-        "ALTER TABLE agent_runs_v36 RENAME TO agent_runs",
-        "CREATE INDEX idx_agent_runs_project_issue_latest
-         ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
-        "CREATE INDEX idx_agent_runs_running_lease
-         ON agent_runs (phase, lease_expires_at)",
-        "CREATE INDEX idx_agent_runs_project_session
-         ON agent_runs (project_id, host, host_session_id, phase)",
-    ] {
-        sqlx::query(statement).execute(&mut *tx).await?;
-    }
-    tx.commit().await?;
-    Ok(())
+    .await;
+    // The pragma is connection-scoped: restore it even on failure so the
+    // pooled connection never leaks with FK enforcement disabled.
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    result
 }
 
 pub(crate) async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(), DaemonError> {
@@ -1446,4 +1492,138 @@ pub(crate) async fn upsert_meta_value(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_pool_with_v35_runs() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Mirror the daemon: foreign key enforcement is on.
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // v35-shaped agent_runs: CHECK without 'dsh'.
+        sqlx::query(
+            "CREATE TABLE agent_runs (
+                run_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+                host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode')),
+                host_run_key TEXT NOT NULL,
+                host_session_id TEXT,
+                parent_run_id TEXT REFERENCES agent_runs(run_id),
+                kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+                phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+                outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+                end_reason TEXT,
+                display_label TEXT,
+                summary TEXT,
+                revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+                start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+                started_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                lease_expires_at TEXT NOT NULL,
+                ended_at TEXT,
+                UNIQUE (project_id, host, host_run_key)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_runs (run_id, project_id, host, host_run_key, kind, phase,
+                                     started_at, last_seen_at, lease_expires_at)
+             VALUES ('arun_11111111111111111111111111111111', 'prj_1', 'codex', 'root:1',
+                     'root', 'running', '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z',
+                     '2026-08-14T01:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // A child table holding foreign keys into agent_runs, with live rows.
+        sqlx::query(
+            "CREATE TABLE agent_run_events (
+                event_id TEXT PRIMARY KEY,
+                event_fingerprint TEXT NOT NULL,
+                run_id TEXT REFERENCES agent_runs(run_id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                occurred_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_run_events (event_id, event_fingerprint, run_id, event_type,
+                                           source, occurred_at)
+             VALUES ('evt_1', 'fp_1', 'arun_11111111111111111111111111111111', 'started',
+                     'hook', '2026-08-14T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn schema_35_to_36_rebuild_keeps_child_rows_and_accepts_dsh() {
+        let pool = test_pool_with_v35_runs().await;
+
+        migrate_local_schema_35_to_36(&pool).await.unwrap();
+
+        // The pre-existing run survived the rebuild and its child row still resolves.
+        let host: String = sqlx::query_scalar(
+            "SELECT host FROM agent_runs WHERE run_id = 'arun_11111111111111111111111111111111'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(host, "codex");
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_run_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events, 1);
+
+        // The new CHECK accepts 'dsh'.
+        sqlx::query(
+            "INSERT INTO agent_runs (run_id, project_id, host, host_run_key, kind, phase,
+                                     started_at, last_seen_at, lease_expires_at)
+             VALUES ('arun_22222222222222222222222222222222', 'prj_1', 'dsh', 'root:2',
+                     'root', 'running', '2026-08-14T00:00:00.000Z', '2026-08-14T00:00:00.000Z',
+                     '2026-08-14T01:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Re-running is a no-op.
+        migrate_local_schema_35_to_36(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn schema_35_to_36_creates_table_when_missing() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate_local_schema_35_to_36(&pool).await.unwrap();
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(exists, 1);
+    }
 }
