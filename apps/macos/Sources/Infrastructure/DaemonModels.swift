@@ -368,9 +368,23 @@ enum DaemonDraftScope: String, Codable, Hashable, Sendable {
 }
 
 enum DaemonResourceKind: String, Codable, Hashable, Sendable {
-    case context
-    case rule
-    case workflow
+    case memory
+
+    /// The daemon now models a single Memory kind, but archived local
+    /// databases and older clients still write the legacy context/rule/
+    /// workflow values; decode them all to `.memory`.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "context", "rule", "workflow", "memory":
+            self = .memory
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown daemon resource kind: \(raw)"
+            ))
+        }
+    }
 }
 
 enum DaemonLocalDraftStatus: String, Codable, Hashable, Sendable {
@@ -436,67 +450,15 @@ struct DaemonDraftOperationResponse: Codable, Sendable {
     let syncStatus: DaemonDraftSyncState
 }
 
-enum DaemonDraftContent: Codable, Hashable, Sendable {
-    case context(content: String)
-    case rule(content: String)
-    case workflow(content: String)
+struct DaemonDraftContent: Codable, Hashable, Sendable {
+    let description: String?
+    let content: String
 
-    private enum CodingKeys: String, CodingKey {
-        case kind
-        case content
-    }
+    var primaryText: String { content }
+    var renderedText: String { content }
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try container.decode(DaemonResourceKind.self, forKey: .kind)
-        switch kind {
-        case .context:
-            self = .context(content: try container.decode(String.self, forKey: .content))
-        case .rule:
-            self = .rule(content: try container.decode(String.self, forKey: .content))
-        case .workflow:
-            self = .workflow(content: try container.decode(String.self, forKey: .content))
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .context(let content):
-            try container.encode(DaemonResourceKind.context, forKey: .kind)
-            try container.encode(content, forKey: .content)
-        case .rule(let content):
-            try container.encode(DaemonResourceKind.rule, forKey: .kind)
-            try container.encode(content, forKey: .content)
-        case .workflow(let content):
-            try container.encode(DaemonResourceKind.workflow, forKey: .kind)
-            try container.encode(content, forKey: .content)
-        }
-    }
-
-    var primaryText: String {
-        switch self {
-        case .context(let content), .rule(let content), .workflow(let content):
-            return content
-        }
-    }
-
-    var renderedText: String {
-        switch self {
-        case .context(let content), .rule(let content), .workflow(let content):
-            return content
-        }
-    }
-
-    func replacingPrimaryText(with text: String) -> Self {
-        switch self {
-        case .context:
-            .context(content: text)
-        case .rule:
-            .rule(content: text)
-        case .workflow:
-            .workflow(content: text)
-        }
+    func replacingPrimaryText(with text: String) -> DaemonDraftContent {
+        .init(description: description, content: text)
     }
 }
 

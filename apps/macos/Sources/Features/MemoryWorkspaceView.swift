@@ -1125,7 +1125,6 @@ struct DraftReconciliationView: View {
         let template = candidate.proposedState ?? candidate.draftState
         let resource = ServerDraftResourceReference(
             scope: template.resource.scope,
-            kind: template.resource.kind,
             id: template.resource.id,
             path: resolvedExists ? resolvedPath : template.resource.path
         )

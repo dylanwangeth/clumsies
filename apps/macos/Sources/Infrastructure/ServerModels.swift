@@ -152,6 +152,24 @@ struct CommitTree: Codable, Sendable {
 enum ServerTreeEntryKind: String, Codable, Hashable, Sendable {
     case memory
     case projectOrgSelection = "project_org_selection"
+
+    /// Tree entries are Memory (or the internal project-org-selection entry).
+    /// Legacy context/rule/workflow entry types from archived commits decode
+    /// to `.memory`.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "context", "rule", "workflow", "memory":
+            self = .memory
+        case "project_org_selection":
+            self = .projectOrgSelection
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown server tree entry kind: \(raw)"
+            ))
+        }
+    }
 }
 
 struct CommitTreeEntry: Codable, Sendable {
@@ -205,7 +223,6 @@ struct ReviewComment: Codable, Identifiable, Hashable, Sendable {
 
 struct ServerDraftResourceReference: Codable, Hashable, Sendable {
     let scope: String
-    let kind: DaemonResourceKind
     let id: String?
     let path: String?
 }
@@ -380,9 +397,7 @@ struct ReviewMergeResponse: Codable, Sendable {
 }
 
 struct ReplaceProjectOrgSelectionRequest: Codable, Sendable {
-    let ruleIds: [String]
-    let contextIds: [String]
-    let workflowIds: [String]
+    let resourceIds: [String]
 }
 
 struct DeleteResult: Codable, Sendable {

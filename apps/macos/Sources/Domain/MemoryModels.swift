@@ -58,13 +58,10 @@ enum MemoryKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var daemonKind: DaemonResourceKind {
-        switch self {
-        case .context: .context
-        case .rules: .rule
-        case .workflows: .workflow
-        }
-    }
+    /// The daemon and Server now model a single Memory kind; the legacy
+    /// context/rules/workflows cases remain as UI-level creation defaults and
+    /// path conventions only.
+    var daemonKind: DaemonResourceKind { .memory }
 
     func supportsMarkdownPreview(path: String) -> Bool {
         switch self {
@@ -76,12 +73,10 @@ enum MemoryKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    /// Resources are no longer kind-tagged on the wire; map the unified
+    /// daemon kind to the default UI creation kind.
     init(_ daemonKind: DaemonResourceKind) {
-        switch daemonKind {
-        case .context: self = .context
-        case .rule: self = .rules
-        case .workflow: self = .workflows
-        }
+        self = .context
     }
 }
 
