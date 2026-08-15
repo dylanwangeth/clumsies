@@ -59,59 +59,22 @@ struct ListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
     let pageInfo: PageInfo
 }
 
-struct RuleMetadata: Codable, Identifiable, Hashable, Sendable {
-    var id: String { ruleId }
+struct MemoryMetadata: Codable, Identifiable, Hashable, Sendable {
+    var id: String { memoryId }
 
-    let ruleId: String
+    let memoryId: String
     let scope: String
     let projectId: String?
     let path: String
     let name: String
+    let description: String
     let contentHash: String
     let status: String
     let updatedAt: String
 }
 
-struct ContextMetadata: Codable, Identifiable, Hashable, Sendable {
-    var id: String { contextId }
-
-    let contextId: String
-    let scope: String
-    let projectId: String?
-    let kind: String
-    let path: String
-    let contentHash: String
-    let size: Int
-    let updatedAt: String
-}
-
-struct WorkflowMetadata: Codable, Identifiable, Hashable, Sendable {
-    var id: String { workflowId }
-
-    let workflowId: String
-    let scope: String
-    let projectId: String?
-    let path: String
-    let name: String
-    let contentHash: String
-    let status: String
-    let updatedAt: String
-}
-
-struct RuleDetail: Codable, Sendable {
-    let rule: RuleMetadata
-    let content: String
-    let etag: String
-}
-
-struct ContextDetail: Codable, Sendable {
-    let context: ContextMetadata
-    let content: String
-    let etag: String
-}
-
-struct WorkflowDetail: Codable, Sendable {
-    let workflow: WorkflowMetadata
+struct MemoryDetail: Codable, Sendable {
+    let memory: MemoryMetadata
     let content: String
     let etag: String
 }
@@ -123,9 +86,7 @@ struct PersonalBundleMetadata: Codable, Identifiable, Hashable, Sendable {
     let ownerUserId: String
     let name: String
     let description: String
-    let ruleCount: Int
-    let contextCount: Int
-    let workflowCount: Int
+    let resourceCount: Int
     let revision: Int
     let createdAt: String
     let updatedAt: String
@@ -133,25 +94,19 @@ struct PersonalBundleMetadata: Codable, Identifiable, Hashable, Sendable {
 
 struct PersonalBundleDetail: Codable, Sendable {
     let bundle: PersonalBundleMetadata
-    let rules: [RuleMetadata]
-    let context: [ContextMetadata]
-    let workflows: [WorkflowMetadata]
+    let memories: [MemoryMetadata]
     let etag: String
 }
 
 struct PersonalBundleRequest: Codable, Sendable {
     let name: String
     let description: String
-    let ruleIds: [String]
-    let contextIds: [String]
-    let workflowIds: [String]
+    let resourceIds: [String]
 }
 
 struct ProjectOrgSelection: Codable, Sendable {
     let projectId: String
-    let rules: [RuleMetadata]
-    let context: [ContextMetadata]
-    let workflows: [WorkflowMetadata]
+    let memories: [MemoryMetadata]
     let revision: Int
 }
 
@@ -195,18 +150,8 @@ struct CommitTree: Codable, Sendable {
 }
 
 enum ServerTreeEntryKind: String, Codable, Hashable, Sendable {
-    case context
-    case rule
-    case workflow
+    case memory
     case projectOrgSelection = "project_org_selection"
-
-    init(_ kind: DaemonResourceKind) {
-        switch kind {
-        case .context: self = .context
-        case .rule: self = .rule
-        case .workflow: self = .workflow
-        }
-    }
 }
 
 struct CommitTreeEntry: Codable, Sendable {
@@ -217,6 +162,7 @@ struct CommitTreeEntry: Codable, Sendable {
     let path: String?
     let blobId: String
     let source: String
+    let description: String?
 }
 
 struct CommitBlob: Codable, Sendable {
