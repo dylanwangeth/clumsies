@@ -27,7 +27,7 @@ struct ExternalLinkText: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .underline()
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(Color(nsColor: .linkColor))
             }
             .contentShape(Rectangle())
         }

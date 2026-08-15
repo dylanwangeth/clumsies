@@ -895,6 +895,8 @@ private struct IssueCard: View {
                     .help(issue.description)
             }
 
+            Divider()
+
             if !externalReferences.items.isEmpty {
                 IssueExternalReferencesSummary(presentation: externalReferences)
             }
@@ -902,17 +904,15 @@ private struct IssueCard: View {
             IssueTimingSummary(issue: issue)
 
             if !issue.activeRuns.isEmpty {
-                Divider()
-                ForEach(Array(issue.activeRuns.prefix(3))) { run in
+                ForEach(Array(issue.activeRuns.prefix(2))) { run in
                     AgentRunRow(run: run)
                 }
-                if issue.activeRuns.count > 3 {
-                    Text("\(issue.activeRuns.count - 3) more active")
+                if issue.activeRuns.count > 2 {
+                    Text("\(issue.activeRuns.count - 2) more active")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else if let latestRun = issue.latestRun {
-                Divider()
                 AgentRunRow(run: latestRun)
             }
         }
@@ -998,14 +998,20 @@ private struct IssueTimingSummary: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(milestones(relativeTo: context.date).enumerated()), id: \.offset) { _, milestone in
+            let items = milestones(relativeTo: context.date)
+            HStack(spacing: 5) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, milestone in
+                    if index > 0 {
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                    }
                     Label(milestone.label, systemImage: milestone.symbol)
                         .help(milestone.help)
                 }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
     }
 
@@ -1039,35 +1045,27 @@ private struct AgentRunRow: View {
     let run: AgentRun
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Image(systemName: run.kind.symbolName)
-                    .foregroundStyle(.secondary)
-                Text(run.displayName)
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                Label(run.statusTitle, systemImage: run.statusSymbolName)
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(run.statusColor)
-                    .lineLimit(1)
-            }
-            .font(.caption)
-
-            if let summary = run.summary, !summary.isEmpty {
-                Text(summary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .help(summary)
-            }
+        HStack(spacing: 5) {
+            Image(systemName: run.kind.symbolName)
+                .foregroundStyle(.secondary)
+            Text(run.displayName)
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Label(run.statusTitle, systemImage: run.statusSymbolName)
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(run.statusColor)
+                .lineLimit(1)
             if let endedAt = run.endedAt,
                let relative = IssueTiming.relativeText(endedAt, relativeTo: .now)
             {
-                Text("ended \(relative)")
-                    .font(.caption2)
+                Text("·")
                     .foregroundStyle(.tertiary)
+                Text(relative)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
         }
+        .font(.caption)
         .help(run.helpText)
     }
 }
@@ -1316,6 +1314,12 @@ private extension AgentRun {
         var details = [host.title, kind == .root ? "Root run" : "Subagent", statusTitle]
         if let parentRunId, !parentRunId.isEmpty {
             details.append("Parent: \(parentRunId)")
+        }
+        if !startedAt.isEmpty {
+            details.append("Started: \(IssueTiming.absoluteText(startedAt) ?? startedAt)")
+        }
+        if let endedAt {
+            details.append("Ended: \(IssueTiming.absoluteText(endedAt) ?? endedAt)")
         }
         return details.joined(separator: " · ")
     }
