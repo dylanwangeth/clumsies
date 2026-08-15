@@ -4206,7 +4206,7 @@ pub(crate) fn project_issue_board(
     for resource in resources {
         if resource.project_id != project_id
             || resource.scope != SourceScope::Project
-            || resource.kind != MemoryKind::Context
+            || resource.kind != MemoryKind::Memory
         {
             continue;
         }
@@ -4556,9 +4556,10 @@ mod tests {
             resource_id: format!("ctx_{path}"),
             project_id: "project-1".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: path.to_owned(),
             title: "Fallback title".to_owned(),
+            description: String::new(),
             content: content.to_owned(),
             content_hash: format!("hash:{path}"),
             source_commit_id: Some("commit-1".to_owned()),

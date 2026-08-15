@@ -864,21 +864,6 @@ fn validate_resource_path(entry: &ServerTreeEntry) -> Result<(), DaemonError> {
         .as_deref()
         .ok_or_else(|| DaemonError::Server(format!("Tree entry {} is missing a path", entry.id)))?;
     validate_relative_path(path)?;
-    match entry.kind {
-        ServerTreeEntryKind::Workflow if !path.starts_with("workflow/") => {
-            return Err(DaemonError::Server(format!(
-                "Workflow Tree entry {} must use the workflow/ path namespace",
-                entry.id
-            )));
-        }
-        ServerTreeEntryKind::Rule if path.to_ascii_lowercase().starts_with("workflow/") => {
-            return Err(DaemonError::Server(format!(
-                "Rule Tree entry {} cannot use the workflow/ path namespace",
-                entry.id
-            )));
-        }
-        _ => {}
-    }
     Ok(())
 }
 
@@ -910,10 +895,10 @@ fn materialization_output_path(entry: &ServerTreeEntry) -> Result<String, Daemon
         .as_deref()
         .ok_or_else(|| DaemonError::Server(format!("Tree entry {} is missing a path", entry.id)))?;
     match entry.kind {
-        ServerTreeEntryKind::Context => Ok(format!("cache/context/{path}")),
-        ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
-            Ok(format!("cache/rule/{path}"))
-        }
+        ServerTreeEntryKind::Rule
+        | ServerTreeEntryKind::Context
+        | ServerTreeEntryKind::Workflow
+        | ServerTreeEntryKind::Memory => Ok(format!("cache/memory/{path}")),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
             "organization selection does not materialize as a file".to_owned(),
         )),
@@ -1301,15 +1286,13 @@ fn ensure_empty_generation(managed_root: &Path, project_id: &str) -> Result<Path
         EMPTY_GENERATION,
         &marker,
         |root| {
-            std::fs::create_dir_all(root.join("cache/rule"))?;
-            std::fs::create_dir_all(root.join("cache/context"))?;
+            std::fs::create_dir_all(root.join("cache/memory"))?;
             let manifest = MaterializedManifest {
                 project_id,
                 commit_id: None,
                 tree_id: None,
                 ref_name: MAIN_REF,
-                rules: BTreeMap::new(),
-                context: BTreeMap::new(),
+                memories: BTreeMap::new(),
             };
             std::fs::write(
                 root.join("manifest.json"),
@@ -1502,9 +1485,10 @@ fn load_project_checkout(
             ServerTreeEntryScope::Daemon => continue,
         };
         let resource_kind = match entry.kind {
-            ServerTreeEntryKind::Rule => DaemonDraftResourceKind::Rule,
-            ServerTreeEntryKind::Context => DaemonDraftResourceKind::Context,
-            ServerTreeEntryKind::Workflow => DaemonDraftResourceKind::Workflow,
+            ServerTreeEntryKind::Rule
+            | ServerTreeEntryKind::Context
+            | ServerTreeEntryKind::Workflow
+            | ServerTreeEntryKind::Memory => DaemonDraftResourceKind::Memory,
             ServerTreeEntryKind::ProjectOrgSelection => continue,
         };
         let path = entry.path.clone().ok_or_else(|| {
@@ -1541,16 +1525,11 @@ fn project_checkout_content(
     blob: &str,
 ) -> Result<DaemonDraftContent, DaemonError> {
     match kind {
-        ServerTreeEntryKind::Context => Ok(DaemonDraftContent::Context {
-            content: blob.to_owned(),
-        }),
-        ServerTreeEntryKind::Rule if blob.trim().is_empty() => Err(DaemonError::Server(
-            "Rule Blob content must not be empty".to_owned(),
-        )),
-        ServerTreeEntryKind::Rule => Ok(DaemonDraftContent::Rule {
-            content: blob.to_owned(),
-        }),
-        ServerTreeEntryKind::Workflow => Ok(DaemonDraftContent::Workflow {
+        ServerTreeEntryKind::Context
+        | ServerTreeEntryKind::Rule
+        | ServerTreeEntryKind::Workflow
+        | ServerTreeEntryKind::Memory => Ok(DaemonDraftContent {
+            description: None,
             content: blob.to_owned(),
         }),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
@@ -1570,8 +1549,7 @@ fn materialize_payload(
         .iter()
         .map(|blob| (blob.blob_id.as_str(), blob))
         .collect::<HashMap<_, _>>();
-    let mut rules = BTreeMap::new();
-    let mut context = BTreeMap::new();
+    let mut memories = BTreeMap::new();
 
     for entry in &payload.tree.entries {
         if entry.kind == ServerTreeEntryKind::ProjectOrgSelection {
@@ -1589,15 +1567,7 @@ fn materialize_payload(
             hash: content_hash(&materialized_content),
             description: "",
         };
-        match entry.kind {
-            ServerTreeEntryKind::Context => {
-                context.insert(entry.id.clone(), manifest_entry);
-            }
-            ServerTreeEntryKind::Rule | ServerTreeEntryKind::Workflow => {
-                rules.insert(entry.id.clone(), manifest_entry);
-            }
-            ServerTreeEntryKind::ProjectOrgSelection => unreachable!(),
-        }
+        memories.insert(entry.id.clone(), manifest_entry);
         let relative_output = PathBuf::from(materialization_output_path(entry)?);
         let output = root.join(relative_output);
         if let Some(parent) = output.parent() {
@@ -1606,15 +1576,13 @@ fn materialize_payload(
         std::fs::write(output, materialized_content.as_bytes())?;
     }
 
-    std::fs::create_dir_all(root.join("cache/rule"))?;
-    std::fs::create_dir_all(root.join("cache/context"))?;
+    std::fs::create_dir_all(root.join("cache/memory"))?;
     let manifest = MaterializedManifest {
         project_id,
         commit_id: Some(&payload.commit.commit_id),
         tree_id: Some(&payload.tree.tree_id),
         ref_name: MAIN_REF,
-        rules,
-        context,
+        memories,
     };
     std::fs::write(
         root.join("manifest.json"),
@@ -1628,12 +1596,10 @@ fn materialized_resource_content(
     blob: &str,
 ) -> Result<String, DaemonError> {
     match kind {
-        ServerTreeEntryKind::Context => Ok(blob.to_owned()),
-        ServerTreeEntryKind::Rule if blob.trim().is_empty() => Err(DaemonError::Server(
-            "Rule Blob content must not be empty".to_owned(),
-        )),
-        ServerTreeEntryKind::Rule => Ok(blob.to_owned()),
-        ServerTreeEntryKind::Workflow => Ok(blob.to_owned()),
+        ServerTreeEntryKind::Context
+        | ServerTreeEntryKind::Rule
+        | ServerTreeEntryKind::Workflow
+        | ServerTreeEntryKind::Memory => Ok(blob.to_owned()),
         ServerTreeEntryKind::ProjectOrgSelection => Err(DaemonError::Server(
             "Project organization selection cannot be materialized as memory".to_owned(),
         )),
@@ -1733,6 +1699,8 @@ struct ServerTreeEntry {
     path: Option<String>,
     blob_id: String,
     source: ServerTreeEntrySource,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1763,7 +1731,21 @@ enum ServerTreeEntryKind {
     Rule,
     Context,
     Workflow,
+    Memory,
     ProjectOrgSelection,
+}
+
+impl ServerTreeEntryKind {
+    /// The unified runtime kind. Archived Commits may still carry the
+    /// legacy rule/context/workflow values; all of them are Memory.
+    fn as_memory_kind(self) -> DaemonDraftResourceKind {
+        match self {
+            Self::Rule | Self::Context | Self::Workflow | Self::Memory => {
+                DaemonDraftResourceKind::Memory
+            }
+            Self::ProjectOrgSelection => DaemonDraftResourceKind::Memory,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1790,8 +1772,7 @@ struct MaterializedManifest<'a> {
     commit_id: Option<&'a str>,
     tree_id: Option<&'a str>,
     ref_name: &'a str,
-    rules: BTreeMap<String, MaterializedManifestEntry<'a>>,
-    context: BTreeMap<String, MaterializedManifestEntry<'a>>,
+    memories: BTreeMap<String, MaterializedManifestEntry<'a>>,
 }
 
 #[derive(Serialize)]
@@ -1834,9 +1815,10 @@ mod tests {
         fn context_entry(id: &str, path: &str) -> ServerTreeEntry {
             ServerTreeEntry {
                 id: id.to_owned(),
-                kind: ServerTreeEntryKind::Context,
+                kind: ServerTreeEntryKind::Memory,
                 scope: ServerTreeEntryScope::Project,
                 project_id: Some("prj_test".to_owned()),
+                description: String::new(),
                 path: Some(path.to_owned()),
                 blob_id: format!("blob_{id}"),
                 source: ServerTreeEntrySource::Project,
@@ -1874,13 +1856,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_blank_rule_blobs() {
-        let error = materialized_resource_content(ServerTreeEntryKind::Rule, "  \n").unwrap_err();
+    fn rejects_materializing_the_system_selection_as_memory() {
+        let error = materialized_resource_content(ServerTreeEntryKind::ProjectOrgSelection, "{}")
+            .unwrap_err();
 
         assert!(
             error
                 .to_string()
-                .contains("Rule Blob content must not be empty")
+                .contains("Project organization selection cannot be materialized as memory")
         );
     }
 
@@ -1931,6 +1914,7 @@ mod tests {
                 kind: entry.1,
                 scope: entry.2,
                 project_id: entry.3.map(ToOwned::to_owned),
+                description: String::new(),
                 path: Some(entry.4.to_owned()),
                 blob_id: blob.blob_id.clone(),
                 source: entry.5,
@@ -1958,15 +1942,15 @@ mod tests {
         materialize_payload(root.path(), "prj_test", &payload).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(root.path().join("cache/context/spec/API.md")).unwrap(),
+            std::fs::read_to_string(root.path().join("cache/memory/spec/API.md")).unwrap(),
             "Context body"
         );
         assert_eq!(
-            std::fs::read_to_string(root.path().join("cache/rule/coding/STYLE.md")).unwrap(),
+            std::fs::read_to_string(root.path().join("cache/memory/coding/STYLE.md")).unwrap(),
             "# Style\n\nApply while coding.\n\nRule body"
         );
         assert_eq!(
-            std::fs::read_to_string(root.path().join("cache/rule/workflow/CODING.md")).unwrap(),
+            std::fs::read_to_string(root.path().join("cache/memory/workflow/CODING.md")).unwrap(),
             "# Coding\n\nWorkflow body\n\n1. Run tests"
         );
     }

@@ -114,7 +114,7 @@ fn reserved_numbered_name(stem: &str, prefix: &str) -> bool {
 }
 
 pub(crate) fn validate_draft_resource_path(
-    resource: DaemonDraftResourceKind,
+    _resource: DaemonDraftResourceKind,
     path: &str,
 ) -> Result<(), DaemonError> {
     if !is_normalized_relative_path(path) {
@@ -122,17 +122,7 @@ pub(crate) fn validate_draft_resource_path(
             "resource path is not a portable normalized relative path: {path}"
         )));
     }
-    match resource {
-        DaemonDraftResourceKind::Workflow if !path.starts_with("workflow/") => {
-            Err(DaemonError::InvalidRequest(
-                "workflow path must use the workflow/ namespace".to_owned(),
-            ))
-        }
-        DaemonDraftResourceKind::Rule if path.to_ascii_lowercase().starts_with("workflow/") => Err(
-            DaemonError::InvalidRequest("rule path cannot use the workflow/ namespace".to_owned()),
-        ),
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -253,15 +243,12 @@ pub(crate) fn git_worktree_main_root(path: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn memory_kind_matches_resource(
-    kind: MemoryKind,
-    resource: DaemonDraftResourceKind,
+    _kind: MemoryKind,
+    _resource: DaemonDraftResourceKind,
 ) -> bool {
-    matches!(
-        (kind, resource),
-        (MemoryKind::Context, DaemonDraftResourceKind::Context)
-            | (MemoryKind::Rule, DaemonDraftResourceKind::Rule)
-            | (MemoryKind::Workflow, DaemonDraftResourceKind::Workflow)
-    )
+    // The unified Memory model has a single resource kind; the check is
+    // retained for call sites while the legacy kind taxonomy is removed.
+    true
 }
 
 pub(crate) fn apply_exact_text_replacements(

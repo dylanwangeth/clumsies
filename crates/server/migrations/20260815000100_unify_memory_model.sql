@@ -60,6 +60,12 @@ ALTER TABLE tree_entries
     ADD CONSTRAINT tree_entries_resource_kind_check
     CHECK (resource_kind IN ('memory', 'project_org_selection'));
 
+-- Tree entries carry the memory description so Commit payloads can feed
+-- the daemon's description-aware search index. Legacy archived entries
+-- (and project_org_selection entries) have no description.
+ALTER TABLE tree_entries
+    ADD COLUMN description TEXT NOT NULL DEFAULT '';
+
 -- Drafts and draft operations carry a single Memory kind.
 ALTER TABLE drafts
     DROP CONSTRAINT drafts_resource_kind_check;

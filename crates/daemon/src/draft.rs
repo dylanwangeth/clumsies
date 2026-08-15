@@ -867,9 +867,9 @@ pub(crate) fn draft_resource_kind_from_str(
     value: &str,
 ) -> Result<DaemonDraftResourceKind, DaemonError> {
     match value {
-        "context" => Ok(DaemonDraftResourceKind::Context),
-        "rule" => Ok(DaemonDraftResourceKind::Rule),
-        "workflow" => Ok(DaemonDraftResourceKind::Workflow),
+        // Legacy kind values from archived local databases are treated as
+        // the unified Memory kind; the runtime only writes 'memory'.
+        "context" | "rule" | "workflow" | "memory" => Ok(DaemonDraftResourceKind::Memory),
         other => Err(DaemonError::InvalidRequest(format!(
             "unknown draft resource kind: {other}"
         ))),

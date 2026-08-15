@@ -527,7 +527,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             unit_key TEXT NOT NULL,
             resource_id TEXT NOT NULL,
             scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
-            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
+            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
             path TEXT NOT NULL,
             heading_path_json TEXT NOT NULL,
             locator_json TEXT NOT NULL,
@@ -566,7 +566,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             resource_order BIGINT NOT NULL CHECK (resource_order >= 0),
             resource_id TEXT NOT NULL,
             scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
-            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
+            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
             path TEXT NOT NULL,
             title TEXT NOT NULL,
             content_hash TEXT NOT NULL,
@@ -587,7 +587,7 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             resource_order BIGINT NOT NULL CHECK (resource_order >= 0),
             resource_id TEXT NOT NULL,
             scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
-            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
+            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
             path TEXT NOT NULL,
             title TEXT NOT NULL,
             content_hash TEXT NOT NULL,
@@ -2208,9 +2208,9 @@ fn parse_scope(value: &str) -> Result<SourceScope, DaemonError> {
 
 fn parse_kind(value: &str) -> Result<MemoryKind, DaemonError> {
     match value {
-        "context" => Ok(MemoryKind::Context),
-        "rule" => Ok(MemoryKind::Rule),
-        "workflow" => Ok(MemoryKind::Workflow),
+        // Legacy kind values from archived history stay readable; the
+        // unified runtime only records 'memory'.
+        "context" | "rule" | "workflow" | "memory" => Ok(MemoryKind::Memory),
         _ => Err(history_corrupt(format!(
             "Unknown Retrieval Run memory kind: {value}"
         ))),
@@ -2261,7 +2261,7 @@ mod tests {
         let corpus = vec![EvaluationCorpusResource {
             resource_id: "context-1".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: "context/one.md".to_owned(),
             title: "One".to_owned(),
             content_hash: "sha256:current".to_owned(),
@@ -2304,7 +2304,7 @@ mod tests {
             unit_key: format!("{resource_id}:unit"),
             resource_id: resource_id.to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: format!("context/{resource_id}.md"),
             heading_path: Vec::new(),
             locator: SourceLocator::MarkdownSpan {

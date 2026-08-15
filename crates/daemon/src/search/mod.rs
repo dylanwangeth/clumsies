@@ -36,17 +36,13 @@ pub(super) const MIN_RERANK_RELEVANCE: f32 = 0.01;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
-    Context,
-    Rule,
-    Workflow,
+    Memory,
 }
 
 impl MemoryKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Context => "context",
-            Self::Rule => "rule",
-            Self::Workflow => "workflow",
+            Self::Memory => "memory",
         }
     }
 }
@@ -94,6 +90,7 @@ pub(crate) struct SourceResource {
     pub(crate) kind: MemoryKind,
     pub(crate) path: String,
     pub(crate) title: String,
+    pub(crate) description: String,
     pub(crate) content: String,
     pub(crate) content_hash: String,
     pub(crate) source_commit_id: Option<String>,
@@ -177,6 +174,7 @@ pub struct LoadedMemoryResource {
     pub kind: MemoryKind,
     pub path: String,
     pub title: String,
+    pub description: String,
     pub content_hash: String,
     pub changed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -773,6 +771,7 @@ pub(crate) async fn load_memory(
             kind: resource.kind,
             path: resource.path.clone(),
             title: resource.title.clone(),
+            description: String::new(),
             content_hash: resource.content_hash.clone(),
             changed,
             content: changed.then(|| resource.content.clone()),
@@ -955,6 +954,7 @@ async fn load_effective_memory_under_storage_guard(
                         kind,
                         path,
                         title,
+                        description: entry.description,
                         content_hash: sha256(&content),
                         content,
                         source_commit_id: Some(base_commit_id.to_owned()),
@@ -1016,12 +1016,14 @@ fn require_ready_memory_cache(
 }
 
 pub(super) fn project_authority_content(
-    kind: MemoryKind,
+    _kind: MemoryKind,
     path: &str,
     blob: &str,
 ) -> Result<(String, String), DaemonError> {
-    if kind == MemoryKind::Rule && blob.trim().is_empty() {
-        return Err(SearchFailure::failed(format!("Rule Blob at {path} has empty content")).into());
+    if blob.trim().is_empty() {
+        return Err(
+            SearchFailure::failed(format!("Memory Blob at {path} has empty content")).into(),
+        );
     }
     let title = markdown_title(blob).unwrap_or_else(|| title_from_path(path));
     Ok((blob.to_owned(), title))
@@ -1037,9 +1039,9 @@ pub(super) fn parse_source_scope(value: &str) -> Result<SourceScope, DaemonError
 
 pub(super) fn parse_memory_kind(value: &str) -> Option<MemoryKind> {
     match value {
-        "context" => Some(MemoryKind::Context),
-        "rule" => Some(MemoryKind::Rule),
-        "workflow" => Some(MemoryKind::Workflow),
+        // Legacy kind values from archived indexes stay readable; the
+        // unified runtime only writes 'memory'.
+        "context" | "rule" | "workflow" | "memory" => Some(MemoryKind::Memory),
         _ => None,
     }
 }
@@ -1359,7 +1361,7 @@ mod tests {
                 unit_key: unit_key.to_owned(),
                 resource_id: resource_id.to_owned(),
                 scope: SourceScope::Project,
-                kind: MemoryKind::Context,
+                kind: MemoryKind::Memory,
                 path: format!("context/{resource_id}.md"),
                 title: resource_id.to_owned(),
                 heading_path: Vec::new(),
@@ -1783,13 +1785,14 @@ mod tests {
                 base_commit_id: None,
                 project_id: "prj_test".to_owned(),
                 scope: crate::DaemonDraftScope::Project,
-                resource: crate::DaemonDraftResourceKind::Context,
+                resource: crate::DaemonDraftResourceKind::Memory,
                 op: DaemonDraftOperation {
                     create: None,
                     update: Some(DaemonUpdateDraftOperation::Content(
                         DaemonContentDraftUpdate {
                         id: "ctx_retrieval".to_owned(),
-                        content: DaemonDraftContent::Context {
+                        content: DaemonDraftContent {
+                            description: None,
                             content: "# Retrieval\n\nHybrid search now uses BM25, vectors, RRF, and reranking."
                                 .to_owned(),
                         },
@@ -1881,7 +1884,7 @@ mod tests {
         .await
         .unwrap();
         index_pool.close().await;
-        assert_eq!(indexed_kinds, ["context", "rule", "workflow"]);
+        assert_eq!(indexed_kinds, ["memory", "memory", "memory"]);
     }
 
     #[tokio::test]
@@ -2266,7 +2269,7 @@ mod tests {
                 json!({
                     "project_id": "prj_test",
                     "scope": "project",
-                    "resource": "context",
+                    "resource": "memory",
                     "op": {
                         "update": {
                             "id": "ctx_retrieval",
@@ -2323,7 +2326,7 @@ mod tests {
                     json!({
                         "project_id": "prj_test",
                         "scope": "project",
-                        "resource": "context",
+                        "resource": "memory",
                         "op": {
                             "update": {
                                 "id": "ctx_retrieval",
@@ -2357,7 +2360,7 @@ mod tests {
                 json!({
                     "project_id": "prj_test",
                     "scope": "project",
-                    "resource": "context",
+                    "resource": "memory",
                     "op": {
                         "update": {
                             "id": "ctx_retrieval",
@@ -2391,7 +2394,8 @@ mod tests {
         };
         assert_eq!(
             update.content,
-            DaemonDraftContent::Context {
+            DaemonDraftContent {
+                description: None,
                 content:
                     "# Retrieval\n\nAgent memory activation combines BM25 and vector retrieval."
                         .to_owned()
@@ -2431,7 +2435,7 @@ mod tests {
                 json!({
                     "project_id": "prj_test",
                     "scope": "project",
-                    "resource": "rule",
+                    "resource": "memory",
                     "op": {
                         "update": {
                             "id": "rule_testing",
@@ -2478,7 +2482,7 @@ mod tests {
                 json!({
                     "project_id": "prj_test",
                     "scope": "project",
-                    "resource": "rule",
+                    "resource": "memory",
                     "op": {
                         "discard": {
                             "id": "rule_testing"
@@ -2521,9 +2525,10 @@ mod tests {
                     resource_id: "ctx_target".to_owned(),
                     project_id: "prj_test".to_owned(),
                     scope: SourceScope::Project,
-                    kind: MemoryKind::Context,
+                    kind: MemoryKind::Memory,
                     path: path.to_owned(),
                     title: title_from_path(path),
+                    description: String::new(),
                     content: content.to_owned(),
                     content_hash: sha256(content),
                     source_commit_id: Some(commit_id.to_owned()),
@@ -2543,7 +2548,7 @@ mod tests {
                 draft_id: draft_id.to_owned(),
                 base_commit_id: Some("commit_base".to_owned()),
                 scope: SourceScope::Project,
-                kind: Some(MemoryKind::Context),
+                kind: Some(MemoryKind::Memory),
                 target_id: target_id.map(ToOwned::to_owned),
                 path: Some("context/base.md".to_owned()),
                 base_resource,
@@ -2567,7 +2572,8 @@ mod tests {
                     update: Some(DaemonUpdateDraftOperation::Content(
                         DaemonContentDraftUpdate {
                             id: "ctx_target".to_owned(),
-                            content: DaemonDraftContent::Context {
+                            content: DaemonDraftContent {
+                                description: None,
                                 content: "# Personal Draft".to_owned(),
                             },
                             description: None,
@@ -2645,7 +2651,8 @@ mod tests {
                 DaemonDraftOperation {
                     create: Some(DaemonCreateDraftOperation {
                         path: "context/new.md".to_owned(),
-                        content: DaemonDraftContent::Context {
+                        content: DaemonDraftContent {
+                            description: None,
                             content: "# New Draft".to_owned(),
                         },
                         description: None,
@@ -2667,7 +2674,8 @@ mod tests {
         let operation = DaemonDraftOperation {
             create: Some(DaemonCreateDraftOperation {
                 path: "context/new.md".to_owned(),
-                content: DaemonDraftContent::Context {
+                content: DaemonDraftContent {
+                    description: None,
                     content: "# New context".to_owned(),
                 },
                 description: None,
@@ -2682,7 +2690,7 @@ mod tests {
             draft_id: "draft_timestamp".to_owned(),
             base_commit_id: Some("commit_base".to_owned()),
             scope: SourceScope::Project,
-            kind: Some(MemoryKind::Context),
+            kind: Some(MemoryKind::Memory),
             target_id: None,
             path: Some("context/new.md".to_owned()),
             base_resource: None,
@@ -2824,9 +2832,10 @@ mod tests {
             resource_id: "ctx_large".to_owned(),
             project_id: "prj_test".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: "context/large.md".to_owned(),
             title: "Large".to_owned(),
+            description: String::new(),
             content_hash: sha256(&content),
             content,
             source_commit_id: Some("commit_test".to_owned()),
@@ -2863,9 +2872,10 @@ mod tests {
                 resource_id: "ctx_alpha".to_owned(),
                 project_id: "prj_test".to_owned(),
                 scope: SourceScope::Project,
-                kind: MemoryKind::Context,
+                kind: MemoryKind::Memory,
                 path: "context/alpha.md".to_owned(),
                 title: "Alpha".to_owned(),
+                description: String::new(),
                 content_hash: sha256(&first_content),
                 content: first_content.clone(),
                 source_commit_id: Some("commit_one".to_owned()),
@@ -2876,9 +2886,10 @@ mod tests {
                 resource_id: "ctx_gamma".to_owned(),
                 project_id: "prj_test".to_owned(),
                 scope: SourceScope::Project,
-                kind: MemoryKind::Context,
+                kind: MemoryKind::Memory,
                 path: "context/gamma.md".to_owned(),
                 title: "Gamma".to_owned(),
+                description: String::new(),
                 content_hash: sha256(&second_content),
                 content: second_content,
                 source_commit_id: Some("commit_one".to_owned()),
@@ -3073,9 +3084,10 @@ mod tests {
             resource_id: "ctx_large_real".to_owned(),
             project_id: "prj_test".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: "context/large-real.md".to_owned(),
             title: "Large real index".to_owned(),
+            description: String::new(),
             content_hash: sha256(&content),
             content,
             source_commit_id: Some("commit_test".to_owned()),
