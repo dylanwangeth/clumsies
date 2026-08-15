@@ -321,221 +321,75 @@ paths:
                 $ref: "#/components/schemas/DeleteResult"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/rules:
+  /api/v1/org/memories:
     get:
-      operationId: listOrgRules
-      summary: List organization rules.
+      operationId: listOrgMemories
+      summary: List organization memories.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: Organization rule page.
+          description: Organization memory page.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RuleListResponse"
+                $ref: "#/components/schemas/MemoryListResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/rules/{rule_id}:
+  /api/v1/org/memories/{memory_id}:
     parameters:
-      - $ref: "#/components/parameters/RuleId"
+      - $ref: "#/components/parameters/MemoryId"
     get:
-      operationId: getOrgRule
-      summary: Read an organization rule.
+      operationId: getOrgMemory
+      summary: Read an organization memory.
       parameters:
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: Organization rule detail.
+          description: Organization memory detail.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RuleDetail"
+                $ref: "#/components/schemas/MemoryDetail"
         "304":
           description: ETag matched.
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/context:
+  /api/v1/projects/{project_id}/memories:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
     get:
-      operationId: listOrgContext
-      summary: List organization context entries.
+      operationId: listProjectMemories
+      summary: List project memories.
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
-          description: Organization context page.
+          description: Project memory page.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextListResponse"
+                $ref: "#/components/schemas/MemoryListResponse"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/org/context/{context_id}:
+  /api/v1/projects/{project_id}/memories/{memory_id}:
     parameters:
-      - $ref: "#/components/parameters/ContextId"
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/MemoryId"
     get:
-      operationId: getOrgContext
-      summary: Read an organization context entry.
+      operationId: getProjectMemory
+      summary: Read a project memory.
       parameters:
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: Organization context detail.
+          description: Project memory detail.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/org/workflows:
-    get:
-      operationId: listOrgWorkflows
-      summary: List organization workflows.
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Organization workflow page.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkflowListResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/org/workflows/{workflow_id}:
-    parameters:
-      - $ref: "#/components/parameters/WorkflowId"
-    get:
-      operationId: getOrgWorkflow
-      summary: Read an organization workflow.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Organization workflow detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkflowDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/rules:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-    get:
-      operationId: listProjectRules
-      summary: List project rules.
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Project rule page.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RuleListResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/rules/{rule_id}:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/RuleId"
-    get:
-      operationId: getProjectRule
-      summary: Read a project rule.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Project rule detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RuleDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/context:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-    get:
-      operationId: listProjectContext
-      summary: List project context entries.
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Project context page.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContextListResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/context/{context_id}:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/ContextId"
-    get:
-      operationId: getProjectContext
-      summary: Read a project context entry.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Project context detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContextDetail"
-        "304":
-          description: ETag matched.
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/workflows:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-    get:
-      operationId: listProjectWorkflows
-      summary: List project workflows.
-      parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-      responses:
-        "200":
-          description: Project workflow page.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkflowListResponse"
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/projects/{project_id}/workflows/{workflow_id}:
-    parameters:
-      - $ref: "#/components/parameters/ProjectId"
-      - $ref: "#/components/parameters/WorkflowId"
-    get:
-      operationId: getProjectWorkflow
-      summary: Read a project workflow.
-      parameters:
-        - $ref: "#/components/parameters/IfNoneMatch"
-      responses:
-        "200":
-          description: Project workflow detail.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkflowDetail"
+                $ref: "#/components/schemas/MemoryDetail"
         "304":
           description: ETag matched.
         default:
@@ -1116,20 +970,8 @@ components:
       in: query
       schema:
         type: string
-    RuleId:
-      name: rule_id
-      in: path
-      required: true
-      schema:
-        type: string
-    ContextId:
-      name: context_id
-      in: path
-      required: true
-      schema:
-        type: string
-    WorkflowId:
-      name: workflow_id
+    MemoryId:
+      name: memory_id
       in: path
       required: true
       schema:
@@ -1294,19 +1136,9 @@ components:
           type: string
         description:
           type: string
-        rule_ids:
+        resource_ids:
           type: array
-          description: Active organization-scoped Rule ids.
-          items:
-            type: string
-        context_ids:
-          type: array
-          description: Active organization-scoped Context ids.
-          items:
-            type: string
-        workflow_ids:
-          type: array
-          description: Active organization-scoped Workflow ids.
+          description: Active organization-scoped Memory ids.
           items:
             type: string
     PersonalBundleUpdateRequest:
@@ -1317,19 +1149,9 @@ components:
           type: string
         description:
           type: string
-        rule_ids:
+        resource_ids:
           type: array
-          description: Active organization-scoped Rule ids.
-          items:
-            type: string
-        context_ids:
-          type: array
-          description: Active organization-scoped Context ids.
-          items:
-            type: string
-        workflow_ids:
-          type: array
-          description: Active organization-scoped Workflow ids.
+          description: Active organization-scoped Memory ids.
           items:
             type: string
     PersonalBundleListResponse:
@@ -1344,22 +1166,14 @@ components:
           $ref: "#/components/schemas/PageInfo"
     PersonalBundleDetail:
       type: object
-      required: [bundle, rules, context, workflows, etag]
+      required: [bundle, memories, etag]
       properties:
         bundle:
           $ref: "#/components/schemas/PersonalBundleMeta"
-        rules:
+        memories:
           type: array
           items:
-            $ref: "#/components/schemas/RuleMeta"
-        context:
-          type: array
-          items:
-            $ref: "#/components/schemas/ContextMeta"
-        workflows:
-          type: array
-          items:
-            $ref: "#/components/schemas/WorkflowMeta"
+            $ref: "#/components/schemas/MemoryMeta"
         etag:
           type: string
     PersonalBundleMeta:
@@ -1369,9 +1183,7 @@ components:
         - owner_user_id
         - name
         - description
-        - rule_count
-        - context_count
-        - workflow_count
+        - resource_count
         - revision
         - created_at
         - updated_at
@@ -1384,11 +1196,7 @@ components:
           type: string
         description:
           type: string
-        rule_count:
-          type: integer
-        context_count:
-          type: integer
-        workflow_count:
+        resource_count:
           type: integer
         revision:
           type: integer
@@ -1398,62 +1206,22 @@ components:
         updated_at:
           type: string
           format: date-time
-    RuleListResponse:
+    MemoryListResponse:
       type: object
       required: [items, page_info]
       properties:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/RuleMeta"
+            $ref: "#/components/schemas/MemoryMeta"
         page_info:
           $ref: "#/components/schemas/PageInfo"
-    ContextListResponse:
+    MemoryDetail:
       type: object
-      required: [items, page_info]
+      required: [memory, content, etag]
       properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/ContextMeta"
-        page_info:
-          $ref: "#/components/schemas/PageInfo"
-    WorkflowListResponse:
-      type: object
-      required: [items, page_info]
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/WorkflowMeta"
-        page_info:
-          $ref: "#/components/schemas/PageInfo"
-    RuleDetail:
-      type: object
-      required: [rule, content, etag]
-      properties:
-        rule:
-          $ref: "#/components/schemas/RuleMeta"
-        content:
-          type: string
-        etag:
-          type: string
-    ContextDetail:
-      type: object
-      required: [context, content, etag]
-      properties:
-        context:
-          $ref: "#/components/schemas/ContextMeta"
-        content:
-          type: string
-        etag:
-          type: string
-    WorkflowDetail:
-      type: object
-      required: [workflow, content, etag]
-      properties:
-        workflow:
-          $ref: "#/components/schemas/WorkflowMeta"
+        memory:
+          $ref: "#/components/schemas/MemoryMeta"
         content:
           type: string
         etag:
@@ -1461,15 +1229,7 @@ components:
     ReplaceProjectOrgSelectionRequest:
       type: object
       properties:
-        rule_ids:
-          type: array
-          items:
-            type: string
-        context_ids:
-          type: array
-          items:
-            type: string
-        workflow_ids:
+        resource_ids:
           type: array
           items:
             type: string
@@ -1594,47 +1354,22 @@ components:
           minLength: 1
           description: Portable normalized relative path used by a rename operation.
     DraftResourceContent:
-      oneOf:
-        - $ref: "#/components/schemas/ContextDraftContent"
-        - $ref: "#/components/schemas/RuleDraftContent"
-        - $ref: "#/components/schemas/WorkflowDraftContent"
-    ContextDraftContent:
       type: object
-      required: [kind, content]
+      required: [content]
       properties:
-        kind:
-          type: string
-          enum: [context]
-        content:
-          type: string
-    RuleDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [rule]
+        description:
+          type: [string, "null"]
+          description: Optional semantic summary updated with the content.
         content:
           type: string
           minLength: 1
-    WorkflowDraftContent:
-      type: object
-      required: [kind, content]
-      properties:
-        kind:
-          type: string
-          enum: [workflow]
-        content:
-          type: string
     DraftResourceRef:
       type: object
-      required: [scope, kind, id, path]
+      required: [scope, id, path]
       properties:
         scope:
           type: string
           enum: [org, project]
-        kind:
-          $ref: "#/components/schemas/DraftResourceKind"
         id:
           type: [string, "null"]
         path:
@@ -2044,11 +1779,11 @@ components:
           type: [string, "null"]
         applied_operation_count:
           type: integer
-    RuleMeta:
+    MemoryMeta:
       type: object
-      required: [rule_id, scope, project_id, path, name, content_hash, status, updated_at]
+      required: [memory_id, scope, project_id, path, name, description, content_hash, status, updated_at]
       properties:
-        rule_id:
+        memory_id:
           type: string
         scope:
           $ref: "#/components/schemas/ResourceScope"
@@ -2058,49 +1793,9 @@ components:
           type: string
         name:
           type: string
-        content_hash:
+        description:
           type: string
-        status:
-          $ref: "#/components/schemas/ResourceStatus"
-        updated_at:
-          type: string
-          format: date-time
-    ContextMeta:
-      type: object
-      required: [context_id, scope, project_id, kind, path, content_hash, size, updated_at]
-      properties:
-        context_id:
-          type: string
-        scope:
-          $ref: "#/components/schemas/ResourceScope"
-        project_id:
-          type: [string, "null"]
-        kind:
-          type: string
-          enum: [file, note, decision, reference]
-        path:
-          type: string
-        content_hash:
-          type: string
-        size:
-          type: integer
-        updated_at:
-          type: string
-          format: date-time
-    WorkflowMeta:
-      type: object
-      required: [workflow_id, scope, project_id, path, name, content_hash, status, updated_at]
-      properties:
-        workflow_id:
-          type: string
-        scope:
-          $ref: "#/components/schemas/ResourceScope"
-        project_id:
-          type: [string, "null"]
-        path:
-          type: string
-        name:
-          type: string
+          description: Agent-generated semantic summary used for retrieval and quick understanding.
         content_hash:
           type: string
         status:
@@ -2230,22 +1925,14 @@ components:
           type: string
     ProjectOrgSelection:
       type: object
-      required: [project_id, rules, context, workflows, revision]
+      required: [project_id, memories, revision]
       properties:
         project_id:
           type: string
-        rules:
+        memories:
           type: array
           items:
-            $ref: "#/components/schemas/RuleMeta"
-        context:
-          type: array
-          items:
-            $ref: "#/components/schemas/ContextMeta"
-        workflows:
-          type: array
-          items:
-            $ref: "#/components/schemas/WorkflowMeta"
+            $ref: "#/components/schemas/MemoryMeta"
         revision:
           type: integer
     DeleteResult:
@@ -2328,9 +2015,6 @@ components:
     DraftReconciliationStatus:
       type: string
       enum: [unknown, clean, conflicts]
-    DraftResourceKind:
-      type: string
-      enum: [context, rule, workflow]
     DraftOperationAction:
       type: string
       enum: [create, update, rename, delete]

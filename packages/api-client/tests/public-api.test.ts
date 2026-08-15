@@ -63,18 +63,10 @@ describe("Clumsies API", () => {
     await api.bundle("bundle");
     await api.updateBundle("bundle", 1, { name: "Updated" });
     await api.deleteBundle("bundle", 2);
-    await api.listOrgRules();
-    await api.orgRule("rule");
-    await api.listOrgContext();
-    await api.orgContext("context");
-    await api.listOrgWorkflows();
-    await api.orgWorkflow("workflow");
-    await api.listProjectRules("project");
-    await api.projectRule("project", "rule");
-    await api.listProjectContext("project");
-    await api.projectContext("project", "context");
-    await api.listProjectWorkflows("project");
-    await api.projectWorkflow("project", "workflow");
+    await api.listOrgMemories();
+    await api.orgMemory("memory");
+    await api.listProjectMemories("project");
+    await api.projectMemory("project", "memory");
     await api.projectOrgSelection("project");
     await api.replaceProjectOrgSelection("project", 1, {});
     await api.listDrafts();
@@ -82,7 +74,7 @@ describe("Clumsies API", () => {
       daemon_installation_id: "daemon",
       project_id: "project",
       title: "Draft",
-      resource: { scope: "project", kind: "context", id: null, path: "context/new.md" },
+      resource: { scope: "project", id: null, path: "memories/new.md" },
     });
     await api.draft("draft");
     await api.updateDraft("draft", 1, { title: "Updated" });
@@ -149,18 +141,10 @@ describe("Clumsies API", () => {
       "GET /api/v1/me/bundles/bundle",
       "PATCH /api/v1/me/bundles/bundle",
       "DELETE /api/v1/me/bundles/bundle",
-      "GET /api/v1/org/rules",
-      "GET /api/v1/org/rules/rule",
-      "GET /api/v1/org/context",
-      "GET /api/v1/org/context/context",
-      "GET /api/v1/org/workflows",
-      "GET /api/v1/org/workflows/workflow",
-      "GET /api/v1/projects/project/rules",
-      "GET /api/v1/projects/project/rules/rule",
-      "GET /api/v1/projects/project/context",
-      "GET /api/v1/projects/project/context/context",
-      "GET /api/v1/projects/project/workflows",
-      "GET /api/v1/projects/project/workflows/workflow",
+      "GET /api/v1/org/memories",
+      "GET /api/v1/org/memories/memory",
+      "GET /api/v1/projects/project/memories",
+      "GET /api/v1/projects/project/memories/memory",
       "GET /api/v1/projects/project/org-selections",
       "PUT /api/v1/projects/project/org-selections",
       "GET /api/v1/drafts",

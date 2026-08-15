@@ -168,89 +168,31 @@ export class ClumsiesApi {
     );
   }
 
-  listOrgRules(query: PageQuery = {}) {
-    return unwrap(this.raw.GET("/api/v1/org/rules", { params: { query } }));
+  listOrgMemories(query: PageQuery = {}) {
+    return unwrap(this.raw.GET("/api/v1/org/memories", { params: { query } }));
   }
 
-  orgRule(ruleId: string) {
+  orgMemory(memoryId: string) {
     return unwrap(
-      this.raw.GET("/api/v1/org/rules/{rule_id}", {
-        params: { path: { rule_id: ruleId } },
+      this.raw.GET("/api/v1/org/memories/{memory_id}", {
+        params: { path: { memory_id: memoryId } },
       }),
     );
   }
 
-  listOrgContext(query: PageQuery = {}) {
-    return unwrap(this.raw.GET("/api/v1/org/context", { params: { query } }));
-  }
-
-  orgContext(contextId: string) {
+  listProjectMemories(projectId: string, query: PageQuery = {}) {
     return unwrap(
-      this.raw.GET("/api/v1/org/context/{context_id}", {
-        params: { path: { context_id: contextId } },
-      }),
-    );
-  }
-
-  listOrgWorkflows(query: PageQuery = {}) {
-    return unwrap(
-      this.raw.GET("/api/v1/org/workflows", { params: { query } }),
-    );
-  }
-
-  orgWorkflow(workflowId: string) {
-    return unwrap(
-      this.raw.GET("/api/v1/org/workflows/{workflow_id}", {
-        params: { path: { workflow_id: workflowId } },
-      }),
-    );
-  }
-
-  listProjectRules(projectId: string, query: PageQuery = {}) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/rules", {
+      this.raw.GET("/api/v1/projects/{project_id}/memories", {
         params: { path: { project_id: projectId }, query },
       }),
     );
   }
 
-  projectRule(projectId: string, ruleId: string) {
+  projectMemory(projectId: string, memoryId: string) {
     return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/rules/{rule_id}", {
-        params: { path: { project_id: projectId, rule_id: ruleId } },
-      }),
-    );
-  }
-
-  listProjectContext(projectId: string, query: PageQuery = {}) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/context", {
-        params: { path: { project_id: projectId }, query },
-      }),
-    );
-  }
-
-  projectContext(projectId: string, contextId: string) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/context/{context_id}", {
-        params: { path: { project_id: projectId, context_id: contextId } },
-      }),
-    );
-  }
-
-  listProjectWorkflows(projectId: string, query: PageQuery = {}) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/workflows", {
-        params: { path: { project_id: projectId }, query },
-      }),
-    );
-  }
-
-  projectWorkflow(projectId: string, workflowId: string) {
-    return unwrap(
-      this.raw.GET("/api/v1/projects/{project_id}/workflows/{workflow_id}", {
+      this.raw.GET("/api/v1/projects/{project_id}/memories/{memory_id}", {
         params: {
-          path: { project_id: projectId, workflow_id: workflowId },
+          path: { project_id: projectId, memory_id: memoryId },
         },
       }),
     );
