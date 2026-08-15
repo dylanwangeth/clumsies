@@ -98,16 +98,17 @@ async fn unify_memory_migration_rewrites_legacy_kinds_on_live_data() {
 
     postgres
         .pool
-        .execute(include_str!("../migrations/20260815000100_unify_memory_model.sql"))
+        .execute(include_str!(
+            "../migrations/20260815000100_unify_memory_model.sql"
+        ))
         .await
         .unwrap();
 
-    let kinds: Vec<String> = sqlx::query_scalar(
-        "SELECT resource_kind FROM resources ORDER BY resource_id",
-    )
-    .fetch_all(&postgres.pool)
-    .await
-    .unwrap();
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT resource_kind FROM resources ORDER BY resource_id")
+            .fetch_all(&postgres.pool)
+            .await
+            .unwrap();
     assert_eq!(
         kinds,
         vec![
@@ -119,18 +120,20 @@ async fn unify_memory_migration_rewrites_legacy_kinds_on_live_data() {
     );
 
     // Description backfilled from name; identity (old_id) preserved.
-    let descriptions: Vec<(String, String)> = sqlx::query_as(
-        "SELECT resource_id, description FROM resources ORDER BY resource_id",
-    )
-    .fetch_all(&postgres.pool)
-    .await
-    .unwrap();
+    let descriptions: Vec<(String, String)> =
+        sqlx::query_as("SELECT resource_id, description FROM resources ORDER BY resource_id")
+            .fetch_all(&postgres.pool)
+            .await
+            .unwrap();
     assert_eq!(
         descriptions,
         vec![
             ("ctx_legacy_context".to_owned(), "Legacy Context".to_owned()),
             ("rul_legacy_rule".to_owned(), "Legacy Rule".to_owned()),
-            ("wfl_legacy_workflow".to_owned(), "Legacy Workflow".to_owned()),
+            (
+                "wfl_legacy_workflow".to_owned(),
+                "Legacy Workflow".to_owned()
+            ),
         ]
     );
 
@@ -163,22 +166,23 @@ async fn unify_memory_migration_rewrites_legacy_kinds_on_live_data() {
     .await
     .unwrap();
     assert_eq!(bundle_kind_gone, 0, "bundle item kind column dropped");
-    let workflow_steps_gone: Option<String> = sqlx::query_scalar(
-        "SELECT to_regclass('workflow_steps')::text",
-    )
-    .fetch_one(&postgres.pool)
-    .await
-    .unwrap();
-    assert!(workflow_steps_gone.is_none(), "workflow_steps table dropped");
+    let workflow_steps_gone: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('workflow_steps')::text")
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert!(
+        workflow_steps_gone.is_none(),
+        "workflow_steps table dropped"
+    );
 
     // Historical tree entries: legacy kinds rewritten, selection kind kept,
     // description column present.
-    let tree_kinds: Vec<(String, String)> = sqlx::query_as(
-        "SELECT item_id, resource_kind FROM tree_entries ORDER BY item_id",
-    )
-    .fetch_all(&postgres.pool)
-    .await
-    .unwrap();
+    let tree_kinds: Vec<(String, String)> =
+        sqlx::query_as("SELECT item_id, resource_kind FROM tree_entries ORDER BY item_id")
+            .fetch_all(&postgres.pool)
+            .await
+            .unwrap();
     assert_eq!(
         tree_kinds,
         vec![
@@ -191,12 +195,11 @@ async fn unify_memory_migration_rewrites_legacy_kinds_on_live_data() {
     );
 
     // Drafts and operations carry the single Memory kind.
-    let draft_kind: String = sqlx::query_scalar(
-        "SELECT resource_kind FROM drafts WHERE draft_id = 'draft_legacy'",
-    )
-    .fetch_one(&postgres.pool)
-    .await
-    .unwrap();
+    let draft_kind: String =
+        sqlx::query_scalar("SELECT resource_kind FROM drafts WHERE draft_id = 'draft_legacy'")
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
     assert_eq!(draft_kind, "memory");
     let operation_kind: String = sqlx::query_scalar(
         "SELECT resource_kind FROM draft_operations WHERE operation_id = 'operation_legacy'",
