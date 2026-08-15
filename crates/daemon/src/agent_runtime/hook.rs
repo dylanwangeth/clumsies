@@ -23,6 +23,11 @@ pub enum HookHost {
     Codex,
     ClaudeCode,
     Opencode,
+    /// DeepSeek Harness (dsh) web sessions. The dsh runtime has no host
+    /// lifecycle hook surface of its own; a small client plugin forwards
+    /// session/turn events to `clumsiesd _agent issue-run-event --host dsh`
+    /// with the same payload vocabulary as the other hosts.
+    Dsh,
 }
 
 impl HookHost {
@@ -31,6 +36,7 @@ impl HookHost {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
             Self::Opencode => "opencode",
+            Self::Dsh => "dsh",
         }
     }
 
@@ -39,6 +45,7 @@ impl HookHost {
             Self::Codex => AgentRunHost::Codex,
             Self::ClaudeCode => AgentRunHost::ClaudeCode,
             Self::Opencode => AgentRunHost::Opencode,
+            Self::Dsh => AgentRunHost::Dsh,
         }
     }
 
@@ -47,6 +54,9 @@ impl HookHost {
             Self::Codex => "turn_id",
             Self::ClaudeCode => "prompt_id",
             Self::Opencode => "message_id",
+            // The dsh plugin mints one turn id per user prompt and reuses it
+            // for the matching Stop event, mirroring the codex turn model.
+            Self::Dsh => "turn_id",
         }
     }
 }
@@ -249,7 +259,12 @@ fn normalize_object(
             host_run_key = Some(root_run_key(host, object)?);
             AgentRunEventType::Ended
         }
-        HookEventName::StopFailure if matches!(host, HookHost::ClaudeCode | HookHost::Opencode) => {
+        HookEventName::StopFailure
+            if matches!(
+                host,
+                HookHost::ClaudeCode | HookHost::Opencode | HookHost::Dsh
+            ) =>
+        {
             kind = Some(AgentRunKind::Root);
             outcome = Some(AgentRunOutcome::Failed);
             host_run_key = Some(root_run_key(host, object)?);
@@ -519,6 +534,53 @@ mod tests {
                 .unwrap_err(),
             HookNormalizeError::InputTooLarge
         );
+    }
+
+    #[test]
+    fn dsh_root_subagent_and_failure_lifecycle_events_normalize() {
+        let started = normalize_hook_event(
+            HookHost::Dsh,
+            br#"{"session_id":"ds_1","turn_id":"turn_9","hook_event_name":"UserPromptSubmit","cwd":"/work"}"#,
+        )
+        .unwrap();
+        assert_eq!(started.host_run_key(), Some("root:turn_9"));
+        assert_eq!(started.event_type(), AgentRunEventType::Started);
+        assert_eq!(started.kind(), Some(AgentRunKind::Root));
+        assert_eq!(started.workspace_path(), Some("/work"));
+
+        let stopped = normalize_hook_event(
+            HookHost::Dsh,
+            br#"{"session_id":"ds_1","turn_id":"turn_9","hook_event_name":"Stop"}"#,
+        )
+        .unwrap();
+        assert_eq!(stopped.host_run_key(), Some("root:turn_9"));
+        assert_eq!(stopped.event_type(), AgentRunEventType::Ended);
+
+        let subagent = normalize_hook_event(
+            HookHost::Dsh,
+            br#"{"session_id":"ds_1","turn_id":"turn_9","agent_id":"sub_2","agent_type":"researcher","hook_event_name":"SubagentStop"}"#,
+        )
+        .unwrap();
+        assert_eq!(subagent.host_run_key(), Some("subagent:ds_1:sub_2"));
+        assert_eq!(subagent.parent_host_run_key(), Some("root:turn_9"));
+        assert_eq!(subagent.kind(), Some(AgentRunKind::Subagent));
+        assert_eq!(subagent.display_label(), Some("researcher"));
+
+        let failure = normalize_hook_event(
+            HookHost::Dsh,
+            br#"{"session_id":"ds_1","turn_id":"turn_10","hook_event_name":"StopFailure","error":"tool_timeout"}"#,
+        )
+        .unwrap();
+        assert_eq!(failure.host_run_key(), Some("root:turn_10"));
+        assert_eq!(failure.outcome(), Some(AgentRunOutcome::Failed));
+
+        let ended = normalize_hook_event(
+            HookHost::Dsh,
+            br#"{"session_id":"ds_1","hook_event_name":"SessionEnd"}"#,
+        )
+        .unwrap();
+        assert_eq!(ended.event_type(), AgentRunEventType::SessionEnded);
+        assert_eq!(ended.outcome(), Some(AgentRunOutcome::Unknown));
     }
 
     #[test]
