@@ -649,6 +649,15 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    func showOrgMemory() {
+        guard activeProjectId != nil else { return }
+        activeProjectId = nil
+        showsProjectSettings = false
+        selectedItemId = nil
+        let tab = visibleTabs.last
+        activeTabId = tab?.id
+    }
+
     func selectProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId }) else { return }
         guard projectId != activeProjectId || !project.isLoaded else { return }
@@ -931,7 +940,11 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func createMemory(kind: MemoryKind, scope: MemoryScope) async {
-        guard let projectId = activeProjectId else { return }
+        // Org-scope drafts are carried by a project in the daemon; when the
+        // user is browsing the Org view without an active project, fall back
+        // to the first project as the carrying project.
+        let projectId = activeProjectId ?? (scope == .org ? projects.first?.id : nil)
+        guard let projectId else { return }
         guard canCreateMemory(kind: kind, scope: scope) else { return }
         let path = uniqueDefaultPath(for: kind, scope: scope)
         let document = defaultDocument(kind: kind, path: path)
