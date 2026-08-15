@@ -507,17 +507,13 @@ impl DaemonDraftScope {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonDraftResourceKind {
-    Context,
-    Rule,
-    Workflow,
+    Memory,
 }
 
 impl DaemonDraftResourceKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Context => "context",
-            Self::Rule => "rule",
-            Self::Workflow => "workflow",
+            Self::Memory => "memory",
         }
     }
 }
@@ -594,11 +590,6 @@ impl DaemonDraftOperation {
                     .and_then(DaemonUpdateDraftOperation::content)
             });
         if let Some(content) = content {
-            if content.resource_kind() != resource {
-                return Err(DaemonError::InvalidRequest(
-                    "draft content kind does not match its resource".to_owned(),
-                ));
-            }
             content.validate()?;
         }
         Ok(())
@@ -714,37 +705,31 @@ pub struct DaemonTextReplacement {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DaemonDraftContent {
-    Context { content: String },
-    Rule { content: String },
-    Workflow { content: String },
+pub struct DaemonDraftContent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub content: String,
 }
 
 impl DaemonDraftContent {
-    pub(crate) fn from_resource(resource: DaemonDraftResourceKind, content: String) -> Self {
-        match resource {
-            DaemonDraftResourceKind::Context => Self::Context { content },
-            DaemonDraftResourceKind::Rule => Self::Rule { content },
-            DaemonDraftResourceKind::Workflow => Self::Workflow { content },
+    pub(crate) fn from_resource(_resource: DaemonDraftResourceKind, content: String) -> Self {
+        Self {
+            description: None,
+            content,
         }
     }
 
     pub(crate) fn resource_kind(&self) -> DaemonDraftResourceKind {
-        match self {
-            Self::Context { .. } => DaemonDraftResourceKind::Context,
-            Self::Rule { .. } => DaemonDraftResourceKind::Rule,
-            Self::Workflow { .. } => DaemonDraftResourceKind::Workflow,
-        }
+        DaemonDraftResourceKind::Memory
     }
 
     pub(crate) fn validate(&self) -> Result<(), DaemonError> {
-        match self {
-            Self::Rule { content } if content.trim().is_empty() => Err(
-                DaemonError::InvalidRequest("rule content must not be empty".to_owned()),
-            ),
-            _ => Ok(()),
+        if self.content.trim().is_empty() {
+            return Err(DaemonError::InvalidRequest(
+                "memory content must not be empty".to_owned(),
+            ));
         }
+        Ok(())
     }
 }
 
@@ -754,14 +739,9 @@ mod draft_operation_validation_tests {
     use crate::util::apply_exact_text_replacements;
 
     fn create_operation(content: DaemonDraftContent) -> DaemonDraftOperation {
-        let path = match content.resource_kind() {
-            DaemonDraftResourceKind::Context => "context/test.md",
-            DaemonDraftResourceKind::Rule => "rules/test",
-            DaemonDraftResourceKind::Workflow => "workflow/test",
-        };
         DaemonDraftOperation {
             create: Some(DaemonCreateDraftOperation {
-                path: path.to_owned(),
+                path: "memory/test.md".to_owned(),
                 content,
                 description: None,
             }),
@@ -773,40 +753,41 @@ mod draft_operation_validation_tests {
     }
 
     #[test]
-    fn rejects_blank_rule_content_before_storage() {
-        let operation = create_operation(DaemonDraftContent::Rule {
+    fn rejects_blank_memory_content_before_storage() {
+        let operation = create_operation(DaemonDraftContent {
+            description: None,
             content: "  ".to_owned(),
         });
 
-        assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
+        assert!(operation.validate(DaemonDraftResourceKind::Memory).is_err());
     }
 
     #[test]
-    fn rejects_content_that_does_not_match_the_resource() {
-        let operation = create_operation(DaemonDraftContent::Context {
-            content: "# Context".to_owned(),
+    fn accepts_non_blank_memory_content() {
+        let operation = create_operation(DaemonDraftContent {
+            description: None,
+            content: "# Memory".to_owned(),
         });
 
-        assert!(operation.validate(DaemonDraftResourceKind::Rule).is_err());
+        assert!(operation.validate(DaemonDraftResourceKind::Memory).is_ok());
     }
 
     #[test]
     fn rejects_non_portable_paths_before_storage() {
         for path in [
             "../outside.md",
-            "context//test.md",
-            "context/AUX.md",
-            "context/test\\file.md",
+            "memory//test.md",
+            "memory/AUX.md",
+            "memory/test\\file.md",
         ] {
-            let mut operation = create_operation(DaemonDraftContent::Context {
-                content: "# Context".to_owned(),
+            let mut operation = create_operation(DaemonDraftContent {
+                description: None,
+                content: "# Memory".to_owned(),
             });
             operation.create.as_mut().unwrap().path = path.to_owned();
 
             assert!(
-                operation
-                    .validate(DaemonDraftResourceKind::Context)
-                    .is_err(),
+                operation.validate(DaemonDraftResourceKind::Memory).is_err(),
                 "path should be rejected: {path}"
             );
         }

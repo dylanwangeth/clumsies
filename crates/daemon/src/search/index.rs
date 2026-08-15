@@ -178,9 +178,10 @@ async fn migrate_project_index(pool: &SqlitePool) -> Result<(), DaemonError> {
             resource_id TEXT NOT NULL,
             project_id TEXT NOT NULL,
             scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
-            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
+            kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
             path TEXT NOT NULL,
             title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
             content TEXT NOT NULL,
             content_hash TEXT NOT NULL,
             source_commit_id TEXT,
@@ -1008,8 +1009,8 @@ async fn write_prepared_index(
         sqlx::query(
             "INSERT INTO search_resources (
                 revision_id, resource_id, project_id, scope, kind, path, title,
-                content, content_hash, source_commit_id, draft_id, draft_revision
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                description, content, content_hash, source_commit_id, draft_id, draft_revision
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(&prepared.revision_id)
         .bind(&resource.resource_id)
@@ -1018,6 +1019,7 @@ async fn write_prepared_index(
         .bind(resource.kind.as_str())
         .bind(&resource.path)
         .bind(&resource.title)
+        .bind(&resource.description)
         .bind(&resource.content)
         .bind(&resource.content_hash)
         .bind(&resource.source_commit_id)
@@ -1368,9 +1370,10 @@ mod tests {
             resource_id: id.to_owned(),
             project_id: "prj_test".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: path.to_owned(),
             title: title.to_owned(),
+            description: String::new(),
             content_hash: super::super::sha256(&content),
             content,
             source_commit_id: Some("commit_one".to_owned()),

@@ -139,6 +139,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_35_to_36(pool).await?;
         existing_schema_version = 36;
     }
+    if existing_schema_version == 36 {
+        migrate_local_schema_36_to_37(pool).await?;
+        existing_schema_version = 37;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -163,7 +167,7 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
             reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
             reconciliation_candidate_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             target_id TEXT,
             path TEXT,
             status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
@@ -191,7 +195,7 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
             local_operation_id TEXT PRIMARY KEY,
             draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
             server_operation_id TEXT,
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             operation_json TEXT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
             sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
@@ -1000,7 +1004,7 @@ pub(crate) async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(
             server_version BIGINT NOT NULL DEFAULT 0,
             base_commit_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             target_id TEXT,
             path TEXT,
             conflict_base_commit_id TEXT,
@@ -1025,7 +1029,7 @@ pub(crate) async fn migrate_local_schema_13_to_14(pool: &SqlitePool) -> Result<(
             local_operation_id TEXT PRIMARY KEY,
             draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
             server_operation_id TEXT,
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             operation_json TEXT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
             sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
@@ -1078,7 +1082,7 @@ pub(crate) async fn migrate_local_schema_14_to_15(pool: &SqlitePool) -> Result<(
             reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
             reconciliation_candidate_id TEXT,
             resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             target_id TEXT,
             path TEXT,
             status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
@@ -1103,7 +1107,7 @@ pub(crate) async fn migrate_local_schema_14_to_15(pool: &SqlitePool) -> Result<(
             local_operation_id TEXT PRIMARY KEY,
             draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
             server_operation_id TEXT,
-            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow')),
+            resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
             operation_json TEXT NOT NULL,
             source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
             sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
@@ -1492,6 +1496,155 @@ pub(crate) async fn upsert_meta_value(
             .await?;
     }
     Ok(())
+}
+
+pub(crate) async fn migrate_local_schema_36_to_37(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        let mut tx = connection.begin().await?;
+
+        // local_drafts: widen resource_kind so the unified Memory kind is
+        // accepted; existing rows keep their legacy values untouched.
+        let drafts_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_drafts'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if drafts_sql.is_none() {
+            // No local_drafts table (e.g. minimal migration seeds); nothing
+            // to rebuild.
+        } else if drafts_sql.as_deref().is_some_and(|sql| sql.contains("'memory'")) {
+            // Already migrated.
+        } else {
+            sqlx::query(
+                "CREATE TABLE local_drafts_v37 (
+                    draft_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    server_draft_id TEXT,
+                    server_version BIGINT NOT NULL DEFAULT 0,
+                    base_commit_id TEXT,
+                    current_commit_id TEXT,
+                    freshness TEXT NOT NULL CHECK (freshness IN ('current', 'behind')) DEFAULT 'current',
+                    has_upstream_resource_changes INTEGER NOT NULL CHECK (has_upstream_resource_changes IN (0, 1)) DEFAULT 0,
+                    reconciliation TEXT NOT NULL CHECK (reconciliation IN ('unknown', 'clean', 'conflicts')) DEFAULT 'unknown',
+                    reconciliation_candidate_id TEXT,
+                    resource_scope TEXT NOT NULL CHECK (resource_scope IN ('org', 'project')),
+                    resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
+                    target_id TEXT,
+                    path TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('open', 'submitted', 'merged', 'discarded')) DEFAULT 'open',
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                )",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO local_drafts_v37
+                 SELECT draft_id, project_id, server_draft_id, server_version, base_commit_id,
+                        current_commit_id, freshness, has_upstream_resource_changes, reconciliation,
+                        reconciliation_candidate_id, resource_scope, resource_kind, target_id, path,
+                        status, created_at, updated_at
+                 FROM local_drafts",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE local_drafts").execute(&mut *tx).await?;
+            sqlx::query("ALTER TABLE local_drafts_v37 RENAME TO local_drafts")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_local_drafts_target_id
+                 ON local_drafts (target_id)",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_drafts_server_draft_id
+                 ON local_drafts (server_draft_id)
+                 WHERE server_draft_id IS NOT NULL",
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // local_draft_operations: widen resource_kind the same way.
+        let operations_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_draft_operations'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if operations_sql.is_none() {
+            // No local_draft_operations table; nothing to rebuild.
+        } else if operations_sql.as_deref().is_some_and(|sql| sql.contains("'memory'")) {
+            // Already migrated.
+        } else {
+            sqlx::query(
+                "CREATE TABLE local_draft_operations_v37 (
+                    local_operation_id TEXT PRIMARY KEY,
+                    draft_id TEXT NOT NULL REFERENCES local_drafts(draft_id) ON DELETE CASCADE,
+                    server_operation_id TEXT,
+                    resource_kind TEXT NOT NULL CHECK (resource_kind IN ('context', 'rule', 'workflow', 'memory')),
+                    operation_json TEXT NOT NULL,
+                    source TEXT NOT NULL CHECK (source IN ('desktop', 'cli', 'mcp_store', 'server')),
+                    sync_status TEXT NOT NULL CHECK (sync_status IN ('queued', 'syncing', 'retrying', 'synced', 'failed')),
+                    last_error TEXT,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                )",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO local_draft_operations_v37
+                 SELECT local_operation_id, draft_id, server_operation_id, resource_kind,
+                        operation_json, source, sync_status, last_error, created_at, updated_at
+                 FROM local_draft_operations",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE local_draft_operations")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("ALTER TABLE local_draft_operations_v37 RENAME TO local_draft_operations")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_local_draft_operations_server_operation_id
+                 ON local_draft_operations (server_operation_id)
+                 WHERE server_operation_id IS NOT NULL",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_local_draft_operations_sync_status
+                 ON local_draft_operations (sync_status)",
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Derived search indexes are rebuilt from the new Commit baseline,
+        // so a reset marker keeps stale kind-constrained indexes from being
+        // queried before the rebuild.
+        sqlx::query(
+            "INSERT INTO daemon_meta (key, value) VALUES ($1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = '1'",
+        )
+        .bind(META_MEMORY_CACHE_RESET_REQUIRED)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    result
 }
 
 #[cfg(test)]

@@ -41,14 +41,36 @@ pub(crate) fn build_units(
     models: &dyn SearchModels,
 ) -> Result<Vec<RetrievalUnit>, SearchFailure> {
     let content = resource.content.as_str();
+    let mut units = Vec::new();
+    if !resource.description.trim().is_empty() {
+        // The description is an explicit retrieval field: it is indexed as
+        // its own unit so BM25, dense vectors and the reranker can match on
+        // the agent-generated summary independently of the body text.
+        let description = resource.description.trim();
+        let token_count = models.token_offsets(description)?.len();
+        units.push(RetrievalUnit {
+            unit_key: format!("{}/description", resource.resource_id),
+            resource_id: resource.resource_id.clone(),
+            ordinal: 0,
+            heading_path: Vec::new(),
+            locator: SourceLocator::MarkdownSpan {
+                start_byte: 0,
+                end_byte: 0,
+                heading_path: Vec::new(),
+            },
+            text: description.to_owned(),
+            text_hash: sha256(description),
+            token_count,
+        });
+    }
     if content.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(units);
     }
     let whole_offsets = models.token_offsets(content)?;
     if whole_offsets.len() <= TARGET_TOKENS {
-        return Ok(vec![make_unit(
+        units.push(make_unit(
             resource,
-            0,
+            units.len(),
             UnitDescriptor {
                 heading_path: Vec::new(),
                 identity: "root",
@@ -57,10 +79,10 @@ pub(crate) fn build_units(
                 range: trim_range(content, 0..content.len()),
                 token_count: whole_offsets.len(),
             },
-        )]);
+        ));
+        return Ok(units);
     }
 
-    let mut units = Vec::new();
     for section in markdown_sections(content) {
         let range = trim_range(content, section.range);
         if range.is_empty() {
@@ -480,13 +502,18 @@ mod tests {
     }
 
     fn resource(content: String) -> SourceResource {
+        resource_with_description(content, String::new())
+    }
+
+    fn resource_with_description(content: String, description: String) -> SourceResource {
         SourceResource {
             resource_id: "ctx_test".to_owned(),
             project_id: "prj_test".to_owned(),
             scope: SourceScope::Project,
-            kind: MemoryKind::Context,
+            kind: MemoryKind::Memory,
             path: "architecture/search.md".to_owned(),
             title: "Search".to_owned(),
+            description,
             content_hash: sha256(&content),
             content,
             source_commit_id: Some("commit_test".to_owned()),
@@ -568,5 +595,38 @@ mod tests {
     #[test]
     fn test_model_is_send_and_sync() {
         let _: Arc<dyn SearchModels> = Arc::new(CharacterModels);
+    }
+
+    #[test]
+    fn description_is_indexed_as_its_own_retrieval_unit() {
+        let units = build_units(
+            &resource_with_description(
+                "# Body\n\nImplementation details only.\n".to_owned(),
+                "Deployment runbook: how to ship releases safely".to_owned(),
+            ),
+            &CharacterModels,
+        )
+        .unwrap();
+
+        let description_unit = units
+            .iter()
+            .find(|unit| unit.unit_key.ends_with("/description"))
+            .expect("description unit exists");
+        assert_eq!(
+            description_unit.text,
+            "Deployment runbook: how to ship releases safely"
+        );
+        // The body unit still points at the real content range.
+        let body_unit = units
+            .iter()
+            .find(|unit| !unit.unit_key.ends_with("/description"))
+            .expect("body unit exists");
+        assert!(!body_unit.text.contains("Deployment runbook"));
+        // Querying on description-only vocabulary reaches the resource.
+        let needle = "ship releases safely";
+        assert!(
+            units.iter().any(|unit| unit.text.contains(needle)),
+            "description vocabulary must be retrievable"
+        );
     }
 }

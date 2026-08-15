@@ -931,6 +931,8 @@ pub struct TreeEntry {
     pub path: Option<String>,
     pub blob_id: String,
     pub source: TreeEntrySource,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

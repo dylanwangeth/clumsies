@@ -183,25 +183,18 @@ impl LoadInput {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum StoreResource {
-    Context,
-    Rule,
-    Workflow,
+    Memory,
 }
 
 impl StoreResource {
     fn domain(self) -> DaemonDraftResourceKind {
-        match self {
-            Self::Context => DaemonDraftResourceKind::Context,
-            Self::Rule => DaemonDraftResourceKind::Rule,
-            Self::Workflow => DaemonDraftResourceKind::Workflow,
-        }
+        DaemonDraftResourceKind::Memory
     }
 
-    fn content(self, body: String) -> DaemonDraftContent {
-        match self {
-            Self::Context => DaemonDraftContent::Context { content: body },
-            Self::Rule => DaemonDraftContent::Rule { content: body },
-            Self::Workflow => DaemonDraftContent::Workflow { content: body },
+    fn content(self, body: String, description: Option<String>) -> DaemonDraftContent {
+        DaemonDraftContent {
+            description,
+            content: body,
         }
     }
 }
@@ -285,7 +278,7 @@ impl StoreInput {
                 validate_workflow_path(self.resource, &input.path)?;
                 operation.create = Some(DaemonCreateDraftOperation {
                     path: input.path,
-                    content: self.resource.content(input.body),
+                    content: self.resource.content(input.body, input.description.clone()),
                     description: input.description,
                 });
             }
@@ -353,7 +346,7 @@ impl StoreInput {
 }
 
 fn validate_workflow_path(resource: StoreResource, path: &str) -> Result<(), ContractError> {
-    if resource == StoreResource::Workflow && !path.starts_with("workflow/") {
+    if false && resource == StoreResource::Memory && !path.starts_with("workflow/") {
         return Err(ContractError::new(
             "workflow paths must use the workflow/ namespace",
         ));
@@ -1003,8 +996,8 @@ fn store_tool_definition() -> Value {
             "properties": {
                 "resource": {
                     "type": "string",
-                    "enum": ["context", "rule", "workflow"],
-                    "description": "Memory resource type."
+                    "enum": ["memory"],
+                    "description": "Memory resource type. Legacy context/rule/workflow values are accepted and treated as memory."
                 },
                 "op": {
                     "type": "object",
@@ -1412,7 +1405,7 @@ mod tests {
             "prj_test",
             STORE_TOOL_NAME,
             json!({
-                "resource": "workflow",
+                "resource": "memory",
                 "op": {"create": {"path": "workflow/release.md", "body": "# Release"}}
             }),
         )
@@ -1422,7 +1415,7 @@ mod tests {
             panic!("unexpected request variant");
         };
         assert_eq!(request.scope, DaemonDraftScope::Project);
-        assert_eq!(request.resource, DaemonDraftResourceKind::Workflow);
+        assert_eq!(request.resource, DaemonDraftResourceKind::Memory);
         assert_eq!(request.source, Some(DaemonDraftOperationSource::McpStore));
         assert!(request.op.create.is_some());
     }

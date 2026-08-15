@@ -4963,6 +4963,7 @@ async fn create_project_commit(
         path: None,
         blob_id: selection_blob_id,
         source: "config".to_owned(),
+        description: String::new(),
     });
 
     validate_tree_materialization_paths(&entries)?;
@@ -5019,6 +5020,8 @@ struct PendingTreeEntry {
     path: Option<String>,
     blob_id: String,
     source: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
 }
 
 fn validate_tree_materialization_paths(entries: &[PendingTreeEntry]) -> Result<(), ServerError> {
@@ -5049,11 +5052,12 @@ async fn pending_resource_entry(
 ) -> Result<PendingTreeEntry, ServerError> {
     let resource_id: String = row.try_get("resource_id")?;
     let body: String = row.try_get("body")?;
+    let description: String = row.try_get("description")?;
     let resource_kind: String = row.try_get("resource_kind")?;
     let path: String = row.try_get("path")?;
     validate_resource_path(&path)?;
     match resource_kind.as_str() {
-        "context" | "rule" | "workflow" => {}
+        "memory" => {}
         other => {
             return Err(ServerError::InvalidRequest(format!(
                 "unknown resource kind while creating Commit: {other}"
@@ -5068,6 +5072,7 @@ async fn pending_resource_entry(
         path: Some(path),
         blob_id: store_blob(tx, &body).await?,
         source: source.to_owned(),
+        description,
     })
 }
 
@@ -5110,8 +5115,9 @@ async fn store_tree(
     for entry in entries {
         sqlx::query(
             "INSERT INTO tree_entries (
-                tree_id, item_id, resource_kind, scope, project_id, path, blob_id, source
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                tree_id, item_id, resource_kind, scope, project_id, path, blob_id, source,
+                description
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT DO NOTHING",
         )
         .bind(&tree_id)
@@ -5122,6 +5128,7 @@ async fn store_tree(
         .bind(&entry.path)
         .bind(&entry.blob_id)
         .bind(&entry.source)
+        .bind(&entry.description)
         .execute(&mut **tx)
         .await?;
     }
@@ -5215,6 +5222,7 @@ async fn load_commit_payload(
             path,
             blob_id: blob_id.clone(),
             source,
+            description: row.try_get("description")?,
         });
         if kind == TreeEntryKind::ProjectOrgSelection {
             project_org_selection = Some(serde_json::from_str(&content).map_err(|error| {
@@ -6188,6 +6196,7 @@ mod tests {
             path: Some(path.to_owned()),
             blob_id: format!("blob_{id}"),
             source: "project".to_owned(),
+            description: String::new(),
         }
     }
 

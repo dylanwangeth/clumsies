@@ -12,9 +12,10 @@ use super::{
 
 pub(super) fn cached_memory_kind(kind: CachedMemoryKind) -> Option<MemoryKind> {
     match kind {
-        CachedMemoryKind::Context => Some(MemoryKind::Context),
-        CachedMemoryKind::Rule => Some(MemoryKind::Rule),
-        CachedMemoryKind::Workflow => Some(MemoryKind::Workflow),
+        CachedMemoryKind::Context
+        | CachedMemoryKind::Rule
+        | CachedMemoryKind::Workflow
+        | CachedMemoryKind::Memory => Some(MemoryKind::Memory),
         CachedMemoryKind::ProjectOrgSelection => None,
     }
 }
@@ -52,6 +53,8 @@ pub(super) struct CachedTreeEntry {
     pub(super) scope: CachedScope,
     pub(super) path: Option<String>,
     pub(super) blob_id: String,
+    #[serde(default)]
+    pub(super) description: String,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -60,6 +63,7 @@ pub(super) enum CachedMemoryKind {
     Context,
     Rule,
     Workflow,
+    Memory,
     ProjectOrgSelection,
 }
 
@@ -205,6 +209,7 @@ async fn load_draft_base_resource(
             kind,
             path,
             title,
+            description: entry.description,
             content_hash: sha256(&content),
             content,
             source_commit_id: Some(commit_id.to_owned()),
@@ -330,19 +335,21 @@ pub(super) fn draft_content_resource(
     let source_commit_id = existing
         .as_ref()
         .and_then(|resource| resource.source.source_commit_id.clone());
-    let (rendered, title) = match (kind, content) {
-        (MemoryKind::Context, DaemonDraftContent::Context { content })
-        | (MemoryKind::Rule, DaemonDraftContent::Rule { content })
-        | (MemoryKind::Workflow, DaemonDraftContent::Workflow { content }) => (
+    let description = content
+        .description
+        .clone()
+        .or_else(|| {
+            existing
+                .as_ref()
+                .map(|resource| resource.source.description.clone())
+        })
+        .unwrap_or_default();
+    let (rendered, title) = {
+        let content = &content.content;
+        (
             content.clone(),
             markdown_title(content).unwrap_or_else(|| title_from_path(&path)),
-        ),
-        _ => {
-            return Err(SearchFailure::failed(
-                "Draft content kind does not match its indexed memory kind",
-            )
-            .into());
-        }
+        )
     };
     Ok(EffectiveResource {
         source: SourceResource {
@@ -352,6 +359,7 @@ pub(super) fn draft_content_resource(
             kind,
             path,
             title,
+            description,
             content_hash: sha256(&rendered),
             content: rendered,
             source_commit_id,

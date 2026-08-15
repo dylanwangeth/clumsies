@@ -161,13 +161,15 @@ fn signed_runtime_binary(root: &Path) -> PathBuf {
 }
 
 fn context_content(content: &str) -> DaemonDraftContent {
-    DaemonDraftContent::Context {
+    DaemonDraftContent {
+        description: None,
         content: content.to_owned(),
     }
 }
 
 fn rule_content(content: &str) -> DaemonDraftContent {
-    DaemonDraftContent::Rule {
+    DaemonDraftContent {
+        description: None,
         content: content.to_owned(),
     }
 }
@@ -351,7 +353,7 @@ async fn project_storage_is_local_per_project_and_moves_managed_cache_safely() {
             base_commit_id: None,
             project_id: "prj_a".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/offline.md".to_owned(),
@@ -2010,7 +2012,7 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/architecture.md".to_owned(),
@@ -2052,7 +2054,7 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/ipc.md".to_owned(),
@@ -2103,7 +2105,7 @@ async fn deleting_a_draft_created_resource_discards_the_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Rule,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "rules/new-rule.md".to_owned(),
@@ -2126,7 +2128,7 @@ async fn deleting_a_draft_created_resource_discards_the_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Rule,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: None,
@@ -2166,7 +2168,7 @@ async fn deleting_an_authoritative_resource_keeps_an_open_deletion_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: Some(DaemonUpdateDraftOperation::Content(
@@ -2191,7 +2193,7 @@ async fn deleting_an_authoritative_resource_keeps_an_open_deletion_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: None,
@@ -2433,7 +2435,7 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
                 base_commit_id: None,
                 project_id: "prj_test".to_owned(),
                 scope: DaemonDraftScope::Project,
-                resource: DaemonDraftResourceKind::Context,
+                resource: DaemonDraftResourceKind::Memory,
                 op: DaemonDraftOperation {
                     create: Some(DaemonCreateDraftOperation {
                         path: "docs/ipc-dispatch.md".to_owned(),
@@ -2524,12 +2526,11 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
             "payload": {
                 "project_id": "prj_mcp",
                 "scope": "project",
-                "resource": "context",
+                "resource": "memory",
                 "op": {
                     "create": {
                         "path": "notes/from-mcp.md",
                         "content": {
-                            "kind": "context",
                             "content": "Stored through the Zig MCP envelope"
                         }
                     }
@@ -2660,7 +2661,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/local.md".to_owned(),
@@ -2683,7 +2684,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: Some(DaemonUpdateDraftOperation::Content(
@@ -2704,7 +2705,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
 
     let list = service
         .list_drafts(DaemonDraftListQuery {
-            resource: Some("context".to_owned()),
+            resource: Some("memory".to_owned()),
             status: Some("open".to_owned()),
             limit: None,
         })
@@ -2715,7 +2716,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
     assert_eq!(item.draft_id, created.draft_id);
     assert_eq!(item.server_draft_id, None);
     assert_eq!(item.server_version, 0);
-    assert_eq!(item.resource_kind, DaemonDraftResourceKind::Context);
+    assert_eq!(item.resource_kind, DaemonDraftResourceKind::Memory);
     assert_eq!(item.path.as_deref(), Some("docs/local.md"));
     assert_eq!(item.status, DaemonLocalDraftStatus::Open);
     assert_eq!(item.pending_operation_count, 2);
@@ -3662,7 +3663,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
             ),
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/sync.md".to_owned(),
@@ -3751,10 +3752,9 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
             .unwrap()
             .starts_with("daemon_")
     );
-    assert_eq!(requests[0]["resource"]["kind"], "context");
+    assert_eq!(requests[0]["resource"]["kind"], "memory");
     assert_eq!(requests[0]["resource"]["path"], "docs/sync.md");
     assert_eq!(requests[0]["operations"][0]["action"], "create");
-    assert_eq!(requests[0]["operations"][0]["content"]["kind"], "context");
     assert_eq!(
         requests[0]["operations"][0]["content"]["content"],
         "Sync me"
@@ -3993,7 +3993,7 @@ async fn queued_draft_syncs_after_project_config_is_set() {
             base_commit_id: None,
             project_id: "prj_late".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/later-config.md".to_owned(),
@@ -4071,7 +4071,7 @@ async fn draft_operation_notifies_auto_sync_worker() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/auto.md".to_owned(),
@@ -4140,7 +4140,7 @@ async fn transient_server_failure_is_retried_automatically() {
             base_commit_id: None,
             project_id: "prj_recovery".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/offline.md".to_owned(),
@@ -4237,7 +4237,7 @@ async fn successful_new_draft_does_not_hide_an_existing_retrying_operation() {
     sqlx::query(
         "INSERT INTO local_drafts (
             draft_id, project_id, resource_scope, resource_kind, status
-         ) VALUES ('draft_retrying', 'prj_retrying', 'project', 'context', 'open')",
+         ) VALUES ('draft_retrying', 'prj_retrying', 'project', 'memory', 'open')",
     )
     .execute(&pool)
     .await
@@ -4247,7 +4247,7 @@ async fn successful_new_draft_does_not_hide_an_existing_retrying_operation() {
             local_operation_id, draft_id, resource_kind, operation_json, source, sync_status,
             last_error
          ) VALUES (
-            'operation_retrying', 'draft_retrying', 'context', '{}', 'desktop', 'retrying',
+            'operation_retrying', 'draft_retrying', 'memory', '{}', 'desktop', 'retrying',
             'Server unavailable'
          )",
     )
@@ -4263,7 +4263,7 @@ async fn successful_new_draft_does_not_hide_an_existing_retrying_operation() {
             base_commit_id: None,
             project_id: "prj_retrying".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/synced-while-retrying.md".to_owned(),
@@ -4307,7 +4307,7 @@ async fn daemon_restart_requeues_an_interrupted_operation() {
             base_commit_id: None,
             project_id: "prj_restart".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "context/restart.md".to_owned(),
@@ -4511,7 +4511,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/batch.md".to_owned(),
@@ -4551,7 +4551,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "docs/batch.md".to_owned(),
@@ -4591,7 +4591,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Context,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: None,
@@ -4659,7 +4659,7 @@ async fn draft_operation_rejects_multiple_operation_variants() {
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
             scope: DaemonDraftScope::Project,
-            resource: DaemonDraftResourceKind::Rule,
+            resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
                     path: "rules/a.md".to_owned(),
@@ -4720,7 +4720,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
     let installed_root = installed.active_generation_path.unwrap();
     assert_eq!(
         std::fs::read_to_string(
-            std::path::Path::new(&installed_root).join("cache/context/context/valid.md")
+            std::path::Path::new(&installed_root).join("cache/memory/context/valid.md")
         )
         .unwrap(),
         "Valid authority"
@@ -4749,7 +4749,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
     );
     assert_eq!(
         std::fs::read_to_string(
-            std::path::Path::new(&installed_root).join("cache/context/context/valid.md")
+            std::path::Path::new(&installed_root).join("cache/memory/context/valid.md")
         )
         .unwrap(),
         "Valid authority"
@@ -5143,9 +5143,7 @@ async fn atomic_commit_payload(
     };
     let selection = json!({
         "project_id": "prj_atomic",
-        "rules": [],
-        "context": [],
-        "workflows": [],
+        "memories": [],
         "revision": 0
     });
     let selection_content = serde_json::to_string(&selection).unwrap();
@@ -5338,7 +5336,7 @@ async fn fake_get_draft(
                 "base_commit_id": null,
                 "resource": {
                     "scope": "project",
-                    "kind": "context",
+                    "kind": "memory",
                     "id": null,
                     "path": "docs/remote.md"
                 },
@@ -5346,12 +5344,11 @@ async fn fake_get_draft(
                     "action": "create",
                     "resource": {
                         "scope": "project",
-                        "kind": "context",
+                        "kind": "memory",
                         "id": null,
                         "path": "docs/remote.md"
                     },
                     "content": {
-                        "kind": "context",
                         "content": "Remote base"
                     },
                     "new_path": null
@@ -5392,7 +5389,6 @@ async fn fake_get_draft(
                 "action": "create",
                 "resource": create_request["resource"],
                 "content": {
-                    "kind": "context",
                     "content": "Remote revision"
                 },
                 "new_path": null,
@@ -5419,7 +5415,7 @@ async fn fake_stale_draft(
             "base_commit_id": null,
             "resource": {
                 "scope": "project",
-                "kind": "context",
+                "kind": "memory",
                 "id": null,
                 "path": "docs/remote.md"
             },
@@ -5572,7 +5568,7 @@ async fn fake_conflicted_draft(
                 "base_commit_id": COMMIT_B,
                 "resource": {
                     "scope": "project",
-                    "kind": "context",
+                    "kind": "memory",
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
@@ -5594,12 +5590,11 @@ async fn fake_conflicted_draft(
                     "action": "update",
                     "resource": {
                         "scope": "project",
-                        "kind": "context",
+                        "kind": "memory",
                         "id": "ctx_conflict",
                         "path": "docs/conflict.md"
                     },
                     "content": {
-                        "kind": "context",
                         "content": "Resolved content"
                     },
                     "new_path": null,
@@ -5615,7 +5610,7 @@ async fn fake_conflicted_draft(
             "base_commit_id": COMMIT_A,
             "resource": {
                 "scope": "project",
-                "kind": "context",
+                "kind": "memory",
                 "id": "ctx_conflict",
                 "path": "docs/conflict.md"
             },
@@ -5637,12 +5632,11 @@ async fn fake_conflicted_draft(
                 "action": "update",
                 "resource": {
                     "scope": "project",
-                    "kind": "context",
+                    "kind": "memory",
                     "id": "ctx_conflict",
                     "path": "docs/conflict.md"
                 },
                 "content": {
-                    "kind": "context",
                     "content": "Draft content"
                 },
                 "new_path": null,
