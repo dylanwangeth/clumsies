@@ -1,18 +1,16 @@
 # MCP
 
-Clumsies exposes four agent-facing tools:
+Clumsies exposes two agent-facing tools:
 
 | Tool | Purpose |
 |---|---|
-| `activate` | Retrieve ranked, directly usable memory fragments for the current task. |
-| `load` | Read complete resources by a known stable ID or exact path. |
-| `store` | Persist an explicitly requested Memory Draft. |
+| `memory` | Manage project memory: retrieve ranked fragments (`activate`), read complete resources (`load`), or persist memory drafts (`store`). |
 | `kanban` | Create, update, list, or semantically transition native Issues. |
 
 The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
 Effective Memory construction, indexing, retrieval, exact loading, Draft
 persistence, and AgentRun projection belong to the resident `clumsiesd` and
-are reached over local XPC. The proxy exposes only the four typed MCP tools; it
+are reached over local XPC. The proxy exposes only the two typed MCP tools; it
 cannot pass arbitrary JSON through to daemon methods.
 
 The proxy verifies the resident's Agent runtime protocol revision and build
@@ -25,14 +23,31 @@ There is no setup call. The removed `retrieve` tool, host-session binding,
 dispatch. Runtime guidance is delivered by `InitializeResult.instructions` and
 the tool descriptions.
 
-## Activate
+## Memory
 
-Call `activate` once at the beginning of each substantive task:
+`memory` unifies all memory operations under a single tool with an `op` tagged enum: `activate`, `load`, and `store`.
+
+### Memory Guidelines (`CLUMSIES.md`)
+
+Each project may define a memory guidelines document (conventionally `CLUMSIES.md` or `README.md` at the workspace root). This document establishes:
+1. **Taxonomy & Organization**: Standard directory layouts (e.g. `architecture/*`, `decisions/*`, `guides/*`).
+2. **Update Rules & Mutation Policy**: When the agent should propose drafts, what descriptions to write, and what not to persist.
+3. **Deprecation Policy**: How conflicting or obsolete memories should be superseded.
+
+Agents can read this document via `memory` with `op: { load: { ids: ["CLUMSIES.md"] } }` before making substantial memory updates.
+
+### Activate
+
+Call `memory` with `op: { activate: ... }` once at the beginning of each substantive task:
 
 ```json
 {
-  "query": "adjust the MCP hybrid retrieval interface",
-  "state": "optional-opaque-state"
+  "op": {
+    "activate": {
+      "query": "adjust the MCP hybrid retrieval interface",
+      "state": "optional-opaque-state"
+    }
+  }
 }
 ```
 
@@ -90,15 +105,19 @@ ready, activation returns `search_model_preparing` with current and total byte
 counts instead of holding the MCP request open. Model preparation retries in
 the background and has no lexical-only fallback.
 
-## Load
+### Load
 
-Use `load` for complete resources already identified by ID or exact path:
+Use `memory` with `op: { load: ... }` for complete resources already identified by ID or exact path (including project guidelines like `CLUMSIES.md`):
 
 ```json
 {
-  "ids": ["mem_123", "architecture/retrieval.md"],
-  "knownHashes": {
-    "mem_123": "sha256:..."
+  "op": {
+    "load": {
+      "ids": ["mem_123", "CLUMSIES.md", "architecture/retrieval.md"],
+      "knownHashes": {
+        "mem_123": "sha256:..."
+      }
+    }
   }
 }
 ```
@@ -111,30 +130,23 @@ optional. When a known hash matches the current complete resource,
 `load` reads the same Effective Memory as `activate`, including current local
 Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 
-## Store
+### Store
 
-Call `store` only when the user explicitly asks to create, update, rename,
+Call `memory` with `op: { store: ... }` only when the user explicitly asks to create, update, rename,
 delete, or discard managed memory. Issues are native objects managed by
 `kanban`; do not model them as Memory documents.
-
-Top-level input:
-
-| Field | Type | Meaning |
-|---|---|---|
-| `resource` | `memory` | The unified Memory type. Legacy `context`, `rule`, and `workflow` values are accepted and treated as memory. |
-| `op` | tagged object | Exactly one of `create`, `update`, `rename`, `delete`, or `discard`. |
 
 Operations:
 
 | Operation | Required fields | Optional fields |
 |---|---|---|
-| `create` | `path`, `body` | `description` |
-| `update` | `id`, `expected_hash`, `replacements` | `description` |
-| `rename` | `id`, `new_path` | `description` |
-| `delete` | `id` | `description` |
-| `discard` | `id` | none |
+| `create` | `path`, `body` | `description`, `resource` |
+| `update` | `id`, `expected_hash`, `replacements` | `description`, `resource` |
+| `rename` | `id`, `new_path` | `description`, `resource` |
+| `delete` | `id` | `description`, `resource` |
+| `discard` | `id` | `resource` |
 
-IDs may be `mem_`-prefixed or legacy `ctx_` / `rul_` / `wfl_` values; legacy
+`resource` defaults to `memory`. IDs may be `mem_`-prefixed or legacy `ctx_` / `rul_` / `wfl_` values; legacy
 IDs stay stable and opaque and are never rewritten.
 
 `delete` removes the addressed item from Local Effective Memory. When the item
@@ -142,16 +154,17 @@ is an unpublished Create Draft, daemon normalizes the operation to `discard`;
 only deletion of an authoritative resource remains an open deletion Draft that
 can be submitted for Review.
 
-Example:
+Example Create:
 
 ```json
 {
-  "resource": "memory",
   "op": {
-    "create": {
-      "path": "release/RELEASE.md",
-      "description": "Release procedure for the project",
-      "body": "# Release\n\nRun verification before publishing."
+    "store": {
+      "create": {
+        "path": "release/RELEASE.md",
+        "description": "Release procedure for the project",
+        "body": "# Release\n\nRun verification before publishing."
+      }
     }
   }
 }
@@ -163,17 +176,18 @@ replacements:
 
 ```json
 {
-  "resource": "memory",
   "op": {
-    "update": {
-      "id": "mem_123",
-      "expected_hash": "sha256:...",
-      "replacements": [
-        {
-          "old_text": "The original exact text.",
-          "new_text": "The replacement text."
-        }
-      ]
+    "store": {
+      "update": {
+        "id": "mem_123",
+        "expected_hash": "sha256:...",
+        "replacements": [
+          {
+            "old_text": "The original exact text.",
+            "new_text": "The replacement text."
+          }
+        ]
+      }
     }
   }
 }

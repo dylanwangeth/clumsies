@@ -73,6 +73,10 @@ pub trait AgentRuntimeBackend {
         &self,
         request: mcp_contract::AgentRuntimeRequest,
     ) -> Result<DaemonIpcResponse, DaemonError>;
+
+    fn guidelines_path(&self) -> Result<Option<String>, DaemonError> {
+        Ok(None)
+    }
 }
 
 impl AgentRuntimeBackend for DaemonIpcClient {
@@ -81,6 +85,11 @@ impl AgentRuntimeBackend for DaemonIpcClient {
         request: mcp_contract::AgentRuntimeRequest,
     ) -> Result<DaemonIpcResponse, DaemonError> {
         self.call(request.into_ipc_request()?)
+    }
+
+    fn guidelines_path(&self) -> Result<Option<String>, DaemonError> {
+        let resp = self.project_config()?;
+        Ok(resp.memory_guidelines_path)
     }
 }
 

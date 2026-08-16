@@ -1391,10 +1391,14 @@ pub(crate) async fn load_project_config(
     let project_id = load_meta_value(pool, "project_config_project_id")
         .await?
         .or_else(|| defaults.project_id.clone());
+    let memory_guidelines_path = load_meta_value(pool, "project_config_memory_guidelines_path")
+        .await?
+        .or_else(|| defaults.memory_guidelines_path.clone());
     let credentials = credentials.filter(|credentials| credentials.server_url == server_url);
     Ok(RuntimeProjectConfig {
         server_url,
         project_id,
+        memory_guidelines_path,
         access_token: credentials
             .as_ref()
             .map(|credentials| credentials.access_token.clone()),
@@ -1417,6 +1421,12 @@ pub(crate) async fn save_project_metadata(
         &mut tx,
         "project_config_project_id",
         config.project_id.as_deref(),
+    )
+    .await?;
+    upsert_meta_value(
+        &mut tx,
+        "project_config_memory_guidelines_path",
+        config.memory_guidelines_path.as_deref(),
     )
     .await?;
     tx.commit().await?;

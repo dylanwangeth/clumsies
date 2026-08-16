@@ -3,6 +3,7 @@ import Foundation
 struct DaemonProjectConfig: Codable, Equatable, Sendable {
     let serverUrl: String
     let projectId: String?
+    let memoryGuidelinesPath: String?
     let hasAccessToken: Bool
     let hasRefreshToken: Bool
     let ready: Bool
@@ -12,6 +13,7 @@ struct DaemonProjectConfig: Codable, Equatable, Sendable {
 struct DaemonProjectConfigUpdate: Codable, Sendable {
     let serverUrl: String
     let projectId: String?
+    let memoryGuidelinesPath: String?
     let accessToken: String?
     let refreshToken: String?
 }

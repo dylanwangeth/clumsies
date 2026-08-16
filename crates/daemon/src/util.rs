@@ -24,6 +24,7 @@ pub(crate) fn canonical_server_url(server_url: &str) -> Result<String, DaemonErr
     ProjectConfig {
         server_url: server_url.to_owned(),
         project_id: None,
+        memory_guidelines_path: None,
     }
     .validate()?;
     Ok(server_url.trim().trim_end_matches('/').to_owned())

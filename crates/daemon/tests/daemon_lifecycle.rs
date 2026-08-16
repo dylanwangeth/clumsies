@@ -2478,6 +2478,7 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
             serde_json::to_value(DaemonProjectConfigUpdateRequest {
                 server_url: "http://127.0.0.1:8080".to_owned(),
                 project_id: Some("prj_test".to_owned()),
+                memory_guidelines_path: None,
                 access_token: Some("secret".to_owned()),
                 refresh_token: Some("refresh-secret".to_owned()),
             })
@@ -2787,6 +2788,7 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: "http://127.0.0.1:18080".to_owned(),
             project_id: Some("prj_config".to_owned()),
+            memory_guidelines_path: None,
             access_token: Some("secret-token".to_owned()),
             refresh_token: Some("refresh-token".to_owned()),
         })
@@ -2843,6 +2845,7 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: "http://127.0.0.1:18080".to_owned(),
             project_id: Some("prj_config".to_owned()),
+            memory_guidelines_path: None,
             access_token: None,
             refresh_token: None,
         })
@@ -2851,6 +2854,45 @@ async fn project_config_can_be_replaced_and_persists_across_restarts() {
     assert!(!signed_out.has_access_token);
     assert!(!signed_out.has_refresh_token);
     assert!(credential_store.credentials().is_none());
+}
+
+#[tokio::test]
+async fn project_config_supports_custom_memory_guidelines_path() {
+    let root = tempfile::tempdir().unwrap();
+    let credential_store = common::TestCredentialStore::default();
+    let state = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    let service = DaemonIpcService::new(state);
+
+    let updated = service
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: "http://127.0.0.1:18080".to_owned(),
+            project_id: Some("prj_custom".to_owned()),
+            memory_guidelines_path: Some("./README.md".to_owned()),
+            access_token: Some("secret-token".to_owned()),
+            refresh_token: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.memory_guidelines_path.as_deref(),
+        Some("./README.md")
+    );
+
+    let restarted = common::initialize_daemon(
+        DaemonConfig::for_root(root.path()),
+        credential_store.clone(),
+    )
+    .await;
+    let restarted_service = DaemonIpcService::new(restarted);
+    let persisted = restarted_service.project_config();
+    assert_eq!(
+        persisted.memory_guidelines_path.as_deref(),
+        Some("./README.md")
+    );
 }
 
 #[tokio::test]
@@ -2868,6 +2910,7 @@ async fn selecting_a_project_preserves_credentials_and_persists_the_active_proje
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: "https://clumsies.example.com".to_owned(),
             project_id: Some("prj_first".to_owned()),
+            memory_guidelines_path: None,
             access_token: Some("access-token".to_owned()),
             refresh_token: Some("refresh-token".to_owned()),
         })
@@ -3571,6 +3614,7 @@ async fn refresh_token_without_access_token_is_rejected_before_persistence() {
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: "https://clumsies.example.com".to_owned(),
             project_id: Some("prj_test".to_owned()),
+            memory_guidelines_path: None,
             access_token: None,
             refresh_token: Some("orphan-refresh".to_owned()),
         })
@@ -3597,6 +3641,7 @@ async fn credential_write_failure_does_not_change_project_metadata_or_runtime_st
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: "https://clumsies.example.com".to_owned(),
             project_id: Some("prj_test".to_owned()),
+            memory_guidelines_path: None,
             access_token: Some("access-secret".to_owned()),
             refresh_token: Some("refresh-secret".to_owned()),
         })
@@ -4028,6 +4073,7 @@ async fn queued_draft_syncs_after_project_config_is_set() {
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: server.url.clone(),
             project_id: Some("prj_late".to_owned()),
+            memory_guidelines_path: None,
             access_token: Some("test-token".to_owned()),
             refresh_token: None,
         })
@@ -4487,6 +4533,7 @@ async fn server_proxy_uses_stale_cache_only_for_read_failures() {
         .replace_project_config(DaemonProjectConfigUpdateRequest {
             server_url: format!("http://{address}"),
             project_id: Some("prj_cache".to_owned()),
+            memory_guidelines_path: None,
             access_token: Some("replacement-token".to_owned()),
             refresh_token: None,
         })
