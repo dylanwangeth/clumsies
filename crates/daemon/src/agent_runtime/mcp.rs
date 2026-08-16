@@ -144,11 +144,14 @@ where
         match method.as_str() {
             "initialize" => {
                 self.initialize_seen = true;
-                if self.project_id.is_none()
-                    && let Some(workspace_path) = extract_workspace_path(&params)
-                    && let Ok(project_id) = self.backend.resolve_binding(workspace_path)
-                {
-                    self.project_id = Some(project_id);
+                if self.project_id.is_none() {
+                    if let Some(workspace_path) = extract_workspace_path(&params)
+                        && let Ok(project_id) = self.backend.resolve_binding(workspace_path)
+                    {
+                        self.project_id = Some(project_id);
+                    } else if let Ok(Some(active)) = self.backend.active_project_id() {
+                        self.project_id = Some(active);
+                    }
                 }
                 Some(success_response(
                     id,
@@ -182,7 +185,12 @@ where
         }
     }
 
-    fn call_tool(&self, params: Value) -> Value {
+    fn call_tool(&mut self, params: Value) -> Value {
+        if self.project_id.is_none()
+            && let Ok(Some(active)) = self.backend.active_project_id()
+        {
+            self.project_id = Some(active);
+        }
         let Some(project_id) = &self.project_id else {
             return tool_error(
                 "No project is bound for this workspace path. Please bind the project in Clumsies App.",

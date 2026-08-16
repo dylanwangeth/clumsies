@@ -147,6 +147,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_37_to_38(pool).await?;
         existing_schema_version = 38;
     }
+    if existing_schema_version == 38 {
+        migrate_local_schema_38_to_39(pool).await?;
+        existing_schema_version = 39;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -1652,7 +1656,7 @@ pub(crate) async fn migrate_local_schema_36_to_37(pool: &SqlitePool) -> Result<(
 }
 
 /// Widens the `agent_runs`, `project_agent_adapters`, and `adapter_fs_ops`
-/// CHECK constraints to accept `antigravity`.
+/// CHECK constraints to accept `dsh`.
 pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(), DaemonError> {
     let mut connection = pool.acquire().await?;
     sqlx::query("PRAGMA foreign_keys = OFF")
@@ -1668,14 +1672,14 @@ pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(sql) = runs_sql
-            && !sql.contains("'antigravity'")
+            && !sql.contains("'dsh'")
         {
             for statement in [
                 "CREATE TABLE agent_runs_v38 (
                     run_id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL,
                     issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
-                    host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh', 'antigravity')),
+                    host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh')),
                     host_run_key TEXT NOT NULL,
                     host_session_id TEXT,
                     parent_run_id TEXT REFERENCES agent_runs(run_id),
@@ -1718,14 +1722,14 @@ pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(sql) = adapters_sql
-            && !sql.contains("'antigravity'")
+            && !sql.contains("'dsh'")
         {
             for statement in [
                 "CREATE TABLE project_agent_adapters_v38 (
                     server_url TEXT NOT NULL,
                     workspace_root TEXT NOT NULL,
                     project_id TEXT NOT NULL,
-                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
+                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
                     revision BIGINT NOT NULL CHECK (revision > 0),
                     manifest_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -1755,7 +1759,7 @@ pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(sql) = fs_ops_sql
-            && !sql.contains("'antigravity'")
+            && !sql.contains("'dsh'")
         {
             for statement in [
                 "CREATE TABLE adapter_fs_ops_v38 (
@@ -1763,7 +1767,7 @@ pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(
                     server_url TEXT NOT NULL,
                     workspace_root TEXT NOT NULL,
                     project_id TEXT NOT NULL,
-                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
+                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
                     action TEXT NOT NULL CHECK (action IN ('install', 'remove')),
                     expected_revision BIGINT,
                     next_revision BIGINT,
@@ -1778,6 +1782,148 @@ pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(
                  FROM adapter_fs_ops",
                 "DROP TABLE adapter_fs_ops",
                 "ALTER TABLE adapter_fs_ops_v38 RENAME TO adapter_fs_ops",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    result
+}
+
+/// Widens the `agent_runs`, `project_agent_adapters`, and `adapter_fs_ops`
+/// CHECK constraints to accept `antigravity`.
+pub(crate) async fn migrate_local_schema_38_to_39(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        let mut tx = connection.begin().await?;
+
+        // 1. agent_runs
+        let runs_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(sql) = runs_sql
+            && !sql.contains("'antigravity'")
+        {
+            for statement in [
+                "CREATE TABLE agent_runs_v39 (
+                    run_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    issue_number BIGINT CHECK (issue_number IS NULL OR issue_number > 0),
+                    host TEXT NOT NULL CHECK (host IN ('codex', 'claude-code', 'zed', 'manual', 'opencode', 'dsh', 'antigravity')),
+                    host_run_key TEXT NOT NULL,
+                    host_session_id TEXT,
+                    parent_run_id TEXT REFERENCES agent_runs(run_id),
+                    kind TEXT NOT NULL CHECK (kind IN ('root', 'subagent')),
+                    phase TEXT NOT NULL CHECK (phase IN ('running', 'ended')),
+                    outcome TEXT CHECK (outcome IN ('completed', 'blocked', 'failed', 'cancelled', 'unknown')),
+                    end_reason TEXT,
+                    display_label TEXT,
+                    summary TEXT,
+                    revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+                    start_observed INTEGER NOT NULL DEFAULT 1 CHECK (start_observed IN (0, 1)),
+                    started_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    lease_expires_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    UNIQUE (project_id, host, host_run_key)
+                )",
+                "INSERT INTO agent_runs_v39
+                 SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                        parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                        revision, start_observed, started_at, last_seen_at, lease_expires_at, ended_at
+                 FROM agent_runs",
+                "DROP TABLE agent_runs",
+                "ALTER TABLE agent_runs_v39 RENAME TO agent_runs",
+                "CREATE INDEX idx_agent_runs_project_issue_latest
+                 ON agent_runs (project_id, issue_number, last_seen_at DESC, run_id DESC)",
+                "CREATE INDEX idx_agent_runs_running_lease
+                 ON agent_runs (phase, lease_expires_at)",
+                "CREATE INDEX idx_agent_runs_project_session
+                 ON agent_runs (project_id, host, host_session_id, phase)",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        // 2. project_agent_adapters
+        let adapters_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_agent_adapters'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(sql) = adapters_sql
+            && !sql.contains("'antigravity'")
+        {
+            for statement in [
+                "CREATE TABLE project_agent_adapters_v39 (
+                    server_url TEXT NOT NULL,
+                    workspace_root TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
+                    revision BIGINT NOT NULL CHECK (revision > 0),
+                    manifest_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (server_url, workspace_root, adapter),
+                    FOREIGN KEY (server_url, workspace_root)
+                        REFERENCES project_bindings(server_url, workspace_root)
+                        ON DELETE CASCADE
+                )",
+                "INSERT INTO project_agent_adapters_v39
+                 SELECT server_url, workspace_root, project_id, adapter, revision,
+                        manifest_json, created_at, updated_at
+                 FROM project_agent_adapters",
+                "DROP TABLE project_agent_adapters",
+                "ALTER TABLE project_agent_adapters_v39 RENAME TO project_agent_adapters",
+                "CREATE INDEX idx_project_agent_adapters_project
+                 ON project_agent_adapters (server_url, project_id)",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        // 3. adapter_fs_ops
+        let fs_ops_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'adapter_fs_ops'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(sql) = fs_ops_sql
+            && !sql.contains("'antigravity'")
+        {
+            for statement in [
+                "CREATE TABLE adapter_fs_ops_v39 (
+                    operation_id TEXT PRIMARY KEY,
+                    server_url TEXT NOT NULL,
+                    workspace_root TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
+                    action TEXT NOT NULL CHECK (action IN ('install', 'remove')),
+                    expected_revision BIGINT,
+                    next_revision BIGINT,
+                    manifest_json TEXT,
+                    changes_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE (server_url, workspace_root, adapter)
+                )",
+                "INSERT INTO adapter_fs_ops_v39
+                 SELECT operation_id, server_url, workspace_root, project_id, adapter, action,
+                        expected_revision, next_revision, manifest_json, changes_json, created_at
+                 FROM adapter_fs_ops",
+                "DROP TABLE adapter_fs_ops",
+                "ALTER TABLE adapter_fs_ops_v39 RENAME TO adapter_fs_ops",
             ] {
                 sqlx::query(statement).execute(&mut *tx).await?;
             }
@@ -1927,7 +2073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_37_to_38_widens_runs_and_adapters_to_antigravity() {
+    async fn schema_38_to_39_widens_runs_and_adapters_to_antigravity() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -2037,7 +2183,7 @@ mod tests {
         .await
         .unwrap();
 
-        migrate_local_schema_37_to_38(&pool).await.unwrap();
+        migrate_local_schema_38_to_39(&pool).await.unwrap();
 
         // Check that antigravity can now be inserted into all 3 tables
         sqlx::query(
@@ -2060,7 +2206,7 @@ mod tests {
         .unwrap();
 
         // Re-running migration is idempotent
-        migrate_local_schema_37_to_38(&pool).await.unwrap();
+        migrate_local_schema_38_to_39(&pool).await.unwrap();
     }
     async fn test_pool_with_v37_adapter_tables() -> SqlitePool {
         let pool = SqlitePoolOptions::new()

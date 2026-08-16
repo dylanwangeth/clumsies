@@ -104,12 +104,14 @@ fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
     let initial_workspace_path = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().into_owned());
-    let initial_project_id = initial_workspace_path.and_then(|workspace_path| {
-        client
-            .resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })
-            .ok()
-            .map(|binding| binding.project_id)
-    });
+    let initial_project_id = initial_workspace_path
+        .and_then(|workspace_path| {
+            client
+                .resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })
+                .ok()
+                .map(|binding| binding.project_id)
+        })
+        .or_else(|| client.project_config().ok().and_then(|cfg| cfg.project_id));
     // The debug-only test seam changes the backend identity only after the
     // startup health and binding requests. This models a resident replacement
     // between MCP initialize and the next tools/call over real XPC.

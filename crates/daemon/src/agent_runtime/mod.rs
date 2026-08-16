@@ -82,6 +82,10 @@ pub trait AgentRuntimeBackend {
             message: "Project binding resolution not supported on this backend".to_owned(),
         })
     }
+
+    fn active_project_id(&self) -> Result<Option<String>, DaemonError> {
+        Ok(None)
+    }
 }
 
 impl AgentRuntimeBackend for DaemonIpcClient {
@@ -95,6 +99,11 @@ impl AgentRuntimeBackend for DaemonIpcClient {
     fn resolve_binding(&self, workspace_path: String) -> Result<String, DaemonError> {
         let resp =
             self.resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })?;
+        Ok(resp.project_id)
+    }
+
+    fn active_project_id(&self) -> Result<Option<String>, DaemonError> {
+        let resp = self.project_config()?;
         Ok(resp.project_id)
     }
 }
