@@ -2186,7 +2186,7 @@ struct WorkspaceLoader: Sendable {
             return try await readiness.waitForHealth { timeout in
                 try await daemon.health(timeout: timeout)
             }
-        } catch let error as DaemonXPCError {
+        } catch is DaemonXPCError {
             let status = await bootstrap.status()
             var details: [String] = []
             if status.installed {
