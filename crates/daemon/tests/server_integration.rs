@@ -1060,6 +1060,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             project_id: Some(bootstrap.project_id.clone()),
             access_token: Some(access_token.to_owned()),
             refresh_token: None,
+            memory_guidelines_path: None,
         })
         .await
         .unwrap();
@@ -1162,6 +1163,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             project_id: Some(bootstrap.project_id.clone()),
             access_token: Some(access_token.to_owned()),
             refresh_token: None,
+            memory_guidelines_path: None,
         })
         .await
         .unwrap();
@@ -1228,6 +1230,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             project_id: Some(bootstrap.project_id.clone()),
             access_token: Some(access_token.to_owned()),
             refresh_token: None,
+            memory_guidelines_path: None,
         })
         .await
         .unwrap();
@@ -1283,6 +1286,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             project_id: Some(bootstrap.project_id.clone()),
             access_token: Some(access_token.to_owned()),
             refresh_token: None,
+            memory_guidelines_path: None,
         })
         .await
         .unwrap();
