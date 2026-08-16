@@ -3225,11 +3225,15 @@ fn render_codex_config(
         let current = current.as_table_mut().ok_or_else(|| {
             adapter_conflict("Codex `mcp_servers.clumsies` must be a TOML table.")
         })?;
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            codex_mcp_entry_matches(current, path)
-                || codex_mcp_entry_matches(current, runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = codex_mcp_entry_matches(current, runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| codex_mcp_entry_matches(current, path))
+            || current
+                .get("command")
+                .and_then(Item::as_str)
+                .is_some_and(|cmd| {
+                    cmd == runtime_binary || cmd.ends_with("/clumsiesd") || cmd == "clumsiesd"
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The Codex `mcp_servers.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -3316,10 +3320,15 @@ fn render_claude_mcp(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("Claude Code `mcpServers` must be a JSON object."))?;
     if let Some(current) = servers.get("clumsies") {
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            current == &claude_mcp_entry(path) || current == &claude_mcp_entry(runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = current == &claude_mcp_entry(runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| current == &claude_mcp_entry(path))
+            || current
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| {
+                    cmd == runtime_binary || cmd.ends_with("/clumsiesd") || cmd == "clumsiesd"
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The Claude Code `mcpServers.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -3362,10 +3371,19 @@ fn render_opencode_config(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("opencode `mcp` must be a JSON object."))?;
     if let Some(current) = mcp.get("clumsies") {
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            current == &opencode_mcp_entry(path) || current == &opencode_mcp_entry(runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = current == &opencode_mcp_entry(runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| current == &opencode_mcp_entry(path))
+            || current
+                .get("command")
+                .and_then(Value::as_array)
+                .is_some_and(|cmd| {
+                    cmd.first().and_then(Value::as_str).is_some_and(|first| {
+                        first == runtime_binary
+                            || first.ends_with("/clumsiesd")
+                            || first == "clumsiesd"
+                    })
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The opencode `mcp.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -4755,9 +4773,9 @@ mod tests {
         let exact_codex = render_codex_config(None, runtime, None).unwrap();
         let exact_claude = render_claude_mcp(None, runtime, None).unwrap();
         let exact_opencode = render_opencode_config(None, runtime, None).unwrap();
-        assert!(render_codex_config(Some(&exact_codex), runtime, None).is_err());
-        assert!(render_claude_mcp(Some(&exact_claude), runtime, None).is_err());
-        assert!(render_opencode_config(Some(&exact_opencode), runtime, None).is_err());
+        assert!(render_codex_config(Some(&exact_codex), runtime, None).is_ok());
+        assert!(render_claude_mcp(Some(&exact_claude), runtime, None).is_ok());
+        assert!(render_opencode_config(Some(&exact_opencode), runtime, None).is_ok());
     }
 
     #[cfg(unix)]
@@ -5271,6 +5289,53 @@ mod tests {
             serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(remaining_hooks.get("lint-checker").is_some());
         assert!(remaining_hooks.get("clumsies-issue-run-event").is_none());
+    }
+
+    #[test]
+    fn claude_and_antigravity_adapters_coexist_without_mcp_conflict() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        // 1. Install Claude Code
+        let claude_changes = install_plan(
+            ProjectAgentAdapterKind::ClaudeCode,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&claude_changes).unwrap();
+        let claude_manifest =
+            manifest_for_changes(&claude_changes, helper, "claude-hash".to_owned());
+
+        // 2. Install Antigravity on same workspace - MUST SUCCEED without conflict
+        let antigravity_changes = install_plan(
+            ProjectAgentAdapterKind::Antigravity,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&antigravity_changes).unwrap();
+
+        let mcp_path = workspace.path().join(".mcp.json");
+        let mcp_json: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
+        assert_eq!(
+            mcp_json["mcpServers"]["clumsies"]["command"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+        assert!(workspace.path().join(".agents/hooks.json").exists());
+        assert!(workspace.path().join(".claude/settings.json").exists());
+
+        // 3. Reinstalling with previous manifest remains idempotent and conflict-free
+        let claude_reinstall = install_plan(
+            ProjectAgentAdapterKind::ClaudeCode,
+            workspace.path(),
+            helper,
+            Some(&claude_manifest),
+        )
+        .unwrap();
+        assert_eq!(claude_reinstall.len(), 6);
     }
 
     #[test]
