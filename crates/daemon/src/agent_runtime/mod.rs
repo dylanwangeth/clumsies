@@ -11,6 +11,7 @@ pub mod mcp_contract;
 
 use crate::{
     AgentRuntimeIdentity, DaemonError, DaemonIpcClient, DaemonIpcRequest, DaemonIpcResponse,
+    DaemonProjectBindingResolveRequest,
 };
 
 pub const AGENT_RUNTIME_PROTOCOL_REVISION: u32 = 1;
@@ -73,6 +74,14 @@ pub trait AgentRuntimeBackend {
         &self,
         request: mcp_contract::AgentRuntimeRequest,
     ) -> Result<DaemonIpcResponse, DaemonError>;
+
+    fn resolve_binding(&self, workspace_path: String) -> Result<String, DaemonError> {
+        let _ = workspace_path;
+        Err(DaemonError::State {
+            code: "project_binding_not_found",
+            message: "Project binding resolution not supported on this backend".to_owned(),
+        })
+    }
 }
 
 impl AgentRuntimeBackend for DaemonIpcClient {
@@ -81,6 +90,12 @@ impl AgentRuntimeBackend for DaemonIpcClient {
         request: mcp_contract::AgentRuntimeRequest,
     ) -> Result<DaemonIpcResponse, DaemonError> {
         self.call(request.into_ipc_request()?)
+    }
+
+    fn resolve_binding(&self, workspace_path: String) -> Result<String, DaemonError> {
+        let resp =
+            self.resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })?;
+        Ok(resp.project_id)
     }
 }
 
