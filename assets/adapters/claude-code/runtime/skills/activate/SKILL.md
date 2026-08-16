@@ -4,7 +4,7 @@ description: Activate available managed agent memory
 argument-hint: "[task or retrieval cue]"
 user-invocable: true
 ---
-Call the `activate` MCP tool once with a natural-language `query` describing
+Call the `memory` MCP tool once with `op: { activate: { query: "..." } }` describing
 the current task or retrieval cue. Use `$ARGUMENTS` when provided; otherwise
 derive the query from the current user task.
 

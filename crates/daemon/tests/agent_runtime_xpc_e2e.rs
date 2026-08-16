@@ -129,8 +129,8 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
             "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"activate\",\"arguments\":{\"query\":\"agent runtime e2e\"}}}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"load\",\"arguments\":{\"ids\":[\"workflow/CODING.md\"]}}}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"activate\":{\"query\":\"agent runtime e2e\"}}}}}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"load\":{\"ids\":[\"workflow/CODING.md\"]}}}}}\n"
         ),
         &[],
     );

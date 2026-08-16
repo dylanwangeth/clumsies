@@ -181,6 +181,8 @@ impl LaunchAgentRuntimeStatus {
 pub struct DaemonProjectConfig {
     pub server_url: String,
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub memory_guidelines_path: Option<String>,
     pub has_access_token: bool,
     pub has_refresh_token: bool,
     pub ready: bool,
@@ -191,6 +193,8 @@ pub struct DaemonProjectConfig {
 pub struct DaemonProjectConfigUpdateRequest {
     pub server_url: String,
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub memory_guidelines_path: Option<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
 }

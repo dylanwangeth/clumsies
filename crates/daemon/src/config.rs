@@ -34,6 +34,7 @@ pub struct DaemonConfig {
 pub struct ProjectConfig {
     pub server_url: String,
     pub project_id: Option<String>,
+    pub memory_guidelines_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -575,6 +576,9 @@ impl ProjectConfig {
             project_id: env::var("CLUMSIES_PROJECT_ID")
                 .ok()
                 .and_then(non_empty_string),
+            memory_guidelines_path: env::var("CLUMSIES_MEMORY_GUIDELINES_PATH")
+                .ok()
+                .and_then(non_empty_string),
         }
     }
 
@@ -594,6 +598,7 @@ impl ProjectConfig {
 pub(crate) struct RuntimeProjectConfig {
     pub(crate) server_url: String,
     pub(crate) project_id: Option<String>,
+    pub(crate) memory_guidelines_path: Option<String>,
     pub(crate) access_token: Option<String>,
     pub(crate) refresh_token: Option<String>,
 }
@@ -603,6 +608,7 @@ impl RuntimeProjectConfig {
         ProjectConfig {
             server_url: self.server_url.clone(),
             project_id: self.project_id.clone(),
+            memory_guidelines_path: self.memory_guidelines_path.clone(),
         }
         .validate()?;
         if self.access_token.is_none() && self.refresh_token.is_some() {
@@ -617,6 +623,7 @@ impl RuntimeProjectConfig {
         ProjectConfig {
             server_url: self.server_url.clone(),
             project_id: self.project_id.clone(),
+            memory_guidelines_path: self.memory_guidelines_path.clone(),
         }
     }
 

@@ -186,6 +186,7 @@ impl DaemonState {
         let project_config = RuntimeProjectConfig {
             server_url: request.server_url.trim().to_owned(),
             project_id: request.project_id.and_then(non_empty_string),
+            memory_guidelines_path: request.memory_guidelines_path.and_then(non_empty_string),
             access_token: request.access_token.and_then(non_empty_string),
             refresh_token: request.refresh_token.and_then(non_empty_string),
         };
@@ -614,6 +615,7 @@ impl DaemonState {
         DaemonProjectConfig {
             server_url: project_config.server_url,
             project_id: project_config.project_id,
+            memory_guidelines_path: project_config.memory_guidelines_path,
             has_access_token: project_config.access_token.is_some(),
             has_refresh_token: project_config.refresh_token.is_some(),
             ready: readiness.ready,
@@ -2224,6 +2226,7 @@ mod tests {
             .replace_project_config(DaemonProjectConfigUpdateRequest {
                 server_url: "https://clumsies.example.test".to_owned(),
                 project_id: Some("prj_test".to_owned()),
+                memory_guidelines_path: None,
                 access_token: Some("existing-access".to_owned()),
                 refresh_token: Some("existing-refresh".to_owned()),
             })

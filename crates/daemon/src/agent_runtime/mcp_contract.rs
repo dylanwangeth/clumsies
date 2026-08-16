@@ -24,9 +24,7 @@ const MAX_ISSUE_FACT_ID_BYTES: usize = 128;
 const MAX_ISSUE_FACT_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_ISSUE_FACT_VALUE_BYTES: usize = 256;
 
-pub const ACTIVATE_TOOL_NAME: &str = "activate";
-pub const LOAD_TOOL_NAME: &str = "load";
-pub const STORE_TOOL_NAME: &str = "store";
+pub const MEMORY_TOOL_NAME: &str = "memory";
 pub const KANBAN_TOOL_NAME: &str = "kanban";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -88,16 +86,8 @@ pub fn parse_tool_call(
     reject_null_values(&arguments)?;
 
     match name {
-        ACTIVATE_TOOL_NAME => {
-            let input: ActivateInput = decode_arguments(name, arguments)?;
-            input.into_domain(project_id)
-        }
-        LOAD_TOOL_NAME => {
-            let input: LoadInput = decode_arguments(name, arguments)?;
-            input.into_domain(project_id)
-        }
-        STORE_TOOL_NAME => {
-            let input: StoreInput = decode_arguments(name, arguments)?;
+        MEMORY_TOOL_NAME => {
+            let input: MemoryInput = decode_arguments(name, arguments)?;
             input.into_domain(project_id)
         }
         KANBAN_TOOL_NAME => {
@@ -132,6 +122,30 @@ fn reject_null_values(value: &Value) -> Result<(), ContractError> {
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryInput {
+    op: MemoryOperation,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryOperation {
+    Activate(ActivateInput),
+    Load(LoadInput),
+    Store(StoreInput),
+}
+
+impl MemoryInput {
+    fn into_domain(self, project_id: &str) -> Result<AgentRuntimeRequest, ContractError> {
+        match self.op {
+            MemoryOperation::Activate(input) => input.into_domain(project_id),
+            MemoryOperation::Load(input) => input.into_domain(project_id),
+            MemoryOperation::Store(input) => input.into_domain(project_id),
+        }
     }
 }
 
@@ -199,11 +213,27 @@ impl StoreResource {
     }
 }
 
+fn default_store_resource() -> StoreResource {
+    StoreResource::Memory
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoreInput {
+    #[serde(default = "default_store_resource")]
     resource: StoreResource,
-    op: StoreOperation,
+    #[serde(default)]
+    create: Option<StoreCreateInput>,
+    #[serde(default)]
+    update: Option<StoreUpdateInput>,
+    #[serde(default)]
+    rename: Option<StoreRenameInput>,
+    #[serde(default)]
+    delete: Option<StoreDeleteInput>,
+    #[serde(default)]
+    discard: Option<StoreDiscardInput>,
+    #[serde(default)]
+    op: Option<StoreOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,6 +293,27 @@ struct StoreDiscardInput {
 
 impl StoreInput {
     fn into_domain(self, project_id: &str) -> Result<AgentRuntimeRequest, ContractError> {
+        let op = match (
+            self.op,
+            self.create,
+            self.update,
+            self.rename,
+            self.delete,
+            self.discard,
+        ) {
+            (Some(op), None, None, None, None, None) => op,
+            (None, Some(create), None, None, None, None) => StoreOperation::Create(create),
+            (None, None, Some(update), None, None, None) => StoreOperation::Update(update),
+            (None, None, None, Some(rename), None, None) => StoreOperation::Rename(rename),
+            (None, None, None, None, Some(delete), None) => StoreOperation::Delete(delete),
+            (None, None, None, None, None, Some(discard)) => StoreOperation::Discard(discard),
+            _ => {
+                return Err(ContractError::new(
+                    "store must provide exactly one operation (create, update, rename, delete, or discard)",
+                ));
+            }
+        };
+
         let resource = self.resource.domain();
         let mut operation = DaemonDraftOperation {
             create: None,
@@ -271,7 +322,7 @@ impl StoreInput {
             delete: None,
             discard: None,
         };
-        match self.op {
+        match op {
             StoreOperation::Create(input) => {
                 require_non_empty(&input.path, "path")?;
                 require_non_empty(&input.body, "body")?;
@@ -932,110 +983,118 @@ fn is_issue_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub const DEFAULT_GUIDELINES_PATH: &str = "CLUMSIES.md";
+
 /// Tool definitions exposed over MCP. Keep these schemas MCP-specific: daemon
 /// request structs intentionally do not double as public Agent contracts.
 pub fn tool_definitions() -> Vec<Value> {
+    tool_definitions_with_guidelines(DEFAULT_GUIDELINES_PATH)
+}
+
+pub fn tool_definitions_with_guidelines(guidelines_path: &str) -> Vec<Value> {
     vec![
-        json!({
-            "name": ACTIVATE_TOOL_NAME,
-            "title": "Activate",
-            "description": "Activate the memory fragments most useful for the current task. Call once at the start of each substantive task. The daemon performs BM25 and vector recall, RRF fusion, reranking, budget control, and fragment delta calculation. Pass state only while fragments from the preceding activation remain in the model context.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Natural-language representation of the current task or retrieval cue."
-                    },
-                    "state": {
-                        "type": "string",
-                        "description": "Opaque next_state from a preceding activation whose fragments are still present in the current model context."
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }
-        }),
-        json!({
-            "name": LOAD_TOOL_NAME,
-            "title": "Load",
-            "description": "Load complete current memory resources by stable id or exact path. Use for deep reading or before editing a known resource; activate already returns directly usable fragments and does not require a follow-up load.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "ids": {
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {"type": "string", "minLength": 1},
-                        "description": "Stable resource ids or exact paths."
-                    },
-                    "knownHashes": {
-                        "type": "object",
-                        "description": "Optional known content hashes keyed by requested id or path. Unchanged resources omit content.",
-                        "additionalProperties": {"type": "string"}
-                    }
-                },
-                "required": ["ids"],
-                "additionalProperties": false
-            }
-        }),
-        store_tool_definition(),
+        memory_tool_definition(guidelines_path),
         kanban_tool_definition(),
     ]
 }
 
-fn store_tool_definition() -> Value {
+fn memory_tool_definition(guidelines_path: &str) -> Value {
+    let description = format!(
+        "Manage project memory: activate ranked memory fragments for the current task, load complete memory resources by ID or path, or create/update/rename/delete/discard memory drafts when explicitly requested. Project memory conventions and update rules are documented at {guidelines_path}; call memory with op.load to read them before making substantial memory updates. Pass exactly one tagged operation in op."
+    );
     json!({
-        "name": STORE_TOOL_NAME,
-        "title": "Store",
-        "description": "Create, update, rename, delete, or discard a local Memory Draft when the user explicitly requests memory maintenance. Issues are native objects managed by the issue tool, not Memory documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Pass exactly one tagged operation.",
+        "name": MEMORY_TOOL_NAME,
+        "title": "Memory",
+        "description": description,
         "inputSchema": {
             "type": "object",
             "properties": {
-                "resource": {
-                    "type": "string",
-                    "enum": ["memory"],
-                    "description": "Memory resource type. Legacy context/rule/workflow values are accepted and treated as memory."
-                },
                 "op": {
                     "type": "object",
                     "minProperties": 1,
                     "maxProperties": 1,
                     "properties": {
-                        "create": {"$ref": "#/$defs/writeCreate"},
-                        "update": {"$ref": "#/$defs/writeUpdate"},
-                        "rename": {
+                        "activate": {
                             "type": "object",
+                            "description": "Activate the memory fragments most useful for the current task. Call once at the start of each substantive task. The daemon performs BM25 and vector recall, RRF fusion, reranking, budget control, and fragment delta calculation. Pass state only while fragments from the preceding activation remain in the model context.",
                             "properties": {
-                                "id": {"type": "string", "minLength": 1},
-                                "new_path": {"type": "string", "minLength": 1},
-                                "description": {"type": "string"}
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Natural-language representation of the current task or retrieval cue."
+                                },
+                                "state": {
+                                    "type": "string",
+                                    "description": "Opaque next_state from a preceding activation whose fragments are still present in the current model context."
+                                }
                             },
-                            "required": ["id", "new_path"],
+                            "required": ["query"],
                             "additionalProperties": false
                         },
-                        "delete": {
+                        "load": {
                             "type": "object",
+                            "description": "Load complete current memory resources by stable id or exact path. Use for deep reading or before editing a known resource; activate already returns directly usable fragments and does not require a follow-up load.",
                             "properties": {
-                                "id": {"type": "string", "minLength": 1},
-                                "description": {"type": "string"}
+                                "ids": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "uniqueItems": true,
+                                    "items": {"type": "string", "minLength": 1},
+                                    "description": "Stable resource ids or exact paths."
+                                },
+                                "knownHashes": {
+                                    "type": "object",
+                                    "description": "Optional known content hashes keyed by requested id or path. Unchanged resources omit content.",
+                                    "additionalProperties": {"type": "string"}
+                                }
                             },
-                            "required": ["id"],
+                            "required": ["ids"],
                             "additionalProperties": false
                         },
-                        "discard": {
+                        "store": {
                             "type": "object",
-                            "properties": {"id": {"type": "string", "minLength": 1}},
-                            "required": ["id"],
+                            "description": "Create, update, rename, delete, or discard a local Memory Draft when the user explicitly requests memory maintenance. Issues are native objects managed by the kanban tool, not Memory documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Follow project memory conventions defined at CLUMSIES.md.",
+                            "properties": {
+                                "resource": {
+                                    "type": "string",
+                                    "enum": ["memory"],
+                                    "description": "Memory resource type. Defaults to 'memory'."
+                                },
+                                "create": {"$ref": "#/$defs/writeCreate"},
+                                "update": {"$ref": "#/$defs/writeUpdate"},
+                                "rename": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string", "minLength": 1},
+                                        "new_path": {"type": "string", "minLength": 1},
+                                        "description": {"type": "string"}
+                                    },
+                                    "required": ["id", "new_path"],
+                                    "additionalProperties": false
+                                },
+                                "delete": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string", "minLength": 1},
+                                        "description": {"type": "string"}
+                                    },
+                                    "required": ["id"],
+                                    "additionalProperties": false
+                                },
+                                "discard": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "string", "minLength": 1}},
+                                    "required": ["id"],
+                                    "additionalProperties": false
+                                }
+                            },
                             "additionalProperties": false
                         }
                     },
                     "additionalProperties": false
                 }
             },
-            "required": ["resource", "op"],
+            "required": ["op"],
             "additionalProperties": false,
             "$defs": {
                 "writeCreate": {
@@ -1328,17 +1387,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_expose_only_the_four_agent_tools() {
+    fn schemas_expose_only_the_two_agent_tools() {
         let tools = tool_definitions();
         let names = tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["activate", "load", "store", "kanban"]);
+        assert_eq!(names, ["memory", "kanban"]);
         assert_eq!(
-            tools[3]["inputSchema"]["properties"]["op"]["properties"]["create"]["properties"]["verification_steps"]
+            tools[1]["inputSchema"]["properties"]["op"]["properties"]["create"]["properties"]["verification_steps"]
                 ["items"]["type"],
             "string"
+        );
+        assert!(
+            tools[0]["inputSchema"]["properties"]["op"]["properties"]["activate"].is_object()
+        );
+        assert!(
+            tools[0]["inputSchema"]["properties"]["op"]["properties"]["load"].is_object()
+        );
+        assert!(
+            tools[0]["inputSchema"]["properties"]["op"]["properties"]["store"].is_object()
         );
     }
 
@@ -1372,16 +1440,16 @@ mod tests {
     fn strict_contract_rejects_unknown_and_null_fields() {
         let unknown = parse_tool_call(
             "prj_test",
-            ACTIVATE_TOOL_NAME,
-            json!({"query": "hello", "raw_payload": "secret"}),
+            MEMORY_TOOL_NAME,
+            json!({"op": {"activate": {"query": "hello", "raw_payload": "secret"}}}),
         )
         .unwrap_err();
         assert!(unknown.to_string().contains("unknown field"));
 
         let null = parse_tool_call(
             "prj_test",
-            ACTIVATE_TOOL_NAME,
-            json!({"query": "hello", "state": null}),
+            MEMORY_TOOL_NAME,
+            json!({"op": {"activate": {"query": "hello", "state": null}}}),
         )
         .unwrap_err();
         assert_eq!(null.to_string(), "arguments must not contain null values");
@@ -1403,10 +1471,14 @@ mod tests {
     fn store_create_builds_the_existing_typed_draft_request() {
         let request = parse_tool_call(
             "prj_test",
-            STORE_TOOL_NAME,
+            MEMORY_TOOL_NAME,
             json!({
-                "resource": "memory",
-                "op": {"create": {"path": "workflow/release.md", "body": "# Release"}}
+                "op": {
+                    "store": {
+                        "resource": "memory",
+                        "create": {"path": "workflow/release.md", "body": "# Release"}
+                    }
+                }
             }),
         )
         .unwrap();

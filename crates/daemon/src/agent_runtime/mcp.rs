@@ -5,13 +5,20 @@ use std::io::{self, BufRead, Write};
 use serde_json::{Map, Value, json};
 
 use super::AgentRuntimeBackend;
-use super::mcp_contract::{decode_tool_call_params, parse_tool_call, tool_definitions};
+use super::mcp_contract::{
+    DEFAULT_GUIDELINES_PATH, decode_tool_call_params, parse_tool_call,
+    tool_definitions_with_guidelines,
+};
 
 const JSONRPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
-pub const SERVER_INSTRUCTIONS: &str = "Call activate once at the start of every substantive user task. It returns ranked memory fragments ready for the current reasoning context. Pass its next_state only while the earlier fragments remain in the model context; omit state after context compaction or when starting fresh. Use load only to read complete resources by known id or path, and store only when the user explicitly asks for memory maintenance. Store queues synchronization and does not publish authority directly. Use kanban for the native Kanban (distinct from remote GitHub Issues). Other agents share this board: before creating or mutating anything, call kanban.list first to check for existing Issues and active runs, so you do not duplicate work or claim an Issue another agent is already working on. A Todo may report blocked=true with blocking_reasons when its dependencies are not Done or an external condition is unsatisfied; treat such an Issue as not yet actionable and do not begin_work on it unless the user explicitly overrides. While you are already working an Issue, a new code-related request from the user does not interrupt the current work: capture it as a new Todo Issue with kanban.create (without begin_work) and continue; only non-code requests such as documentation, memory, or workflow text may be handled immediately. Then call kanban.get when the user supplies a global issue_id, create durable Todo work only after the list check, update semantic content, call kanban.begin_work BEFORE starting work on any Issue (user-assigned or self-created) to claim it and enter In Progress (skip it only if the Issue is already bound to an active run), and call kanban.request_closure only after judging its acceptance criteria satisfied. kanban.get returns the owning project_id; mutations remain scoped to this MCP workspace. Agents cannot approve closure. AgentRun lifecycle events never advance an Issue.";
+pub fn server_instructions(guidelines_path: &str) -> String {
+    format!(
+        "Call memory with op: {{ activate: {{ query: \"...\" }} }} once at the start of every substantive user task. It returns ranked memory fragments ready for the current reasoning context. Pass its next_state only while the earlier fragments remain in the model context; omit state after context compaction or when starting fresh. Use memory with op: {{ load: {{ ids: [...] }} }} to read complete resources by known id or path (including project memory conventions at {guidelines_path}). Use memory with op: {{ store: ... }} only when the user explicitly asks for memory maintenance; adhere to project memory update rules before storing drafts. Store queues synchronization and does not publish authority directly. Use kanban for the native Kanban (distinct from remote GitHub Issues). Other agents share this board: before creating or mutating anything, call kanban.list first to check for existing Issues and active runs, so you do not duplicate work or claim an Issue another agent is already working on. A Todo may report blocked=true with blocking_reasons when its dependencies are not Done or an external condition is unsatisfied; treat such an Issue as not yet actionable and do not begin_work on it unless the user explicitly overrides. While you are already working an Issue, a new code-related request from the user does not interrupt the current work: capture it as a new Todo Issue with kanban.create (without begin_work) and continue; only non-code requests such as documentation, memory, or workflow text may be handled immediately. Then call kanban.get when the user supplies a global issue_id, create durable Todo work only after the list check, update semantic content, call kanban.begin_work BEFORE starting work on any Issue (user-assigned or self-created) to claim it and enter In Progress (skip it only if the Issue is already bound to an active run), and call kanban.request_closure only after judging its acceptance criteria satisfied. kanban.get returns the owning project_id; mutations remain scoped to this MCP workspace. Agents cannot approve closure. AgentRun lifecycle events never advance an Issue."
+    )
+}
 
 #[derive(Clone, Copy)]
 enum ErrorCode {
@@ -26,6 +33,7 @@ enum ErrorCode {
 pub struct McpServer<B> {
     backend: B,
     project_id: String,
+    guidelines_path: String,
     version: String,
     initialize_seen: bool,
     initialized: bool,
@@ -36,13 +44,24 @@ where
     B: AgentRuntimeBackend,
 {
     pub fn new(backend: B, project_id: impl Into<String>, version: impl Into<String>) -> Self {
+        let guidelines_path = backend
+            .guidelines_path()
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| DEFAULT_GUIDELINES_PATH.to_owned());
         Self {
             backend,
             project_id: project_id.into(),
+            guidelines_path,
             version: version.into(),
             initialize_seen: false,
             initialized: false,
         }
+    }
+
+    pub fn with_guidelines_path(mut self, path: impl Into<String>) -> Self {
+        self.guidelines_path = path.into();
+        self
     }
 
     /// Processes one newline-delimited JSON-RPC message. Notifications return
@@ -150,7 +169,7 @@ where
                         "protocolVersion": PROTOCOL_VERSION,
                         "capabilities": {"tools": {"listChanged": false}},
                         "serverInfo": {"name": "clumsies", "version": self.version},
-                        "instructions": SERVER_INSTRUCTIONS
+                        "instructions": server_instructions(&self.guidelines_path)
                     }),
                 ))
             }
@@ -160,7 +179,10 @@ where
                 ErrorCode::ServerNotInitialized,
                 "Server not initialized",
             )),
-            "tools/list" => Some(success_response(id, json!({"tools": tool_definitions()}))),
+            "tools/list" => Some(success_response(
+                id,
+                json!({"tools": tool_definitions_with_guidelines(&self.guidelines_path)}),
+            )),
             "tools/call" => Some(success_response(id, self.call_tool(params))),
             _ => Some(error_response(
                 id,
@@ -374,7 +396,7 @@ mod tests {
         let list = server
             .process_line(br#"{"id":2,"method":"tools/list","params":{}}"#)
             .unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -383,7 +405,7 @@ mod tests {
         let mut server = initialized_server(backend);
         let response = server
             .process_line(
-                br#"{"id":3,"method":"tools/call","params":{"name":"activate","arguments":{"query":"runtime identity"}}}"#,
+                br#"{"id":3,"method":"tools/call","params":{"name":"memory","arguments":{"op":{"activate":{"query":"runtime identity"}}}}}"#,
             )
             .unwrap();
 
@@ -406,7 +428,7 @@ mod tests {
         let mut server = initialized_server(backend);
         let response = server
             .process_line(
-                br#"{"id":4,"method":"tools/call","params":{"name":"activate","arguments":{"query":"ok","prompt":"secret"}}}"#,
+                br#"{"id":4,"method":"tools/call","params":{"name":"memory","arguments":{"op":{"activate":{"query":"ok","prompt":"secret"}}}}}"#,
             )
             .unwrap();
 
@@ -438,7 +460,7 @@ mod tests {
         let mut server = initialized_server(backend);
         let response = server
             .process_line(
-                br#"{"id":5,"method":"tools/call","params":{"name":"activate","arguments":{"query":"hello"}}}"#,
+                br#"{"id":5,"method":"tools/call","params":{"name":"memory","arguments":{"op":{"activate":{"query":"hello"}}}}}"#,
             )
             .unwrap();
 
@@ -465,5 +487,35 @@ mod tests {
         let ping: Value = serde_json::from_slice(lines[1]).unwrap();
         assert_eq!(too_large["error"]["code"], -32700);
         assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
+    fn server_injects_custom_guidelines_path_into_instructions_and_tool_definition() {
+        let backend = RecordingBackend::success(json!({}));
+        let mut server = McpServer::new(backend, "prj_test", "0.16.3")
+            .with_guidelines_path("./docs/MEMORY_RULES.md");
+
+        let init = server
+            .process_line(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
+            .unwrap();
+        assert!(
+            init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("./docs/MEMORY_RULES.md")
+        );
+
+        server.process_line(br#"{"method":"notifications/initialized"}"#);
+        let list = server
+            .process_line(br#"{"id":2,"method":"tools/list","params":{}}"#)
+            .unwrap();
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let memory_tool = tools.iter().find(|t| t["name"] == "memory").unwrap();
+        assert!(
+            memory_tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("./docs/MEMORY_RULES.md")
+        );
     }
 }
