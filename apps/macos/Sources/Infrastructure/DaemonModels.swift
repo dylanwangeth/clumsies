@@ -59,6 +59,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
     case codex
     case claudeCode = "claude-code"
     case opencode
+    case dsh
 
     var id: String { rawValue }
 
@@ -67,6 +68,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
         case .codex: "Codex"
         case .claudeCode: "Claude Code"
         case .opencode: "opencode"
+        case .dsh: "DeepSeek Harness (dsh)"
         }
     }
 }

@@ -50,6 +50,7 @@ pub enum ProjectAgentAdapterKind {
     Codex,
     ClaudeCode,
     Opencode,
+    Dsh,
 }
 
 impl ProjectAgentAdapterKind {
@@ -58,6 +59,7 @@ impl ProjectAgentAdapterKind {
             Self::Codex => "codex",
             Self::ClaudeCode => "claude-code",
             Self::Opencode => "opencode",
+            Self::Dsh => "dsh",
         }
     }
 
@@ -66,6 +68,7 @@ impl ProjectAgentAdapterKind {
             "codex" => Ok(Self::Codex),
             "claude-code" => Ok(Self::ClaudeCode),
             "opencode" => Ok(Self::Opencode),
+            "dsh" => Ok(Self::Dsh),
             _ => Err(DaemonError::InvalidConfig(
                 "persisted Coding Agent adapter kind is invalid".to_owned(),
             )),
@@ -162,6 +165,7 @@ enum ManagedFileKind {
     ClaudeMcp,
     ClaudeSettings,
     OpencodeConfig,
+    DshConfig,
     Exclusive,
 }
 
@@ -224,6 +228,7 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
         ManagedFileKind::OpencodeConfig => {
             &["mcp.clumsies", "plugin[./.opencode/plugins/clumsies.ts]"]
         }
+        ManagedFileKind::DshConfig => &["$file"],
         ManagedFileKind::Exclusive => &["$file"],
     }
 }
@@ -411,6 +416,10 @@ fn validate_adapter_journal_path(
                     ManagedFileKind::Exclusive
                 )
         ),
+        ProjectAgentAdapterKind::Dsh => matches!(
+            (relative.to_str(), kind),
+            (Some(".dsh/clumsies.json"), ManagedFileKind::DshConfig)
+        ),
     };
     if !allowed {
         return Err(adapter_conflict(
@@ -594,7 +603,9 @@ fn validate_prepared_adapter_fs_op(operation: &PreparedAdapterFsOp) -> Result<()
             ));
         }
         let expected_after_mode = change.after_content.as_ref().map(|_| match change.kind {
-            ManagedFileKind::Exclusive => expected_exclusive_mode(relative),
+            ManagedFileKind::Exclusive | ManagedFileKind::DshConfig => {
+                expected_exclusive_mode(relative)
+            }
             _ => change.before_mode.unwrap_or(0o644),
         });
         if change.after_mode != expected_after_mode {
@@ -1840,11 +1851,13 @@ pub(crate) async fn install(
     verify_code_signature(&runtime_binary)?;
     let runtime_hash = sha256_file(&runtime_binary)?;
     let previous_manifest = existing.as_ref().map(|record| &record.manifest);
-    let changes = install_plan(
+    let changes = install_plan_with_project(
         request.adapter,
         &workspace_root,
         &runtime_binary,
         previous_manifest,
+        Some(&server_url),
+        Some(&project_id),
     )?;
     let files_changed = changes
         .iter()
@@ -2109,11 +2122,30 @@ async fn normalize_empty_binding_alias(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_plan(
     adapter: ProjectAgentAdapterKind,
     workspace_root: &Path,
     runtime_binary: &Path,
     previous_manifest: Option<&AdapterManifest>,
+) -> Result<Vec<PendingChange>, DaemonError> {
+    install_plan_with_project(
+        adapter,
+        workspace_root,
+        runtime_binary,
+        previous_manifest,
+        None,
+        None,
+    )
+}
+
+fn install_plan_with_project(
+    adapter: ProjectAgentAdapterKind,
+    workspace_root: &Path,
+    runtime_binary: &Path,
+    previous_manifest: Option<&AdapterManifest>,
+    server_url: Option<&str>,
+    project_id: Option<&str>,
 ) -> Result<Vec<PendingChange>, DaemonError> {
     install_plan_with_claude_mcp_path(
         adapter,
@@ -2121,6 +2153,8 @@ fn install_plan(
         runtime_binary,
         previous_manifest,
         None,
+        server_url,
+        project_id,
     )
 }
 
@@ -2130,6 +2164,8 @@ fn install_plan_with_claude_mcp_path(
     runtime_binary: &Path,
     previous_manifest: Option<&AdapterManifest>,
     claude_mcp_path: Option<&Path>,
+    server_url: Option<&str>,
+    project_id: Option<&str>,
 ) -> Result<Vec<PendingChange>, DaemonError> {
     let effective_claude_mcp_path = claude_mcp_path
         .map(Path::to_path_buf)
@@ -2157,6 +2193,7 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join("opencode.json"),
             workspace_root.join(".opencode/plugins/clumsies.ts"),
         ],
+        ProjectAgentAdapterKind::Dsh => vec![workspace_root.join(".dsh/clumsies.json")],
     };
     for path in &target_paths {
         ManagedPathGuard::capture_under(workspace_root, path)?;
@@ -2297,9 +2334,40 @@ fn install_plan_with_claude_mcp_path(
                 )?,
             ]
         }
+        ProjectAgentAdapterKind::Dsh => {
+            let server_url = server_url.ok_or_else(|| {
+                adapter_conflict("The dsh adapter plan needs the daemon server URL.")
+            })?;
+            let project_id = project_id.ok_or_else(|| {
+                adapter_conflict("The dsh adapter plan needs the bound Project id.")
+            })?;
+            vec![exclusive_change_with_kind(
+                workspace_root.join(".dsh/clumsies.json"),
+                &render_dsh_config(server_url, project_id, &runtime),
+                previous_manifest,
+                0o644,
+                ManagedFileKind::DshConfig,
+            )?]
+        }
     };
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(changes)
+}
+
+/// Renders the workspace marker the dsh hook plugin reads to route dsh
+/// sessions to this Project: the daemon's canonical server URL, the bound
+/// Project id, and the App-bundled clumsiesd path that forwards lifecycle
+/// events. The file is fully owned by this integration (Exclusive).
+fn render_dsh_config(server_url: &str, project_id: &str, runtime_binary: &str) -> Vec<u8> {
+    let value = json!({
+        "server_url": server_url,
+        "project_id": project_id,
+        "runtime": runtime_binary,
+    });
+    let mut rendered = serde_json::to_vec_pretty(&value)
+        .expect("serializing the dsh adapter config to JSON cannot fail");
+    rendered.push(b'\n');
+    rendered
 }
 
 fn remove_plan(
@@ -2373,7 +2441,7 @@ fn remove_plan(
                     .map(|content| remove_opencode_config(content, helper))
                     .transpose()?
                     .flatten(),
-                ManagedFileKind::Exclusive => {
+                ManagedFileKind::DshConfig | ManagedFileKind::Exclusive => {
                     if let Some(content) = &expected.content
                         && sha256(content) != file.installed_hash {
                             return Err(state_error(
@@ -2418,6 +2486,7 @@ fn validate_manifest_managed_path(
         }
         ManagedFileKind::ClaudeSettings => relative == Path::new(".claude/settings.json"),
         ManagedFileKind::OpencodeConfig => relative == Path::new("opencode.json"),
+        ManagedFileKind::DshConfig => relative == Path::new(".dsh/clumsies.json"),
         ManagedFileKind::Exclusive => [
             ".codex/hooks/resolve-binary.sh",
             ".codex/hooks/issue-run-event.sh",
@@ -2449,6 +2518,22 @@ fn exclusive_change(
     previous_manifest: Option<&AdapterManifest>,
     mode: u32,
 ) -> Result<PendingChange, DaemonError> {
+    exclusive_change_with_kind(
+        path,
+        desired,
+        previous_manifest,
+        mode,
+        ManagedFileKind::Exclusive,
+    )
+}
+
+fn exclusive_change_with_kind(
+    path: PathBuf,
+    desired: &[u8],
+    previous_manifest: Option<&AdapterManifest>,
+    mode: u32,
+    kind: ManagedFileKind,
+) -> Result<PendingChange, DaemonError> {
     let expected = capture_file_snapshot(&path)?;
     if let Some(current) = expected.content.as_deref() {
         let current_hash = sha256(current);
@@ -2474,7 +2559,7 @@ fn exclusive_change(
         path,
         expected,
         desired: Some(desired.to_vec()),
-        kind: ManagedFileKind::Exclusive,
+        kind,
         mode,
     })
 }
@@ -2562,12 +2647,16 @@ fn render_managed_binary_resolver(
             r#"PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)""#
         }
         ProjectAgentAdapterKind::ClaudeCode => r#"PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}""#,
-        ProjectAgentAdapterKind::Opencode => unreachable!("opencode does not install a resolver"),
+        ProjectAgentAdapterKind::Opencode | ProjectAgentAdapterKind::Dsh => {
+            unreachable!("opencode and dsh do not install a resolver")
+        }
     };
     let exported_project_directory = match adapter {
         ProjectAgentAdapterKind::Codex => "PROJECT_ROOT",
         ProjectAgentAdapterKind::ClaudeCode => "PROJECT_DIR",
-        ProjectAgentAdapterKind::Opencode => unreachable!("opencode does not install a resolver"),
+        ProjectAgentAdapterKind::Opencode | ProjectAgentAdapterKind::Dsh => {
+            unreachable!("opencode and dsh do not install a resolver")
+        }
     };
     format!(
         "#!/usr/bin/env bash\n# Resolve only the App-bundled clumsiesd selected by Clumsies.\n\
@@ -3391,7 +3480,7 @@ fn inferred_managed_anchor(path: &Path) -> Result<PathBuf, DaemonError> {
     while let Some(directory) = ancestor {
         if matches!(
             directory.file_name().and_then(OsStr::to_str),
-            Some(".codex" | ".claude" | ".agents" | ".opencode" | ".clumsies")
+            Some(".codex" | ".claude" | ".agents" | ".opencode" | ".clumsies" | ".dsh")
         ) {
             return directory.parent().map(Path::to_path_buf).ok_or_else(|| {
                 adapter_conflict(&format!(
@@ -3868,6 +3957,7 @@ fn adapter_record_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AdapterRecor
         "codex" => ProjectAgentAdapterKind::Codex,
         "claude-code" => ProjectAgentAdapterKind::ClaudeCode,
         "opencode" => ProjectAgentAdapterKind::Opencode,
+        "dsh" => ProjectAgentAdapterKind::Dsh,
         _ => {
             return Err(DaemonError::InvalidConfig(format!(
                 "unknown persisted Coding Agent adapter {raw_adapter}"
@@ -4362,6 +4452,8 @@ mod tests {
             Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
             None,
             Some(&registry),
+            None,
+            None,
         )
         .unwrap();
 
@@ -4772,6 +4864,83 @@ mod tests {
             change.path.ends_with(".opencode/plugins/clumsies.ts")
                 && change.kind == ManagedFileKind::Exclusive
         }));
+    }
+
+    #[test]
+    fn install_plan_includes_dsh_marker() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let changes = install_plan_with_project(
+            ProjectAgentAdapterKind::Dsh,
+            workspace.path(),
+            helper,
+            None,
+            Some("https://clumsies.example.com"),
+            Some("prj_dsh_test"),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 1);
+        let marker = &changes[0];
+        assert_eq!(marker.path, workspace.path().join(".dsh/clumsies.json"));
+        assert_eq!(marker.kind, ManagedFileKind::DshConfig);
+        assert_eq!(marker.mode, 0o644);
+        let rendered: Value = serde_json::from_slice(marker.desired.as_deref().unwrap()).unwrap();
+        assert_eq!(rendered["server_url"], "https://clumsies.example.com");
+        assert_eq!(rendered["project_id"], "prj_dsh_test");
+        assert_eq!(
+            rendered["runtime"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+    }
+
+    #[test]
+    fn dsh_plan_requires_project_context() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+        let error = install_plan_with_project(
+            ProjectAgentAdapterKind::Dsh,
+            workspace.path(),
+            helper,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::State { .. }));
+    }
+
+    #[test]
+    fn dsh_install_remove_round_trip() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let changes = install_plan_with_project(
+            ProjectAgentAdapterKind::Dsh,
+            workspace.path(),
+            helper,
+            None,
+            Some("https://clumsies.example.com"),
+            Some("prj_dsh_test"),
+        )
+        .unwrap();
+        apply_changes(&changes).unwrap();
+
+        let marker_path = workspace.path().join(".dsh/clumsies.json");
+        let marker: Value = serde_json::from_slice(&fs::read(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker["server_url"], "https://clumsies.example.com");
+        assert_eq!(marker["project_id"], "prj_dsh_test");
+        assert_eq!(
+            marker["runtime"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+
+        let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
+        let removals = remove_plan(&manifest, workspace.path()).unwrap();
+        apply_changes(&removals).unwrap();
+        assert!(!marker_path.exists());
+        cleanup_empty_adapter_directories(&removals, workspace.path());
+        assert!(!workspace.path().join(".dsh").exists());
     }
 
     #[test]

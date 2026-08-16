@@ -34,6 +34,39 @@ Register the Clumsies MCP server in the dsh profile patch layer
 by the hook (see below) — the daemon never lets an agent mint its own
 identity.
 
+## Coding Agents adapter (project settings)
+
+dsh is a first-class Coding Agent adapter. In the macOS app, Project Settings
+→ Coding Agents (and the New Project sheet) list **DeepSeek Harness (dsh)**
+next to Codex, Claude Code, and opencode. Enabling the toggle installs a
+workspace marker the dsh side reads:
+
+```json
+{
+  "server_url": "https://clumsies.example.com",
+  "project_id": "prj_…",
+  "runtime": "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+}
+```
+
+The marker lives at `.dsh/clumsies.json` in the repository and is fully
+managed (installed, updated, and removed) by the daemon's adapter journal,
+like the other adapters' files. Disabling the toggle removes it.
+
+The dsh hook plugin (`dev/dsh/clumsies-hook.mjs`) resolves the marker by
+walking up from the session cwd: the marker's workspace root is forwarded as
+the event `cwd` (so the daemon binds the run to the adapter-managed
+Project even when `dsh web` was launched from a parent directory) and the
+marker's `runtime` pins the clumsiesd binary that forwards events (no
+machine-specific path in the plugin). Sessions without a marker fall back to
+the session cwd and the environment/default runtime, so manual setups keep
+working. `dev/dsh/issue-run-event.sh` does the same lookup for shell-driven
+forwarding.
+
+The MCP side remains a one-time profile registration (below): the static
+`cwd` pins the spawned `clumsiesd mcp serve` to one workspace, so the
+profile patch targets the workspace whose kanban the dsh sessions should see.
+
 ## AgentRun lifecycle hook
 
 The daemon accepts hook events from the `dsh` host:
@@ -84,10 +117,11 @@ export function apply(ctx: Context) {
 }
 ```
 
-Until the plugin ships, a shell wrapper can drive the same contract from any
-event source; `dev/dsh/issue-run-event.sh` is a reference implementation.
-The invariant to preserve: **one `turn_id` per user prompt, reused for the
-matching `Stop`**, and **no event ever blocks the session**.
+The shipped plugin (`dev/dsh/clumsies-hook.mjs`) also resolves the
+`.dsh/clumsies.json` marker described above; a shell wrapper
+(`dev/dsh/issue-run-event.sh`) drives the same contract from any event
+source. The invariant to preserve: **one `turn_id` per user prompt, reused
+for the matching `Stop`**, and **no event ever blocks the session**.
 
 ## Daemon-side changes (landed)
 

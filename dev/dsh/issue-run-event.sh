@@ -6,11 +6,36 @@
 # Payload: {"hook_event_name":"UserPromptSubmit|Stop|StopFailure|SubagentStart|SubagentStop|SessionEnd",
 #           "session_id":"...","turn_id":"...","agent_id":"...","agent_type":"...","cwd":"/path"}
 #
-# Requires CLUMSIES_BIN (defaults to the installed Clumsies.app runtime).
+# Resolves the App-bundled clumsiesd from the nearest .dsh/clumsies.json
+# marker (installed by the Clumsies dsh Coding Agent adapter), falling back
+# to CLUMSIES_BIN and then the default installed path.
 
 set -eu
 
-CLUMSIES_BIN="${CLUMSIES_BIN:-/Users/weiwang/Applications/Clumsies.app/Contents/Resources/clumsiesd}"
+DEFAULT_BIN="/Users/weiwang/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+
+resolve_runtime() {
+  CLUMSIES_BIN="${CLUMSIES_BIN:-}"
+  if [ -n "$CLUMSIES_BIN" ] && [ -x "$CLUMSIES_BIN" ]; then
+    printf '%s' "$CLUMSIES_BIN"
+    return 0
+  fi
+  dir="$(pwd 2>/dev/null || printf '.')"
+  while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+    if [ -f "$dir/.dsh/clumsies.json" ]; then
+      marker_runtime="$(sed -n 's/.*"runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$dir/.dsh/clumsies.json" 2>/dev/null | head -n 1)"
+      if [ -n "$marker_runtime" ] && [ -x "$marker_runtime" ]; then
+        printf '%s' "$marker_runtime"
+        return 0
+      fi
+    fi
+    dir="$(dirname "$dir" 2>/dev/null || printf '')"
+  done
+  printf '%s' "$DEFAULT_BIN"
+}
+
+CLUMSIES_BIN="$(resolve_runtime)"
 if [ ! -x "$CLUMSIES_BIN" ]; then
   exit 0
 fi

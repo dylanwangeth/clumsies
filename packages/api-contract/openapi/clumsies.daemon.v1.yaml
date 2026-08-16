@@ -2163,10 +2163,10 @@ components:
       enum: [preparing, materializing, verifying, switching, cleaning, completed, failed]
     ProjectAgentAdapterKind:
       type: string
-      enum: [codex, claude-code, opencode]
+      enum: [codex, claude-code, opencode, dsh]
     AgentRunHost:
       type: string
-      enum: [codex, claude-code, zed, manual, opencode]
+      enum: [codex, claude-code, zed, manual, opencode, dsh]
     AgentRunKind:
       type: string
       enum: [root, subagent]
