@@ -53,6 +53,14 @@ The marker lives at `.dsh/clumsies.json` in the repository and is fully
 managed (installed, updated, and removed) by the daemon's adapter journal,
 like the other adapters' files. Disabling the toggle removes it.
 
+The marker is per-machine state (the App-bundled clumsiesd path and the
+daemon's server URL), so repositories using the dsh adapter should ignore it
+in git, same as `.codex/`, `.claude/`, and `.opencode/`:
+
+```gitignore
+.dsh/
+```
+
 The dsh hook plugin (`dev/dsh/clumsies-hook.mjs`) resolves the marker by
 walking up from the session cwd: the marker's workspace root is forwarded as
 the event `cwd` (so the daemon binds the run to the adapter-managed
