@@ -89,7 +89,15 @@ async fn rewrite_migration_converts_legacy_selection_blobs() {
                         "status": "active", "updated_at": "2026-07-16T00:00:00Z"
                     }],
                     "revision": 5
-                }');
+                }'),
+                -- Production-shaped data: plain Markdown resource bodies share
+                -- the blobs table with org-selection payloads, and a corrupt
+                -- selection entry may reference a non-object Blob. Neither
+                -- may abort the migration.
+                ('blob_markdown_body', '# s6-0 TUI 组件体系总览
+
+clumsies TUI 的完整 UI 组件库文档正文。'),
+                ('blob_selection_corrupt', '# 不是 JSON 的 selection 内容');
 
             INSERT INTO trees (tree_id) VALUES ('tree_v1');
             INSERT INTO tree_entries (
@@ -98,7 +106,9 @@ async fn rewrite_migration_converts_legacy_selection_blobs() {
                 ('tree_v1', 'selection_legacy', 'project_org_selection', 'project',
                  'project_test', NULL, 'blob_selection_legacy', 'config'),
                 ('tree_v1', 'selection_unified', 'project_org_selection', 'project',
-                 'project_test', NULL, 'blob_selection_unified', 'config');
+                 'project_test', NULL, 'blob_selection_unified', 'config'),
+                ('tree_v1', 'selection_corrupt', 'project_org_selection', 'project',
+                 'project_test', NULL, 'blob_selection_corrupt', 'config');
             "##,
         )
         .await
@@ -149,6 +159,25 @@ async fn rewrite_migration_converts_legacy_selection_blobs() {
     assert_eq!(workflow["project_id"], "project_test");
     assert_eq!(workflow["description"], "Workflow desc");
     assert_eq!(workflow["status"], "active");
+
+    // Production-shaped data: Markdown resource bodies in the blobs table
+    // and a corrupt org-selection entry must not abort the migration, and
+    // the corrupt entry is skipped rather than rewritten.
+    let markdown: String =
+        sqlx::query_scalar("SELECT content FROM blobs WHERE blob_id = 'blob_markdown_body'")
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert!(markdown.starts_with("# s6-0"), "Markdown body untouched");
+    let corrupt: String =
+        sqlx::query_scalar("SELECT content FROM blobs WHERE blob_id = 'blob_selection_corrupt'")
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        corrupt, "# 不是 JSON 的 selection 内容",
+        "corrupt selection Blob skipped, not rewritten"
+    );
 
     // Idempotent: the already-unified Blob is untouched, and re-running the
     // migration changes nothing.
