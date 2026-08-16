@@ -2182,8 +2182,31 @@ struct WorkspaceLoader: Sendable {
             _ = try await bootstrap.ensureRunning()
         }
 
-        return try await readiness.waitForHealth { timeout in
-            try await daemon.health(timeout: timeout)
+        do {
+            return try await readiness.waitForHealth { timeout in
+                try await daemon.health(timeout: timeout)
+            }
+        } catch is DaemonXPCError {
+            let status = await bootstrap.status()
+            var details: [String] = []
+            if status.installed {
+                details.append("installed: true")
+            } else {
+                details.append("installed: false")
+            }
+            if status.running {
+                details.append("running: true")
+            } else {
+                details.append("running: false")
+            }
+            if let pid = status.pid {
+                details.append("pid: \(pid)")
+            }
+            if let lastError = status.error, !lastError.isEmpty {
+                details.append("error: \(lastError)")
+            }
+            let detailString = details.joined(separator: ", ")
+            throw DaemonXPCError.connectionFailed(detail: detailString.isEmpty ? nil : detailString)
         }
     }
 

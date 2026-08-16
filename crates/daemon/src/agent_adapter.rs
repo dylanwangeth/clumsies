@@ -1916,13 +1916,17 @@ pub(crate) async fn install(
     )?;
     persist_prepared_adapter_fs_op(&state.inner.pool, &operation).await?;
     apply_prepared_adapter_fs_op(&operation)?;
-    finalize_prepared_adapter_fs_op(&state.inner.pool, &operation)
+    let result = finalize_prepared_adapter_fs_op(&state.inner.pool, &operation)
         .await?
         .ok_or_else(|| {
             DaemonError::InvalidConfig(
                 "adapter install transaction finalized without a manifest".to_owned(),
             )
-        })
+        })?;
+    if request.adapter == ProjectAgentAdapterKind::Antigravity {
+        ensure_antigravity_global_mcp(&runtime_binary);
+    }
+    Ok(result)
 }
 
 pub(crate) async fn remove(
@@ -2217,7 +2221,6 @@ fn install_plan_with_claude_mcp_path(
         ],
         ProjectAgentAdapterKind::Dsh => vec![workspace_root.join(".dsh/clumsies.json")],
         ProjectAgentAdapterKind::Antigravity => vec![
-            workspace_root.join(".mcp.json"),
             workspace_root.join(".agents/hooks.json"),
             workspace_root.join(".agents/hooks/resolve-binary.sh"),
             workspace_root.join(".agents/hooks/issue-run-event.sh"),
@@ -2378,7 +2381,6 @@ fn install_plan_with_claude_mcp_path(
             )?]
         }
         ProjectAgentAdapterKind::Antigravity => {
-            let mcp_path = workspace_root.join(".mcp.json");
             let hooks_path = workspace_root.join(".agents/hooks.json");
             let hook_script_path = workspace_root.join(".agents/hooks/issue-run-event.sh");
             let hook_ownership = HookOwnership {
@@ -2389,9 +2391,6 @@ fn install_plan_with_claude_mcp_path(
             let managed_resolver =
                 render_managed_binary_resolver(ProjectAgentAdapterKind::Antigravity, &runtime);
             vec![
-                merged_change(mcp_path, ManagedFileKind::ClaudeMcp, 0o644, |current| {
-                    render_claude_mcp(current, &runtime, previous_runtime)
-                })?,
                 merged_change(
                     hooks_path.clone(),
                     ManagedFileKind::AntigravityHooks,
@@ -3166,6 +3165,41 @@ fn antigravity_hook_entry_matches(entry: &Value, script_path: &Path) -> bool {
     pre_matches && stop_matches
 }
 
+fn ensure_antigravity_global_mcp(runtime_binary: &Path) {
+    let home = match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home),
+        None => return,
+    };
+    let config_dir = home.join(".gemini/config");
+    let config_path = config_dir.join("mcp_config.json");
+    let _ = fs::create_dir_all(&config_dir);
+    let mut root: Value = if let Ok(content) = fs::read(&config_path) {
+        serde_json::from_slice(&content).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    let root_obj = match root.as_object_mut() {
+        Some(obj) => obj,
+        None => return,
+    };
+    let servers = root_obj
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(servers) = servers {
+        servers.insert(
+            "clumsies".to_owned(),
+            json!({
+                "command": runtime_binary.display().to_string(),
+                "args": ["mcp", "serve"]
+            }),
+        );
+        if let Ok(rendered) = serde_json::to_vec_pretty(&root) {
+            let _ = fs::write(&config_path, rendered);
+        }
+    }
+}
+
 fn render_codex_config(
     existing: Option<&[u8]>,
     runtime_binary: &str,
@@ -3191,11 +3225,15 @@ fn render_codex_config(
         let current = current.as_table_mut().ok_or_else(|| {
             adapter_conflict("Codex `mcp_servers.clumsies` must be a TOML table.")
         })?;
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            codex_mcp_entry_matches(current, path)
-                || codex_mcp_entry_matches(current, runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = codex_mcp_entry_matches(current, runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| codex_mcp_entry_matches(current, path))
+            || current
+                .get("command")
+                .and_then(Item::as_str)
+                .is_some_and(|cmd| {
+                    cmd == runtime_binary || cmd.ends_with("/clumsiesd") || cmd == "clumsiesd"
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The Codex `mcp_servers.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -3282,10 +3320,15 @@ fn render_claude_mcp(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("Claude Code `mcpServers` must be a JSON object."))?;
     if let Some(current) = servers.get("clumsies") {
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            current == &claude_mcp_entry(path) || current == &claude_mcp_entry(runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = current == &claude_mcp_entry(runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| current == &claude_mcp_entry(path))
+            || current
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| {
+                    cmd == runtime_binary || cmd.ends_with("/clumsiesd") || cmd == "clumsiesd"
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The Claude Code `mcpServers.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -3328,10 +3371,19 @@ fn render_opencode_config(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("opencode `mcp` must be a JSON object."))?;
     if let Some(current) = mcp.get("clumsies") {
-        let owned = previous_runtime_binary.is_some_and(|path| {
-            current == &opencode_mcp_entry(path) || current == &opencode_mcp_entry(runtime_binary)
-        });
-        if !owned {
+        let is_adoptable = current == &opencode_mcp_entry(runtime_binary)
+            || previous_runtime_binary.is_some_and(|path| current == &opencode_mcp_entry(path))
+            || current
+                .get("command")
+                .and_then(Value::as_array)
+                .is_some_and(|cmd| {
+                    cmd.first().and_then(Value::as_str).is_some_and(|first| {
+                        first == runtime_binary
+                            || first.ends_with("/clumsiesd")
+                            || first == "clumsiesd"
+                    })
+                });
+        if !is_adoptable {
             return Err(adapter_conflict(
                 "The opencode `mcp.clumsies` entry is not managed by this Clumsies integration.",
             ));
@@ -4721,9 +4773,9 @@ mod tests {
         let exact_codex = render_codex_config(None, runtime, None).unwrap();
         let exact_claude = render_claude_mcp(None, runtime, None).unwrap();
         let exact_opencode = render_opencode_config(None, runtime, None).unwrap();
-        assert!(render_codex_config(Some(&exact_codex), runtime, None).is_err());
-        assert!(render_claude_mcp(Some(&exact_claude), runtime, None).is_err());
-        assert!(render_opencode_config(Some(&exact_opencode), runtime, None).is_err());
+        assert!(render_codex_config(Some(&exact_codex), runtime, None).is_ok());
+        assert!(render_claude_mcp(Some(&exact_claude), runtime, None).is_ok());
+        assert!(render_opencode_config(Some(&exact_opencode), runtime, None).is_ok());
     }
 
     #[cfg(unix)]
@@ -5138,11 +5190,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(changes.iter().any(|change| {
-            change.path == workspace.path().join(".mcp.json")
-                && change.kind == ManagedFileKind::ClaudeMcp
-                && change.mode == 0o644
-        }));
+        assert!(
+            !changes
+                .iter()
+                .any(|change| { change.path == workspace.path().join(".mcp.json") })
+        );
         assert!(changes.iter().any(|change| {
             change.path == workspace.path().join(".agents/hooks.json")
                 && change.kind == ManagedFileKind::AntigravityHooks
@@ -5180,21 +5232,13 @@ mod tests {
         .unwrap();
         apply_changes(&changes).unwrap();
 
-        let mcp_path = workspace.path().join(".mcp.json");
         let hooks_path = workspace.path().join(".agents/hooks.json");
         let resolver_path = workspace.path().join(".agents/hooks/resolve-binary.sh");
         let hook_path = workspace.path().join(".agents/hooks/issue-run-event.sh");
 
-        assert!(mcp_path.exists());
         assert!(hooks_path.exists());
         assert!(resolver_path.exists());
         assert!(hook_path.exists());
-
-        let mcp_json: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
-        assert_eq!(
-            mcp_json["mcpServers"]["clumsies"]["command"],
-            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
-        );
 
         let hooks_json: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(hooks_json["clumsies-issue-run-event"]["PreInvocation"].is_array());
@@ -5204,7 +5248,6 @@ mod tests {
         let removals = remove_plan(&manifest, workspace.path()).unwrap();
         apply_changes(&removals).unwrap();
 
-        assert!(!mcp_path.exists());
         assert!(!hooks_path.exists());
         assert!(!resolver_path.exists());
         assert!(!hook_path.exists());
@@ -5213,16 +5256,9 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_merges_existing_mcp_and_hooks() {
+    fn antigravity_merges_existing_hooks() {
         let workspace = tempfile::tempdir().unwrap();
         let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
-
-        let mcp_path = workspace.path().join(".mcp.json");
-        fs::write(
-            &mcp_path,
-            br#"{"mcpServers":{"other":{"type":"stdio","command":"other-mcp"}}}"#,
-        )
-        .unwrap();
 
         let hooks_path = workspace.path().join(".agents/hooks.json");
         fs::create_dir_all(workspace.path().join(".agents")).unwrap();
@@ -5241,13 +5277,6 @@ mod tests {
         .unwrap();
         apply_changes(&changes).unwrap();
 
-        let merged_mcp: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
-        assert_eq!(merged_mcp["mcpServers"]["other"]["command"], "other-mcp");
-        assert_eq!(
-            merged_mcp["mcpServers"]["clumsies"]["command"],
-            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
-        );
-
         let merged_hooks: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(merged_hooks.get("lint-checker").is_some());
         assert!(merged_hooks.get("clumsies-issue-run-event").is_some());
@@ -5256,14 +5285,57 @@ mod tests {
         let removals = remove_plan(&manifest, workspace.path()).unwrap();
         apply_changes(&removals).unwrap();
 
-        let remaining_mcp: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
-        assert_eq!(remaining_mcp["mcpServers"]["other"]["command"], "other-mcp");
-        assert!(remaining_mcp["mcpServers"].get("clumsies").is_none());
-
         let remaining_hooks: Value =
             serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(remaining_hooks.get("lint-checker").is_some());
         assert!(remaining_hooks.get("clumsies-issue-run-event").is_none());
+    }
+
+    #[test]
+    fn claude_and_antigravity_adapters_coexist_without_mcp_conflict() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        // 1. Install Claude Code
+        let claude_changes = install_plan(
+            ProjectAgentAdapterKind::ClaudeCode,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&claude_changes).unwrap();
+        let claude_manifest =
+            manifest_for_changes(&claude_changes, helper, "claude-hash".to_owned());
+
+        // 2. Install Antigravity on same workspace - MUST SUCCEED without conflict
+        let antigravity_changes = install_plan(
+            ProjectAgentAdapterKind::Antigravity,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&antigravity_changes).unwrap();
+
+        let mcp_path = workspace.path().join(".mcp.json");
+        let mcp_json: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
+        assert_eq!(
+            mcp_json["mcpServers"]["clumsies"]["command"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+        assert!(workspace.path().join(".agents/hooks.json").exists());
+        assert!(workspace.path().join(".claude/settings.json").exists());
+
+        // 3. Reinstalling with previous manifest remains idempotent and conflict-free
+        let claude_reinstall = install_plan(
+            ProjectAgentAdapterKind::ClaudeCode,
+            workspace.path(),
+            helper,
+            Some(&claude_manifest),
+        )
+        .unwrap();
+        assert_eq!(claude_reinstall.len(), 6);
     }
 
     #[test]

@@ -25,7 +25,7 @@ enum ErrorCode {
 /// type never creates daemon state or writes protocol diagnostics to stdout.
 pub struct McpServer<B> {
     backend: B,
-    project_id: String,
+    project_id: Option<String>,
     version: String,
     initialize_seen: bool,
     initialized: bool,
@@ -35,10 +35,10 @@ impl<B> McpServer<B>
 where
     B: AgentRuntimeBackend,
 {
-    pub fn new(backend: B, project_id: impl Into<String>, version: impl Into<String>) -> Self {
+    pub fn new(backend: B, project_id: Option<String>, version: impl Into<String>) -> Self {
         Self {
             backend,
-            project_id: project_id.into(),
+            project_id,
             version: version.into(),
             initialize_seen: false,
             initialized: false,
@@ -144,6 +144,15 @@ where
         match method.as_str() {
             "initialize" => {
                 self.initialize_seen = true;
+                if self.project_id.is_none() {
+                    if let Some(workspace_path) = extract_workspace_path(&params)
+                        && let Ok(project_id) = self.backend.resolve_binding(workspace_path)
+                    {
+                        self.project_id = Some(project_id);
+                    } else if let Ok(Some(active)) = self.backend.active_project_id() {
+                        self.project_id = Some(active);
+                    }
+                }
                 Some(success_response(
                     id,
                     json!({
@@ -176,12 +185,22 @@ where
         }
     }
 
-    fn call_tool(&self, params: Value) -> Value {
+    fn call_tool(&mut self, params: Value) -> Value {
+        if self.project_id.is_none()
+            && let Ok(Some(active)) = self.backend.active_project_id()
+        {
+            self.project_id = Some(active);
+        }
+        let Some(project_id) = &self.project_id else {
+            return tool_error(
+                "No project is bound for this workspace path. Please bind the project in Clumsies App.",
+            );
+        };
         let params = match decode_tool_call_params(params) {
             Ok(params) => params,
             Err(error) => return tool_error(error.to_string()),
         };
-        let request = match parse_tool_call(&self.project_id, &params.name, params.arguments) {
+        let request = match parse_tool_call(project_id, &params.name, params.arguments) {
             Ok(request) => request,
             Err(error) => return tool_error(error.to_string()),
         };
@@ -197,6 +216,61 @@ where
             Err(_) => tool_error("local daemon is unavailable or rejected the memory operation"),
         }
     }
+}
+
+fn extract_workspace_path(params: &Value) -> Option<String> {
+    if let Some(root_uri) = params.get("rootUri").and_then(Value::as_str)
+        && let Some(path) = uri_to_path(root_uri)
+    {
+        return Some(path);
+    }
+    if let Some(root_path) = params.get("rootPath").and_then(Value::as_str) {
+        let trimmed = root_path.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_owned());
+        }
+    }
+    if let Some(folders) = params.get("workspaceFolders").and_then(Value::as_array) {
+        for folder in folders {
+            if let Some(uri) = folder.get("uri").and_then(Value::as_str)
+                && let Some(path) = uri_to_path(uri)
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn uri_to_path(uri: &str) -> Option<String> {
+    let raw = uri.strip_prefix("file://")?;
+    let decoded = percent_decode_path(raw);
+    let trimmed = decoded.trim();
+    if !trimmed.is_empty() {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
+fn percent_decode_path(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2)
+                && let Ok(val) =
+                    u8::from_str_radix(std::str::from_utf8(&[h1, h2]).unwrap_or(""), 16)
+            {
+                bytes.push(val);
+                continue;
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn request_id(object: &Map<String, Value>) -> Value {
@@ -331,6 +405,17 @@ mod tests {
                 },
             }
         }
+
+        fn error(error: ApiError) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                response: DaemonIpcResponse {
+                    ok: false,
+                    payload: Value::Null,
+                    error: Some(error),
+                },
+            }
+        }
     }
 
     impl AgentRuntimeBackend for RecordingBackend {
@@ -341,7 +426,7 @@ mod tests {
     }
 
     fn initialized_server(backend: RecordingBackend) -> McpServer<RecordingBackend> {
-        let mut server = McpServer::new(backend, "prj_test", "0.16.3");
+        let mut server = McpServer::new(backend, Some("prj_test".to_owned()), "0.16.3");
         assert!(
             server
                 .process_line(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#)
@@ -358,7 +443,7 @@ mod tests {
     #[test]
     fn enforces_initialize_then_initialized_before_listing_tools() {
         let backend = RecordingBackend::success(json!({}));
-        let mut server = McpServer::new(backend, "prj_test", "0.16.3");
+        let mut server = McpServer::new(backend, Some("prj_test".to_owned()), "0.16.3");
         let early = server
             .process_line(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
             .unwrap();
@@ -378,6 +463,42 @@ mod tests {
     }
 
     #[test]
+    fn lazy_initialize_resolves_workspace_path_from_root_uri() {
+        struct LazyBackend;
+        impl AgentRuntimeBackend for LazyBackend {
+            fn execute(
+                &self,
+                _request: AgentRuntimeRequest,
+            ) -> Result<DaemonIpcResponse, DaemonError> {
+                Ok(DaemonIpcResponse {
+                    ok: true,
+                    payload: json!({}),
+                    error: None,
+                })
+            }
+            fn resolve_binding(&self, workspace_path: String) -> Result<String, DaemonError> {
+                if workspace_path == "/Volumes/ORICO/workspace/clumsies" {
+                    Ok("prj_resolved".to_owned())
+                } else {
+                    Err(DaemonError::State {
+                        code: "not_found",
+                        message: "not found".to_owned(),
+                    })
+                }
+            }
+        }
+
+        let mut server = McpServer::new(LazyBackend, None, "0.16.3");
+        assert!(server.project_id.is_none());
+
+        let init_resp = server
+            .process_line(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///Volumes/ORICO/workspace/clumsies"}}"#)
+            .unwrap();
+        assert_eq!(init_resp["result"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(server.project_id.as_deref(), Some("prj_resolved"));
+    }
+
+    #[test]
     fn typed_activate_call_reaches_backend_and_wraps_structured_content() {
         let backend = RecordingBackend::success(json!({"next_state": "opaque"}));
         let mut server = initialized_server(backend);
@@ -394,10 +515,36 @@ mod tests {
         );
         let requests = server.backend.requests.lock().unwrap();
         let AgentRuntimeRequest::Activate(request) = &requests[0] else {
-            panic!("unexpected request variant");
+            panic!("expected Activate request");
         };
         assert_eq!(request.project_id, "prj_test");
         assert_eq!(request.query, "runtime identity");
+    }
+
+    #[test]
+    fn maps_backend_domain_error_to_structured_error() {
+        let backend = RecordingBackend::error(ApiError {
+            code: "index_preparing".to_owned(),
+            message: "indexing in progress".to_owned(),
+            request_id: "req_test".to_owned(),
+            details: json!({}),
+        });
+        let mut server = initialized_server(backend);
+        let response = server
+            .process_line(
+                br#"{"id":4,"method":"tools/call","params":{"name":"activate","arguments":{"query":"runtime identity"}}}"#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            response["result"]["content"][0]["text"],
+            "indexing in progress"
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["error"]["code"],
+            "index_preparing"
+        );
+        assert_eq!(response["result"]["isError"], true);
     }
 
     #[test]
@@ -456,7 +603,7 @@ mod tests {
         let mut input = BufReader::new(Cursor::new(input));
         let mut output = Vec::new();
         let backend = RecordingBackend::success(json!({}));
-        let mut server = McpServer::new(backend, "prj_test", "0.16.3");
+        let mut server = McpServer::new(backend, Some("prj_test".to_owned()), "0.16.3");
 
         server.serve(&mut input, &mut output).unwrap();
 

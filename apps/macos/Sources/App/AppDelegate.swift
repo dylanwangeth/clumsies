@@ -188,7 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func presentMainFailure(message: String, retry: @escaping () -> Void) {
         presentMainContent(
-            FailureView(message: message, retry: retry),
+            FailureView(
+                message: message,
+                retry: retry,
+                onShowLogs: { [weak self] in self?.showLogsInFinder() }
+            ),
             surface: .failure,
             title: "Clumsies"
         )
@@ -318,9 +322,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         diagnosticsWindow = window
     }
 
+    @objc func showLogsInFinderAction(_ sender: Any?) {
+        showLogsInFinder()
+    }
+
     private func showLogsInFinder() {
-        guard let path = store.runtime?.health.logDir, !path.isEmpty else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        let path = store.runtime?.health.logDir
+        let logURL: URL
+        if let path, !path.isEmpty {
+            logURL = URL(fileURLWithPath: path)
+        } else {
+            logURL = AppBundleRuntimeLocation.defaultLogDirectoryURL
+        }
+        if FileManager.default.fileExists(atPath: logURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([logURL])
+        } else {
+            NSWorkspace.shared.open(logURL)
+        }
     }
 
     private func installStatusItem() {
@@ -354,6 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             keyEquivalent: ""
         )
         settings.target = self
+        let revealLogs = menu.addItem(
+            withTitle: "Reveal Logs in Finder",
+            action: #selector(showLogsInFinderAction(_:)),
+            keyEquivalent: ""
+        )
+        revealLogs.target = self
         menu.addItem(.separator())
         menu.addItem(
             withTitle: "Quit Clumsies",
@@ -681,20 +705,68 @@ private struct AuthenticationView: View {
 private struct FailureView: View {
     let message: String
     let retry: () -> Void
+    var onShowLogs: (() -> Void)?
+    @State private var copied = false
 
     var body: some View {
         VStack(spacing: 18) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 34))
-                .foregroundStyle(.secondary)
-            Text("Clumsies could not open")
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 38))
+                .foregroundStyle(.yellow)
+            Text("Clumsies could not start local daemon")
                 .font(.title3.weight(.semibold))
-            Text(message)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 340)
-            Button("Try Again", action: retry)
-                .buttonStyle(.borderedProminent)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .lineLimit(8)
+            }
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            )
+            .frame(maxWidth: 520)
+
+            HStack(spacing: 12) {
+                Button("Try Again", action: retry)
+                    .buttonStyle(.borderedProminent)
+
+                Button("Reveal Logs in Finder") {
+                    if let onShowLogs {
+                        onShowLogs()
+                    } else {
+                        let url = AppBundleRuntimeLocation.defaultLogDirectoryURL
+                        if FileManager.default.fileExists(atPath: url.path) {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        } else {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+
+                Button(copied ? "Copied!" : "Copy Diagnostics") {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    let report = """
+                    Clumsies Startup Diagnostics:
+                    Error: \(message)
+                    Log Directory: \(AppBundleRuntimeLocation.defaultLogDirectoryURL.path)
+                    """
+                    pasteboard.setString(report, forType: .string)
+                    copied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        copied = false
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding(38)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
