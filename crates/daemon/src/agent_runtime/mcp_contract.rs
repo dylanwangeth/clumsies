@@ -136,7 +136,7 @@ struct MemoryInput {
 enum MemoryOperation {
     Activate(ActivateInput),
     Load(LoadInput),
-    Store(StoreInput),
+    Store(Box<StoreInput>),
 }
 
 impl MemoryInput {
@@ -1399,15 +1399,9 @@ mod tests {
                 ["items"]["type"],
             "string"
         );
-        assert!(
-            tools[0]["inputSchema"]["properties"]["op"]["properties"]["activate"].is_object()
-        );
-        assert!(
-            tools[0]["inputSchema"]["properties"]["op"]["properties"]["load"].is_object()
-        );
-        assert!(
-            tools[0]["inputSchema"]["properties"]["op"]["properties"]["store"].is_object()
-        );
+        assert!(tools[0]["inputSchema"]["properties"]["op"]["properties"]["activate"].is_object());
+        assert!(tools[0]["inputSchema"]["properties"]["op"]["properties"]["load"].is_object());
+        assert!(tools[0]["inputSchema"]["properties"]["op"]["properties"]["store"].is_object());
     }
 
     #[test]
