@@ -102,8 +102,12 @@ fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
     let client = agent_runtime_client(AGENT_RUNTIME_STARTUP_IPC_TIMEOUT)?;
     verify_agent_runtime(&client)?;
     let workspace_path = std::env::current_dir()?.to_string_lossy().into_owned();
-    let binding =
-        client.resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })?;
+    let project_id = client
+        .resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })
+        .ok()
+        .map(|binding| binding.project_id)
+        .or_else(|| client.project_config().ok().and_then(|cfg| cfg.project_id))
+        .unwrap_or_default();
     // The debug-only test seam changes the backend identity only after the
     // startup health and binding requests. This models a resident replacement
     // between MCP initialize and the next tools/call over real XPC.
@@ -112,7 +116,7 @@ fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
             .with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
         None => client.with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
     };
-    let mut server = McpServer::new(backend, binding.project_id, env!("CARGO_PKG_VERSION"));
+    let mut server = McpServer::new(backend, project_id, env!("CARGO_PKG_VERSION"));
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     server.serve(&mut stdin.lock(), &mut stdout.lock())?;
