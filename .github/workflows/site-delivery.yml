@@ -1,0 +1,72 @@
+name: Site Delivery
+
+# Builds the VitePress docs and the official static site, then deploys them to
+# the production Caddy instance (/srv/docs and /srv/www) over SSH. This is the
+# automated equivalent of `deploy/site.sh`.
+#
+# Required repository secrets (in addition to the Server Delivery secrets):
+#   SITE_DEPLOY_SSH_KEY   - private key allowed on the production host for site
+#                           deploys (root or a user with passwordless sudo)
+#   SITE_DEPLOY_HOST      - SSH hostname or IP of the installation
+#   SITE_DEPLOY_USER      - optional; defaults to root
+#   DEPLOY_KNOWN_HOSTS    - pinned SSH host-key line for SITE_DEPLOY_HOST
+#                           (shared with Server Delivery)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "deploy/Caddyfile"
+      - "compose.production.yml"
+      - ".github/workflows/site-delivery.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: production-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install docs dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Configure deploy SSH
+        env:
+          SITE_DEPLOY_SSH_KEY: ${{ secrets.SITE_DEPLOY_SSH_KEY }}
+          SITE_DEPLOY_HOST: ${{ secrets.SITE_DEPLOY_HOST }}
+          SITE_DEPLOY_USER: ${{ secrets.SITE_DEPLOY_USER }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$SITE_DEPLOY_SSH_KEY" || { echo "Missing secret: SITE_DEPLOY_SSH_KEY"; exit 1; }
+          test -n "$SITE_DEPLOY_HOST" || { echo "Missing secret: SITE_DEPLOY_HOST"; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "Missing secret: DEPLOY_KNOWN_HOSTS"; exit 1; }
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SITE_DEPLOY_SSH_KEY" > "$HOME/.ssh/id_site_deploy"
+          chmod 600 "$HOME/.ssh/id_site_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          {
+            echo "Host production-site"
+            echo "  HostName $SITE_DEPLOY_HOST"
+            echo "  User ${SITE_DEPLOY_USER:-root}"
+            echo "  IdentityFile $HOME/.ssh/id_site_deploy"
+            echo "  IdentitiesOnly yes"
+          } >> "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
+
+      - name: Deploy docs and official site
+        run: deploy/site.sh production-site
