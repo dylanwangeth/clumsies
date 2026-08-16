@@ -1,92 +1,96 @@
-# clumsies
+# Clumsies
 
-[![CI](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml/badge.svg)](https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/github/license/lilhammerfun/clumsies?label=License)](https://github.com/lilhammerfun/clumsies/blob/main/LICENSE)
-[![Release](https://img.shields.io/github/v/release/lilhammerfun/clumsies?label=Release)](https://github.com/lilhammerfun/clumsies/releases)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lilhammerfun/clumsies/main/docs/public/logo.svg" width="72" height="72" alt="Clumsies Logo" />
+</p>
 
-Building collaborative agent memory infrastructure for distributing rules,
-workflows, and project context to coding agents.
+<p align="center">
+  <b>The Collaborative Memory Platform for Agent Coding</b><br>
+  <i>Share, review, and evolve organizational memory assets across engineering teams and coding agents.</i>
+</p>
 
-> [!WARNING]
-> Work in progress. This is still a very early system. Expect rough edges, missing flows, broken corners, and backward-incompatible changes.
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-Documentation: [docs.clumsies.ai](https://docs.clumsies.ai) · 中文文档：[docs.clumsies.ai/zh](https://docs.clumsies.ai/zh/) · Official site: [clumsies.ai](https://clumsies.ai)
+<p align="center">
+  <a href="https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml"><img src="https://github.com/lilhammerfun/clumsies/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/lilhammerfun/clumsies/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lilhammerfun/clumsies?label=License" alt="License: MIT"></a>
+  <a href="https://github.com/lilhammerfun/clumsies/releases"><img src="https://img.shields.io/github/v/release/lilhammerfun/clumsies?label=Release" alt="Release"></a>
+</p>
 
-## The problem
+---
+
+## The Paradigm Shift
 
 AI coding agents are changing the control plane of software development.
 
-Organizations used to manage only code. Now they also need to manage the rules, constraints, and project context that shape how agents write code.
+Engineering organizations used to manage only code in Git repositories. In the agentic era, teams must also manage the **architectural rules, domain constraints, and project context** that steer how AI agents write and refactor code.
 
-But an agent's memory lives inside its own runtime. It is not an
-organizational asset, and it is hard for teams to share, review, or evolve in
-one place. When context pressure hits, useful project rules and background can
-still get silently dropped.
+Today, agent memory is trapped inside isolated model sessions or local markdown files. It cannot be peer-reviewed, shared across teammates, or synchronized across agent runs. When context limits hit, critical project guidelines are silently dropped.
 
-clumsies keeps that external memory in managed organization and project scopes. Agents activate
-ranked task-relevant fragments, load complete known resources only when needed,
-and store explicit draft refinements through the same system.
+**Clumsies is the collaborative memory platform for agent coding.** It treats agent memory as a first-class, versioned organizational asset — enabling human engineers and autonomous agents to build, review, and activate shared knowledge seamlessly.
 
-## Key features
+---
 
-- **Managed agent memory.** Store rules, workflows, and project context outside
-  any single agent runtime, then keep local project state in sync.
-- **Cue-driven activation.** The MCP surface is centered on `activate`, `load`,
-  `store`, and `kanban`; hybrid retrieval returns useful fragments directly
-  instead of loading every complete resource up front.
-- **Organization and project scope.** Shared memory can live at the
-  organization level, while projects keep their own project-specific context
-  and rules.
-- **Personal bundles.** Bundles let each user maintain reusable selections of
-  memory resources without turning those selections into organization truth.
-- **Agent adapters.** The adapter layer installs the runtime hooks and skills
-  needed by supported agents. Codex, Claude Code, opencode, and the DeepSeek
-  Harness (dsh) are supported today.
-- **Self-hosted authority.** The Rust Server and PostgreSQL run in your
-  infrastructure, while the signed Rust daemon owns local state and the Agent
-  MCP/Hook proxy surfaces.
+## Key Features
 
-## Quick start
+- **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Memory objects in Org and Project scopes. Changes are proposed as Drafts, verified through Peer Reviews, and merged atomically into immutable Commit history.
+- **Hybrid Retrieval & Precise Activation**: Combines SQLite FTS5 BM25 text search, local dense vector embeddings, Reciprocal Rank Fusion (RRF), and Cross-Encoder reranking. Agents retrieve task-relevant fragments on demand without exhausting token budgets.
+- **Agent-Native Asynchronous Kanban**: Agents autonomously claim tasks (`begin_work`), build dependency DAGs, evaluate blocking predicates, and record structured verification steps. Human approval gates (`approve_closure`) ensure only verified work transitions to Done.
+- **Pure MCP & Lifecycle Hooks**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`) with zero thin-skill pollution.
+- **Self-Hosted Authority**: Run the Rust Server and PostgreSQL in your own infrastructure with organization OIDC, while the local resident daemon owns fast local state and XPC transport.
 
-The macOS client currently runs from source and connects to the hosted Clumsies
-Server at `https://app.clumsies.ai`:
+---
+
+## Supported Agent Ecosystem
+
+| Agent Host | Protocol Surface | Managed Files | Supported Lifecycle |
+| :--- | :--- | :--- | :--- |
+| **Google Antigravity** | MCP + Lifecycle Hook | `.mcp.json`, `.agents/hooks.json` | `PreInvocation`, `Stop` (Decision Probe) |
+| **Claude Code** | MCP + Lifecycle Hook | `.mcp.json`, `.claude/hooks.json` | `PreInvocation`, `PostInvocation` |
+| **OpenAI Codex** | MCP + Config Hook | `codex.json`, `.codex/hooks/` | Pre/Post Execution |
+| **opencode** | MCP Server | `.opencode/mcp.json` | Task Dispatch |
+| **DeepSeek Harness (dsh)**| Hook Bridge | `.dsh/hooks/` | Run Telemetry & Session Binding |
+
+---
+
+## Quick Start
+
+### macOS App (Recommended)
+
+1. Download the latest release from [Releases](https://github.com/lilhammerfun/clumsies/releases).
+2. Move `Clumsies.app` to `/Applications` or `~/Applications`.
+3. Open `Clumsies.app`. It automatically provisions the resident launchd daemon (`ai.clumsies.daemon`) and connects to your organization server.
+4. Toggle your desired Coding Agent adapters in **Project Settings → Coding Agents**.
+
+### Development from Source
 
 ```bash
+# Clone repository
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
+
+# Install dependencies and launch native macOS App
 bun install
 bun run dev:macos
 ```
 
-The build embeds the Rust daemon binary, atomically replaces
-`~/Applications/Clumsies.app`, and launches the native AppKit/SwiftUI
-application from that stable path. Supported Agent adapters point directly at
-the same signed `clumsiesd` artifact for MCP and lifecycle Hook proxy modes, so
-there is no separately installed CLI to keep in sync.
-
-For a downloaded release, extract the ZIP and move `Clumsies.app` to
-`/Applications` or `~/Applications` before opening it. The App intentionally
-refuses to install its daemon or Agent integrations from macOS App
-Translocation's temporary quarantine path.
-
-For local Server and Web Admin development, start PostgreSQL, the deterministic
-fake OIDC provider, and Server with:
+For local server development:
 
 ```bash
+# Start PostgreSQL, fake OIDC provider, and the Rust Server
 bun run dev:server
 ```
 
-The fake provider is for local Server development only; production uses the
-organization's OIDC provider. The macOS app talks to the local daemon, which
-owns automatic draft synchronization and authenticated Server transport.
+---
 
-For the self-hosted configuration, see the
-[deployment guide](https://docs.clumsies.ai/guides/deploy-for-an-org/).
+## Documentation
 
-The former Zig CLI/TUI/MCP implementation is retained only as an explicit
-[archive](archive/zig-cli/README.md). It is not built, released, installed, or
-used by supported Agent integrations.
+Full documentation is available at [docs.clumsies.ai](https://docs.clumsies.ai).
+
+---
 
 ## License
 
-MIT
+[MIT License](LICENSE) © 2026 Clumsies Lab

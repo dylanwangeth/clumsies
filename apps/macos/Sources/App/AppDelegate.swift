@@ -585,17 +585,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 }
 
 private struct LaunchView: View {
+    @State private var loadingStageText: String = "Connecting to resident daemon…"
+
+    private let brandAccent = Color(red: 0.88, green: 0.32, blue: 0.60)
+
     var body: some View {
-        VStack(spacing: 18) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 88, height: 88)
-            ProgressView()
-                .controlSize(.small)
-                .accessibilityLabel("Opening Clumsies")
+        VStack(spacing: 24) {
+            Spacer()
+
+            VStack(spacing: 16) {
+                BrandLogoView(size: 68, isBreathing: true)
+
+                VStack(spacing: 4) {
+                    Text("Clumsies")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("The Collaborative Memory Platform for Agent Coding")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(spacing: 10) {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(brandAccent)
+                    .frame(width: 160)
+                    .controlSize(.small)
+
+                Text(loadingStageText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
+            Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        .background(.ultraThinMaterial)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+        .onAppear {
+            Task {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    loadingStageText = "Syncing team memory…"
+                }
+            }
+        }
     }
 }
 
@@ -603,15 +640,15 @@ private struct AuthenticationView: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 24) {
             Spacer()
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 96, height: 96)
-            VStack(spacing: 7) {
+            BrandLogoView(size: 76, isBreathing: false)
+            VStack(spacing: 8) {
                 Text("Sign in to Clumsies")
-                    .font(.title2.weight(.semibold))
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .tracking(0.3)
                 Text("Continue with your organization's identity provider.")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -619,6 +656,7 @@ private struct AuthenticationView: View {
                 Task { await store.signIn() }
             } label: {
                 Text("Continue in Browser")
+                    .fontWeight(.medium)
                     .frame(minWidth: 190)
             }
             .buttonStyle(.borderedProminent)
@@ -635,7 +673,8 @@ private struct AuthenticationView: View {
         }
         .padding(38)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background)
+        .background(.ultraThinMaterial)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
     }
 }
 

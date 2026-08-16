@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "vitepress dev docs",
+    "dev:site": "python3 -m http.server 4000 --directory site",
     "dev:macos": "sh apps/macos/Scripts/run.sh",
     "dev:web-admin": "bun run --cwd apps/web-admin dev",
     "dev:infra": "docker compose up -d --wait postgres fake-oidc",

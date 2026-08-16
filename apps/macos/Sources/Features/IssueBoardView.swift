@@ -1289,6 +1289,7 @@ private extension AgentRunHost {
         case .zed: "Zed"
         case .opencode: "opencode"
         case .dsh: "dsh"
+        case .antigravity: "Antigravity"
         case .unknown: "Unknown"
         }
     }

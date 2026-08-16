@@ -89,6 +89,7 @@ fn process_mode(args: &[String]) -> Result<ProcessMode, Box<dyn std::error::Erro
                 "claude-code" => HookHost::ClaudeCode,
                 "opencode" => HookHost::Opencode,
                 "dsh" => HookHost::Dsh,
+                "antigravity" => HookHost::Antigravity,
                 _ => return Err("unsupported Agent Hook host".into()),
             };
             Ok(ProcessMode::AgentIssueRunEvent(host))

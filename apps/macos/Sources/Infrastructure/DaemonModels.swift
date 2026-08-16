@@ -60,6 +60,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
     case claudeCode = "claude-code"
     case opencode
     case dsh
+    case antigravity
 
     var id: String { rawValue }
 
@@ -69,6 +70,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
         case .claudeCode: "Claude Code"
         case .opencode: "opencode"
         case .dsh: "DeepSeek Harness (dsh)"
+        case .antigravity: "Antigravity"
         }
     }
 }
@@ -617,6 +619,8 @@ enum AgentRunHost: String, Codable, Hashable, Sendable {
     case opencode
     /// DeepSeek Harness web sessions (hook-issued runs).
     case dsh
+    /// Google Antigravity lifecycle hook integration.
+    case antigravity
     /// Host added by a newer daemon than this app build; the board must keep
     /// decoding instead of failing the whole payload.
     case unknown

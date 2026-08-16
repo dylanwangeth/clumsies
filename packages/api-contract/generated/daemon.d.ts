@@ -864,9 +864,9 @@ export interface components {
         /** @enum {string} */
         DaemonProjectStorageMoveState: "preparing" | "materializing" | "verifying" | "switching" | "cleaning" | "completed" | "failed";
         /** @enum {string} */
-        ProjectAgentAdapterKind: "codex" | "claude-code" | "opencode" | "dsh";
+        ProjectAgentAdapterKind: "codex" | "claude-code" | "opencode" | "dsh" | "antigravity";
         /** @enum {string} */
-        AgentRunHost: "codex" | "claude-code" | "zed" | "manual" | "opencode" | "dsh";
+        AgentRunHost: "codex" | "claude-code" | "zed" | "manual" | "opencode" | "dsh" | "antigravity";
         /** @enum {string} */
         AgentRunKind: "root" | "subagent";
         /** @enum {string} */

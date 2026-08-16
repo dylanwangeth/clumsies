@@ -221,6 +221,9 @@ pub enum AgentRunHost {
     /// client plugin forwarding lifecycle events to the daemon hook proxy.
     #[serde(rename = "dsh")]
     Dsh,
+    /// Google Antigravity lifecycle hook integration.
+    #[serde(rename = "antigravity")]
+    Antigravity,
 }
 
 impl AgentRunHost {
@@ -232,6 +235,7 @@ impl AgentRunHost {
             Self::Zed => "zed",
             Self::Opencode => "opencode",
             Self::Dsh => "dsh",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -243,6 +247,7 @@ impl AgentRunHost {
             "zed" => Ok(Self::Zed),
             "opencode" => Ok(Self::Opencode),
             "dsh" => Ok(Self::Dsh),
+            "antigravity" => Ok(Self::Antigravity),
             value => Err(corrupt_run(format!("unknown AgentRun host {value}"))),
         }
     }

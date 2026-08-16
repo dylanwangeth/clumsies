@@ -28,6 +28,8 @@ pub enum HookHost {
     /// session/turn events to `clumsiesd _agent issue-run-event --host dsh`
     /// with the same payload vocabulary as the other hosts.
     Dsh,
+    /// Google Antigravity lifecycle hook integration.
+    Antigravity,
 }
 
 impl HookHost {
@@ -37,6 +39,7 @@ impl HookHost {
             Self::ClaudeCode => "claude-code",
             Self::Opencode => "opencode",
             Self::Dsh => "dsh",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -46,6 +49,7 @@ impl HookHost {
             Self::ClaudeCode => AgentRunHost::ClaudeCode,
             Self::Opencode => AgentRunHost::Opencode,
             Self::Dsh => AgentRunHost::Dsh,
+            Self::Antigravity => AgentRunHost::Antigravity,
         }
     }
 
@@ -57,6 +61,7 @@ impl HookHost {
             // The dsh plugin mints one turn id per user prompt and reuses it
             // for the matching Stop event, mirroring the codex turn model.
             Self::Dsh => "turn_id",
+            Self::Antigravity => "turn_id",
         }
     }
 }
@@ -188,7 +193,10 @@ impl NormalizedHookEvent {
     ) -> Option<RecordAgentRunEventRequest> {
         if self.hook_event_name != HookEventName::Stop
             || self.stop_hook_active
-            || !matches!(self.host, HookHost::Codex | HookHost::ClaudeCode)
+            || !matches!(
+                self.host,
+                HookHost::Codex | HookHost::ClaudeCode | HookHost::Antigravity
+            )
         {
             return None;
         }
@@ -262,7 +270,7 @@ fn normalize_object(
         HookEventName::StopFailure
             if matches!(
                 host,
-                HookHost::ClaudeCode | HookHost::Opencode | HookHost::Dsh
+                HookHost::ClaudeCode | HookHost::Opencode | HookHost::Dsh | HookHost::Antigravity
             ) =>
         {
             kind = Some(AgentRunKind::Root);
@@ -595,5 +603,50 @@ mod tests {
         assert_eq!(probe.event_type, AgentRunEventType::Heartbeat);
         assert_eq!(final_event.event_type, AgentRunEventType::Ended);
         assert_ne!(probe.event_id, final_event.event_id);
+    }
+
+    #[test]
+    fn antigravity_root_subagent_and_failure_lifecycle_events_normalize() {
+        let started = normalize_hook_event(
+            HookHost::Antigravity,
+            br#"{"session_id":"ag_session_1","turn_id":"turn_42","hook_event_name":"UserPromptSubmit","cwd":"/work"}"#,
+        )
+        .unwrap();
+        assert_eq!(started.host_run_key(), Some("root:turn_42"));
+        assert_eq!(started.event_type(), AgentRunEventType::Started);
+        assert_eq!(started.kind(), Some(AgentRunKind::Root));
+        assert_eq!(started.workspace_path(), Some("/work"));
+
+        let stopped = normalize_hook_event(
+            HookHost::Antigravity,
+            br#"{"session_id":"ag_session_1","turn_id":"turn_42","hook_event_name":"Stop"}"#,
+        )
+        .unwrap();
+        assert_eq!(stopped.host_run_key(), Some("root:turn_42"));
+        assert_eq!(stopped.event_type(), AgentRunEventType::Ended);
+
+        let subagent = normalize_hook_event(
+            HookHost::Antigravity,
+            br#"{"session_id":"ag_session_1","turn_id":"turn_42","agent_id":"sub_research","agent_type":"researcher","hook_event_name":"SubagentStop"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            subagent.host_run_key(),
+            Some("subagent:ag_session_1:sub_research")
+        );
+        assert_eq!(subagent.parent_host_run_key(), Some("root:turn_42"));
+        assert_eq!(subagent.kind(), Some(AgentRunKind::Subagent));
+        assert_eq!(subagent.display_label(), Some("researcher"));
+
+        let failure = normalize_hook_event(
+            HookHost::Antigravity,
+            br#"{"session_id":"ag_session_1","turn_id":"turn_43","hook_event_name":"StopFailure","error":"timeout"}"#,
+        )
+        .unwrap();
+        assert_eq!(failure.host_run_key(), Some("root:turn_43"));
+        assert_eq!(failure.outcome(), Some(AgentRunOutcome::Failed));
+
+        let probe = stopped.to_stop_probe_request("prj_test").unwrap();
+        assert_eq!(probe.event_type, AgentRunEventType::Heartbeat);
     }
 }

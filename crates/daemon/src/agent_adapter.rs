@@ -34,6 +34,8 @@ const ISSUE_RUN_EVENT_CODEX: &str =
     include_str!("../../../assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl");
 const ISSUE_RUN_EVENT_CLAUDE: &str =
     include_str!("../../../assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl");
+const ISSUE_RUN_EVENT_ANTIGRAVITY: &str =
+    include_str!("../../../assets/adapters/antigravity/runtime/hooks/issue-run-event.sh.tpl");
 const OPENCODE_PLUGIN: &str = include_str!("../../../assets/adapters/opencode/runtime/plugin.ts");
 const LEGACY_USER_PROMPT_SUBMIT_CODEX_SHA256: &str =
     "03bfb5ddbad36dcf53ba3f1e4e07a83cece33d4a98c29298dc0d7e776f63f815";
@@ -51,6 +53,7 @@ pub enum ProjectAgentAdapterKind {
     ClaudeCode,
     Opencode,
     Dsh,
+    Antigravity,
 }
 
 impl ProjectAgentAdapterKind {
@@ -60,6 +63,7 @@ impl ProjectAgentAdapterKind {
             Self::ClaudeCode => "claude-code",
             Self::Opencode => "opencode",
             Self::Dsh => "dsh",
+            Self::Antigravity => "antigravity",
         }
     }
 
@@ -69,6 +73,7 @@ impl ProjectAgentAdapterKind {
             "claude-code" => Ok(Self::ClaudeCode),
             "opencode" => Ok(Self::Opencode),
             "dsh" => Ok(Self::Dsh),
+            "antigravity" => Ok(Self::Antigravity),
             _ => Err(DaemonError::InvalidConfig(
                 "persisted Coding Agent adapter kind is invalid".to_owned(),
             )),
@@ -166,6 +171,7 @@ enum ManagedFileKind {
     ClaudeSettings,
     OpencodeConfig,
     DshConfig,
+    AntigravityHooks,
     Exclusive,
 }
 
@@ -229,6 +235,10 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
             &["mcp.clumsies", "plugin[./.opencode/plugins/clumsies.ts]"]
         }
         ManagedFileKind::DshConfig => &["$file"],
+        ManagedFileKind::AntigravityHooks => &[
+            "clumsies-issue-run-event.PreInvocation",
+            "clumsies-issue-run-event.Stop",
+        ],
         ManagedFileKind::Exclusive => &["$file"],
     }
 }
@@ -420,6 +430,18 @@ fn validate_adapter_journal_path(
             (relative.to_str(), kind),
             (Some(".dsh/clumsies.json"), ManagedFileKind::DshConfig)
         ),
+        ProjectAgentAdapterKind::Antigravity => matches!(
+            (relative.to_str(), kind),
+            (Some(".mcp.json"), ManagedFileKind::ClaudeMcp)
+                | (
+                    Some(".agents/hooks.json"),
+                    ManagedFileKind::AntigravityHooks
+                )
+                | (
+                    Some(".agents/hooks/resolve-binary.sh" | ".agents/hooks/issue-run-event.sh"),
+                    ManagedFileKind::Exclusive
+                )
+        ),
     };
     if !allowed {
         return Err(adapter_conflict(
@@ -453,7 +475,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             server_url TEXT NOT NULL,
             workspace_root TEXT NOT NULL,
             project_id TEXT NOT NULL,
-            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
+            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
             revision BIGINT NOT NULL CHECK (revision > 0),
             manifest_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -491,7 +513,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             server_url TEXT NOT NULL,
             workspace_root TEXT NOT NULL,
             project_id TEXT NOT NULL,
-            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
+            adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh', 'antigravity')),
             action TEXT NOT NULL CHECK (action IN ('install', 'remove')),
             expected_revision BIGINT,
             next_revision BIGINT,
@@ -2194,6 +2216,12 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join(".opencode/plugins/clumsies.ts"),
         ],
         ProjectAgentAdapterKind::Dsh => vec![workspace_root.join(".dsh/clumsies.json")],
+        ProjectAgentAdapterKind::Antigravity => vec![
+            workspace_root.join(".mcp.json"),
+            workspace_root.join(".agents/hooks.json"),
+            workspace_root.join(".agents/hooks/resolve-binary.sh"),
+            workspace_root.join(".agents/hooks/issue-run-event.sh"),
+        ],
     };
     for path in &target_paths {
         ManagedPathGuard::capture_under(workspace_root, path)?;
@@ -2349,6 +2377,41 @@ fn install_plan_with_claude_mcp_path(
                 ManagedFileKind::DshConfig,
             )?]
         }
+        ProjectAgentAdapterKind::Antigravity => {
+            let mcp_path = workspace_root.join(".mcp.json");
+            let hooks_path = workspace_root.join(".agents/hooks.json");
+            let hook_script_path = workspace_root.join(".agents/hooks/issue-run-event.sh");
+            let hook_ownership = HookOwnership {
+                lifecycle: manifest_manages_path(previous_manifest, &hook_script_path),
+                legacy_prompt: false,
+            };
+            let managed_hook = render_managed_hook_script(ISSUE_RUN_EVENT_ANTIGRAVITY, &runtime);
+            let managed_resolver =
+                render_managed_binary_resolver(ProjectAgentAdapterKind::Antigravity, &runtime);
+            vec![
+                merged_change(mcp_path, ManagedFileKind::ClaudeMcp, 0o644, |current| {
+                    render_claude_mcp(current, &runtime, previous_runtime)
+                })?,
+                merged_change(
+                    hooks_path.clone(),
+                    ManagedFileKind::AntigravityHooks,
+                    0o644,
+                    |current| render_antigravity_hooks(current, &hook_script_path, hook_ownership),
+                )?,
+                exclusive_change(
+                    workspace_root.join(".agents/hooks/resolve-binary.sh"),
+                    managed_resolver.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+                exclusive_change(
+                    hook_script_path,
+                    managed_hook.as_bytes(),
+                    previous_manifest,
+                    0o755,
+                )?,
+            ]
+        }
     };
     changes.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(changes)
@@ -2441,6 +2504,20 @@ fn remove_plan(
                     .map(|content| remove_opencode_config(content, helper))
                     .transpose()?
                     .flatten(),
+                ManagedFileKind::AntigravityHooks => expected
+                    .content
+                    .as_deref()
+                    .map(|content| {
+                        remove_antigravity_hooks(
+                            content,
+                            &path
+                                .parent()
+                                .unwrap_or(Path::new("."))
+                                .join("hooks/issue-run-event.sh"),
+                        )
+                    })
+                    .transpose()?
+                    .flatten(),
                 ManagedFileKind::DshConfig | ManagedFileKind::Exclusive => {
                     if let Some(content) = &expected.content
                         && sha256(content) != file.installed_hash {
@@ -2487,6 +2564,7 @@ fn validate_manifest_managed_path(
         ManagedFileKind::ClaudeSettings => relative == Path::new(".claude/settings.json"),
         ManagedFileKind::OpencodeConfig => relative == Path::new("opencode.json"),
         ManagedFileKind::DshConfig => relative == Path::new(".dsh/clumsies.json"),
+        ManagedFileKind::AntigravityHooks => relative == Path::new(".agents/hooks.json"),
         ManagedFileKind::Exclusive => [
             ".codex/hooks/resolve-binary.sh",
             ".codex/hooks/issue-run-event.sh",
@@ -2499,6 +2577,8 @@ fn validate_manifest_managed_path(
             ".claude/skills/activate/SKILL.md",
             ".claude/skills/ntmd/SKILL.md",
             ".opencode/plugins/clumsies.ts",
+            ".agents/hooks/resolve-binary.sh",
+            ".agents/hooks/issue-run-event.sh",
         ]
         .iter()
         .any(|candidate| relative == Path::new(candidate)),
@@ -2647,13 +2727,14 @@ fn render_managed_binary_resolver(
             r#"PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)""#
         }
         ProjectAgentAdapterKind::ClaudeCode => r#"PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}""#,
+        ProjectAgentAdapterKind::Antigravity => r#"PROJECT_DIR="${ANTIGRAVITY_PROJECT_DIR:-$PWD}""#,
         ProjectAgentAdapterKind::Opencode | ProjectAgentAdapterKind::Dsh => {
             unreachable!("opencode and dsh do not install a resolver")
         }
     };
     let exported_project_directory = match adapter {
         ProjectAgentAdapterKind::Codex => "PROJECT_ROOT",
-        ProjectAgentAdapterKind::ClaudeCode => "PROJECT_DIR",
+        ProjectAgentAdapterKind::ClaudeCode | ProjectAgentAdapterKind::Antigravity => "PROJECT_DIR",
         ProjectAgentAdapterKind::Opencode | ProjectAgentAdapterKind::Dsh => {
             unreachable!("opencode and dsh do not install a resolver")
         }
@@ -2983,6 +3064,106 @@ fn render_json(value: &Value) -> Result<Vec<u8>, DaemonError> {
     let mut rendered = serde_json::to_vec_pretty(value)?;
     rendered.push(b'\n');
     Ok(rendered)
+}
+
+fn render_antigravity_hooks(
+    existing: Option<&[u8]>,
+    script_path: &Path,
+    ownership: HookOwnership,
+) -> Result<Vec<u8>, DaemonError> {
+    let mut root = match existing {
+        Some(content) => serde_json::from_slice::<Value>(content).map_err(|_| {
+            adapter_conflict("The existing Antigravity hook registry is not valid JSON.")
+        })?,
+        None => Value::Object(Map::new()),
+    };
+    let root_object = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The Antigravity hook registry must be a JSON object."))?;
+
+    if let Some(existing_entry) = root_object.get("clumsies-issue-run-event")
+        && !ownership.lifecycle
+        && !antigravity_hook_entry_matches(existing_entry, script_path)
+    {
+        return Err(adapter_conflict(
+            "The Antigravity `clumsies-issue-run-event` hook entry is already registered but is not owned by this Clumsies integration.",
+        ));
+    }
+
+    let hook_entry = root_object
+        .entry("clumsies-issue-run-event")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            adapter_conflict(
+                "The Antigravity `clumsies-issue-run-event` entry must be a JSON object.",
+            )
+        })?;
+
+    let hook_cmd = hook_command(script_path);
+    hook_entry.insert(
+        "PreInvocation".to_owned(),
+        json!([
+            {
+                "type": "command",
+                "command": hook_cmd,
+                "timeout": 5
+            }
+        ]),
+    );
+    hook_entry.insert(
+        "Stop".to_owned(),
+        json!([
+            {
+                "type": "command",
+                "command": hook_cmd,
+                "timeout": 5
+            }
+        ]),
+    );
+
+    render_json(&root)
+}
+
+fn remove_antigravity_hooks(
+    content: &[u8],
+    script_path: &Path,
+) -> Result<Option<Vec<u8>>, DaemonError> {
+    let mut root = serde_json::from_slice::<Value>(content).map_err(|_| {
+        adapter_conflict("The existing Antigravity hook registry is not valid JSON.")
+    })?;
+    let root_object = root
+        .as_object_mut()
+        .ok_or_else(|| adapter_conflict("The Antigravity hook registry must be a JSON object."))?;
+
+    if let Some(entry) = root_object.get("clumsies-issue-run-event") {
+        if !antigravity_hook_entry_matches(entry, script_path) {
+            return Err(adapter_conflict(
+                "The Antigravity `clumsies-issue-run-event` hook entry changed after installation.",
+            ));
+        }
+        root_object.remove("clumsies-issue-run-event");
+    }
+
+    if root_object.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(render_json(&root)?))
+}
+
+fn antigravity_hook_entry_matches(entry: &Value, script_path: &Path) -> bool {
+    let Some(object) = entry.as_object() else {
+        return false;
+    };
+    let pre_matches = object
+        .get("PreInvocation")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| arr.len() == 1 && is_exact_command_handler(&arr[0], script_path, 5));
+    let stop_matches = object
+        .get("Stop")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| arr.len() == 1 && is_exact_command_handler(&arr[0], script_path, 5));
+    pre_matches && stop_matches
 }
 
 fn render_codex_config(
@@ -3958,6 +4139,7 @@ fn adapter_record_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AdapterRecor
         "claude-code" => ProjectAgentAdapterKind::ClaudeCode,
         "opencode" => ProjectAgentAdapterKind::Opencode,
         "dsh" => ProjectAgentAdapterKind::Dsh,
+        "antigravity" => ProjectAgentAdapterKind::Antigravity,
         _ => {
             return Err(DaemonError::InvalidConfig(format!(
                 "unknown persisted Coding Agent adapter {raw_adapter}"
@@ -4941,6 +5123,147 @@ mod tests {
         assert!(!marker_path.exists());
         cleanup_empty_adapter_directories(&removals, workspace.path());
         assert!(!workspace.path().join(".dsh").exists());
+    }
+
+    #[test]
+    fn install_plan_includes_antigravity_artifacts() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Antigravity,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+
+        assert!(changes.iter().any(|change| {
+            change.path == workspace.path().join(".mcp.json")
+                && change.kind == ManagedFileKind::ClaudeMcp
+                && change.mode == 0o644
+        }));
+        assert!(changes.iter().any(|change| {
+            change.path == workspace.path().join(".agents/hooks.json")
+                && change.kind == ManagedFileKind::AntigravityHooks
+                && change.mode == 0o644
+        }));
+        assert!(changes.iter().any(|change| {
+            change.path == workspace.path().join(".agents/hooks/resolve-binary.sh")
+                && change.kind == ManagedFileKind::Exclusive
+                && change.mode == 0o755
+        }));
+        assert!(changes.iter().any(|change| {
+            change.path == workspace.path().join(".agents/hooks/issue-run-event.sh")
+                && change.kind == ManagedFileKind::Exclusive
+                && change.mode == 0o755
+        }));
+        // Verify NO skills are installed
+        assert!(
+            changes
+                .iter()
+                .all(|change| !change.path.to_string_lossy().contains("skills"))
+        );
+    }
+
+    #[test]
+    fn antigravity_install_remove_round_trip() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Antigravity,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&changes).unwrap();
+
+        let mcp_path = workspace.path().join(".mcp.json");
+        let hooks_path = workspace.path().join(".agents/hooks.json");
+        let resolver_path = workspace.path().join(".agents/hooks/resolve-binary.sh");
+        let hook_path = workspace.path().join(".agents/hooks/issue-run-event.sh");
+
+        assert!(mcp_path.exists());
+        assert!(hooks_path.exists());
+        assert!(resolver_path.exists());
+        assert!(hook_path.exists());
+
+        let mcp_json: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
+        assert_eq!(
+            mcp_json["mcpServers"]["clumsies"]["command"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+
+        let hooks_json: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        assert!(hooks_json["clumsies-issue-run-event"]["PreInvocation"].is_array());
+        assert!(hooks_json["clumsies-issue-run-event"]["Stop"].is_array());
+
+        let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
+        let removals = remove_plan(&manifest, workspace.path()).unwrap();
+        apply_changes(&removals).unwrap();
+
+        assert!(!mcp_path.exists());
+        assert!(!hooks_path.exists());
+        assert!(!resolver_path.exists());
+        assert!(!hook_path.exists());
+        cleanup_empty_adapter_directories(&removals, workspace.path());
+        assert!(!workspace.path().join(".agents").exists());
+    }
+
+    #[test]
+    fn antigravity_merges_existing_mcp_and_hooks() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let mcp_path = workspace.path().join(".mcp.json");
+        fs::write(
+            &mcp_path,
+            br#"{"mcpServers":{"other":{"type":"stdio","command":"other-mcp"}}}"#,
+        )
+        .unwrap();
+
+        let hooks_path = workspace.path().join(".agents/hooks.json");
+        fs::create_dir_all(workspace.path().join(".agents")).unwrap();
+        fs::write(
+            &hooks_path,
+            br#"{"lint-checker":{"PostToolUse":[{"matcher":"run_command","hooks":[{"type":"command","command":"./scripts/lint.sh","timeout":10}]}]}}"#,
+        )
+        .unwrap();
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Antigravity,
+            workspace.path(),
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&changes).unwrap();
+
+        let merged_mcp: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
+        assert_eq!(merged_mcp["mcpServers"]["other"]["command"], "other-mcp");
+        assert_eq!(
+            merged_mcp["mcpServers"]["clumsies"]["command"],
+            "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        );
+
+        let merged_hooks: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        assert!(merged_hooks.get("lint-checker").is_some());
+        assert!(merged_hooks.get("clumsies-issue-run-event").is_some());
+
+        let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
+        let removals = remove_plan(&manifest, workspace.path()).unwrap();
+        apply_changes(&removals).unwrap();
+
+        let remaining_mcp: Value = serde_json::from_slice(&fs::read(&mcp_path).unwrap()).unwrap();
+        assert_eq!(remaining_mcp["mcpServers"]["other"]["command"], "other-mcp");
+        assert!(remaining_mcp["mcpServers"].get("clumsies").is_none());
+
+        let remaining_hooks: Value =
+            serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        assert!(remaining_hooks.get("lint-checker").is_some());
+        assert!(remaining_hooks.get("clumsies-issue-run-event").is_none());
     }
 
     #[test]

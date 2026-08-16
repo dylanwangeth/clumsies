@@ -161,7 +161,7 @@ type _daemonAgentAdapterMethods = [
 ];
 
 type _daemonAgentAdapterInspectionContract = [
-  Expect<Equals<DaemonSchemas["ProjectAgentAdapterKind"], "codex" | "claude-code" | "opencode" | "dsh">>,
+  Expect<Equals<DaemonSchemas["ProjectAgentAdapterKind"], "codex" | "claude-code" | "opencode" | "dsh" | "antigravity">>,
   Expect<Equals<keyof LegacyAgentAdapterInspectionRequestSchema, "runtime_binary_path">>,
   Expect<Equals<LegacyAgentAdapterInspectionRequestSchema["runtime_binary_path"], string>>,
   Expect<Equals<
@@ -215,7 +215,7 @@ type _daemonIssueRunMethods = [
 ];
 
 type _daemonIssueRunContract = [
-  Expect<Equals<DaemonSchemas["AgentRunHost"], "codex" | "claude-code" | "zed" | "manual" | "opencode" | "dsh">>,
+  Expect<Equals<DaemonSchemas["AgentRunHost"], "codex" | "claude-code" | "zed" | "manual" | "opencode" | "dsh" | "antigravity">>,
   Expect<Equals<DaemonSchemas["IssueExternalReferenceKind"], "issue" | "pull_request">>,
   Expect<Equals<
     DaemonSchemas["AgentRunEventType"],

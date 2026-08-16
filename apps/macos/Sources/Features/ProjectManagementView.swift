@@ -431,8 +431,10 @@ private struct ProjectLocalSetupSettings: View {
             } else {
                 ForEach(bindings) { binding in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(URL(fileURLWithPath: binding.workspaceRoot).lastPathComponent)
-                            .fontWeight(.medium)
+                        if bindings.count > 1 {
+                            Text(URL(fileURLWithPath: binding.workspaceRoot).lastPathComponent)
+                                .fontWeight(.medium)
+                        }
                         ForEach(ProjectAgentAdapterKind.allCases) { adapter in
                             Toggle(
                                 adapter.title,

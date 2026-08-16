@@ -1461,8 +1461,9 @@ private struct GlobalSidebar: View {
                     .tag(GlobalSidebarDestination.section(.reviews))
             } header: {
                 HStack(spacing: 7) {
-                    Image(nsImage: NSApp.applicationIconImage)
+                    Image("BrandMark", bundle: .main)
                         .resizable()
+                        .scaledToFit()
                         .frame(width: 16, height: 16)
                     Text(store.organization?.name ?? "Clumsies Lab")
                         .fontWeight(.semibold)
