@@ -70,17 +70,22 @@ export default withMermaid(
             { text: "Deployment", link: "/guides/deploy-for-an-org" },
             { text: "Member workflow", link: "/guides/how-to-use-clumsies" },
             { text: "Agent runtime", link: "/guides/agent-runtime" },
-            { text: "AgentRun lifecycle", link: "/guides/agent-run-injection" }
+            { text: "AgentRun lifecycle", link: "/guides/agent-run-injection" },
+            { text: "DSH integration", link: "/guides/dsh-integration" },
+            { text: "Development workflow", link: "/guides/development-workflow" },
+            { text: "Memory storage boundary", link: "/guides/rule-store-unification" },
+            { text: "Archived Zig CLI", link: "/guides/cli-commands" }
           ]
         },
         {
           text: "System",
           items: [
             { text: "Architecture", link: "/architecture" },
+            { text: "Server", link: "/server" },
             {
               text: "Core model",
               items: [
-                { text: "Hub", link: "/artifact" },
+                { text: "Organization memory", link: "/artifact" },
                 { text: "Project", link: "/workspace" },
                 { text: "Unified Memory model", link: "/unified-memory-model" }
               ]
@@ -93,6 +98,7 @@ export default withMermaid(
                 { text: "Adapter", link: "/adapter" },
                 { text: "Issue board requirements", link: "/issue-board-requirements" },
                 { text: "Issue board design", link: "/issue-board-design" },
+                { text: "Retrieval and evaluation", link: "/retrieval-evaluation" },
                 { text: "META_PROMPT", link: "/meta-prompt" }
               ]
             },

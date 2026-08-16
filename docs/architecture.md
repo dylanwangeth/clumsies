@@ -66,7 +66,7 @@ sequenceDiagram
     participant S as Server
     participant P as PostgreSQL
 
-    C->>D: store(project_id, scope, resource, op, base_commit_id)
+    C->>D: store(project_id, scope, memory ref, op, base_commit_id)
     D->>P: no direct access
     D->>D: persist local draft and queued operation
     D-->>C: local operation accepted
@@ -101,9 +101,9 @@ sequenceDiagram
     Server-->>Desktop: new commit_id
 ```
 
-Organization and project Refs are independent. Merging a Hub draft advances the
-organization Ref only; merging a Local draft advances the selected project Ref
-only.
+Organization and project Refs are independent. Merging an organization-scope
+draft advances the organization Ref only; merging a project-scope draft
+advances the selected project Ref only.
 
 ## Authority read path
 

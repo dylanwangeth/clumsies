@@ -22,8 +22,8 @@ record remains after migration.
 
 The removed bootstrap content is protocol instruction rather than durable
 memory, so it is deleted instead of reclassified. Long-lived behavioral
-constraints belong in Rules, reusable procedures belong in Workflows, and
-background material belongs in Context.
+constraints, reusable procedures, and background material are all Memory
+resources in the unified model; nothing is recreated as a separate type.
 
 See [MCP](/mcp) for the current wire contract and [Runtime](/runtime) for the
 daemon-owned Effective Memory path.

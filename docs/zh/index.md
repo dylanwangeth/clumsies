@@ -14,9 +14,11 @@ hero:
       link: /zh/architecture
 
 features:
-  - title: Hub 与 Local
-    details: 在一个 Desktop 工作流中浏览组织共享记忆与项目专属记忆。
+  - title: 统一的 Memory 模型
+    details: Rule、Workflow 与 Context 统一为单一 Markdown Memory 对象，携带语义 description 与稳定 ID，处于组织或项目作用域。
   - title: 自动 Draft
     details: Desktop 与 MCP 写入同一个常驻 daemon；本地变更无需手动 push 即可同步。
-  - title: Agent 集成
-    details: 为 Codex、Claude Code 与 opencode 提供 hook/plugin 事件桥，AgentRun 进入看板。
+  - title: Agent 原生看板
+    details: Agent 通过 typed kanban 操作认领、暂停、释放并提议关闭 Issue；只有用户的 Approve 闸门能让 Issue 进入 Done。
+  - title: Host 适配器
+    details: Codex、Claude Code、opencode 与 DeepSeek Harness 共用同一个 App 内签名 Rust runtime，并做 release-identity 校验。

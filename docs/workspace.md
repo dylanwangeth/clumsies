@@ -29,13 +29,16 @@ sent to daemon as a Project identity and is not a runtime fallback.
 
 ## Memory scope
 
-Projects own repository-specific Context, Rules, and Workflows. Organization
-memory remains under the independent Hub scope. Each scope has its own Ref and
-immutable Commit history; merging one scope never advances the other.
+Projects own repository-specific Memory. Organization memory remains under the
+independent organization scope (historically the Hub view). Each scope has its
+own Ref and immutable Commit history; merging one scope never advances the
+other. A Memory's role — rule, workflow, or context — is carried by its content
+and path, not by a closed type.
 
 Bundles are personal selections of shared organization memory. They help a
 member reuse a curated set but do not become Project identity or replace the
-organization Ref.
+organization Ref. A Bundle holds a single `resource_ids` list; membership never
+changes resource identity.
 
 ## Local state
 

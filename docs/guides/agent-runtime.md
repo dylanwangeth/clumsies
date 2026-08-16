@@ -68,7 +68,7 @@ The current tool surface is:
 - `activate`: send a natural-language task cue and receive ranked fragments
   ready for the current reasoning context.
 - `load`: read complete resources by known stable ID or exact path.
-- `store`: persist an explicit user-requested Context, Rule, or Workflow Draft.
+- `store`: persist an explicit user-requested Memory Draft.
 - `kanban`: get a native Issue by global ID, create/update/list native Issues, explicitly start Issue work, or
   request Issue closure after semantic judgment.
 
@@ -78,7 +78,7 @@ Typical use is:
 activate(query, optional state)
   -> use returned fragments
   -> optionally load known complete resources
-  -> store only for explicit Context, Rule, or Workflow maintenance
+  -> store only for explicit memory maintenance
   -> kanban.get when the user supplies a copied global Issue ID
   -> kanban.create for durable new or follow-up work
   -> explicitly kanban.begin_work when this is durable Local Issue work

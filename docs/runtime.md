@@ -44,8 +44,8 @@ dependency.
 ## Draft synchronization
 
 Every local operation is persisted before synchronization is attempted. The
-queue supports create, update, rename, delete, and discard for Context, Rule,
-and Workflow resources.
+queue supports create, update, rename, delete, and discard for Memory
+resources in the unified model.
 
 Deleting an authoritative resource keeps an open deletion Draft until Review
 merge. Deleting a resource created only by the current Draft cancels that
@@ -57,7 +57,7 @@ Each draft carries:
 
 - `project_id`
 - `scope` (`org` or `project`)
-- resource kind
+- the unified Memory identity (id or path; no three-type kind)
 - `base_commit_id`
 - the currently installed target Ref Commit
 - derived freshness and Server reconciliation projection
@@ -106,7 +106,8 @@ project Ref before creating the local draft. A missing Ref produces a draft
 with no base; daemon never invents a Commit ID.
 
 MCP does not currently expose organization scope in `store`; interpreting the
-same call as a Hub write would be ambiguous. Hub writes are explicit in Desktop.
+same call as an organization-scope write would be ambiguous.
+Organization-scope writes are explicit in Desktop.
 
 The daemon combines the installed authority generation with current
 `open`/`submitted` Draft operations before both `activate` and `load`. For a

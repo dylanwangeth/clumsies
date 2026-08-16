@@ -1,11 +1,13 @@
 # Unified Memory Model
 
-Date: 2026-08-15
+Date: 2026-08-15 · Status: implemented in code (native ISSUE-012 in review)
 
 This document is the implementation blueprint for ISSUE-012: replacing the
 closed Rule / Workflow / Context types with one unified Memory object across
-Server, daemon, OpenAPI, MCP, macOS, and the Agent Adapter. It is a
-destructive refactor: existing data is protected and migrated, while the old
+Server, daemon, OpenAPI, MCP, macOS, and the Agent Adapter. The Server, daemon,
+API contract, MCP, and macOS unification commits landed on 2026-08-15; this
+page is the design and migration record for that change. It is a destructive
+refactor: existing data is protected and migrated, while the old
 three-type write contracts are not preserved for the long term.
 
 ## Core object

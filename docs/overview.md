@@ -1,38 +1,44 @@
 # Overview
 
 Clumsies is external memory infrastructure for coding agents. It keeps durable
-Context, Rules, and Workflows outside one model conversation, makes
-the relevant subset available to an agent, and turns changes into reviewable
-drafts instead of invisible local edits.
+Memory outside one model conversation, makes the relevant subset available to
+an agent, and turns changes into reviewable drafts instead of invisible local
+edits.
 
 ## Memory model
 
-Memory is a product concept, not one database table.
+Memory is the single first-class content object. The former closed Context /
+Rule / Workflow types are unified into it: whether a Memory reads as a "rule",
+a "workflow", or project "context" is expressed by its content and path, not by
+a type discriminator.
 
-| Type | Meaning |
+| Concept | Meaning |
 | --- | --- |
-| Context | file-oriented project or organization knowledge |
-| Rule | Markdown-backed strong constraints |
-| Workflow | Markdown-backed ordered operational behavior with its own lifecycle |
-| Bundle | a personal selection of shared memory resources |
+| Memory | Markdown-backed content with stable `id`, `scope`, `title`, `path`, `description`, `content`, `revision`, and `status` |
+| Organization scope | shared memory with its own Ref and immutable Commit history |
+| Project scope | repository-scoped memory; projects may consume selected organization resources |
+| Bundle | a personal selection of shared memory resources (`resource_ids`) |
+| Issue | a native agent-managed Kanban object, distinct from Memory |
 
-Organization resources are general and shared. Projects may consume selected
-organization resources and own independent Context, Rules, and Workflows.
+New Memory objects receive `mem_`-prefixed IDs. Legacy `ctx_` / `rul_` / `wfl_`
+IDs remain stable and opaque; they are never rewritten. `description` is a
+required, agent-generated semantic summary on create and an explicit retrieval
+field, chunked and indexed separately from `content`.
 
 ## Product surfaces
 
 | Surface | Role |
 | --- | --- |
-| Desktop | primary human product for browsing, editing, reviewing, and merging memory |
+| Desktop | primary human product for browsing, editing, reviewing, and merging memory; the unified Memory section shows organization and project memory with a scope filter |
 | resident `clumsiesd` | always-on Rust runtime for drafts, sync, retrieval, native transport, and client coordination |
 | Agent runtime | short-lived `clumsiesd mcp serve` and `_agent` proxies used by supported hosts |
 | Server | self-hosted authority service backed by PostgreSQL |
-| MCP | agent-facing `activate`, `load`, and `store` interface |
+| MCP | agent-facing `activate`, `load`, `store`, and `kanban` interface |
 | Web Admin | organization, member, project, token, audit, and health administration |
 
-In Desktop, **Hub** means organization-scoped shared memory. **Local** means the
-selected project's resources and local drafts. Server is the process name; Hub
-is not a second backend.
+Organization memory (historically the Hub view) and project memory
+(historically Local) are the two scopes of one Memory model. Server is the
+process name; neither scope is a second backend.
 
 ## Memory lifecycle
 
@@ -66,12 +72,16 @@ has moved.
 
 ## Current implementation boundary
 
-The Rust Server, generic organization OIDC, complete Public/Admin contracts,
-Desktop transport, local draft queue, refresh-token retry, macOS Keychain
-credential storage, reviewed Commit creation, daemon Commit synchronization,
-user-resolvable stale conflicts, and atomic MCP authority generations are
-implemented. Real PostgreSQL tests cover merge-to-Commit, two-daemon
-convergence, restart recovery, and failure without Ref advancement.
+The unified Memory model (Server, daemon, OpenAPI, MCP, macOS), the
+organization/project memory endpoints (`/api/v1/org/memories` and
+`/api/v1/projects/{project_id}/memories`), description-aware retrieval, the
+org-admin `memory-export` migration endpoint, generic organization OIDC,
+complete Public/Admin contracts, Desktop transport, local draft queue,
+refresh-token retry, macOS Keychain credential storage, reviewed Commit
+creation, daemon Commit synchronization, user-resolvable stale conflicts, and
+atomic MCP authority generations are implemented. Real PostgreSQL tests cover
+merge-to-Commit, two-daemon convergence, restart recovery, and failure without
+Ref advancement.
 
 The resident daemon composes the installed Commit generation with current local
 Draft operations into one Effective Memory view. It derives Markdown retrieval

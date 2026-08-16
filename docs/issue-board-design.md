@@ -30,6 +30,8 @@ description              Markdown, Agent-authored
 acceptance_criteria_json JSON string array
 external_references_json JSON array of typed Issue/PR URL references
 status                   todo | in_progress | paused | in_review | done
+verification_level       agent_self | human_required | mixed
+verification_steps_json  human verification protocol (completed flags)
 revision                 optimistic concurrency token
 changed_by_run_id?       latest semantic Agent owner/proposer
 closure_summary?
@@ -37,6 +39,10 @@ created_at / started_at? / updated_at / closed_at?
 archived_at?
 UNIQUE(project_id, issue_number)
 ```
+
+Board-state transitions are recorded as an event timeline
+(`from_state`, `to_state`, `changed_by_run_id`, `occurred_at`), so a card's
+history shows which Agent moved it and when.
 
 Dependencies and blocking predicates live in two Project-scoped child tables:
 
@@ -78,7 +84,7 @@ Identity has two intentionally different forms:
 The timestamps describe the current Issue lifecycle:
 
 - `created_at` is immutable;
-- `started_at` is first written by `start_issue_work`, never by a hook;
+- `started_at` is first written by `begin_work`, never by a hook;
 - `closed_at` is written only by the user `approve_closure` gate;
 - Request Changes preserves `started_at`; Reopen clears both `started_at` and
   `closed_at`, so the next semantic start begins a new cycle;
@@ -86,7 +92,7 @@ The timestamps describe the current Issue lifecycle:
   legacy timing stays unknown rather than being inferred from AgentRun telemetry.
 
 `native_issue_imports(project_id, imported_at)` records one-time migration from
-legacy Context documents. Import copies data and legacy state; no resource id,
+legacy Memory documents. Import copies data and legacy state; no resource id,
 path, Draft id, commit id, or content hash is retained as a live relationship.
 
 ## 3. Commands
@@ -94,8 +100,9 @@ path, Draft id, commit id, or content hash is retained as a live relationship.
 ### Agent commands
 
 `get_issue` resolves one globally unique `issue_id` and returns the owning
-`project_id`, full description, acceptance criteria, state, and revision. It is
-the lookup path when a user pastes an ID copied from Kanban.
+`project_id`, full description, acceptance criteria, verification protocol,
+`changed_by_run_id`, state, revision, and event timeline. It is the lookup path
+when a user pastes an ID copied from Kanban.
 
 `create_issue` validates structured content, allocates the smallest available
 number in `001...999` inside one transaction, and inserts Todo at revision 1.
@@ -121,13 +128,32 @@ with a host and no embedded credentials. De-duplication uses normalized URL plus
 kind while preserving the first occurrence's order. Query strings and fragments
 remain part of the reference.
 
-`start_issue_work` validates the run and open Issue, prevents run rebinding,
-links the run, and transitions Todo/Closure Requested/In Progress to In
-Progress. The same run/state retry is idempotent.
+`start_issue_work` (`kanban.begin_work`) validates the hook-issued run and the
+open Issue, prevents run rebinding, enforces the session single-hold rule (one
+session holds at most one In Progress Issue), links the run, and moves any
+non-Done Issue to In Progress. The same run/state retry is idempotent.
+
+`pause_issue_work` requires the run bound to an In Progress Issue and moves it
+to Paused; the run stays running so it can resume later.
+
+`resume_issue_work` requires Paused. The agent path requires the pausing run
+(`changed_by_run_id`) or an explicit `takeover`; the human path omits the run,
+refuses while another AgentRun is actively working the Issue, and unbinds stale
+ended run bindings.
+
+`unclaim_issue` releases a Paused or abandoned In Progress Issue back to Todo
+without an AgentRun binding. It is refused while an active run works the Issue;
+that run must pause or request closure first.
 
 `request_issue_closure` requires a root run that owns the In Progress Issue and
-no other unexpired active run. It records the bounded proposal summary and
-transitions to Closure Requested. Retries with identical inputs are idempotent.
+no other unexpired active run. When `verification_level` is not
+`agent_self`, `verification_steps` must be present. It records the bounded
+proposal summary and transitions to In Review. Retries with identical inputs
+are idempotent.
+
+`export_issue` produces a deterministic, portable Markdown snapshot of the
+Issue (title, description, acceptance criteria, references, dependencies,
+blocking facts, verification protocol, state, and timeline).
 
 ### User gates
 
@@ -135,8 +161,8 @@ transitions to Closure Requested. Retries with identical inputs are idempotent.
 
 | Action | Required current state | Result |
 |---|---|---|
-| `approve_closure` | Closure Requested | Done |
-| `request_changes` | Closure Requested | In Progress |
+| `approve_closure` | In Review | Done |
+| `request_changes` | In Review | In Progress |
 | `reopen` | Done | Todo |
 
 Every gate requires `expected_revision`; mismatches and invalid transitions are
@@ -144,6 +170,10 @@ conflicts. Approval clears active ownership and sets `closed_at`. Request
 Changes clears the closure proposal while retaining the current cycle start and
 AgentRun history. Reopen clears closure data and the current cycle timing, and
 does not invent an AgentRun owner.
+
+The human Release/Resume paths reuse `unclaim_issue` and `resume_issue_work`
+with no run, so a Paused or abandoned Issue can be handed back to Todo or back
+to In Progress without an AgentRun binding.
 
 `remove_issue` accepts user-only cleanup actions. Archive requires Done and
 sets `archived_at`, which removes the Issue from project-scoped board/list
@@ -166,19 +196,25 @@ blocked     = any dependency board_state != done
 blocking_reasons = unresolved dependency keys/states plus unsatisfied facts
 ```
 
-The response includes a board revision derived from the newest native Issue
-revision/update timestamp. Details are loaded on demand and cached against the
-Issue revision.
+Stale In Progress cards form the derived **Abandoned** column: the daemon never
+stores an "abandoned" state, and the UI asks the human to verify what the
+previous handler left behind before releasing it. The response includes a board
+revision derived from the newest native Issue revision/update timestamp.
+Details are loaded on demand and cached against the Issue revision.
 
 ## 5. MCP contract
 
 ```json
 {"op":{"list":{}}}
 {"op":{"get":{"issue_id":"issue_0123456789abcdef0123456789abcdef"}}}
-{"op":{"create":{"title":"Export Issues as Markdown","description":"...","acceptance_criteria":["..."],"external_references":[{"kind":"issue","url":"https://github.com/org/repo/issues/7"}],"dependencies":["ISSUE-003"],"blocking_facts":[{"fact_id":"host:zed-hooks","kind":"host_capability","value":"hooks","description":"Zed lacks lifecycle hooks","satisfied":false}]}}}
+{"op":{"create":{"title":"Export Issues as Markdown","description":"...","acceptance_criteria":["..."],"external_references":[{"kind":"issue","url":"https://github.com/org/repo/issues/7"}],"dependencies":["ISSUE-003"],"blocking_facts":[{"fact_id":"host:zed-hooks","kind":"host_capability","value":"hooks","description":"Zed lacks lifecycle hooks","satisfied":false}],"verification_level":"human_required","verification_steps":[{"text":"Run the manual release checklist"}]}}}
 {"op":{"update":{"issue_key":"ISSUE-007","expected_revision":1,"external_references":[{"kind":"pull_request","url":"https://github.com/org/repo/pull/42"}],"blocking_facts":[]}}}
-{"op":{"start":{"run_id":"arun_...","issue_key":"ISSUE-007","expected_revision":4}}}
+{"op":{"begin_work":{"run_id":"arun_...","issue_key":"ISSUE-007","expected_revision":4}}}
+{"op":{"pause_issue":{"run_id":"arun_...","issue_key":"ISSUE-007"}}}
+{"op":{"resume_issue":{"run_id":"arun_...","issue_key":"ISSUE-007","takeover":true}}}
+{"op":{"unclaim":{"issue_key":"ISSUE-007","expected_revision":5}}}
 {"op":{"request_closure":{"run_id":"arun_...","summary":"Criteria satisfied","expected_revision":5}}}
+{"op":{"export":{"issue_key":"ISSUE-007"}}}
 ```
 
 There is no MCP approval operation and no generic status setter.
@@ -187,13 +223,16 @@ There is no MCP approval operation and no generic status setter.
 
 UserPromptSubmit records/upserts the root AgentRun and injects its exact identity
 plus instructions to choose existing/new/no Issue. The instruction names
-`kanban.create`; it never tells the Agent to create a Context document.
+`kanban.create`; it never tells the Agent to create a Memory document.
 
 Before root Stop, the host-specific hook reminds the Agent to request closure
 only after a semantic acceptance-criteria check. Normal Stop ends telemetry
 without an outcome-based Issue transition. Subagent Stop records telemetry only.
 
-Codex and Claude Code are the implemented lifecycle-hook adapters.
+Codex and Claude Code use managed shell Hooks; opencode uses its plugin API;
+the DeepSeek Harness (dsh) forwards the same lifecycle vocabulary through
+`clumsiesd _agent issue-run-event --host dsh`. StopFailure records a failed
+outcome; SessionEnd ends remaining runs for the session.
 
 ## 7. macOS composition
 
@@ -204,19 +243,22 @@ the detail column. This keeps the global sidebar visible, delegates toolbar and
 full-screen safe-area behavior to the system, and supplies the standard Back
 affordance without a custom overlay, inspector, or floating panel.
 
-`IssueBoardRoute` carries only the globally unique native Issue ID. The detail
-resolves the current card from the board model and renders only the title and
-Markdown description in a readable-width document layout. It does not display
-metadata, acceptance criteria, editing controls, a custom surface, or a Context
-document link.
+The board shows five columns — Todo, In Progress, In Review, Abandoned
+(derived), Done. `IssueBoardRoute` carries only the globally unique native
+Issue ID. The detail resolves the current card from the board model and renders
+the title, Markdown description, verification section (titled by verification
+level), and event timeline in a readable-width document layout. It does not
+display editing controls, a custom surface, or a Memory document link.
 
 Cards keep the compact lifecycle times meaningful to their state: Created for
-Todo, Opened for active work, and Opened plus Closed for Done. All user actions
-live in the card context menu: global ID copy, state gates, archive, and delete.
-When external references exist, the card adds compact per-kind summaries rather
-than rendering raw long URLs. Its context menu supplies Open and Copy Link
-commands. Issue and Pull Request presence are orthogonal board filters and may
-be combined with Project and Stale filtering.
+Todo, Opened for active work (In Progress, Paused, In Review), and Opened plus
+Closed for Done. Cards show a description excerpt and a handler status chip for
+the active/pausing AgentRun. All user actions live in the card context menu:
+global ID copy, Pause/Resume/Take Over/Release, state gates, archive, and
+delete. When external references exist, the card adds compact per-kind
+summaries rather than rendering raw long URLs. Its context menu supplies Open
+and Copy Link commands. Issue and Pull Request presence are orthogonal board
+filters and may be combined with Project, Stale, and blocked filtering.
 
 Single-clicking a card only changes the board selection. Double-clicking it, or
 choosing View Details from its context menu, pushes the detail destination.
@@ -233,10 +275,16 @@ and components columns and adds nullable `archived_at`. Local schema 26 to 27
 adds `external_references_json`. Local schema 27 to 28 expands AgentRun hosts
 with `zed` and `manual` (manual run binding). Local schema 28 to 29 adds
 `issue_dependencies` and `issue_blocking_facts` (Issue dependency and blocking
-predicate support). The first
-board access per Project may parse legacy Context Issue files once and insert
-copies using their numbers and last known board states. The import marker is
-written in the same transaction, including when no legacy Issues exist.
+predicate support). The first board access per Project may parse legacy Memory
+Issue files once and insert copies using their numbers and last known board
+states. The import marker is written in the same transaction, including when no
+legacy Issues exist.
+
+Later migrations (through the current version 37) add `verification_level` /
+`verification_steps` (31→32), widen the status CHECK with `paused` (32→33),
+rename `closure_requested` to `in_review` (33→34), expand AgentRun hosts with
+`dsh` (35→36), and widen local Draft kinds for the unified Memory model
+(36→37).
 
 After the marker exists, list/detail/start/update/closure/gate paths never load
 Effective Memory for Issue behavior.

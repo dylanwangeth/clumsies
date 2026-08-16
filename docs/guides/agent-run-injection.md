@@ -44,6 +44,7 @@ unbound, and one active Issue cannot be claimed by a second active run.
 | Codex | `UserPromptSubmit`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd` | `.codex/hooks.json` → managed shell Hook |
 | Claude Code | the common set plus `StopFailure` | `.claude/settings.json` → managed shell Hook |
 | opencode | user message, completed/failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `Stop`/`StopFailure`, and `SessionEnd` |
+| dsh | the same hook vocabulary (`UserPromptSubmit`, `Stop`/`StopFailure`, `SubagentStart`/`SubagentStop`, `SessionEnd`) | dsh client plugin pipes events to `clumsiesd _agent issue-run-event --host dsh` |
 
 The resident daemon upserts a run by Project, host, and host run key. Stable
 event IDs make delivery idempotent; replaying the same event is a no-op, while

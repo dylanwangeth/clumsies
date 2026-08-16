@@ -10,6 +10,8 @@ workflows, and project context to coding agents.
 > [!WARNING]
 > Work in progress. This is still a very early system. Expect rough edges, missing flows, broken corners, and backward-incompatible changes.
 
+Documentation: [docs.clumsies.ai](https://docs.clumsies.ai) · 中文文档：[docs.clumsies.ai/zh](https://docs.clumsies.ai/zh/) · Official site: [clumsies.ai](https://clumsies.ai)
+
 ## The problem
 
 AI coding agents are changing the control plane of software development.
@@ -30,15 +32,16 @@ and store explicit draft refinements through the same system.
 - **Managed agent memory.** Store rules, workflows, and project context outside
   any single agent runtime, then keep local project state in sync.
 - **Cue-driven activation.** The MCP surface is centered on `activate`, `load`,
-  and `store`; hybrid retrieval returns useful fragments directly instead of
-  loading every complete resource up front.
+  `store`, and `kanban`; hybrid retrieval returns useful fragments directly
+  instead of loading every complete resource up front.
 - **Organization and project scope.** Shared memory can live at the
   organization level, while projects keep their own project-specific context
   and rules.
 - **Personal bundles.** Bundles let each user maintain reusable selections of
   memory resources without turning those selections into organization truth.
 - **Agent adapters.** The adapter layer installs the runtime hooks and skills
-  needed by supported agents. Codex and Claude Code are supported today.
+  needed by supported agents. Codex, Claude Code, opencode, and the DeepSeek
+  Harness (dsh) are supported today.
 - **Self-hosted authority.** The Rust Server and PostgreSQL run in your
   infrastructure, while the signed Rust daemon owns local state and the Agent
   MCP/Hook proxy surfaces.

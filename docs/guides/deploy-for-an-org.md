@@ -1,8 +1,8 @@
 # Deploy for an organization
 
 This guide deploys one self-hosted Clumsies organization. The Rust Server image
-contains Web Admin; Hub remains the organization-memory view in Desktop and is
-not a deployed process.
+contains Web Admin; organization memory is the Memory section's organization
+scope in Desktop and is not a deployed process.
 
 ## Runtime boundary
 
@@ -193,7 +193,33 @@ respectively (see `deploy/Caddyfile`). They live in this repository: the
 VitePress sources under `docs/`, the official site under `site/` (plain
 HTML/CSS, no build step).
 
-Deploy them with:
+### Deploy through CI/CD
+
+The `Site Delivery` workflow (`.github/workflows/site-delivery.yml`) builds the
+VitePress site and deploys it automatically on every `main` push that touches
+`docs/`, `site/`, `deploy/Caddyfile`, `compose.production.yml`, or the
+workflow itself. It can also be dispatched manually from the Actions tab.
+
+The workflow needs these repository secrets in addition to the Server
+Delivery secrets:
+
+| Secret | Value |
+|---|---|
+| `SITE_DEPLOY_HOST` | SSH hostname or IP of the installation (same host as `DEPLOY_HOST`) |
+| `SITE_DEPLOY_SSH_KEY` | dedicated private key whose public half is authorized on the host for site deploys |
+| `SITE_DEPLOY_USER` | optional; defaults to `root` |
+| `DEPLOY_KNOWN_HOSTS` | pinned SSH host-key line for the host (shared with Server Delivery) |
+
+Add the public half of `SITE_DEPLOY_SSH_KEY` to the site-deploy user's
+`authorized_keys` (for `root`, `/root/.ssh/authorized_keys`). Unlike the
+Server Delivery key, this key is **not** restricted by a forced command:
+`deploy/site.sh` needs an interactive-capable SSH session to run `mkdir`,
+`rsync`, `scp`, and `docker compose` on the host. Keep the two keys separate so
+the Server Delivery forced command cannot be widened by accident.
+
+### Manual fallback
+
+For a one-off deploy without waiting for CI, run the same script locally:
 
 ```bash
 deploy/site.sh          # ssh target defaults to "aliyun"

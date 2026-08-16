@@ -18,14 +18,19 @@ profiles in the app.
 
 ## Browse memory
 
-Desktop has two memory scopes:
+The unified **Memory** section shows both scopes of one Memory model in a
+single navigator, with a Project filter that also offers the **Org** scope for
+organization-shared memory:
 
-- **Hub** contains organization-shared Context, Rules, and Workflows.
-- **Local** contains the selected project's resources and local drafts.
+- **Org** (organization scope, historically called Hub) contains
+  organization-shared Memory.
+- **Project** (project scope, historically called Local) contains the selected
+  project's resources and local drafts.
 
-Choose a resource kind in the Content Region navigator, then open its Markdown
-file in the workbench. Rules and Workflows retain their domain identity through
-resource metadata while using the same document editing model as Context.
+There are no closed Context / Rule / Workflow types — a Memory's role is
+carried by its content and path. The navigator lists Memory by path; opening
+one shows its Markdown body and required semantic description in the workbench.
+Creating a Memory always collects a non-empty `description`.
 
 ## Edit and review
 
@@ -34,7 +39,7 @@ automatically synchronizes it to Server. Saving a draft does not publish it.
 
 The collaboration flow is:
 
-1. edit a Hub or Local resource
+1. edit an organization- or project-scope Memory resource
 2. keep editing normally while newer shared Commits synchronize
 3. review and explicitly merge the latest shared version when prompted
 4. submit the coordinated draft for review
@@ -72,7 +77,7 @@ to a default Project.
 
 MCP `store` and Desktop editing use the same daemon queue, so a change created
 by an agent appears in Desktop for review. Organization-scoped MCP writes are
-not exposed yet; Hub edits remain explicit Desktop operations.
+not exposed yet; organization-scope edits remain explicit Desktop operations.
 
 ## Bundles
 

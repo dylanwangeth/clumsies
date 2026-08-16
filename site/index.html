@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>clumsies — Collaborative external memory for coding agents</title>
-  <meta name="description" content="clumsies is collaborative external memory for coding agents. Distribute project context and constraints, keep local drafts automatic, and publish changes through review.">
+  <meta name="description" content="clumsies is collaborative external memory for coding agents. Keep rules, constraints, and project context outside any single agent runtime, keep local drafts automatic, and publish changes through review.">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
   <link rel="icon" href="/assets/favicon-dark.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/assets/site.css">
@@ -20,6 +20,7 @@
     </a>
     <nav class="nav-links">
       <a href="https://docs.clumsies.ai">Documentation</a>
+      <a href="https://github.com/lilhammerfun/clumsies/releases">Download</a>
       <a href="https://github.com/lilhammerfun/clumsies">GitHub</a>
     </nav>
   </header>
@@ -29,19 +30,21 @@
       <p class="eyebrow">External memory for coding agents</p>
       <h1>Give your agents a memory that belongs to the team.</h1>
       <p class="hero-sub">
-        clumsies keeps rules, workflows, and project context outside any single
-        agent runtime — organized, reviewed, and shared across your organization.
+        clumsies keeps the rules, constraints, and project context that shape
+        how agents write code outside any single agent runtime — organized,
+        reviewed, and shared across your organization.
       </p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="https://docs.clumsies.ai">Read the docs</a>
+        <a class="btn btn-primary" href="https://github.com/lilhammerfun/clumsies/releases">Download for macOS</a>
+        <a class="btn btn-secondary" href="https://docs.clumsies.ai">Read the docs</a>
         <a class="btn btn-secondary" href="https://github.com/lilhammerfun/clumsies">View on GitHub</a>
       </div>
     </section>
 
     <section class="features">
       <div class="feature">
-        <h3>Hub and Local</h3>
-        <p>Browse organization-shared memory and project-specific memory through one Desktop workflow.</p>
+        <h3>One Memory model</h3>
+        <p>Rules, workflows, and project context are one Markdown-backed Memory object with a semantic description, stable IDs, and organization or project scope — not three closed types.</p>
       </div>
       <div class="feature">
         <h3>Automatic drafts</h3>
@@ -50,6 +53,14 @@
       <div class="feature">
         <h3>Reviewed authority</h3>
         <p>Drafts become authoritative only through review and a Commit that advances the organization or project Ref.</p>
+      </div>
+      <div class="feature">
+        <h3>Agent-native Kanban</h3>
+        <p>Agents claim and advance native Issues through typed kanban operations; only the user's Approve gate makes an Issue Done.</p>
+      </div>
+      <div class="feature">
+        <h3>Host adapters</h3>
+        <p>Codex, Claude Code, opencode, and the DeepSeek Harness share one App-bundled Rust runtime with release-identity checks.</p>
       </div>
       <div class="feature">
         <h3>Self-hosted Server</h3>

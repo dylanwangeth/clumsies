@@ -28,8 +28,9 @@ process over XPC; it does not initialize daemon state. The crate is not an
 authority source.
 
 `apps/macos` is the primary human product. It uses typed XPC requests and never
-persists Server credentials. Hub in this UI means
-organization-scoped shared memory; Local means project and local draft work.
+persists Server credentials. The unified Memory section shows both
+organization-scoped and project-scoped memory with an Org/project filter; the
+historical Hub/Local labels survive only as scope labels.
 
 The App bundle contains one signed `clumsiesd`. launchd runs it as the resident
 daemon, while supported Agent hosts run the same binary as `mcp serve` or

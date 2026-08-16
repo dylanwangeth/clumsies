@@ -7,6 +7,7 @@
 
 Codex 与 Claude Code 的第一次根 Stop 只记录非终态 decision probe，并让
 Agent 自己判断是否应调用 `request_closure`；后续 Stop 才结束 AgentRun。
+opencode 使用 plugin API 转发同一组事件，dsh 使用相同的 lifecycle 词汇。
 Stop 本身不会推进、批准或关闭 Issue。Hook 输入会缩减为有限的 lifecycle
 标识，prompt、transcript 和 tool payload 不进入 daemon。
 

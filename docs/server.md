@@ -1,16 +1,16 @@
 # Server
 
 Server is the deployable authority service for clumsies. **Hub is not another
-service name**: Hub is the Desktop product view over organization-scoped shared
-memory. The Rust binary and container are named Server.
+service name**: Hub is a historical Desktop label for the organization scope of
+the unified Memory model. The Rust binary and container are named Server.
 
 ## Responsibilities
 
 Server owns:
 
 - organization membership, project membership, roles, and token sessions
-- organization and project Context, Rules, and Workflows
-- personal Bundles
+- organization and project Memory (the unified model)
+- personal Bundles (`resource_ids`)
 - drafts, draft operation history, reviews, decisions, comments, and merges
 - immutable Commit history, Trees, Blobs, and movable organization/project Refs
 - admin configuration, token revocation, audit events, and health reporting
@@ -36,6 +36,13 @@ Each organization and project has its own Ref. A merge locks the target Ref,
 checks `If-Match`, verifies that the Draft is based on that Commit, creates a new
 immutable Commit, and advances only that Ref. Project metadata revision is
 separate from memory history.
+
+The unified Memory endpoints are `GET /api/v1/org/memories`,
+`GET /api/v1/projects/{project_id}/memories`, and the corresponding
+`{memory_id}` detail routes. An org-admin `GET /api/v1/admin/memory-export`
+emits every Memory (including `issues/` paths), all Drafts with their raw
+operations, Project org selections, and personal bundles as the repeatable,
+verifiable migration export.
 
 Draft lifecycle (`open`, `submitted`, `merged`, `discarded`) is independent from
 freshness (`current`, `behind`) and reconciliation (`unknown`, `clean`,

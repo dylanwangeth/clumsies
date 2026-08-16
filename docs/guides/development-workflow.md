@@ -21,7 +21,7 @@ repository, one remote, and one set of git hooks.
    from claiming the same issue).
 2. **Create the worktree** from `main`:
    ```sh
-   git worktree add .codex/worktrees/<wt-name> -b <branch> main
+   git worktree add target/codex-worktrees/<wt-name> -b <branch> main
    ```
 3. **Develop inside the worktree.** All commits stay on `<branch>`; the main
    checkout and other worktrees are untouched.
@@ -33,7 +33,7 @@ repository, one remote, and one set of git hooks.
    so the branch stays reviewable.
 7. **Clean up**:
    ```sh
-   git worktree remove .codex/worktrees/<wt-name>
+   git worktree remove target/codex-worktrees/<wt-name>
    git branch -d <branch>
    ```
 

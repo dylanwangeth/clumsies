@@ -107,8 +107,8 @@ stored separately.
 
 These calculations make the evaluation pipeline executable; they do not claim
 production retrieval quality. A representative query set and relevance labels
-must come from real Hub and Local use and be reviewed by a human before they
-become a quality gate.
+must come from real organization and project use and be reviewed by a human
+before they become a quality gate.
 
 ## Local API
 

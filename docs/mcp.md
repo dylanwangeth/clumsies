@@ -6,7 +6,7 @@ Clumsies exposes four agent-facing tools:
 |---|---|
 | `activate` | Retrieve ranked, directly usable memory fragments for the current task. |
 | `load` | Read complete resources by a known stable ID or exact path. |
-| `store` | Persist an explicitly requested Context, Rule, or Workflow Draft. |
+| `store` | Persist an explicitly requested Memory Draft. |
 | `kanban` | Create, update, list, or semantically transition native Issues. |
 
 The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
@@ -62,11 +62,11 @@ The response contains:
   "fragments": [
     {
       "action": "add",
-      "unit_key": "ctx_123/mcp/memory-delta/0/0",
+      "unit_key": "mem_123/memory-delta/0/0",
       "content_hash": "sha256:...",
-      "resource_id": "ctx_123",
+      "resource_id": "mem_123",
       "scope": "project",
-      "kind": "context",
+      "kind": "memory",
       "path": "architecture/retrieval.md",
       "heading_path": ["MCP", "Memory Delta"],
       "content": "..."
@@ -96,9 +96,9 @@ Use `load` for complete resources already identified by ID or exact path:
 
 ```json
 {
-  "ids": ["ctx_123", "architecture/retrieval.md"],
+  "ids": ["mem_123", "architecture/retrieval.md"],
   "knownHashes": {
-    "ctx_123": "sha256:..."
+    "mem_123": "sha256:..."
   }
 }
 ```
@@ -115,13 +115,13 @@ Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 
 Call `store` only when the user explicitly asks to create, update, rename,
 delete, or discard managed memory. Issues are native objects managed by
-`kanban`; do not model them as Context documents.
+`kanban`; do not model them as Memory documents.
 
 Top-level input:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `resource` | `context`, `rule`, or `workflow` | The explicit memory domain type. |
+| `resource` | `memory` | The unified Memory type. Legacy `context`, `rule`, and `workflow` values are accepted and treated as memory. |
 | `op` | tagged object | Exactly one of `create`, `update`, `rename`, `delete`, or `discard`. |
 
 Operations:
@@ -134,6 +134,9 @@ Operations:
 | `delete` | `id` | `description` |
 | `discard` | `id` | none |
 
+IDs may be `mem_`-prefixed or legacy `ctx_` / `rul_` / `wfl_` values; legacy
+IDs stay stable and opaque and are never rewritten.
+
 `delete` removes the addressed item from Local Effective Memory. When the item
 is an unpublished Create Draft, daemon normalizes the operation to `discard`;
 only deletion of an authoritative resource remains an open deletion Draft that
@@ -143,10 +146,11 @@ Example:
 
 ```json
 {
-  "resource": "workflow",
+  "resource": "memory",
   "op": {
     "create": {
-      "path": "workflow/RELEASE.md",
+      "path": "release/RELEASE.md",
+      "description": "Release procedure for the project",
       "body": "# Release\n\nRun verification before publishing."
     }
   }
@@ -159,10 +163,10 @@ replacements:
 
 ```json
 {
-  "resource": "context",
+  "resource": "memory",
   "op": {
     "update": {
-      "id": "ctx_123",
+      "id": "mem_123",
       "expected_hash": "sha256:...",
       "replacements": [
         {
@@ -181,12 +185,13 @@ atomically against the same original content. A stale hash, missing match,
 ambiguous match, or overlap rejects the complete update without creating a
 Draft operation. `new_text` may be empty to delete text.
 
-Workflow paths use the `workflow/` namespace. For Context, Rule, and Workflow,
-create `body` is the complete resource content. Updates never accept a complete
-body from the agent; daemon materializes the verified replacements into the
-complete Draft result. Rule and Workflow bodies are Markdown; their domain
-identity is metadata on the resource, not an embedded wire format. Metaprompt
-and `mpf` are not valid wire values.
+Paths are free-form within the organization or project namespace. The create
+`body` is the complete resource content; updates never accept a complete body
+from the agent — daemon materializes the verified replacements into the
+complete Draft result. Memory bodies are Markdown; whether a resource reads as
+a rule, workflow, or context is expressed by its content and path, not by a
+wire type. `description` is an optional semantic summary on create/update and
+an explicit retrieval field. Metaprompt and `mpf` are not valid wire values.
 
 A successful result contains the local operation ID, Draft ID, queue status,
 and sync status. It means the operation is durably stored locally and queued
@@ -205,13 +210,14 @@ The input contains exactly one tagged operation under `op`:
 | Operation | Fields | Result |
 |---|---|---|
 | `list` | none | The bound Project's native Issue board and recent unlinked runs. |
-| `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, state, revision, and owning `project_id`. |
+| `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, `changed_by_run_id`, state, revision, event timeline, and owning `project_id`. |
 | `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | A new Todo Issue with an atomically allocated key. |
 | `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | Updated Issue content without a status transition. |
 | `begin_work` | `issue_key`, Hook-issued `run_id`, and `expected_revision` | In Progress state plus the linked AgentRun. Agents cannot mint a manual run, and one session holds at most one In Progress Issue. |
 | `pause_issue` | `run_id`, `issue_key` | Paused state; the pausing run may later resume. |
 | `resume_issue` | `run_id`, `issue_key`; optional `takeover` | Back to In Progress. Non-owner resume requires `takeover`. |
-| `request_closure` | `run_id`, `expected_revision`; optional `summary` | Closure Requested state plus the linked AgentRun. |
+| `request_closure` | `issue_key`, `run_id`, `expected_revision`; optional `summary` | In Review state plus the linked AgentRun. Rejected when the Issue requires human verification and `verification_steps` is empty. |
+| `unclaim` | `issue_key`, `expected_revision`; optional `run_id` | Releases an In Progress, Paused, or abandoned Issue back to Todo without an AgentRun binding. Refused while an active run is working the Issue (that run must pause or request closure first); a human release omits `run_id`. |
 | `export` | `issue_key` | A deterministic, portable Markdown snapshot of the Issue. |
 
 `issue_id` uses `issue_` followed by 32 lowercase hexadecimal characters and is
@@ -224,6 +230,9 @@ the lifecycle hook.
 
 `verification_level` is `agent_self`, `human_required`, or `mixed`, with
 `verification_steps` listing the human verification protocol for closure.
+`request_closure` is rejected when the level is not `agent_self` and
+`verification_steps` is empty; the Agent must first add the protocol with
+`update`.
 
 `external_references` is a bounded array of objects with `kind` (`issue` or
 `pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
@@ -250,9 +259,15 @@ acceptance criteria satisfied. Subagents cannot request closure. Do not choose
 a current run from `list` by recency: concurrent runs make that inference
 ambiguous.
 
-The optional closure summary is limited to 1,000 UTF-8 bytes. Closure Requested
-is an Agent proposal. Agents cannot approve it; only the user's desktop Approve
-gate makes the Issue Done.
+The optional closure summary is limited to 1,000 UTF-8 bytes. In Review
+(formerly called Closure Requested) is an Agent proposal. Agents cannot approve
+it; only the user's desktop Approve gate makes the Issue Done. The board shows
+five columns — Todo, In Progress, In Review, Abandoned, Done — where Abandoned
+is a derived bucket of In Progress Issues whose AgentRun claim silently died
+(stale, no active run, 24h of inactivity); the daemon never stores an
+"abandoned" state. A Paused Issue keeps its place in In Progress with a paused
+badge, and its handling Agent may resume it or a new handler may take it over
+with `takeover`.
 
 Example:
 
@@ -260,6 +275,7 @@ Example:
 {
   "op": {
     "request_closure": {
+      "issue_key": "ISSUE-123",
       "run_id": "arun_123",
       "summary": "Acceptance criteria are satisfied.",
       "expected_revision": 4
@@ -291,6 +307,9 @@ validates the tagged input and forwards the operation.
 | `pause_issue` | MCP `kanban.pause_issue` |
 | `resume_issue` | MCP `kanban.resume_issue` |
 | `request_issue_closure` | MCP `kanban.request_closure` |
+| `unclaim_issue` | MCP `kanban.unclaim`, Desktop Release |
+| `apply_issue_gate` | Desktop Approve / Request Changes / Reopen gates |
+| `remove_issue` | Desktop Archive / Delete cleanup |
 | `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
 | `search_index_status` | Desktop diagnostics and tests |
 | `rebuild_search_index` | Recovery, tests, and development tooling |
