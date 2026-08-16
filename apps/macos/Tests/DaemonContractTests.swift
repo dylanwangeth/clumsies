@@ -1866,7 +1866,7 @@ private actor RetryingDaemonHealthProbe {
         attempts += 1
         if failuresRemaining > 0 {
             failuresRemaining -= 1
-            throw DaemonXPCError.requestTimedOut
+            throw DaemonXPCError.requestTimedOut()
         }
         return result
     }
