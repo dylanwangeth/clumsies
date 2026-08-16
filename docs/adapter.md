@@ -1,8 +1,8 @@
 # Adapter
 
 Adapter is the daemon-owned integration layer that makes the Clumsies Agent
-runtime usable inside Codex, Claude Code, and opencode. It installs each host's
-MCP registration, lifecycle bridge, and thin skills without creating a second
+runtime usable inside Codex, Claude Code, opencode, and Antigravity. It installs each host's
+MCP registration, lifecycle bridge, and necessary configuration without creating a second
 memory or runtime implementation.
 
 ## Runtime boundary
@@ -19,7 +19,7 @@ one of two short-lived proxy modes:
 
 ```text
 clumsiesd mcp serve
-clumsiesd _agent issue-run-event --host codex|claude-code|opencode
+clumsiesd _agent issue-run-event --host codex|claude-code|opencode|antigravity
 ```
 
 The installer requires an executable whose canonical path ends in
@@ -44,6 +44,7 @@ workspace root, and host.
 | Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.agents/skills/activate`, `.agents/skills/ntmd` |
 | Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.claude/skills/activate`, `.claude/skills/ntmd` |
 | opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` | MCP tools are used directly |
+| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` | MCP tools are used directly |
 
 Codex and Claude Code MCP entries execute the pinned binary with arguments
 `mcp`, `serve`. The opencode local MCP entry executes the equivalent command

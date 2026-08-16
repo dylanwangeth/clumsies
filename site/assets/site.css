@@ -16,6 +16,8 @@
   --brand: #e657a0;
   --brand-strong: #c93b86;
   --brand-line: rgba(230, 87, 160, 0.35);
+  --logo-glow: rgba(230, 87, 160, 0.22);
+  --logo-shadow: rgba(230, 87, 160, 0.35);
   --glow: rgba(230, 87, 160, 0.1);
   --grid-v: rgba(35, 40, 47, 0.025);
   --grid-h: rgba(35, 40, 47, 0.016);
@@ -38,6 +40,8 @@
     --brand: #f178b8;
     --brand-strong: #ff9ccb;
     --brand-line: rgba(241, 120, 184, 0.4);
+    --logo-glow: rgba(241, 120, 184, 0.2);
+    --logo-shadow: rgba(241, 120, 184, 0.4);
     --glow: rgba(241, 120, 184, 0.09);
     --grid-v: rgba(255, 255, 255, 0.022);
     --grid-h: rgba(255, 255, 255, 0.014);
@@ -102,6 +106,21 @@ a:hover { text-decoration: underline; }
   text-align: center;
 }
 
+.hero-logo-wrap {
+  width: 108px;
+  height: 108px;
+  margin: 0 auto 26px;
+  border-radius: 30px;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 32%, var(--logo-glow), transparent 72%);
+}
+
+.hero-logo {
+  color: var(--brand);
+  filter: drop-shadow(0 10px 28px var(--logo-shadow));
+}
+
 .eyebrow {
   font-size: 13px;
   font-weight: 600;
@@ -117,6 +136,13 @@ a:hover { text-decoration: underline; }
   letter-spacing: -0.03em;
   font-weight: 700;
   margin-bottom: 22px;
+}
+
+.hero h1 .accent {
+  background: linear-gradient(100deg, var(--brand) 0%, var(--brand-strong) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .hero-sub {
@@ -184,11 +210,25 @@ a:hover { text-decoration: underline; }
   transform: translateY(-2px);
 }
 
+.feature-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.feature-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--brand);
+  flex: none;
+}
+
 .feature h3 {
   font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  margin-bottom: 8px;
+  margin: 0;
 }
 
 .feature p { font-size: 14px; color: var(--ink-2); }
@@ -223,6 +263,14 @@ a:hover { text-decoration: underline; }
   font-size: 13px;
   color: var(--ink-2);
 }
+
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer-brand .brand-mark { color: var(--brand); }
 
 .footer-links { display: flex; gap: 18px; }
 .footer-links a { color: var(--ink-2); }
