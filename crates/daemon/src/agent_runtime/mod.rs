@@ -77,6 +77,10 @@ pub trait AgentRuntimeBackend {
     fn guidelines_path(&self) -> Result<Option<String>, DaemonError> {
         Ok(None)
     }
+
+    fn active_project_id(&self) -> Result<Option<String>, DaemonError> {
+        Ok(None)
+    }
 }
 
 impl AgentRuntimeBackend for DaemonIpcClient {
@@ -90,6 +94,11 @@ impl AgentRuntimeBackend for DaemonIpcClient {
     fn guidelines_path(&self) -> Result<Option<String>, DaemonError> {
         let resp = self.project_config()?;
         Ok(resp.memory_guidelines_path)
+    }
+
+    fn active_project_id(&self) -> Result<Option<String>, DaemonError> {
+        let resp = self.project_config()?;
+        Ok(resp.project_id)
     }
 }
 
