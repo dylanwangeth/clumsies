@@ -2,10 +2,10 @@
 :root {
   --vp-font-family-base: "Avenir Next", "SF Pro Text", "PingFang SC", "Helvetica Neue", system-ui, sans-serif;
   --vp-font-family-mono: "Cascadia Mono", "Berkeley Mono", "SFMono-Regular", monospace;
-  --vp-c-brand-1: #1d1d1f;
-  --vp-c-brand-2: #5a5a60;
-  --vp-c-brand-3: #0f1012;
-  --vp-c-brand-soft: rgba(18, 18, 20, 0.08);
+  --vp-c-brand-1: #c93b86;
+  --vp-c-brand-2: #e657a0;
+  --vp-c-brand-3: #a82f6f;
+  --vp-c-brand-soft: rgba(230, 87, 160, 0.12);
   --vp-c-bg: #f3f4f6;
   --vp-c-bg-alt: #eaedf1;
   --vp-c-bg-soft: #fafbfc;
@@ -16,20 +16,21 @@
   --vp-c-border: rgba(20, 21, 24, 0.12);
   --vp-c-divider: rgba(20, 21, 24, 0.1);
   --vp-c-gutter: rgba(20, 21, 24, 0.06);
-  --vp-home-hero-name-color: #121317;
+  --vp-home-hero-name-color: #e657a0;
   --vp-home-hero-name-background: none;
-  --vp-custom-block-tip-border: rgba(20, 21, 24, 0.2);
-  --vp-custom-block-tip-bg: rgba(255, 255, 255, 0.55);
+  --vp-custom-block-tip-border: rgba(230, 87, 160, 0.35);
+  --vp-custom-block-tip-bg: rgba(230, 87, 160, 0.06);
   --vp-custom-block-warning-border: rgba(180, 130, 40, 0.4);
   --vp-custom-block-warning-bg: rgba(255, 250, 235, 0.8);
   --vp-custom-block-danger-border: rgba(200, 70, 60, 0.4);
   --vp-custom-block-danger-bg: rgba(255, 242, 240, 0.8);
-  --vp-code-color: #b45309;
+  --vp-code-color: #c93b86;
   --vp-code-bg: rgba(20, 21, 24, 0.055);
   --vp-code-block-bg: #16181d;
   --vp-code-line-highlight-bg: rgba(255, 255, 255, 0.06);
-  --vp-button-brand-bg: #1d1d1f;
-  --vp-button-brand-hover-bg: #0f1012;
+  --vp-button-brand-bg: #e657a0;
+  --vp-button-brand-hover-bg: #c93b86;
+  --vp-button-brand-text: #ffffff;
   --vp-button-alt-bg: #eaedf1;
   --vp-button-alt-hover-bg: #e2e5ea;
   --vp-button-alt-border: rgba(20, 21, 24, 0.12);
@@ -39,10 +40,10 @@
 }
 
 .dark {
-  --vp-c-brand-1: #f5f7fa;
-  --vp-c-brand-2: #b5bcc7;
-  --vp-c-brand-3: #ffffff;
-  --vp-c-brand-soft: rgba(245, 247, 250, 0.08);
+  --vp-c-brand-1: #f178b8;
+  --vp-c-brand-2: #ff9ccb;
+  --vp-c-brand-3: #ffd4ea;
+  --vp-c-brand-soft: rgba(241, 120, 184, 0.18);
   --vp-c-bg: #111419;
   --vp-c-bg-alt: #171b22;
   --vp-c-bg-soft: #1d222b;
@@ -53,21 +54,21 @@
   --vp-c-border: rgba(255, 255, 255, 0.12);
   --vp-c-divider: rgba(255, 255, 255, 0.09);
   --vp-c-gutter: rgba(255, 255, 255, 0.05);
-  --vp-home-hero-name-color: #f5f7fa;
+  --vp-home-hero-name-color: #f178b8;
   --vp-home-hero-name-background: none;
-  --vp-custom-block-tip-border: rgba(255, 255, 255, 0.18);
-  --vp-custom-block-tip-bg: rgba(255, 255, 255, 0.04);
+  --vp-custom-block-tip-border: rgba(241, 120, 184, 0.35);
+  --vp-custom-block-tip-bg: rgba(241, 120, 184, 0.08);
   --vp-custom-block-warning-border: rgba(255, 210, 120, 0.35);
   --vp-custom-block-warning-bg: rgba(255, 210, 120, 0.07);
   --vp-custom-block-danger-border: rgba(255, 130, 120, 0.35);
   --vp-custom-block-danger-bg: rgba(255, 130, 120, 0.07);
-  --vp-code-color: #f2b866;
+  --vp-code-color: #f178b8;
   --vp-code-bg: rgba(255, 255, 255, 0.07);
   --vp-code-block-bg: #0d0f13;
   --vp-code-line-highlight-bg: rgba(255, 255, 255, 0.05);
-  --vp-button-brand-bg: #f5f7fa;
-  --vp-button-brand-hover-bg: #ffffff;
-  --vp-button-brand-text: #0f1114;
+  --vp-button-brand-bg: #f178b8;
+  --vp-button-brand-hover-bg: #ff9ccb;
+  --vp-button-brand-text: #2a1220;
   --vp-button-alt-bg: rgba(255, 255, 255, 0.05);
   --vp-button-alt-hover-bg: rgba(255, 255, 255, 0.08);
   --vp-button-alt-border: rgba(255, 255, 255, 0.12);
@@ -149,7 +150,7 @@
 
 .vp-doc a {
   text-decoration: none;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.28);
+  border-bottom: 1px solid rgba(201, 59, 134, 0.3);
   transition: border-color 140ms ease, color 140ms ease;
 }
 
@@ -158,7 +159,7 @@
 }
 
 .dark .vp-doc a {
-  border-bottom-color: rgba(245, 247, 250, 0.24);
+  border-bottom-color: rgba(241, 120, 184, 0.3);
 }
 
 .vp-doc table {
@@ -327,6 +328,7 @@
 
 .VPFeature:hover {
   background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(230, 87, 160, 0.35);
   transform: translateY(-2px);
 }
 
@@ -337,6 +339,7 @@
 
 .dark .VPFeature:hover {
   background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(241, 120, 184, 0.4);
 }
 
 .VPFeature .box {
