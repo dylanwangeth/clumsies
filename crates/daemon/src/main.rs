@@ -408,6 +408,67 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
         }
     }
 
+    /// Structured crash observability for the resident daemon.
+    ///
+    /// Hard signal faults (e.g. stack overflow) bypass Rust panics entirely and
+    /// leave no record in the daemon logs; macOS still writes .ips crash reports
+    /// to ~/Library/Logs/DiagnosticReports. This installs a panic hook that
+    /// records structured panic details, and detects rapid restarts (crash
+    /// loops) at startup so a dying daemon is visible in the logs.
+    fn install_crash_observability(config: &DaemonConfig) {
+        use std::io::Write;
+
+        let crash_log_path = config.log_dir.join("clumsiesd.crash.log");
+
+        // A restart shortly after the previous start almost certainly means the
+        // previous instance died unexpectedly.
+        let marker_path = config.root_dir.join(".daemon-started-at");
+        let previous = std::fs::read_to_string(&marker_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        if let Some(previous) = previous {
+            let gap = now.saturating_sub(previous);
+            if gap < 120 {
+                tracing::warn!(
+                    gap_secs = gap,
+                    build_id = daemon::agent_runtime::AGENT_RUNTIME_BUILD_ID,
+                    "clumsiesd restarted {gap}s after its previous start; possible crash loop (see ~/Library/Logs/DiagnosticReports/clumsiesd-*.ips)"
+                );
+            }
+        }
+        let _ = std::fs::write(&marker_path, now.to_string());
+
+        std::panic::set_hook(Box::new(move |info| {
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            tracing::error!(
+                panic = %info,
+                version = env!("CARGO_PKG_VERSION"),
+                build_id = daemon::agent_runtime::AGENT_RUNTIME_BUILD_ID,
+                "clumsiesd panicked:\n{backtrace}"
+            );
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&crash_log_path)
+            {
+                let _ = writeln!(
+                    file,
+                    "clumsiesd panicked (pid {} version {} build_id {}): {info}",
+                    std::process::id(),
+                    env!("CARGO_PKG_VERSION"),
+                    daemon::agent_runtime::AGENT_RUNTIME_BUILD_ID
+                );
+                let _ = writeln!(file, "{backtrace}");
+            }
+        }));
+    }
+
+    install_crash_observability(&config);
+
     let state = if test_mach_service {
         DaemonState::initialize_with_credential_store(config, Arc::new(IsolatedTestCredentialStore))
             .await?
