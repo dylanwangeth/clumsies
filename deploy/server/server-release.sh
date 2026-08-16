@@ -337,6 +337,26 @@ resume_release() {
   wait_public_health 30
 }
 
+# Persist the failed Server container's log before rollback's
+# --force-recreate destroys the only copy of it.
+capture_server_logs() {
+  local container
+  local logfile
+
+  logfile="$RELEASE_DIR/failed-container-$(date -u +%Y%m%dT%H%M%SZ).log"
+  container="$(docker ps --all \
+    --filter label=com.docker.compose.project=clumsies \
+    --filter label=com.docker.compose.service=server \
+    --format '{{.ID}}' | sed -n '1p' || true)"
+  if [[ -z "$container" ]]; then
+    log "no Server container found to capture logs from"
+    return 0
+  fi
+  docker logs --tail 400 "$container" >"$logfile" 2>&1 || true
+  log "captured failed Server container logs: $logfile"
+  sed 's/^/    /' "$logfile" >&2 || true
+}
+
 rollback_release() {
   local previous_image="$1"
   local backup="$2"
@@ -414,6 +434,7 @@ deploy_release() {
 
   if ! compose up --detach --no-deps --pull never \
     --wait --wait-timeout 180 server; then
+    capture_server_logs
     if ! rollback_release "$previous_image" "$backup"; then
       record_release rollback-failed "$timestamp" "$commit" "$image" \
         "$previous_image" "$backup" "$preflight_backup"
@@ -425,6 +446,7 @@ deploy_release() {
   fi
 
   if ! wait_public_health 30; then
+    capture_server_logs
     if ! rollback_release "$previous_image" "$backup"; then
       record_release rollback-failed "$timestamp" "$commit" "$image" \
         "$previous_image" "$backup" "$preflight_backup"
