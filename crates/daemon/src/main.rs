@@ -64,8 +64,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ProcessMode::AgentIssueRunEvent(host) => {
             // Lifecycle observation is fail-open. The managed wrapper records
             // bounded diagnostics, while raw Hook input is never echoed here.
+            init_hook_tracing();
             if run_hook_proxy(host).is_err() {
-                eprintln!("clumsiesd Hook proxy could not record this lifecycle event");
+                tracing::error!("clumsiesd Hook proxy could not record this lifecycle event");
             }
             Ok(())
         }
@@ -73,9 +74,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(run_daemon(args))
+            match runtime.block_on(run_daemon(args)) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    // Startup and fatal runtime errors carry a structured,
+                    // traceable record in daemon.log in addition to stderr.
+                    tracing::error!(
+                        error = %error,
+                        "clumsiesd daemon exited with a fatal error"
+                    );
+                    Err(error)
+                }
+            }
         }
     }
+}
+
+/// Hook proxies run without the daemon's log directory; route bounded
+/// diagnostics to stderr with an explicit minimum level so the failure
+/// record survives regardless of the invoking host's RUST_LOG.
+fn init_hook_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_timer(SystemTime)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .try_init();
 }
 
 fn process_mode(args: &[String]) -> Result<ProcessMode, Box<dyn std::error::Error>> {
