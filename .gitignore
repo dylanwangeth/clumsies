@@ -43,6 +43,7 @@ docs/.vitepress/dist/
 plugins/
 .claude/
 .opencode/
+.dsh/
 opencode.json
 .agents/skills/clumsies-generated-workflows/
 CLAUDE.md

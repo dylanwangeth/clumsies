@@ -143,6 +143,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_36_to_37(pool).await?;
         existing_schema_version = 37;
     }
+    if existing_schema_version == 37 {
+        migrate_local_schema_37_to_38(pool).await?;
+        existing_schema_version = 38;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -1647,6 +1651,102 @@ pub(crate) async fn migrate_local_schema_36_to_37(pool: &SqlitePool) -> Result<(
     result
 }
 
+/// Widen the Coding Agent adapter CHECK constraints to accept the dsh
+/// (DeepSeek Harness) host integration. SQLite cannot alter a CHECK
+/// constraint in place, so both adapter tables are rebuilt in a single
+/// FK-safe transaction. project_agent_adapters is a child of
+/// project_bindings (FK kept, rows copied); adapter_fs_ops has no foreign
+/// keys. Each table is widened independently so a partially migrated
+/// database converges on the next run.
+pub(crate) async fn migrate_local_schema_37_to_38(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut tx = pool.begin().await?;
+    let adapters_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_agent_adapters'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let fs_ops_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'adapter_fs_ops'",
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if adapters_sql
+        .as_deref()
+        .is_none_or(|sql| sql.contains("'dsh'"))
+        && fs_ops_sql
+            .as_deref()
+            .is_none_or(|sql| sql.contains("'dsh'"))
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
+    if let Some(sql) = adapters_sql.as_deref()
+        && !sql.contains("'dsh'")
+    {
+        for statement in [
+            "CREATE TABLE project_agent_adapters_v38 (
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
+                revision BIGINT NOT NULL CHECK (revision > 0),
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (server_url, workspace_root, adapter),
+                FOREIGN KEY (server_url, workspace_root)
+                    REFERENCES project_bindings(server_url, workspace_root)
+                    ON DELETE CASCADE
+            )",
+            "INSERT INTO project_agent_adapters_v38 (
+                server_url, workspace_root, project_id, adapter, revision,
+                manifest_json, created_at, updated_at
+             )
+             SELECT server_url, workspace_root, project_id, adapter, revision,
+                    manifest_json, created_at, updated_at
+             FROM project_agent_adapters",
+            "DROP TABLE project_agent_adapters",
+            "ALTER TABLE project_agent_adapters_v38 RENAME TO project_agent_adapters",
+            "CREATE INDEX idx_project_agent_adapters_project
+             ON project_agent_adapters (server_url, project_id)",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+    }
+    if let Some(sql) = fs_ops_sql.as_deref()
+        && !sql.contains("'dsh'")
+    {
+        for statement in [
+            "CREATE TABLE adapter_fs_ops_v38 (
+                operation_id TEXT PRIMARY KEY,
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
+                action TEXT NOT NULL CHECK (action IN ('install', 'remove')),
+                expected_revision BIGINT,
+                next_revision BIGINT,
+                manifest_json TEXT,
+                changes_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (server_url, workspace_root, adapter)
+            )",
+            "INSERT INTO adapter_fs_ops_v38 (
+                operation_id, server_url, workspace_root, project_id, adapter, action,
+                expected_revision, next_revision, manifest_json, changes_json, created_at
+             )
+             SELECT operation_id, server_url, workspace_root, project_id, adapter, action,
+                    expected_revision, next_revision, manifest_json, changes_json, created_at
+             FROM adapter_fs_ops",
+            "DROP TABLE adapter_fs_ops",
+            "ALTER TABLE adapter_fs_ops_v38 RENAME TO adapter_fs_ops",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1778,5 +1878,211 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(exists, 1);
+    }
+
+    async fn test_pool_with_v37_adapter_tables() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Mirror the daemon: foreign key enforcement is on.
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // v37-shaped project_bindings.
+        sqlx::query(
+            "CREATE TABLE project_bindings (
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                revision BIGINT NOT NULL CHECK (revision > 0),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (server_url, workspace_root)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // v37-shaped adapter tables: CHECK without 'dsh'.
+        sqlx::query(
+            "CREATE TABLE project_agent_adapters (
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode')),
+                revision BIGINT NOT NULL CHECK (revision > 0),
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (server_url, workspace_root, adapter),
+                FOREIGN KEY (server_url, workspace_root)
+                    REFERENCES project_bindings(server_url, workspace_root)
+                    ON DELETE CASCADE
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE INDEX idx_project_agent_adapters_project
+             ON project_agent_adapters (server_url, project_id)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE adapter_fs_ops (
+                operation_id TEXT PRIMARY KEY,
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode')),
+                action TEXT NOT NULL CHECK (action IN ('install', 'remove')),
+                expected_revision BIGINT,
+                next_revision BIGINT,
+                manifest_json TEXT,
+                changes_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE (server_url, workspace_root, adapter)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Seed live rows in both tables.
+        sqlx::query(
+            "INSERT INTO project_bindings (server_url, workspace_root, project_id, revision)
+             VALUES ('https://clumsies.example.com', '/work/repo', 'prj_1', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO project_agent_adapters (
+                server_url, workspace_root, project_id, adapter, revision, manifest_json)
+             VALUES ('https://clumsies.example.com', '/work/repo', 'prj_1', 'codex', 1, '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO adapter_fs_ops (
+                operation_id, server_url, workspace_root, project_id, adapter, action,
+                expected_revision, next_revision, manifest_json, changes_json)
+             VALUES ('op_1', 'https://clumsies.example.com', '/work/repo', 'prj_1', 'codex',
+                     'install', NULL, 1, NULL, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn schema_37_to_38_widens_both_adapter_tables_and_preserves_rows() {
+        let pool = test_pool_with_v37_adapter_tables().await;
+
+        migrate_local_schema_37_to_38(&pool).await.unwrap();
+
+        // Pre-existing rows survived both rebuilds.
+        let adapter: String = sqlx::query_scalar(
+            "SELECT adapter FROM project_agent_adapters
+             WHERE server_url = 'https://clumsies.example.com' AND workspace_root = '/work/repo'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(adapter, "codex");
+        let ops: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM adapter_fs_ops")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ops, 1);
+
+        // Both widened CHECK constraints now accept 'dsh'.
+        sqlx::query(
+            "INSERT INTO project_agent_adapters (
+                server_url, workspace_root, project_id, adapter, revision, manifest_json)
+             VALUES ('https://clumsies.example.com', '/work/repo', 'prj_1', 'dsh', 1, '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO adapter_fs_ops (
+                operation_id, server_url, workspace_root, project_id, adapter, action,
+                expected_revision, next_revision, manifest_json, changes_json)
+             VALUES ('op_2', 'https://clumsies.example.com', '/work/repo', 'prj_1', 'dsh',
+                     'install', NULL, 1, NULL, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The project index survived the rebuild.
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_project_agent_adapters_project'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Re-running is a no-op.
+        migrate_local_schema_37_to_38(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn schema_37_to_38_widens_only_the_stale_table() {
+        let pool = test_pool_with_v37_adapter_tables().await;
+        // Manually widen project_agent_adapters; only adapter_fs_ops stays stale.
+        sqlx::query(
+            "CREATE TABLE project_agent_adapters_v38 (
+                server_url TEXT NOT NULL,
+                workspace_root TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                adapter TEXT NOT NULL CHECK (adapter IN ('codex', 'claude-code', 'opencode', 'dsh')),
+                revision BIGINT NOT NULL CHECK (revision > 0),
+                manifest_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (server_url, workspace_root, adapter),
+                FOREIGN KEY (server_url, workspace_root)
+                    REFERENCES project_bindings(server_url, workspace_root)
+                    ON DELETE CASCADE
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO project_agent_adapters_v38 SELECT * FROM project_agent_adapters")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE project_agent_adapters")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE project_agent_adapters_v38 RENAME TO project_agent_adapters")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        migrate_local_schema_37_to_38(&pool).await.unwrap();
+
+        // The stale fs-ops table is now widened too.
+        sqlx::query(
+            "INSERT INTO adapter_fs_ops (
+                operation_id, server_url, workspace_root, project_id, adapter, action,
+                expected_revision, next_revision, manifest_json, changes_json)
+             VALUES ('op_2', 'https://clumsies.example.com', '/work/repo', 'prj_1', 'dsh',
+                     'install', NULL, 1, NULL, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 }
