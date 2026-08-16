@@ -57,11 +57,12 @@ pub enum AgentRuntimeRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ToolCallParams {
     pub(crate) name: String,
     #[serde(default = "empty_object")]
     pub(crate) arguments: Value,
+    #[serde(default)]
+    pub(crate) _meta: Option<Value>,
 }
 
 fn empty_object() -> Value {

@@ -12,6 +12,11 @@ enum AppBundleRuntimeLocationError: LocalizedError, Sendable {
 }
 
 enum AppBundleRuntimeLocation {
+    static var defaultLogDirectoryURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(components: "Library", "Logs", "ai.clumsies")
+    }
+
     static func requireStable(_ bundleURL: URL) throws {
         let components = bundleURL.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         if components.contains("AppTranslocation") {

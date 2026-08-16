@@ -3,8 +3,8 @@ import XPC
 
 enum DaemonXPCError: LocalizedError, Sendable {
     case invalidRequest
-    case connectionFailed
-    case requestTimedOut
+    case connectionFailed(detail: String? = nil)
+    case requestTimedOut(timeout: TimeInterval? = nil)
     case invalidReply
     case daemon(APIErrorPayload)
 
@@ -12,10 +12,16 @@ enum DaemonXPCError: LocalizedError, Sendable {
         switch self {
         case .invalidRequest:
             return "Could not encode the daemon request."
-        case .connectionFailed:
-            return "The local Clumsies daemon is unavailable."
-        case .requestTimedOut:
-            return "The local Clumsies daemon did not respond in time."
+        case .connectionFailed(let detail):
+            if let detail, !detail.isEmpty {
+                return "The local Clumsies daemon is unavailable (\(detail)). Review logs in ~/Library/Logs/ai.clumsies."
+            }
+            return "The local Clumsies daemon is unavailable. Review logs in ~/Library/Logs/ai.clumsies."
+        case .requestTimedOut(let timeout):
+            if let timeout {
+                return "The local Clumsies daemon did not respond within \(String(format: "%.1f", timeout))s. Review logs in ~/Library/Logs/ai.clumsies."
+            }
+            return "The local Clumsies daemon did not respond in time. Review logs in ~/Library/Logs/ai.clumsies."
         case .invalidReply:
             return "The local Clumsies daemon returned an invalid response."
         case .daemon(let error):
@@ -296,7 +302,9 @@ struct DaemonXPCClient: Sendable {
             request.attach(connection)
             xpc_connection_set_event_handler(connection) { event in
                 if xpc_get_type(event) == XPC_TYPE_ERROR {
-                    request.fail(.connectionFailed)
+                    let desc = xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION)
+                        .map(String.init(cString:))
+                    request.fail(.connectionFailed(detail: desc))
                 }
             }
             xpc_connection_activate(connection)
@@ -304,16 +312,21 @@ struct DaemonXPCClient: Sendable {
             let message = xpc_dictionary_create(nil, nil, 0)
             xpc_dictionary_set_string(message, "request_json", requestJSON)
             xpc_connection_send_message_with_reply(connection, message, replyQueue) { reply in
-                guard xpc_get_type(reply) != XPC_TYPE_ERROR,
-                      xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                guard xpc_get_type(reply) != XPC_TYPE_ERROR else {
+                    let desc = xpc_dictionary_get_string(reply, XPC_ERROR_KEY_DESCRIPTION)
+                        .map(String.init(cString:))
+                    request.fail(.connectionFailed(detail: desc))
+                    return
+                }
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
                       let responsePointer = xpc_dictionary_get_string(reply, "response_json") else {
-                    request.fail(.connectionFailed)
+                    request.fail(.invalidReply)
                     return
                 }
                 request.succeed(String(cString: responsePointer))
             }
             replyQueue.asyncAfter(deadline: .now() + timeout) {
-                request.fail(.requestTimedOut)
+                request.fail(.requestTimedOut(timeout: timeout))
             }
         }
     }
@@ -339,7 +352,7 @@ struct DaemonStartupReadiness: Sendable {
     func waitForHealth(_ check: HealthCheck) async throws -> DaemonHealth {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
-        var lastError: DaemonXPCError = .connectionFailed
+        var lastError: DaemonXPCError = .connectionFailed()
 
         while clock.now < deadline {
             let remaining = clock.now.duration(to: deadline)
