@@ -18,6 +18,13 @@
 --
 -- Idempotent: only Blobs that still lack a 'memories' key are rewritten,
 -- and only Blobs referenced as org-selection tree entries are touched.
+-- The selection filter is applied as a JOIN before any JSON parsing:
+-- Blobs also store plain Markdown resource bodies, and parsing them as
+-- JSON must never happen (the LATERAL expression must not see non-org-
+-- selection rows, regardless of the planner's join order). A leading-brace
+-- guard additionally skips (rather than fails on) org-selection entries
+-- whose content is not an object, so a single corrupt Blob cannot block
+-- the migration.
 
 UPDATE blobs
 SET content = rewritten.content
@@ -30,7 +37,16 @@ FROM (
             'memories', COALESCE(merged.memories, '[]'::jsonb)
         )::text AS content
     FROM blobs b
-    CROSS JOIN LATERAL (SELECT b.content::jsonb AS parsed) p
+    JOIN (
+        SELECT DISTINCT blob_id
+        FROM tree_entries
+        WHERE resource_kind = 'project_org_selection'
+    ) selection_blobs ON selection_blobs.blob_id = b.blob_id
+    CROSS JOIN LATERAL (
+        SELECT CASE
+                   WHEN b.content ~ '^[[:space:]]*\{' THEN b.content::jsonb
+               END AS parsed
+    ) p
     CROSS JOIN LATERAL (
         SELECT jsonb_agg(
             jsonb_build_object(
@@ -69,7 +85,4 @@ FROM (
     ) merged
     WHERE NOT parsed ? 'memories'
 ) rewritten
-WHERE blobs.blob_id = rewritten.blob_id
-  AND blobs.blob_id IN (
-      SELECT blob_id FROM tree_entries WHERE resource_kind = 'project_org_selection'
-  );
+WHERE blobs.blob_id = rewritten.blob_id;
