@@ -859,19 +859,35 @@ mod platform {
             if unsafe { object_type(message) } != unsafe { xpc_dictionary_type() } {
                 return;
             }
-            let response_json = dispatch_message(&service, &runtime, message);
-            let Ok(response_json) = response_json else {
-                return;
-            };
-            let reply = unsafe { xpc_dictionary_create_reply(message) };
-            let Ok(reply) = (unsafe { XpcOwnedObject::new(reply) }) else {
-                return;
-            };
-            if set_xpc_string(reply.as_ptr(), RESPONSE_JSON_KEY, &response_json).is_ok() {
-                unsafe {
-                    xpc_connection_send_message(peer, reply.as_ptr());
+            // Never run request handling on this callback thread: libxpc
+            // dispatches connection event handlers onto a GCD global queue
+            // whose threads have only a 512 KiB stack, while request handling
+            // (e.g. retry_sync -> commit_sync -> HTTPS) unfolds a deeply
+            // nested future chain that overflows it with a silent SIGILL.
+            // Retain the message, hand the work to a tokio worker, and let the
+            // worker build and send the reply.
+            // Raw pointers are moved across threads as usize (same pattern as
+            // the connection retention below), then cast back inside the task.
+            let message = unsafe { xpc_retain(message) } as usize;
+            let service = service.clone();
+            let peer = unsafe { xpc_retain(peer) } as usize;
+            runtime.spawn(async move {
+                let message = SendXpc(message as *mut c_void);
+                let peer = SendXpc(peer as *mut c_void);
+                let response_json = dispatch_message(&service, message).await;
+                if let (Ok(response_json), Ok(reply)) = (response_json, unsafe {
+                    XpcOwnedObject::new(xpc_dictionary_create_reply(message.0))
+                }) && set_xpc_string(reply.as_ptr(), RESPONSE_JSON_KEY, &response_json).is_ok()
+                {
+                    unsafe {
+                        xpc_connection_send_message(peer.0, reply.as_ptr());
+                    }
                 }
-            }
+                unsafe {
+                    xpc_release(peer.0);
+                    xpc_release(message.0);
+                }
+            });
         });
         unsafe {
             xpc_connection_set_event_handler(peer, RcBlock::as_ptr(&peer_handler).cast());
@@ -879,19 +895,30 @@ mod platform {
         }
     }
 
-    fn dispatch_message(
+    /// Handles one XPC request on a tokio worker thread. The GCD callback
+    /// thread only retains the message and spawns this task, so request
+    /// handling never runs on the 512 KiB dispatch stack.
+    async fn dispatch_message(
         service: &DaemonIpcService,
-        runtime: &Handle,
-        message: XpcObject,
+        message: SendXpc,
     ) -> Result<String, DaemonError> {
-        let request_json = xpc_dictionary_string(message, REQUEST_JSON_KEY)?;
+        let request_json = xpc_dictionary_string(message.0, REQUEST_JSON_KEY)?;
         let request: DaemonIpcRequest = serde_json::from_str(&request_json)?;
         let response = match validate_agent_runtime_request(&request) {
-            Ok(()) => runtime.block_on(service.dispatch(request)),
+            Ok(()) => service.dispatch(request).await,
             Err(error) => DaemonIpcResponse::from_result(Err(error)),
         };
         serde_json::to_string(&response).map_err(DaemonError::from)
     }
+
+    /// XPC objects are reference-counted and documented as safe to use from
+    /// any thread; the raw pointer only needs an explicit Send marker to move
+    /// into the tokio task that sends the reply.
+    #[derive(Clone, Copy)]
+    struct SendXpc(XpcObject);
+
+    // Safety: libxpc objects may be retained/released/sent from any thread.
+    unsafe impl Send for SendXpc {}
 
     fn xpc_dictionary_with_json(key: &str, value: &str) -> Result<XpcOwnedObject, DaemonError> {
         let object =
