@@ -8,6 +8,24 @@ struct DaemonProjectConfig: Codable, Equatable, Sendable {
     let hasRefreshToken: Bool
     let ready: Bool
     let missingFields: [String]
+
+    init(
+        serverUrl: String,
+        projectId: String? = nil,
+        memoryGuidelinesPath: String? = nil,
+        hasAccessToken: Bool,
+        hasRefreshToken: Bool,
+        ready: Bool,
+        missingFields: [String] = []
+    ) {
+        self.serverUrl = serverUrl
+        self.projectId = projectId
+        self.memoryGuidelinesPath = memoryGuidelinesPath
+        self.hasAccessToken = hasAccessToken
+        self.hasRefreshToken = hasRefreshToken
+        self.ready = ready
+        self.missingFields = missingFields
+    }
 }
 
 struct DaemonProjectConfigUpdate: Codable, Sendable {
@@ -16,6 +34,20 @@ struct DaemonProjectConfigUpdate: Codable, Sendable {
     let memoryGuidelinesPath: String?
     let accessToken: String?
     let refreshToken: String?
+
+    init(
+        serverUrl: String,
+        projectId: String? = nil,
+        memoryGuidelinesPath: String? = nil,
+        accessToken: String? = nil,
+        refreshToken: String? = nil
+    ) {
+        self.serverUrl = serverUrl
+        self.projectId = projectId
+        self.memoryGuidelinesPath = memoryGuidelinesPath
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+    }
 }
 
 struct DaemonProjectSelection: Codable, Sendable {
