@@ -92,7 +92,7 @@ struct ProjectCreationSheet: View {
                         }
                     }
 
-                    Text("A Bundle imports its Hub memory into the new Project.")
+                    Text("A Bundle imports its Organization memory into the new Project.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

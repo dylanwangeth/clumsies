@@ -1553,7 +1553,7 @@ private struct SearchEntry: Identifiable {
         .init(
             id: "memory:\(item.id)",
             title: item.document.title,
-            detail: "\(item.scope == .org ? "Hub" : "Local") · \(item.kind.title) · \(item.document.path)",
+            detail: "\(item.scope == .org ? "Organization" : "Project") · \(item.kind.title) · \(item.document.path)",
             symbol: item.kind.symbol,
             destination: .memory(item)
         )

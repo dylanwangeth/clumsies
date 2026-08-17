@@ -160,19 +160,19 @@ enum ProjectSetupError: LocalizedError, Sendable {
         case .bundleNotFound:
             "The selected Bundle is no longer available."
         case .bundleContainsUnavailableMemory:
-            "The selected Bundle contains memory that is not available in Hub."
+            "The selected Bundle contains memory that is not available in the Organization."
         }
     }
 }
 
 enum ProjectMemorySelectionError: LocalizedError, Sendable {
-    case invalidHubResources
+    case invalidOrgResources
     case projectUnavailable
 
     var errorDescription: String? {
         switch self {
-        case .invalidHubResources:
-            "Only current Hub memory can be added to or removed from a Project."
+        case .invalidOrgResources:
+            "Only current Organization memory can be added to or removed from a Project."
         case .projectUnavailable:
             "The selected Project is no longer available."
         }
@@ -1205,7 +1205,7 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func addHubMemory(resourceIds: Set<String>, toProject projectId: String) async throws {
+    func addOrgMemories(resourceIds: Set<String>, toProject projectId: String) async throws {
         try await mutateProjectOrgSelection(
             projectId: projectId,
             resourceIds: resourceIds,
@@ -1213,7 +1213,7 @@ final class WorkspaceStore: ObservableObject {
         )
     }
 
-    func removeHubMemoryFromActiveProject(resourceIds: Set<String>) async throws {
+    func removeOrgMemoriesFromActiveProject(resourceIds: Set<String>) async throws {
         guard let projectId = activeProjectId else { throw WorkspaceLoadError.noProjects }
         try await mutateProjectOrgSelection(
             projectId: projectId,
@@ -1228,12 +1228,12 @@ final class WorkspaceStore: ObservableObject {
         mutation: ProjectOrgSelectionMutation
     ) async throws {
         guard canManageOrgSelection else {
-            throw ServerClientError.forbidden("Organization owners and admins manage project Hub memory.")
+            throw ServerClientError.forbidden("Only Organization owners and admins can manage project memory.")
         }
         guard projects.contains(where: { $0.id == projectId }) else {
             throw ProjectMemorySelectionError.projectUnavailable
         }
-        try validateHubResourceIds(resourceIds)
+        try validateOrgResourceIds(resourceIds)
         try await withProjectOrgSelectionMutation {
             let current: ProjectOrgSelection = try await server.get(
                 "/api/v1/projects/\(projectId)/org-selections"
@@ -1303,7 +1303,7 @@ final class WorkspaceStore: ObservableObject {
         }
         let resourceIds = Set(bundle.resourceIds)
         do {
-            try validateHubResourceIds(resourceIds)
+            try validateOrgResourceIds(resourceIds)
         } catch {
             throw ProjectSetupError.bundleContainsUnavailableMemory
         }
@@ -1315,10 +1315,10 @@ final class WorkspaceStore: ObservableObject {
         )
     }
 
-    private func validateHubResourceIds(_ resourceIds: Set<String>) throws {
+    private func validateOrgResourceIds(_ resourceIds: Set<String>) throws {
         let available = Set(resources.lazy.filter { $0.scope == .org }.map(\.id))
         guard resourceIds.isSubset(of: available) else {
-            throw ProjectMemorySelectionError.invalidHubResources
+            throw ProjectMemorySelectionError.invalidOrgResources
         }
     }
 
@@ -1362,7 +1362,7 @@ final class WorkspaceStore: ObservableObject {
     ) async throws {
         try await withBundleMutation {
             guard let current = bundles.first(where: { $0.id == bundle.id }) else { return }
-            try validateHubResourceIds(resourceIds)
+            try validateOrgResourceIds(resourceIds)
             let selected = resources.filter {
                 $0.scope == .org && resourceIds.contains($0.id)
             }
