@@ -319,14 +319,14 @@ private struct FileTreeView: View {
         }
 
         if !addableItems.isEmpty {
-            Menu(addToLocalTitle(count: addableItems.count)) {
+            Menu(addToProjectTitle(count: addableItems.count)) {
                 if store.projects.isEmpty {
                     Button("No Projects") {}
                         .disabled(true)
                 } else {
                     ForEach(store.projects) { project in
-                        Button(project.name) {
-                            addToLocal(addableItems, projectId: project.id)
+                        Button("Add to \(project.name)") {
+                            addToProject(addableItems, projectId: project.id)
                         }
                     }
                 }
@@ -335,8 +335,8 @@ private struct FileTreeView: View {
         }
 
         if !removableItems.isEmpty {
-            Button(removeFromLocalTitle(count: removableItems.count)) {
-                removeFromLocal(removableItems)
+            Button(removeFromProjectTitle(count: removableItems.count)) {
+                removeFromProject(removableItems)
             }
             .disabled(!store.canManageOrgSelection)
         }
@@ -388,10 +388,10 @@ private struct FileTreeView: View {
         selectionAnchorId = itemId
     }
 
-    private func addToLocal(_ items: [MemoryListItem], projectId: String) {
+    private func addToProject(_ items: [MemoryListItem], projectId: String) {
         Task {
             do {
-                try await store.addHubMemory(
+                try await store.addOrgMemories(
                     resourceIds: Set(items.map(\.id)),
                     toProject: projectId
                 )
@@ -401,10 +401,10 @@ private struct FileTreeView: View {
         }
     }
 
-    private func removeFromLocal(_ items: [MemoryListItem]) {
+    private func removeFromProject(_ items: [MemoryListItem]) {
         Task {
             do {
-                try await store.removeHubMemoryFromActiveProject(
+                try await store.removeOrgMemoriesFromActiveProject(
                     resourceIds: Set(items.map(\.id))
                 )
             } catch {
@@ -413,12 +413,12 @@ private struct FileTreeView: View {
         }
     }
 
-    private func addToLocalTitle(count: Int) -> String {
-        count == 1 ? "Add to Local" : "Add \(count) Items to Local"
+    private func addToProjectTitle(count: Int) -> String {
+        count == 1 ? "Add to Project" : "Add \(count) Items to Project"
     }
 
-    private func removeFromLocalTitle(count: Int) -> String {
-        count == 1 ? "Remove from Local" : "Remove \(count) Items from Local"
+    private func removeFromProjectTitle(count: Int) -> String {
+        count == 1 ? "Remove from Project" : "Remove \(count) Items from Project"
     }
 }
 
@@ -458,7 +458,7 @@ private struct FileTreeRow: View {
                 reconciliation: item?.draft?.reconciliation
             )
         }
-        .help(item?.inherited == true ? "Inherited from Hub" : entry.node.name)
+        .help(item?.inherited == true ? "Inherited from Organization" : entry.node.name)
     }
 
     private var titleColor: Color {

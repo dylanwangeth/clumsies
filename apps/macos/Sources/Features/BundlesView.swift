@@ -168,7 +168,7 @@ private struct BundleEditor: View {
     }
 
     private func resourceLocation(_ resource: MemoryResource) -> String {
-        let scope = resource.scope == .org ? "Hub" : resource.projectName ?? "Project"
+        let scope = resource.scope == .org ? "Organization" : resource.projectName ?? "Project"
         return "\(scope) · \(resource.kind.singularTitle)"
     }
 
@@ -278,6 +278,6 @@ private struct BundleResourcePicker: View {
     }
 
     private func resourceLocation(_ resource: MemoryResource) -> String {
-        resource.scope == .org ? "Hub" : resource.projectName ?? "Project"
+        resource.scope == .org ? "Organization" : resource.projectName ?? "Project"
     }
 }
