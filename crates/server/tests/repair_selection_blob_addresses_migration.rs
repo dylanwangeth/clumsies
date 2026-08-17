@@ -79,7 +79,10 @@ async fn repair_restores_content_address_integrity() {
     .fetch_one(&postgres.pool)
     .await
     .unwrap();
-    assert_eq!(broken, 1, "rewrite migration must leave one broken content address");
+    assert_eq!(
+        broken, 1,
+        "rewrite migration must leave one broken content address"
+    );
 
     // The repair migration restores integrity.
     postgres
@@ -99,18 +102,16 @@ async fn repair_restores_content_address_integrity() {
     .await
     .unwrap();
     assert_eq!(
-        broken_referenced,
-        0,
+        broken_referenced, 0,
         "repair migration must fix every referenced broken content address"
     );
 
     // Tree entries must point at the correctly-addressed row.
-    let entry_blob: Option<String> = sqlx::query_scalar(
-        "SELECT blob_id FROM tree_entries WHERE tree_id = 'tree_test'"
-    )
-    .fetch_one(&postgres.pool)
-    .await
-    .unwrap();
+    let entry_blob: Option<String> =
+        sqlx::query_scalar("SELECT blob_id FROM tree_entries WHERE tree_id = 'tree_test'")
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
     let valid: Option<String> = sqlx::query_scalar(
         "SELECT blob_id FROM blobs
          WHERE encode(sha256(convert_to('blob', 'UTF8') || decode('00', 'hex') || convert_to(content, 'UTF8')), 'hex') = blob_id
@@ -119,5 +120,8 @@ async fn repair_restores_content_address_integrity() {
     .fetch_one(&postgres.pool)
     .await
     .unwrap();
-    assert_eq!(entry_blob, valid, "tree entry must reference the repaired Blob");
+    assert_eq!(
+        entry_blob, valid,
+        "tree entry must reference the repaired Blob"
+    );
 }
