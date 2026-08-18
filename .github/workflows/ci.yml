@@ -27,6 +27,11 @@ jobs:
           shellcheck dev/check-agent-runtime-boundary.sh
           sh dev/check-agent-runtime-boundary.sh
 
+      - name: Check retired terminology
+        run: |
+          shellcheck dev/check-retired-terms.sh
+          sh dev/check-retired-terms.sh
+
   docs:
     runs-on: ubuntu-latest
     steps:
