@@ -2197,13 +2197,15 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!(create_sql.contains("'memory'"), "kind CHECK must accept memory");
-        let version: String = sqlx::query_scalar(
-            "SELECT value FROM search_meta WHERE key = 'schema_version'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        assert!(
+            create_sql.contains("'memory'"),
+            "kind CHECK must accept memory"
+        );
+        let version: String =
+            sqlx::query_scalar("SELECT value FROM search_meta WHERE key = 'schema_version'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(version, PROJECT_INDEX_SCHEMA_VERSION.to_string());
         pool.close().await;
     }
