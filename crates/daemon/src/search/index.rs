@@ -15,7 +15,12 @@ use super::{
     RetrievalUnit, SearchFailure, SearchModels, SourceResource,
 };
 
-const PROJECT_INDEX_SCHEMA_VERSION: i64 = 6;
+// Schema 7 guarantees search_resources carries the description column and the
+// widened kind CHECK. Version 6 was written in two flavors: before commit
+// 232eaac the column and the 'memory' kind were missing from the CREATE TABLE
+// without a version bump, so rebuilds below are keyed on column presence
+// rather than the version marker alone.
+const PROJECT_INDEX_SCHEMA_VERSION: i64 = 7;
 pub(super) const VECTOR_INPUT_VERSION: &str = "search-passage.v1:fastembed-prefix=passage";
 
 #[derive(Clone, Debug)]
@@ -148,6 +153,53 @@ async fn migrate_project_index(pool: &SqlitePool) -> Result<(), DaemonError> {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+    }
+    // Pre-232eaac databases carry schema_version 6 while search_resources is
+    // missing the description column and still checks kind against
+    // ('context', 'rule', 'workflow'); older schemas (3-5) never had the
+    // column either. Adding the column alone cannot repair a restrictive
+    // kind CHECK because SQLite cannot alter a CHECK constraint, so those
+    // index tables are rebuilt here and the next background build recreates
+    // the index from the current generation with the unified Memory schema.
+    // Tables without a restrictive kind CHECK only need the column added
+    // and keep their ready heads. Fresh databases are untouched because the
+    // CREATE TABLE below already includes the column and the widened CHECK.
+    let has_search_resources: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'search_resources'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let has_description_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('search_resources') WHERE name = 'description'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_search_resources > 0 && has_description_column == 0 {
+        let create_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'search_resources'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if create_sql.contains("kind IN") && !create_sql.contains("'memory'") {
+            let mut tx = pool.begin().await?;
+            for statement in [
+                "DROP TABLE IF EXISTS search_units_fts",
+                "DROP TABLE IF EXISTS search_heads",
+                "DROP TABLE IF EXISTS search_units",
+                "DROP TABLE IF EXISTS search_resources",
+                "DROP TABLE IF EXISTS search_revisions",
+                "DROP TABLE IF EXISTS search_vector_cache",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+        } else {
+            sqlx::query(
+                "ALTER TABLE search_resources ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+            )
+            .execute(pool)
+            .await?;
+        }
     }
     // Keep the fresh schema and its version marker in one SQLite transaction.
     // A process crash must never leave a partial set of tables that a later
@@ -2072,5 +2124,87 @@ mod tests {
             base,
             vector_input_hash("embedding.v1", 384, "path\nheading\nchanged")
         );
+    }
+
+    #[tokio::test]
+    async fn migrate_rebuilds_legacy_schema_six_without_description_column() {
+        // Reproduces the pre-232eaac database flavor: schema_version 6 with a
+        // search_resources table that lacks the description column and still
+        // checks kind against the legacy values. The daemon's index build
+        // failed on these with "table search_resources has no column named
+        // description" because the schema version had not been bumped when
+        // the column was added.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.sqlite");
+        {
+            let legacy = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    SqliteConnectOptions::from_str(&path.display().to_string())
+                        .unwrap()
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE search_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&legacy)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO search_meta (key, value) VALUES ('schema_version', '6')")
+                .execute(&legacy)
+                .await
+                .unwrap();
+            sqlx::query(
+                "CREATE TABLE search_resources (
+                    revision_id TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow')),
+                    path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    source_commit_id TEXT,
+                    draft_id TEXT,
+                    draft_revision TEXT,
+                    PRIMARY KEY (revision_id, resource_id)
+                )",
+            )
+            .execute(&legacy)
+            .await
+            .unwrap();
+            legacy.close().await;
+        }
+
+        let pool = connect_project_index(&path).await.unwrap();
+        let has_description: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('search_resources')
+             WHERE name = 'description'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_description, 1);
+        let create_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'search_resources'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(create_sql.contains("'memory'"), "kind CHECK must accept memory");
+        let version: String = sqlx::query_scalar(
+            "SELECT value FROM search_meta WHERE key = 'schema_version'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(version, PROJECT_INDEX_SCHEMA_VERSION.to_string());
+        pool.close().await;
     }
 }
