@@ -21,15 +21,11 @@ for archived_asset in \
   assets/adapters/codex/runtime/hooks.json.tpl \
   assets/adapters/codex/runtime/hooks/resolve-binary.sh.tpl \
   assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl \
-  assets/adapters/codex/runtime/skills/activate/SKILL.md \
-  assets/adapters/codex/runtime/skills/ntmd/SKILL.md \
   assets/adapters/claude-code/runtime/settings.json.tpl \
   assets/adapters/claude-code/runtime/mcp.json.tpl \
   assets/adapters/claude-code/runtime/hooks/resolve-binary.sh.tpl \
   assets/adapters/claude-code/runtime/hooks/session-start.sh.tpl \
-  assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl \
-  assets/adapters/claude-code/runtime/skills/activate/SKILL.md \
-  assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md
+  assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl
 do
   test -f "archive/zig-cli/$archived_asset"
 done

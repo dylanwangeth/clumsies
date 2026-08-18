@@ -158,22 +158,6 @@ fn addClaudeCodeAdapterAssetOptions(b: *std.Build, options: *std.Build.Step.Opti
         b,
         "assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl",
     ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_activate", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/skills/activate/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_claude_code_runtime_skill_ntmd", readSourceAsset(
-        b,
-        "assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_activate", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/skills/activate/SKILL.md",
-    ));
-    options.addOption([]const u8, "adapter_codex_runtime_skill_ntmd", readSourceAsset(
-        b,
-        "assets/adapters/codex/runtime/skills/ntmd/SKILL.md",
-    ));
 }
 
 fn readSourceAsset(b: *std.Build, relative_path: []const u8) []const u8 {
