@@ -32,8 +32,8 @@ remains readable until the new one publishes atomically.
 | MCP parsing and response framing | short-lived `clumsiesd mcp serve` proxy |
 
 The proxy does not read generation files, inspect an old manifest, or maintain a
-second resource cache. Thin host skills only tell the Agent which MCP workflow
-to follow; they do not contain authoritative memory.
+second resource cache. The thin host-native skill layer is retired (ISSUE-064):
+no adapter installs skills, and skill directories are not an authority source.
 
 ## Historical implementation
 

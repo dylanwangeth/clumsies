@@ -3297,11 +3297,12 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
         )
     );
     assert!(!daemon_root.path().join("bin/clumsies").exists());
+    // Thin skills were retired (ISSUE-064): the adapter never installs them.
     assert!(
-        repository_root
+        !repository_root
             .path()
             .join(".agents/skills/activate/SKILL.md")
-            .is_file()
+            .exists()
     );
 
     let idempotent = service
@@ -3340,6 +3341,7 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
             .join(".agents/skills/activate/SKILL.md")
             .exists()
     );
+    assert!(!repository_root.path().join(".agents/skills").exists());
 
     let removed = service
         .remove_project_binding(DaemonProjectBindingRemoveRequest {
@@ -3356,6 +3358,134 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
         .await
         .unwrap();
     assert!(bindings.items.is_empty());
+}
+
+#[tokio::test]
+async fn adapter_update_retires_stale_managed_skill_files() {
+    let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let repository_root = tempfile::tempdir().unwrap();
+    let codex_config = repository_root.path().join(".codex/config.toml");
+    std::fs::create_dir_all(codex_config.parent().unwrap()).unwrap();
+    std::fs::write(&codex_config, "[model]\nname = \"gpt\"\n").unwrap();
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}");
+    let server_url = config.project.server_url.clone();
+    let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
+        server_url: server_url.clone(),
+        access_token: "test-token".to_owned(),
+        refresh_token: None,
+    }));
+    let state = common::initialize_daemon(config, credential_store).await;
+    let service = DaemonIpcService::new(state);
+    service
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: repository_root.path().display().to_string(),
+            project_id: "prj_adapter".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    let helper = signed_runtime_binary(daemon_root.path());
+    let installed = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_adapter".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            runtime_binary_path: helper.display().to_string(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(installed.revision, 1);
+
+    // Simulate the pre-retirement state: thin skill files exist on disk and
+    // the stored manifest still manages them (as older releases wrote it).
+    let activate = repository_root
+        .path()
+        .join(".agents/skills/activate/SKILL.md");
+    let ntmd = repository_root.path().join(".agents/skills/ntmd/SKILL.md");
+    std::fs::create_dir_all(activate.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(ntmd.parent().unwrap()).unwrap();
+    let content = b"---\nname: legacy\n---\n";
+    std::fs::write(&activate, content).unwrap();
+    std::fs::write(&ntmd, content).unwrap();
+    let db = sqlx::SqlitePool::connect(&format!(
+        "sqlite://{}",
+        daemon_root.path().join("local.db").display()
+    ))
+    .await
+    .unwrap();
+    // The daemon stores the canonicalized workspace root (/private/var/...).
+    let canonical_root = std::fs::canonicalize(repository_root.path()).unwrap();
+    let manifest_json: String = sqlx::query_scalar(
+        "SELECT manifest_json FROM project_agent_adapters
+         WHERE workspace_root = $1 AND adapter = 'codex'",
+    )
+    .bind(canonical_root.display().to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
+    let hash = format!("{:x}", Sha256::digest(content));
+    for relative in [
+        ".agents/skills/activate/SKILL.md",
+        ".agents/skills/ntmd/SKILL.md",
+    ] {
+        manifest["managed_files"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "path": canonical_root.join(relative).display().to_string(),
+                "kind": "exclusive",
+                "installed_hash": hash,
+            }));
+    }
+    sqlx::query("UPDATE project_agent_adapters SET manifest_json = $1")
+        .bind(manifest.to_string())
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Updating the adapter must retire the previously-managed skill files.
+    let updated = service
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_adapter".to_owned(),
+            workspace_root: repository_root.path().display().to_string(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            runtime_binary_path: helper.display().to_string(),
+            expected_revision: Some(installed.revision),
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.revision, 2);
+    assert!(!activate.exists());
+    assert!(!ntmd.exists());
+    assert!(!repository_root.path().join(".agents").exists());
+
+    let manifest_json: String = sqlx::query_scalar(
+        "SELECT manifest_json FROM project_agent_adapters
+         WHERE workspace_root = $1 AND adapter = 'codex'",
+    )
+    .bind(canonical_root.display().to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
+    assert!(
+        manifest["managed_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|file| !file["path"].as_str().unwrap().contains("skills"))
+    );
 }
 
 #[tokio::test]

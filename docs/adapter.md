@@ -39,12 +39,18 @@ daemon requires the repository's canonical Project binding first, serializes
 local setup, and persists one revisioned adapter record per Server authority,
 workspace root, and host.
 
-| Host | MCP registration | Lifecycle integration | Thin skills |
-| --- | --- | --- | --- |
-| Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.agents/skills/activate`, `.agents/skills/ntmd` |
-| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` | `.claude/skills/activate`, `.claude/skills/ntmd` |
-| opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` | MCP tools are used directly |
-| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` | MCP tools are used directly |
+| Host | MCP registration | Lifecycle integration |
+| --- | --- | --- |
+| Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
+| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
+| opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
+| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` |
+
+Every host consumes the MCP tools directly; the thin host-native skills that
+older releases installed for Codex and Claude Code
+(`.agents/skills/activate|ntmd`, `.claude/skills/activate|ntmd`) are
+retired. The adapter update path deletes those previously-managed skill files
+instead of leaving them behind.
 
 Codex and Claude Code MCP entries execute the pinned binary with arguments
 `mcp`, `serve`. The opencode local MCP entry executes the equivalent command
@@ -83,9 +89,11 @@ decision semantics.
 
 ## Safe install, update, and remove
 
-Adapter merges shared host configuration while treating generated scripts,
-plugins, and thin skills as exclusive managed files. Its manifest records the
-installed hash of every managed file.
+Adapter merges shared host configuration while treating generated scripts
+and plugins as exclusive managed files. Its manifest records the installed
+hash of every managed file, and the update path retires previously-managed
+files the current plan no longer includes (for example the retired thin
+skills).
 
 The App refuses to bootstrap `clumsiesd` or persist an Agent runtime path while
 macOS is running it from an App Translocation mount. Move the released App to

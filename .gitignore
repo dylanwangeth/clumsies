@@ -45,7 +45,6 @@ plugins/
 .opencode/
 .dsh/
 opencode.json
-.agents/skills/clumsies-generated-workflows/
 CLAUDE.md
 prompts/
 GEMINI.md

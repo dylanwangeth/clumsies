@@ -22,14 +22,6 @@ use crate::config::DAEMON_AGENT_LABEL;
 
 mod legacy;
 
-const ACTIVATE_SKILL_CODEX: &str =
-    include_str!("../../../assets/adapters/codex/runtime/skills/activate/SKILL.md");
-const NTMD_SKILL_CODEX: &str =
-    include_str!("../../../assets/adapters/codex/runtime/skills/ntmd/SKILL.md");
-const ACTIVATE_SKILL_CLAUDE: &str =
-    include_str!("../../../assets/adapters/claude-code/runtime/skills/activate/SKILL.md");
-const NTMD_SKILL_CLAUDE: &str =
-    include_str!("../../../assets/adapters/claude-code/runtime/skills/ntmd/SKILL.md");
 const ISSUE_RUN_EVENT_CODEX: &str =
     include_str!("../../../assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl");
 const ISSUE_RUN_EVENT_CLAUDE: &str =
@@ -384,6 +376,9 @@ fn validate_adapter_journal_path(
     relative: &Path,
     kind: ManagedFileKind,
 ) -> Result<(), DaemonError> {
+    // The retired thin-skill paths stay accepted so that pending journal ops
+    // written before the thin-skills retirement (ISSUE-064) remain
+    // recoverable. New plans never produce them.
     let allowed = match adapter {
         ProjectAgentAdapterKind::Codex => matches!(
             (relative.to_str(), kind),
@@ -1873,7 +1868,7 @@ pub(crate) async fn install(
     verify_code_signature(&runtime_binary)?;
     let runtime_hash = sha256_file(&runtime_binary)?;
     let previous_manifest = existing.as_ref().map(|record| &record.manifest);
-    let changes = install_plan_with_project(
+    let mut changes = install_plan_with_project(
         request.adapter,
         &workspace_root,
         &runtime_binary,
@@ -1881,6 +1876,13 @@ pub(crate) async fn install(
         Some(&server_url),
         Some(&project_id),
     )?;
+    // Retire previously-managed files the new plan no longer includes (the
+    // retired thin skills) instead of silently orphaning them on disk.
+    changes.extend(retire_stale_managed_changes(
+        &changes,
+        previous_manifest,
+        &workspace_root,
+    )?);
     let files_changed = changes
         .iter()
         .map(change_is_needed)
@@ -1903,7 +1905,7 @@ pub(crate) async fn install(
         PreparedAdapterFsOp {
             operation_id: Uuid::new_v4().to_string(),
             server_url,
-            workspace_root,
+            workspace_root: workspace_root.clone(),
             project_id,
             adapter: request.adapter,
             action: AdapterFsAction::Install,
@@ -1916,13 +1918,15 @@ pub(crate) async fn install(
     )?;
     persist_prepared_adapter_fs_op(&state.inner.pool, &operation).await?;
     apply_prepared_adapter_fs_op(&operation)?;
-    finalize_prepared_adapter_fs_op(&state.inner.pool, &operation)
+    let adapter = finalize_prepared_adapter_fs_op(&state.inner.pool, &operation)
         .await?
         .ok_or_else(|| {
             DaemonError::InvalidConfig(
                 "adapter install transaction finalized without a manifest".to_owned(),
             )
-        })
+        })?;
+    cleanup_empty_adapter_directories(&changes, &workspace_root);
+    Ok(adapter)
 }
 
 pub(crate) async fn remove(
@@ -2199,8 +2203,6 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join(".codex/hooks/resolve-binary.sh"),
             workspace_root.join(".codex/hooks/issue-run-event.sh"),
             workspace_root.join(".codex/hooks/user-prompt-submit.sh"),
-            workspace_root.join(".agents/skills/activate/SKILL.md"),
-            workspace_root.join(".agents/skills/ntmd/SKILL.md"),
         ],
         ProjectAgentAdapterKind::ClaudeCode => vec![
             effective_claude_mcp_path.clone(),
@@ -2208,8 +2210,6 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join(".claude/hooks/resolve-binary.sh"),
             workspace_root.join(".claude/hooks/issue-run-event.sh"),
             workspace_root.join(".claude/hooks/user-prompt-submit.sh"),
-            workspace_root.join(".claude/skills/activate/SKILL.md"),
-            workspace_root.join(".claude/skills/ntmd/SKILL.md"),
         ],
         ProjectAgentAdapterKind::Opencode => vec![
             workspace_root.join("opencode.json"),
@@ -2272,18 +2272,6 @@ fn install_plan_with_claude_mcp_path(
                     previous_manifest,
                     0o755,
                 )?,
-                exclusive_change(
-                    workspace_root.join(".agents/skills/activate/SKILL.md"),
-                    ACTIVATE_SKILL_CODEX.as_bytes(),
-                    previous_manifest,
-                    0o644,
-                )?,
-                exclusive_change(
-                    workspace_root.join(".agents/skills/ntmd/SKILL.md"),
-                    NTMD_SKILL_CODEX.as_bytes(),
-                    previous_manifest,
-                    0o644,
-                )?,
             ]
         }
         ProjectAgentAdapterKind::ClaudeCode => {
@@ -2329,18 +2317,6 @@ fn install_plan_with_claude_mcp_path(
                     managed_hook.as_bytes(),
                     previous_manifest,
                     0o755,
-                )?,
-                exclusive_change(
-                    workspace_root.join(".claude/skills/activate/SKILL.md"),
-                    ACTIVATE_SKILL_CLAUDE.as_bytes(),
-                    previous_manifest,
-                    0o644,
-                )?,
-                exclusive_change(
-                    workspace_root.join(".claude/skills/ntmd/SKILL.md"),
-                    NTMD_SKILL_CLAUDE.as_bytes(),
-                    previous_manifest,
-                    0o644,
                 )?,
             ]
         }
@@ -2431,6 +2407,50 @@ fn render_dsh_config(server_url: &str, project_id: &str, runtime_binary: &str) -
         .expect("serializing the dsh adapter config to JSON cannot fail");
     rendered.push(b'\n');
     rendered
+}
+
+/// Retires previously-managed exclusive files the new install plan no
+/// longer includes. The thin-skills retirement (ISSUE-064) relies on this to
+/// delete stale `.agents/skills/*` and `.claude/skills/*` files on the next
+/// adapter update instead of silently orphaning them. A file that changed
+/// since install is a conflict, mirroring `remove_plan` semantics.
+fn retire_stale_managed_changes(
+    changes: &[PendingChange],
+    previous_manifest: Option<&AdapterManifest>,
+    workspace_root: &Path,
+) -> Result<Vec<PendingChange>, DaemonError> {
+    let Some(previous_manifest) = previous_manifest else {
+        return Ok(Vec::new());
+    };
+    let plan_paths: BTreeSet<&Path> = changes.iter().map(|change| change.path.as_path()).collect();
+    let mut retired = Vec::new();
+    for file in &previous_manifest.managed_files {
+        let path = PathBuf::from(&file.path);
+        if plan_paths.contains(path.as_path()) || file.kind != ManagedFileKind::Exclusive {
+            continue;
+        }
+        validate_manifest_managed_path(workspace_root, &path, file.kind)?;
+        let expected = capture_file_snapshot(&path)?;
+        if let Some(content) = &expected.content
+            && sha256(content) != file.installed_hash
+        {
+            return Err(state_error(
+                "project_agent_adapter_conflict",
+                &format!(
+                    "{} changed after Clumsies installed it; review it before updating the integration.",
+                    path.display()
+                ),
+            ));
+        }
+        retired.push(PendingChange {
+            path,
+            expected,
+            desired: None,
+            kind: file.kind,
+            mode: 0o644,
+        });
+    }
+    Ok(retired)
 }
 
 fn remove_plan(
@@ -2565,6 +2585,10 @@ fn validate_manifest_managed_path(
         ManagedFileKind::OpencodeConfig => relative == Path::new("opencode.json"),
         ManagedFileKind::DshConfig => relative == Path::new(".dsh/clumsies.json"),
         ManagedFileKind::AntigravityHooks => relative == Path::new(".agents/hooks.json"),
+        // The retired thin-skill paths stay accepted so that manifests and
+        // pending journal ops written before the thin-skills retirement
+        // (ISSUE-064) remain removable and recoverable. New plans never
+        // produce them; the update path retires the files on disk.
         ManagedFileKind::Exclusive => [
             ".codex/hooks/resolve-binary.sh",
             ".codex/hooks/issue-run-event.sh",
@@ -5163,6 +5187,160 @@ mod tests {
             changes
                 .iter()
                 .all(|change| !change.path.to_string_lossy().contains("skills"))
+        );
+    }
+
+    #[test]
+    fn codex_and_claude_install_plans_include_no_skills() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        for adapter in [
+            ProjectAgentAdapterKind::Codex,
+            ProjectAgentAdapterKind::ClaudeCode,
+        ] {
+            let changes = install_plan(adapter, workspace.path(), helper, None).unwrap();
+            assert!(
+                changes
+                    .iter()
+                    .all(|change| !change.path.to_string_lossy().contains("skills")),
+                "{adapter:?} install plan must not contain thin skills"
+            );
+        }
+    }
+
+    #[test]
+    fn update_retires_stale_managed_skill_files() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        // Simulate the pre-retirement state: the old manifest managed the
+        // thin skill files and they exist on disk.
+        let codex_activate = workspace.path().join(".agents/skills/activate/SKILL.md");
+        let codex_ntmd = workspace.path().join(".agents/skills/ntmd/SKILL.md");
+        let claude_activate = workspace.path().join(".claude/skills/activate/SKILL.md");
+        let claude_ntmd = workspace.path().join(".claude/skills/ntmd/SKILL.md");
+        for path in [&codex_activate, &codex_ntmd, &claude_activate, &claude_ntmd] {
+            atomic_write(
+                path,
+                b"---
+name: legacy
+---
+",
+                0o644,
+            )
+            .unwrap();
+        }
+        let previous_manifest = AdapterManifest {
+            runtime_binary_hash: "helper-hash".to_owned(),
+            runtime_binary_path: helper.display().to_string(),
+            managed_files: vec![
+                ManagedFile {
+                    path: codex_activate.display().to_string(),
+                    kind: ManagedFileKind::Exclusive,
+                    installed_hash: sha256(
+                        b"---
+name: legacy
+---
+",
+                    ),
+                },
+                ManagedFile {
+                    path: codex_ntmd.display().to_string(),
+                    kind: ManagedFileKind::Exclusive,
+                    installed_hash: sha256(
+                        b"---
+name: legacy
+---
+",
+                    ),
+                },
+                ManagedFile {
+                    path: claude_activate.display().to_string(),
+                    kind: ManagedFileKind::Exclusive,
+                    installed_hash: sha256(
+                        b"---
+name: legacy
+---
+",
+                    ),
+                },
+                ManagedFile {
+                    path: claude_ntmd.display().to_string(),
+                    kind: ManagedFileKind::Exclusive,
+                    installed_hash: sha256(
+                        b"---
+name: legacy
+---
+",
+                    ),
+                },
+            ],
+        };
+
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Codex,
+            workspace.path(),
+            helper,
+            Some(&previous_manifest),
+        )
+        .unwrap();
+        let retired =
+            retire_stale_managed_changes(&changes, Some(&previous_manifest), workspace.path())
+                .unwrap();
+        assert_eq!(retired.len(), 4);
+        assert!(retired.iter().all(|change| change.desired.is_none()));
+
+        let mut all_changes = changes.clone();
+        all_changes.extend(retired);
+        apply_changes(&all_changes).unwrap();
+        cleanup_empty_adapter_directories(&all_changes, workspace.path());
+        for path in [&codex_activate, &codex_ntmd, &claude_activate, &claude_ntmd] {
+            assert!(!path.exists(), "{} must be retired", path.display());
+        }
+        assert!(!workspace.path().join(".agents").exists());
+
+        let manifest = manifest_for_changes(&all_changes, helper, "helper-hash".to_owned());
+        assert!(
+            manifest
+                .managed_files
+                .iter()
+                .all(|file| !file.path.contains("skills"))
+        );
+    }
+
+    #[test]
+    fn update_retire_conflicts_when_a_retired_file_changed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+
+        let skill_path = workspace.path().join(".agents/skills/activate/SKILL.md");
+        atomic_write(&skill_path, b"installed content", 0o644).unwrap();
+        let previous_manifest = AdapterManifest {
+            runtime_binary_hash: "helper-hash".to_owned(),
+            runtime_binary_path: helper.display().to_string(),
+            managed_files: vec![ManagedFile {
+                path: skill_path.display().to_string(),
+                kind: ManagedFileKind::Exclusive,
+                installed_hash: sha256(b"installed content"),
+            }],
+        };
+        // The user edited the file after install: retirement must conflict.
+        atomic_write(&skill_path, b"user edited", 0o644).unwrap();
+        let changes = install_plan(
+            ProjectAgentAdapterKind::Codex,
+            workspace.path(),
+            helper,
+            Some(&previous_manifest),
+        )
+        .unwrap();
+        let error =
+            retire_stale_managed_changes(&changes, Some(&previous_manifest), workspace.path())
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("changed after Clumsies installed it")
         );
     }
 

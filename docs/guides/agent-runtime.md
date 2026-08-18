@@ -97,10 +97,11 @@ context.
 
 ## Adapter boundary
 
-Adapters make a concrete host launch the MCP server and expose thin host-native
-skills. They may still manage host-specific hooks for capabilities outside the
-MCP memory contract, but those hooks must not reimplement retrieval or inject a
-second bootstrap protocol.
+Adapters make a concrete host launch the MCP server; hosts consume the MCP
+tools directly, so no host-native skill layer is installed. Adapters manage
+host-specific hooks for lifecycle observation outside the MCP memory contract,
+but those hooks must not reimplement retrieval or inject a second bootstrap
+protocol.
 
 The native daemon installer writes the exact code-signed App-bundled
 `clumsiesd` path into host configuration and its managed resolver. It does not
