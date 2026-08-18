@@ -302,22 +302,43 @@ private struct FileTreeView: View {
     private func fileTreeMenu(for nodeIds: Set<String>) -> some View {
         let targetItems = FileTreeNode.items(in: roots, selectedNodeIds: nodeIds)
         let singleItem = targetItems.count == 1 ? targetItems.first : nil
-        let addableItems = targetItems.filter { $0.scope == .org && !$0.inherited }
-        let removableItems = targetItems.filter(\.inherited)
+        let isOrgView = store.activeProjectId == nil
+        let addableItems = MemoryFileTreeMenu.addable(targetItems, inOrgView: isOrgView)
+        let removableItems = MemoryFileTreeMenu.removable(targetItems, inOrgView: isOrgView)
+        let trashableItems = MemoryFileTreeMenu.trashable(targetItems, inOrgView: isOrgView)
+        let singleManageable = singleItem.map {
+            MemoryFileTreeMenu.isManageable($0, inOrgView: isOrgView)
+        } ?? false
+        let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
+            || (singleItem?.draft != nil)
 
+        // ---- generic document operations (standard macOS conventions) ----
         if let singleItem {
             Button("Open") { store.open(singleItem) }
             if singleItem.supportsMarkdownPreview {
                 Button("Open Source") { store.open(singleItem, mode: .source) }
             }
-            if singleItem.draft?.freshness == .behind {
-                Button(singleItem.draft?.hasUpstreamResourceChanges == true ? "Review Changes" : "Update Draft") {
-                    reviewSharedChanges(for: singleItem)
+            if singleManageable {
+                Button("Rename…") { beginRenaming(singleItem) }
+                if singleItem.resource != nil {
+                    Button("Move to Trash", role: .destructive) {
+                        Task { await store.delete(singleItem) }
+                    }
                 }
             }
-            Divider()
+        } else if !targetItems.isEmpty {
+            Button("Open") { targetItems.forEach { store.open($0) } }
+            if !trashableItems.isEmpty {
+                Button(moveToTrashTitle(count: trashableItems.count), role: .destructive) {
+                    deleteItems(trashableItems)
+                }
+            }
         }
 
+        // ---- domain operations (Memory scope relationships and drafts) ----
+        if hasDomainSection {
+            Divider()
+        }
         if !addableItems.isEmpty {
             Menu(addToProjectTitle(count: addableItems.count)) {
                 if store.projects.isEmpty {
@@ -333,29 +354,21 @@ private struct FileTreeView: View {
             }
             .disabled(!store.canManageOrgSelection || store.projects.isEmpty)
         }
-
         if !removableItems.isEmpty {
             Button(removeFromProjectTitle(count: removableItems.count)) {
                 removeFromProject(removableItems)
             }
             .disabled(!store.canManageOrgSelection)
         }
-
         if let singleItem {
-            if !addableItems.isEmpty || !removableItems.isEmpty {
-                Divider()
-            }
-            if !singleItem.inherited {
-                Button("Rename…") { beginRenaming(singleItem) }
+            if singleItem.draft?.freshness == .behind {
+                Button(singleItem.draft?.hasUpstreamResourceChanges == true ? "Review Changes" : "Update Draft") {
+                    reviewSharedChanges(for: singleItem)
+                }
             }
             if let draft = singleItem.draft {
                 Button("Discard Draft") {
                     Task { await store.discard(draft) }
-                }
-            }
-            if !singleItem.inherited {
-                Button("Move to Trash", role: .destructive) {
-                    Task { await store.delete(singleItem) }
                 }
             }
         }
@@ -386,6 +399,18 @@ private struct FileTreeView: View {
         }
         selectedNodeIds = [itemId]
         selectionAnchorId = itemId
+    }
+
+    private func moveToTrashTitle(count: Int) -> String {
+        count == 1 ? "Move to Trash" : "Move \(count) Items to Trash"
+    }
+
+    private func deleteItems(_ items: [MemoryListItem]) {
+        Task {
+            for item in items {
+                await store.delete(item)
+            }
+        }
     }
 
     private func addToProject(_ items: [MemoryListItem], projectId: String) {
@@ -452,6 +477,13 @@ private struct FileTreeRow: View {
             isExpanded: isExpanded,
             titleColor: titleColor
         ) {
+            if item?.inherited == true {
+                Image(systemName: "building.2")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Inherited from Organization")
+                    .accessibilityLabel("Inherited from Organization")
+            }
             SharedUpdateIndicator(
                 freshness: item?.draft?.freshness,
                 hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
@@ -1295,3 +1327,38 @@ struct DocumentPathBreadcrumb: View {
         .font(.system(size: 14, weight: .regular))
     }
 }
+
+
+/// Pure classification of file-tree context menu operations (design v2).
+///
+/// Menu = generic document operations (standard macOS conventions) + domain
+/// operations (Memory scope relationships and drafts). Add to Project exists
+/// only in the Org view; Remove from Project exists only in the Project view
+/// for inherited items; Rename/Trash apply only to items owned by the current
+/// view context.
+enum MemoryFileTreeMenu {
+    /// Items that can be renamed or trashed in the current view context:
+    /// org memories in the Org view, project-owned memories in the Project
+    /// view. Inherited and org-unreferenced items are view-only.
+    static func isManageable(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
+        !item.inherited && (inOrgView ? item.scope == .org : item.scope == .project)
+    }
+
+    /// Org memories that may be added to a project: only in the Org view.
+    static func addable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
+        inOrgView ? items.filter { $0.scope == .org } : []
+    }
+
+    /// Items inherited by the active project that may be removed from it:
+    /// only in the Project view.
+    static func removable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
+        inOrgView ? [] : items.filter(\.inherited)
+    }
+
+    /// Items that support batch Move to Trash: manageable items that back a
+    /// resource (pure drafts are discarded, not trashed).
+    static func trashable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
+        items.filter { isManageable($0, inOrgView: inOrgView) && $0.resource != nil }
+    }
+}
+
