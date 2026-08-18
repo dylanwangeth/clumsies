@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -eu
 
 # Retired terminology gate (ISSUE-063).
 #
@@ -19,7 +19,7 @@ matches="$(grep -rnE '"[^"]*\b(Hub|Local)\b[^"]*"' \
   "$root/apps/macos/Sources" --include='*.swift' \
   | grep -vE 'Local (Runtime|edits remain saved)' || true)"
 
-if [[ -n "$matches" ]]; then
+if [ -n "$matches" ]; then
   printf 'Retired Hub/Local terminology found in user-visible strings:\n%s\n' \
     "$matches" >&2
   status=1
