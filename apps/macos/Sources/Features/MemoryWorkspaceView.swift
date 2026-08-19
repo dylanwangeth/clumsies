@@ -806,7 +806,13 @@ private struct DocumentSessionView: View {
     private var documentDiff: some View {
         Group {
             if let presentation = documentDiffPresentation {
-                UnifiedDiffView(presentation: presentation)
+                // The unified view sizes to its content and would be
+                // vertically centered otherwise; fill the pane and scroll
+                // vertically when the diff is taller than the viewport.
+                ScrollView([.vertical]) {
+                    UnifiedDiffView(presentation: presentation)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
             } else if loadsDocumentDiff {
                 ProgressView()
                     .controlSize(.small)
