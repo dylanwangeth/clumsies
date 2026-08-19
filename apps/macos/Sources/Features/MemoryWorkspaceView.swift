@@ -723,6 +723,8 @@ private struct DocumentSessionView: View {
     @State private var reconciliationCandidate: DraftReconciliationCandidate?
     @State private var loadsReconciliation = false
     @State private var reconciliationUpdateRequest = 0
+    @State private var documentDiffPresentation: UnifiedDiffPresentation?
+    @State private var loadsDocumentDiff = false
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
@@ -802,20 +804,43 @@ private struct DocumentSessionView: View {
 
     @ViewBuilder
     private var documentDiff: some View {
-        if let draft = item.draft, !draft.isDeletion {
-            SplitDiffView(
-                original: item.resource?.document.body ?? "",
-                modified: document.body,
-                originalTitle: "Shared Version",
-                modifiedTitle: "Local Changes",
-                originalPath: item.resource?.document.path ?? draft.document.path,
-                modifiedPath: draft.document.path
-            )
-        } else {
-            ContentUnavailableView(
-                "No Local Changes",
-                systemImage: "doc.text",
-                description: Text("Edit this memory to see a diff against the shared version.")
+        Group {
+            if let presentation = documentDiffPresentation {
+                UnifiedDiffView(presentation: presentation)
+            } else if loadsDocumentDiff {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    "No Changes",
+                    systemImage: "doc.text",
+                    description: Text("No local or remote changes to show for this document.")
+                )
+            }
+        }
+        .onAppear { loadDocumentDiff() }
+        .onChange(of: documentDiffIdentity) { _, _ in loadDocumentDiff() }
+    }
+
+    private var documentDiffIdentity: String {
+        [
+            item.draft?.id ?? "no-draft",
+            item.draft?.freshness.rawValue ?? "-",
+            item.resource?.contentHash ?? "-",
+            String(store.staleResourceIds.contains(item.resource?.id ?? "")),
+        ].joined(separator: ":")
+    }
+
+    private func loadDocumentDiff() {
+        guard mode == .diff, !loadsDocumentDiff else { return }
+        documentDiffPresentation = nil
+        loadsDocumentDiff = true
+        Task {
+            defer { loadsDocumentDiff = false }
+            documentDiffPresentation = await store.documentDiffPresentation(
+                for: item,
+                localText: document.body
             )
         }
     }

@@ -1315,6 +1315,53 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    /// The synced content of one resource from the daemon checkout,
+    /// used to render the remote layer of a stale document's diff.
+    func checkoutContent(for resourceId: String) async -> String? {
+        guard let projectId = resources.first(where: { $0.id == resourceId })?.projectId
+            ?? activeProjectId else { return nil }
+        guard let checkout = try? await daemon.projectCheckout(projectId), checkout.ready,
+              let checkoutResource = checkout.resources.first(where: { $0.resourceId == resourceId }) else {
+            return nil
+        }
+        return checkoutResource.content.content
+    }
+
+    /// Builds the three-way unified diff presentation for one document:
+    /// local changes (base -> draft) render green/red, remote changes
+    /// (base -> latest shared) render gray.
+    func documentDiffPresentation(
+        for item: MemoryListItem,
+        localText: String
+    ) async -> UnifiedDiffPresentation? {
+        if let draft = item.draft, !draft.isDeletion {
+            if draft.freshness == .behind,
+               let candidate = try? await reconciliationCandidate(for: draft) {
+                return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                    base: candidate.baseState.exists ? (candidate.baseState.content?.content ?? "") : "",
+                    local: localText,
+                    remote: candidate.currentState.exists ? (candidate.currentState.content?.content ?? "") : ""
+                ))
+            }
+            let sharedText = item.resource?.document.body ?? ""
+            return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                base: sharedText,
+                local: localText,
+                remote: sharedText
+            ))
+        }
+        if let resource = item.resource, staleResourceIds.contains(resource.id) {
+            guard let checkoutText = await checkoutContent(for: resource.id) else { return nil }
+            let snapshot = resource.document.body
+            return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                base: snapshot,
+                local: snapshot,
+                remote: checkoutText
+            ))
+        }
+        return nil
+    }
+
     func addOrgMemories(resourceIds: Set<String>, toProject projectId: String) async throws {
         try await mutateProjectOrgSelection(
             projectId: projectId,
