@@ -804,23 +804,54 @@ private struct DocumentSessionView: View {
 
     @ViewBuilder
     private var documentDiff: some View {
-        Group {
-            if let presentation = documentDiffPresentation {
-                UnifiedDiffView(presentation: presentation)
-            } else if loadsDocumentDiff {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    "No Changes",
-                    systemImage: "doc.text",
-                    description: Text("No local or remote changes to show for this document.")
-                )
+        // The pane contract for a document view is the same one Preview
+        // uses: the root is a greedy vertical ScrollView that fills the
+        // remaining height, with content pinned to the top. The unified
+        // diff stays a content-sized fragment (as in Reviews) and this
+        // outer scroll handles vertical overflow.
+        ScrollView([.vertical]) {
+            VStack(alignment: .leading, spacing: 0) {
+                if let rename = renameSummary {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.right")
+                            .foregroundStyle(.secondary)
+                        Text("Path: \(rename.from) → \(rename.to)")
+                            .textSelection(.enabled)
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                    .background(Color.accentColor.opacity(0.06))
+                }
+
+                if let presentation = documentDiffPresentation {
+                    UnifiedDiffView(presentation: presentation)
+                } else if loadsDocumentDiff {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, minHeight: 320)
+                } else {
+                    ContentUnavailableView(
+                        "No Changes",
+                        systemImage: "doc.text",
+                        description: Text("No local or remote changes to show for this document.")
+                    )
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .onAppear { loadDocumentDiff() }
         .onChange(of: documentDiffIdentity) { _, _ in loadDocumentDiff() }
+    }
+
+    /// A draft that only moves the file (rename) has no content diff;
+    /// surface the path change so the pane never looks empty.
+    private var renameSummary: (from: String, to: String)? {
+        guard let draft = item.draft,
+              let resource = item.resource,
+              draft.document.path != resource.document.path else { return nil }
+        return (resource.document.path, draft.document.path)
     }
 
     private var documentDiffIdentity: String {

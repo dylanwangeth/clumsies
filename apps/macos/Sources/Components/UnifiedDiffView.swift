@@ -386,9 +386,6 @@ struct UnifiedDiffView: View {
     @Binding var commentDraft: String
     let isSubmittingComment: Bool
     let showsCommentControls: Bool
-    /// Standalone usage (no outer scroll container): fill the offered
-    /// height and scroll vertically, like the split diff does.
-    let fillsHeight: Bool
     let onRequestComment: (Int) -> Void
     let onCancelComment: () -> Void
     let onSubmitComment: (Int) -> Void
@@ -422,7 +419,6 @@ struct UnifiedDiffView: View {
         _commentDraft = commentDraft
         self.isSubmittingComment = isSubmittingComment
         self.showsCommentControls = true
-        self.fillsHeight = false
         self.onRequestComment = onRequestComment
         self.onCancelComment = onCancelComment
         self.onSubmitComment = onSubmitComment
@@ -437,7 +433,6 @@ struct UnifiedDiffView: View {
         _commentDraft = .constant("")
         self.isSubmittingComment = false
         self.showsCommentControls = false
-        self.fillsHeight = true
         self.onRequestComment = { _ in }
         self.onCancelComment = {}
         self.onSubmitComment = { _ in }
@@ -452,10 +447,7 @@ struct UnifiedDiffView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 96)
             } else {
-                ScrollView(
-                    fillsHeight ? [.horizontal, .vertical] : [.horizontal],
-                    showsIndicators: true
-                ) {
+                ScrollView(.horizontal, showsIndicators: true) {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(presentation.blocks) { block in
                             blockView(block)
@@ -466,10 +458,6 @@ struct UnifiedDiffView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(
-            maxHeight: fillsHeight ? CGFloat.infinity : nil,
-            alignment: .topLeading
-        )
         .background(Color(nsColor: .textBackgroundColor))
         .background {
             GeometryReader { proxy in
