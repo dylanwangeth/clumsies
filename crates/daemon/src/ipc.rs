@@ -20,7 +20,8 @@ use crate::{
     ExportEvaluationSetRequest, ExportEvaluationSetResponse, GetIssueRequest,
     IssueBoardListRequest, IssueBoardResponse, IssueDetailRequest, IssueDetailResponse,
     IssueMutationResponse, IssueRemovalResponse, IssueWorkflowMutationResponse, LoadMemoryRequest,
-    LoadMemoryResponse, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
+    LoadMemoryResponse, ListRecallsRequest, ListRecallsResponse, RecordAgentRunEventRequest,
+    RecordAgentRunEventResponse,
     RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
     RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
     SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
@@ -471,6 +472,17 @@ impl DaemonIpcClient {
     ) -> Result<RetrievalRunDetail, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "get_retrieval_run",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_recalls",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

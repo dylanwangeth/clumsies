@@ -1093,6 +1093,13 @@ impl DaemonState {
         retrieval_history::get_retrieval_run(self, request).await
     }
 
+    pub async fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        recall::list_recalls(self, request).await
+    }
+
     pub async fn create_evaluation_case(
         &self,
         request: CreateEvaluationCaseRequest,
@@ -1937,6 +1944,13 @@ impl DaemonIpcService {
         self.state.get_retrieval_run(request).await
     }
 
+    pub async fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        self.state.list_recalls(request).await
+    }
+
     pub async fn create_evaluation_case(
         &self,
         request: CreateEvaluationCaseRequest,
@@ -2097,6 +2111,7 @@ impl DaemonIpcService {
                 dispatch_async!(self, request.payload, list_retrieval_runs)
             }
             "get_retrieval_run" => dispatch_async!(self, request.payload, get_retrieval_run),
+            "list_recalls" => dispatch_async!(self, request.payload, list_recalls),
             "create_evaluation_case" => {
                 dispatch_async!(self, request.payload, create_evaluation_case)
             }

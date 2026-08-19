@@ -11,6 +11,7 @@ mod draft;
 mod ipc;
 mod migration;
 mod project_storage;
+mod recall;
 mod retrieval_history;
 mod search;
 mod server_client;
@@ -58,6 +59,10 @@ pub use project_storage::{
     DaemonProjectStorageMode, DaemonProjectStorageMove, DaemonProjectStorageMoveRequest,
     DaemonProjectStorageMoveState, DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
     DaemonProjectStorageResetRequest,
+};
+pub use recall::{
+    ListRecallsRequest, ListRecallsResponse, RecallActivation, RecallFragment, RecallSession,
+    RecallTask,
 };
 pub use retrieval_history::{
     ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
