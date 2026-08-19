@@ -298,9 +298,9 @@ struct WorkspaceView: View {
                                     ProgressView()
                                         .controlSize(.small)
                                         .frame(width: 24, height: 24)
-                                        .help(state.isLoading ? "Reviewing changes" : "Updating draft")
+                                        .help(state.isLoading ? "Reviewing changes" : "Syncing")
                                         .accessibilityLabel(
-                                            state.isLoading ? "Reviewing changes" : "Updating draft"
+                                            state.isLoading ? "Reviewing changes" : "Syncing"
                                         )
                                 } else {
                                     Button {
@@ -311,21 +311,32 @@ struct WorkspaceView: View {
                                         Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
                                     }
                                     .disabled(!state.canUpdate)
-                                    .help("Update Draft")
-                                    .accessibilityLabel("Update Draft")
+                                    .help("Sync")
+                                    .accessibilityLabel("Sync")
                                 }
                             }
 
-                            if item.supportsMarkdownPreview {
-                                let mode = store.currentTabMode ?? .source
+                            if documentReconciliationState == nil, documentNeedsSync {
                                 Button {
-                                    store.open(item, mode: mode == .preview ? .source : .preview)
+                                    store.syncDocument(item)
                                 } label: {
-                                    Image(systemName: mode == .preview ? "doc.plaintext" : "eye")
+                                    Image(systemName: item.draft?.reconciliation == .conflicts
+                                        ? "exclamationmark.triangle"
+                                        : "arrow.trianglehead.2.clockwise.rotate.90")
                                 }
-                                .help(mode == .preview ? "Open Source" : "Open Preview")
-                                .accessibilityLabel(mode == .preview ? "Open Source" : "Open Preview")
+                                .help("Sync")
+                                .accessibilityLabel("Sync")
                             }
+
+                            Picker("Document View", selection: documentMode) {
+                                ForEach(availableDocumentModes, id: \.self) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(documentReconciliationState != nil)
+                            .help("Document View")
+                            .accessibilityLabel("Document View")
 
                             Menu {
                                 if let draft = item.draft, draft.status == .open {
@@ -1113,6 +1124,29 @@ struct WorkspaceView: View {
                 .frame(minWidth: 120, maxWidth: 360, alignment: .leading)
                 .accessibilityLabel("Path: \(path)")
         }
+    }
+
+    private var availableDocumentModes: [WorkbenchTabMode] {
+        store.currentItem?.supportsMarkdownPreview == true
+            ? [.preview, .source, .diff]
+            : [.source, .diff]
+    }
+
+    private var documentMode: Binding<WorkbenchTabMode> {
+        Binding(
+            get: {
+                let mode = store.currentTabMode ?? .preview
+                return availableDocumentModes.contains(mode) ? mode : .source
+            },
+            set: { store.switchDocumentMode($0) }
+        )
+    }
+
+    private var documentNeedsSync: Bool {
+        guard let item = store.currentItem else { return false }
+        if item.draft?.freshness == .behind { return true }
+        return item.draft == nil
+            && item.resource.map { store.staleResourceIds.contains($0.id) } == true
     }
 
     private var searchResults: [SearchEntry] {

@@ -155,6 +155,10 @@ private struct FileTreeView: View {
                 FileTreeRow(
                     entry: entry,
                     isExpanded: expandedDirectoryIds.contains(entry.id),
+                    isStale: entry.node.item.map {
+                        $0.draft == nil
+                            && $0.resource.map { store.staleResourceIds.contains($0.id) } == true
+                    } == true,
                     onDirectoryClick: { modifierFlags in
                         handleDirectoryClick(entry.id, modifierFlags: modifierFlags)
                     }
@@ -292,12 +296,6 @@ private struct FileTreeView: View {
         }
     }
 
-    private func reviewSharedChanges(for item: MemoryListItem) {
-        guard let draft = item.draft, draft.freshness == .behind else { return }
-        store.open(item)
-        store.pendingDocumentCommand = .reviewSharedChanges(itemId: item.id, draft: draft)
-    }
-
     @ViewBuilder
     private func fileTreeMenu(for nodeIds: Set<String>) -> some View {
         let targetItems = FileTreeNode.items(in: roots, selectedNodeIds: nodeIds)
@@ -309,8 +307,11 @@ private struct FileTreeView: View {
         let singleManageable = singleItem.map {
             MemoryFileTreeMenu.isManageable($0, inOrgView: isOrgView)
         } ?? false
+        let singleStale = singleItem.map { item in
+            item.resource.map { store.staleResourceIds.contains($0.id) } == true
+        } ?? false
         let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
-            || (singleItem?.draft != nil)
+            || (singleItem?.draft != nil) || singleStale
 
         // ---- generic document operations (standard macOS conventions) ----
         if let singleItem {
@@ -362,8 +363,13 @@ private struct FileTreeView: View {
         }
         if let singleItem {
             if singleItem.draft?.freshness == .behind {
-                Button(singleItem.draft?.hasUpstreamResourceChanges == true ? "Review Changes" : "Update Draft") {
-                    reviewSharedChanges(for: singleItem)
+                Button(singleItem.draft?.hasUpstreamResourceChanges == true ? "Review Changes" : "Sync") {
+                    store.syncDocument(singleItem)
+                }
+            } else if let resource = singleItem.resource,
+                      store.staleResourceIds.contains(resource.id) {
+                Button("Sync") {
+                    store.syncDocument(singleItem)
                 }
             }
             if let draft = singleItem.draft {
@@ -479,6 +485,7 @@ enum MemoryFileTreeTitleTone: Equatable {
 private struct FileTreeRow: View {
     let entry: VisibleFileTreeNode
     let isExpanded: Bool
+    let isStale: Bool
     let onDirectoryClick: (NSEvent.ModifierFlags) -> Void
 
     private var item: MemoryListItem? { entry.node.item }
@@ -516,7 +523,8 @@ private struct FileTreeRow: View {
             SharedUpdateIndicator(
                 freshness: item?.draft?.freshness,
                 hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
-                reconciliation: item?.draft?.reconciliation
+                reconciliation: item?.draft?.reconciliation,
+                isStale: isStale
             )
         }
         .help(item?.inherited == true ? "Inherited from Organization" : entry.node.name)
@@ -783,10 +791,32 @@ private struct DocumentSessionView: View {
                 )
             } else if mode == .preview {
                 MarkdownPreview(source: renderedSource)
+            } else if mode == .diff {
+                documentDiff
             } else {
                 editor
                     .disabled(item.inherited)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var documentDiff: some View {
+        if let draft = item.draft, !draft.isDeletion {
+            SplitDiffView(
+                original: item.resource?.document.body ?? "",
+                modified: document.body,
+                originalTitle: "Shared Version",
+                modifiedTitle: "Local Changes",
+                originalPath: item.resource?.document.path ?? draft.document.path,
+                modifiedPath: draft.document.path
+            )
+        } else {
+            ContentUnavailableView(
+                "No Local Changes",
+                systemImage: "doc.text",
+                description: Text("Edit this memory to see a diff against the shared version.")
+            )
         }
     }
 
