@@ -222,21 +222,6 @@ struct WorkspaceView: View {
                         }
 
                         if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.fixed)
-                        }
-
-                        if #available(macOS 26.0, *) {
-                            ToolbarItem {
-                                documentPath
-                            }
-                            .sharedBackgroundVisibility(.hidden)
-                        } else {
-                            ToolbarItem {
-                                documentPath
-                            }
-                        }
-
-                        if #available(macOS 26.0, *) {
                             ToolbarSpacer(.flexible)
                         }
                     }
@@ -1114,15 +1099,6 @@ struct WorkspaceView: View {
             EmptyView()
         case .reviews:
             EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private var documentPath: some View {
-        if let path = store.currentDocumentPath {
-            DocumentPathBreadcrumb(path: path)
-                .frame(minWidth: 120, maxWidth: 360, alignment: .leading)
-                .accessibilityLabel("Path: \(path)")
         }
     }
 

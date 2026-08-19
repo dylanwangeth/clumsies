@@ -1357,34 +1357,6 @@ private struct ReviewRequestSheet: View {
     }
 }
 
-struct DocumentPathBreadcrumb: View {
-    let path: String
-
-    private var components: [String] {
-        path.split(separator: "/").map(String.init)
-    }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(Array(components.enumerated()), id: \.offset) { index, component in
-                if index > 0 {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Text(component)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .fontWeight(index == components.count - 1 ? .medium : .regular)
-                    .foregroundStyle(index == components.count - 1 ? .primary : .secondary)
-                    .layoutPriority(index == components.count - 1 ? 1 : 0)
-            }
-        }
-        .font(.system(size: 14, weight: .regular))
-    }
-}
-
-
 /// Pure classification of file-tree context menu operations (design v2).
 ///
 /// Menu = generic document operations (standard macOS conventions) + domain
@@ -1417,4 +1389,3 @@ enum MemoryFileTreeMenu {
         items.filter { isManageable($0, inOrgView: inOrgView) && $0.resource != nil }
     }
 }
-

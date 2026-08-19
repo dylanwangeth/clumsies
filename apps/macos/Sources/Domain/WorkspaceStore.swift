@@ -308,12 +308,6 @@ final class WorkspaceStore: ObservableObject {
         navigationForwardStack.contains(where: isVisibleTab)
     }
 
-    var currentDocumentPath: String? {
-        guard let tab = activeVisibleTab,
-              let item = item(for: tab) else { return nil }
-        return item.document.path
-    }
-
     var currentItem: MemoryListItem? {
         guard let tab = activeVisibleTab else { return nil }
         return item(for: tab)
