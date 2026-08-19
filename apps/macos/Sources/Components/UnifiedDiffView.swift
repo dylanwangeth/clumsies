@@ -268,6 +268,9 @@ enum ThreeWayDiff: Sendable {
         }
 
         emitInsertions(at: 0)
+        // An empty base (e.g. a newly created draft) has no lines to
+        // anchor; every line is a pure insertion, already emitted above.
+        guard !baseLines.isEmpty else { return lines }
         for baseLine in 1 ... baseLines.count {
             let text = baseLines[baseLine - 1]
             let localMutation = localByBase[baseLine] ?? BaseMutation()

@@ -248,6 +248,16 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(lines.map(\.kind), [.removal, .remoteInsertion, .insertion])
     }
 
+    func testThreeWayEmptyBaseYieldsPureInsertions() {
+        let lines = ThreeWayDiff.lines(base: "", local: "a\nb", remote: "")
+        XCTAssertEqual(lines.map(\.kind), [.insertion, .insertion])
+    }
+
+    func testThreeWayEmptyBaseWithRemoteYieldsGrayFirst() {
+        let lines = ThreeWayDiff.lines(base: "", local: "a", remote: "b")
+        XCTAssertEqual(lines.map(\.kind), [.remoteInsertion, .insertion])
+    }
+
     func testThreeWayUnchangedStreamYieldsNoBlocks() {
         let presentation = UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
             base: "a", local: "a", remote: "a"
