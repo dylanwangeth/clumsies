@@ -119,14 +119,20 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(presentation.help, "The shared version of this file has changed")
     }
 
-    func testBehindDraftWithoutResourceChangesDoesNotShowFileAccessory() {
-        XCTAssertNil(
+    func testBehindDraftWithoutResourceChangesShowsBaseBehindAccessory() throws {
+        let presentation = try XCTUnwrap(
             SharedUpdateStatusPresentation.resolve(
                 freshness: .behind,
                 hasUpstreamResourceChanges: false,
                 reconciliation: .clean
             )
         )
+
+        XCTAssertEqual(
+            presentation.symbolName,
+            "arrow.trianglehead.2.clockwise.rotate.90"
+        )
+        XCTAssertEqual(presentation.help, "Draft base is behind the shared version")
     }
 
     func testConflictedBehindDraftShowsConflictAccessory() throws {
@@ -140,6 +146,87 @@ final class FileTreeSelectionTests: XCTestCase {
 
         XCTAssertEqual(presentation.symbolName, "exclamationmark.triangle")
         XCTAssertEqual(presentation.help, "Shared update has conflicts")
+    }
+
+    func testNilItemUsesPrimaryTone() {
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: nil), .primary)
+    }
+
+    func testSyncedResourceUsesPrimaryTone() {
+        let item = MemoryListItem(id: "res", resource: nil, draft: nil, inherited: false)
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .primary)
+    }
+
+    func testInheritedResourceUsesSecondaryTone() {
+        let item = MemoryListItem(id: "res", resource: nil, draft: nil, inherited: true)
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .secondary)
+    }
+
+    func testNewDraftUsesGreenTone() {
+        let item = MemoryListItem(
+            id: "new",
+            resource: nil,
+            draft: draft(targetId: nil),
+            inherited: false
+        )
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .newDraft)
+    }
+
+    func testModifiedDraftUsesYellowTone() {
+        let item = MemoryListItem(
+            id: "res",
+            resource: nil,
+            draft: draft(targetId: "res"),
+            inherited: false
+        )
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .modifiedDraft)
+    }
+
+    func testDeletionDraftUsesRedTone() {
+        let item = MemoryListItem(
+            id: "res",
+            resource: nil,
+            draft: draft(targetId: "res", isDeletion: true),
+            inherited: false
+        )
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .deletedDraft)
+    }
+
+    func testDraftToneTakesPrecedenceOverInherited() {
+        let item = MemoryListItem(
+            id: "res",
+            resource: nil,
+            draft: draft(targetId: "res"),
+            inherited: true
+        )
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .modifiedDraft)
+    }
+
+    private func draft(
+        targetId: String?,
+        isDeletion: Bool = false
+    ) -> LocalDraft {
+        LocalDraft(
+            id: "draft-\(targetId ?? "new")",
+            projectId: "project",
+            serverId: nil,
+            serverVersion: 0,
+            baseCommitId: "base",
+            currentCommitId: "base",
+            freshness: .current,
+            hasUpstreamResourceChanges: false,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
+            scope: .project,
+            kind: .context,
+            targetId: targetId,
+            status: .open,
+            origin: .desktop,
+            syncStatus: .synced,
+            updatedAt: "2026-08-05T00:00:00Z",
+            document: .init(title: "Untitled", path: "a.md", body: ""),
+            isDeletion: isDeletion
+        )
     }
 
     private func memoryItem(id: String, path: String) -> MemoryListItem {
