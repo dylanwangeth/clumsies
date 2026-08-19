@@ -331,6 +331,56 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+    func testOpeningOrgScopedItemWithDraftStaysVisibleInOrgView() {
+        let store = WorkspaceStore()
+        store.selectedSection = .memory
+        // activeProjectId defaults to nil (Org view).
+
+        let item = MemoryListItem(
+            id: "org-resource",
+            resource: MemoryResource(
+                id: "org-resource",
+                scope: .org,
+                projectId: nil,
+                projectName: nil,
+                kind: .context,
+                contentHash: "hash",
+                updatedAt: "2026-08-05T00:00:00Z",
+                refCommitId: "commit",
+                contentLoaded: true,
+                document: .init(title: "org.md", path: "org.md", body: "")
+            ),
+            draft: LocalDraft(
+                id: "org-draft",
+                projectId: "carrying-project",
+                serverId: nil,
+                serverVersion: 0,
+                baseCommitId: "commit",
+                currentCommitId: "commit",
+                freshness: .current,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .unknown,
+                reconciliationCandidateId: nil,
+                scope: .org,
+                kind: .context,
+                targetId: "org-resource",
+                status: .open,
+                origin: .desktop,
+                syncStatus: .synced,
+                updatedAt: "2026-08-05T00:00:00Z",
+                document: .init(title: "org.md", path: "org.md", body: "body"),
+                isDeletion: false
+            ),
+            inherited: false
+        )
+
+        store.open(item)
+
+        XCTAssertEqual(store.activeTabId, store.activeVisibleTab?.id)
+        XCTAssertEqual(store.activeVisibleTab?.itemId, "org-resource")
+        XCTAssertTrue(store.visibleTabs.contains { $0.id == store.activeTabId })
+    }
+
     private func tab(
         itemId: String,
         section: WorkspaceSection = .memory,

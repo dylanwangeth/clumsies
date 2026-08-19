@@ -769,9 +769,14 @@ final class WorkspaceStore: ObservableObject {
         showsProjectSettings = false
         let previousTabId = activeVisibleTab?.id
         let resolvedMode = mode ?? (item.supportsMarkdownPreview ? .preview : .source)
+        // Org-scope tabs are always visible regardless of the active project,
+        // so the tab's projectId must reflect scope (nil for Org), not the
+        // carrying project of an Org-scope draft. Reusing item.projectId here
+        // leaked the draft's carrying project and hid Org documents while the
+        // Org view (or another project) was active.
         let tab = WorkbenchTab(
             section: selectedSection,
-            projectId: item.projectId,
+            projectId: item.scope == .org ? nil : item.projectId,
             itemId: item.id,
             mode: resolvedMode,
             title: item.document.title
@@ -791,7 +796,9 @@ final class WorkspaceStore: ObservableObject {
     func reveal(_ item: MemoryListItem) async {
         selectedSection = .memory
         selectedKind = item.kind
-        if let projectId = item.projectId {
+        // Only project-scope items need a project switch; Org-scope items stay
+        // in the Org view even when their draft is carried by a project.
+        if item.scope == .project, let projectId = item.projectId {
             await selectProject(projectId)
         }
         open(item)

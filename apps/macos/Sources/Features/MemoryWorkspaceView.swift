@@ -447,6 +447,35 @@ private struct FileTreeView: View {
     }
 }
 
+/// Git-style title color for a memory file-tree row.
+enum MemoryFileTreeTitleTone: Equatable {
+    case primary
+    case secondary
+    case newDraft
+    case modifiedDraft
+    case deletedDraft
+
+    static func resolve(item: MemoryListItem?) -> Self {
+        guard let item else { return .primary }
+        guard let draft = item.draft else {
+            return item.inherited ? .secondary : .primary
+        }
+        if draft.isDeletion { return .deletedDraft }
+        if draft.targetId == nil { return .newDraft }
+        return .modifiedDraft
+    }
+
+    var color: Color {
+        switch self {
+        case .primary: return .primary
+        case .secondary: return .secondary
+        case .newDraft: return .green
+        case .modifiedDraft: return Color(red: 0.8, green: 0.6, blue: 0.1) // amber, legible in light mode
+        case .deletedDraft: return .red
+        }
+    }
+}
+
 private struct FileTreeRow: View {
     let entry: VisibleFileTreeNode
     let isExpanded: Bool
@@ -494,10 +523,7 @@ private struct FileTreeRow: View {
     }
 
     private var titleColor: Color {
-        guard let item else { return .primary }
-        if item.draft != nil { return .accentColor }
-        if item.inherited { return .secondary }
-        return .primary
+        MemoryFileTreeTitleTone.resolve(item: item).color
     }
 
 }
