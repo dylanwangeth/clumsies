@@ -4,6 +4,10 @@ enum UnifiedDiffLineKind: Equatable, Sendable {
     case context
     case insertion
     case removal
+    case remoteInsertion
+    case remoteRemoval
+
+    var isChanged: Bool { self != .context }
 }
 
 struct UnifiedDiffLine: Identifiable, Equatable, Sendable {
@@ -189,6 +193,174 @@ struct UnifiedDiffPresentation: Equatable, Sendable {
     }
 }
 
+/// Builds a unified diff stream from three full texts.
+///
+/// - base -> local changes render green/red (the user's own changes).
+/// - base -> remote changes render gray (other people's committed changes
+///   that are not part of the local draft yet).
+enum ThreeWayDiff: Sendable {
+    static func lines(base: String, local: String, remote: String) -> [UnifiedDiffLine] {
+        let baseLines = split(base)
+        let localModel = SplitDiffModel.make(original: base, modified: local)
+        let remoteModel = SplitDiffModel.make(original: base, modified: remote)
+
+        struct BaseMutation {
+            var removed = false
+            var replacement: String?
+            var localLine: Int?
+        }
+
+        var localByBase: [Int: BaseMutation] = [:]
+        var localInsertions: [Int: [(text: String, line: Int)]] = [:]
+        var localAnchor = 0
+        for row in localModel.rows {
+            if let original = row.original {
+                localAnchor = original.lineNumber
+                var mutation = localByBase[original.lineNumber] ?? BaseMutation()
+                mutation.removed = original.kind == .removal
+                mutation.localLine = row.modified?.lineNumber
+                if row.modified?.kind == .insertion {
+                    mutation.replacement = row.modified?.text
+                }
+                localByBase[original.lineNumber] = mutation
+            } else if let modified = row.modified {
+                localInsertions[localAnchor, default: []].append((modified.text, modified.lineNumber))
+            }
+        }
+
+        var remoteByBase: [Int: BaseMutation] = [:]
+        var remoteInsertions: [Int: [String]] = [:]
+        var remoteAnchor = 0
+        for row in remoteModel.rows {
+            if let original = row.original {
+                remoteAnchor = original.lineNumber
+                var mutation = remoteByBase[original.lineNumber] ?? BaseMutation()
+                mutation.removed = original.kind == .removal
+                if row.modified?.kind == .insertion {
+                    mutation.replacement = row.modified?.text
+                }
+                remoteByBase[original.lineNumber] = mutation
+            } else if let modified = row.modified {
+                remoteInsertions[remoteAnchor, default: []].append(modified.text)
+            }
+        }
+
+        var lines: [UnifiedDiffLine] = []
+        var counter = 0
+        func emit(_ kind: UnifiedDiffLineKind, _ text: String, old: Int?, new: Int?) {
+            counter += 1
+            lines.append(.init(
+                id: "three-way-\(counter)",
+                kind: kind,
+                text: text,
+                oldLineNumber: old,
+                newLineNumber: new
+            ))
+        }
+
+        func emitInsertions(at position: Int) {
+            for text in remoteInsertions[position] ?? [] {
+                emit(.remoteInsertion, text, old: nil, new: nil)
+            }
+            for entry in localInsertions[position] ?? [] {
+                emit(.insertion, entry.text, old: nil, new: entry.line)
+            }
+        }
+
+        emitInsertions(at: 0)
+        for baseLine in 1 ... baseLines.count {
+            let text = baseLines[baseLine - 1]
+            let localMutation = localByBase[baseLine] ?? BaseMutation()
+            let remoteMutation = remoteByBase[baseLine] ?? BaseMutation()
+
+            if localMutation.removed, remoteMutation.removed {
+                emit(.removal, text, old: baseLine, new: nil)
+                if let remoteText = remoteMutation.replacement, remoteText != text {
+                    emit(.remoteInsertion, remoteText, old: nil, new: nil)
+                }
+                if let localText = localMutation.replacement, localText != text {
+                    emit(.insertion, localText, old: nil, new: localMutation.localLine)
+                }
+            } else if localMutation.removed {
+                emit(.removal, text, old: baseLine, new: nil)
+                if let localText = localMutation.replacement, localText != text {
+                    emit(.insertion, localText, old: nil, new: localMutation.localLine)
+                }
+            } else if remoteMutation.removed {
+                emit(.remoteRemoval, text, old: baseLine, new: nil)
+                if let remoteText = remoteMutation.replacement, remoteText != text {
+                    emit(.remoteInsertion, remoteText, old: nil, new: nil)
+                }
+            } else {
+                emit(.context, text, old: baseLine, new: localMutation.localLine ?? baseLine)
+            }
+
+            emitInsertions(at: baseLine)
+        }
+        return lines
+    }
+
+    private static func split(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+}
+
+extension UnifiedDiffPresentation {
+    /// Builds a presentation from a fully expanded unified line stream,
+    /// collapsing unchanged runs into omissions like `init(model:)` does.
+    init(lines: [UnifiedDiffLine], contextLineCount: Int = 3) {
+        let changedIndices = lines.indices.filter { lines[$0].kind.isChanged }
+        guard !changedIndices.isEmpty else {
+            blocks = []
+            return
+        }
+        let context = max(0, contextLineCount)
+        var ranges: [ClosedRange<Int>] = []
+        for index in changedIndices {
+            let candidate = max(0, index - context) ... min(lines.count - 1, index + context)
+            if let previous = ranges.last, candidate.lowerBound <= previous.upperBound + 1 {
+                ranges[ranges.count - 1] = previous.lowerBound ... max(previous.upperBound, candidate.upperBound)
+            } else {
+                ranges.append(candidate)
+            }
+        }
+
+        var result: [UnifiedDiffBlockPresentation] = []
+        var cursor = 0
+        for range in ranges {
+            if cursor < range.lowerBound {
+                result.append(.init(
+                    id: result.count,
+                    kind: .omission,
+                    lines: Array(lines[cursor ..< range.lowerBound])
+                ))
+            }
+            let hunkLines = Array(lines[range])
+            result.append(.init(
+                id: result.count,
+                kind: .hunk(Self.hunkLabel(hunkLines)),
+                lines: hunkLines
+            ))
+            cursor = range.upperBound + 1
+        }
+        if cursor < lines.count {
+            result.append(.init(
+                id: result.count,
+                kind: .omission,
+                lines: Array(lines[cursor...])
+            ))
+        }
+        blocks = result
+    }
+
+    private static func hunkLabel(_ lines: [UnifiedDiffLine]) -> String {
+        let oldNumbers = lines.compactMap(\.oldLineNumber)
+        let newNumbers = lines.compactMap(\.newLineNumber)
+        return "@@ -\(oldNumbers.first ?? 1),\(oldNumbers.count) +\(newNumbers.first ?? 1),\(newNumbers.count) @@"
+    }
+}
+
 private enum UnifiedDiffMetrics {
     static let oldLineGutterWidth: CGFloat = 42
     static let newLineGutterWidth: CGFloat = 42
@@ -210,6 +382,7 @@ struct UnifiedDiffView: View {
     let composingLine: Int?
     @Binding var commentDraft: String
     let isSubmittingComment: Bool
+    let showsCommentControls: Bool
     let onRequestComment: (Int) -> Void
     let onCancelComment: () -> Void
     let onSubmitComment: (Int) -> Void
@@ -242,10 +415,25 @@ struct UnifiedDiffView: View {
         self.composingLine = composingLine
         _commentDraft = commentDraft
         self.isSubmittingComment = isSubmittingComment
+        self.showsCommentControls = true
         self.onRequestComment = onRequestComment
         self.onCancelComment = onCancelComment
         self.onSubmitComment = onSubmitComment
         self.onReply = onReply
+    }
+
+    /// Read-only presentation without review comment plumbing.
+    init(presentation: UnifiedDiffPresentation) {
+        self.presentation = presentation
+        self.commentsByLine = [:]
+        self.composingLine = nil
+        _commentDraft = .constant("")
+        self.isSubmittingComment = false
+        self.showsCommentControls = false
+        self.onRequestComment = { _ in }
+        self.onCancelComment = {}
+        self.onSubmitComment = { _ in }
+        self.onReply = { _ in }
     }
 
     var body: some View {
@@ -413,7 +601,7 @@ struct UnifiedDiffView: View {
 
     @ViewBuilder
     private func commentControl(for line: UnifiedDiffLine) -> some View {
-        if let anchor = line.commentAnchorLine {
+        if showsCommentControls, let anchor = line.commentAnchorLine {
             Button {
                 onRequestComment(anchor)
             } label: {
@@ -472,8 +660,8 @@ struct UnifiedDiffView: View {
     private func marker(for kind: UnifiedDiffLineKind) -> String {
         switch kind {
         case .context: " "
-        case .insertion: "+"
-        case .removal: "−"
+        case .insertion, .remoteInsertion: "+"
+        case .removal, .remoteRemoval: "−"
         }
     }
 
@@ -482,6 +670,7 @@ struct UnifiedDiffView: View {
         case .context: .secondary
         case .insertion: .green
         case .removal: .red
+        case .remoteInsertion, .remoteRemoval: .gray
         }
     }
 
@@ -490,6 +679,7 @@ struct UnifiedDiffView: View {
         case .context: .clear
         case .insertion: .green.opacity(0.08)
         case .removal: .red.opacity(0.08)
+        case .remoteInsertion, .remoteRemoval: .gray.opacity(0.08)
         }
     }
 }

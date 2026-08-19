@@ -233,6 +233,28 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .deletedDraft)
     }
 
+    func testThreeWayLocalChangeShowsRemovalThenInsertion() {
+        let lines = ThreeWayDiff.lines(base: "a\nb", local: "a\nB", remote: "a\nb")
+        XCTAssertEqual(lines.map(\.kind), [.context, .removal, .insertion])
+    }
+
+    func testThreeWayRemoteChangeShowsGrayLines() {
+        let lines = ThreeWayDiff.lines(base: "a\nb", local: "a\nb", remote: "a\nB")
+        XCTAssertEqual(lines.map(\.kind), [.context, .remoteRemoval, .remoteInsertion])
+    }
+
+    func testThreeWayConflictShowsRemoteThenLocal() {
+        let lines = ThreeWayDiff.lines(base: "a", local: "L", remote: "R")
+        XCTAssertEqual(lines.map(\.kind), [.removal, .remoteInsertion, .insertion])
+    }
+
+    func testThreeWayUnchangedStreamYieldsNoBlocks() {
+        let presentation = UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+            base: "a", local: "a", remote: "a"
+        ))
+        XCTAssertEqual(presentation.changedLineCount, 0)
+    }
+
     func testDraftToneTakesPrecedenceOverInherited() {
         let item = MemoryListItem(
             id: "res",
