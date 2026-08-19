@@ -124,9 +124,11 @@ struct WorkspaceView: View {
     let onShowLogs: () -> Void
     let loadsReviewDetail: Bool
     @StateObject private var issueBoardModel: IssueBoardModel
+    @StateObject private var recallModel: RecallModel
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var reviewSplitVisibility: NavigationSplitViewVisibility = .all
+    @State private var recallSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
     @State private var confirmsBundleDeletion = false
     @State private var showsSyncIssuePopover = false
@@ -153,6 +155,7 @@ struct WorkspaceView: View {
         self.onShowLogs = onShowLogs
         self.loadsReviewDetail = loadsReviewDetail
         _issueBoardModel = StateObject(wrappedValue: IssueBoardModel(daemon: store.daemon))
+        _recallModel = StateObject(wrappedValue: RecallModel(daemon: store.daemon))
     }
 
     private var showsDocumentTabs: Bool {
@@ -174,6 +177,8 @@ struct WorkspaceView: View {
             issuesWorkspace
         case .reviews:
             reviewsWorkspace
+        case .recall:
+            recallWorkspace
         default:
             regularWorkspace
         }
@@ -676,6 +681,7 @@ struct WorkspaceView: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
+        case .recall: "Search Recall"
         }
     }
 
@@ -879,6 +885,62 @@ struct WorkspaceView: View {
             }
         }
         .frame(width: 16, height: 16)
+    }
+
+    private var recallWorkspace: some View {
+        NavigationSplitView(columnVisibility: $recallSplitVisibility) {
+            GlobalSidebar(
+                store: store,
+                onOpenSettings: onOpenSettings,
+                onOpenDiagnostics: onOpenDiagnostics,
+                onShowLogs: onShowLogs
+            )
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+        } content: {
+            RecallSessionList(model: recallModel)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+        } detail: {
+            RecallSessionDetail(model: recallModel)
+                .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                .toolbar {
+                    recallToolbarContent
+                }
+        }
+        .onAppear {
+            store.showsProjectSettings = false
+            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .doubleColumn
+            if recallSplitVisibility != target {
+                recallSplitVisibility = target
+            }
+            if recallModel.sessions.isEmpty {
+                Task { await recallModel.load() }
+            }
+        }
+        .onChange(of: recallSplitVisibility) { _, visibility in
+            let expanded = visibility != .detailOnly
+            if store.sidebarExpanded != expanded {
+                store.sidebarExpanded = expanded
+            }
+        }
+        .onChange(of: store.sidebarExpanded) { _, expanded in
+            let target: NavigationSplitViewVisibility = expanded ? .all : .doubleColumn
+            if recallSplitVisibility != target {
+                recallSplitVisibility = target
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var recallToolbarContent: some ToolbarContent {
+        ToolbarItem {
+            Button {
+                Task { await recallModel.load() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Refresh Recall")
+            .accessibilityLabel("Refresh Recall")
+        }
     }
 
     private var issuesWorkspace: some View {
@@ -1114,6 +1176,10 @@ struct WorkspaceView: View {
             ToolbarItem {
                 EmptyView()
             }
+        case .recall:
+            ToolbarItem {
+                EmptyView()
+            }
         }
     }
 
@@ -1127,6 +1193,8 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
+            EmptyView()
+        case .recall:
             EmptyView()
         }
     }
@@ -1151,6 +1219,8 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
+            EmptyView()
+        case .recall:
             EmptyView()
         }
     }
@@ -1243,6 +1313,8 @@ struct WorkspaceView: View {
                 entries.append(.review(review))
             }
         case .issues:
+            break
+        case .recall:
             break
         }
         return Array(entries.prefix(30))
@@ -1460,6 +1532,7 @@ private struct WorkspaceSearchPopover: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
+        case .recall: "Search Recall"
         }
     }
 
@@ -1551,6 +1624,9 @@ private struct GlobalSidebar: View {
                     .tag(GlobalSidebarDestination.section(.bundles))
                 SidebarDestinationLabel(section: .reviews)
                     .tag(GlobalSidebarDestination.section(.reviews))
+
+                SidebarDestinationLabel(section: .recall)
+                    .tag(GlobalSidebarDestination.section(.recall))
             } header: {
                 HStack(spacing: 7) {
                     Image("BrandMark", bundle: .main)

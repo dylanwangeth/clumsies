@@ -217,6 +217,10 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "list_retrieval_runs", payload: request)
     }
 
+    func listRecalls(_ request: ListRecallsRequest) async throws -> ListRecallsResponse {
+        try await call(method: "list_recalls", payload: request)
+    }
+
     func retrievalRun(_ runId: String) async throws -> RetrievalRunDetail {
         try await call(
             method: "get_retrieval_run",

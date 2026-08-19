@@ -1199,3 +1199,61 @@ struct ExportEvaluationSetResponse: Codable, Sendable {
     let fixtureJson: String
     let report: RetrievalBenchmarkReport
 }
+
+struct ListRecallsRequest: Codable, Sendable {
+    let workspaceRoot: String?
+    let limit: Int?
+
+    init(workspaceRoot: String? = nil, limit: Int? = nil) {
+        self.workspaceRoot = workspaceRoot
+        self.limit = limit
+    }
+}
+
+struct ListRecallsResponse: Codable, Sendable {
+    let sessions: [RecallSession]
+    let workspaceRoots: [String]
+}
+
+struct RecallSession: Codable, Identifiable, Sendable {
+    var id: String { sessionId }
+
+    let sessionId: String
+    let title: String?
+    let workspaceRoot: String
+    let createdAt: Int64?
+    let tasks: [RecallTask]
+}
+
+struct RecallTask: Codable, Identifiable, Sendable {
+    var id: String { messageId }
+
+    let messageId: String
+    let text: String
+    let time: Int64?
+    let activations: [RecallActivation]
+}
+
+struct RecallActivation: Codable, Identifiable, Sendable {
+    var id: String { callId }
+
+    let toolName: String
+    let callId: String
+    let query: String
+    let state: String?
+    let time: Int64?
+    let runId: String?
+    let runStatus: String?
+    let fragments: [RecallFragment]
+    let resultError: String?
+}
+
+struct RecallFragment: Codable, Identifiable, Sendable {
+    var id: String { "\(resourceId)\u{0}\(path)\u{0}\(action ?? "")" }
+
+    let action: String?
+    let resourceId: String
+    let path: String
+    let content: String
+}
+

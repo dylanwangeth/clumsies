@@ -870,7 +870,7 @@ final class WorkspaceStore: ObservableObject {
         switch selectedSection {
         case .memory:
             break
-        case .issues, .bundles, .reviews:
+        case .issues, .bundles, .reviews, .recall:
             return []
         }
 

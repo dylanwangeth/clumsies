@@ -5,6 +5,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     case issues
     case bundles
     case reviews
+    case recall
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
         case .issues: "Kanban"
         case .bundles: "Bundles"
         case .reviews: "Reviews"
+        case .recall: "Recall"
         }
     }
 
@@ -23,6 +25,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
         case .issues: "rectangle.3.group"
         case .bundles: "shippingbox"
         case .reviews: "checkmark.bubble"
+        case .recall: "sparkle.magnifyingglass"
         }
     }
 }
