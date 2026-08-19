@@ -205,9 +205,26 @@ struct RuntimeState: Sendable {
     let serverDataSource: String
 }
 
-enum WorkbenchTabMode: String, Hashable, Sendable {
-    case source
+enum WorkbenchTabMode: String, CaseIterable, Hashable, Sendable {
     case preview
+    case source
+    case diff
+
+    var title: String {
+        switch self {
+        case .preview: "Preview"
+        case .source: "Source"
+        case .diff: "Diff"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .preview: "eye"
+        case .source: "doc.plaintext"
+        case .diff: "arrow.left.arrow.right"
+        }
+    }
 }
 
 struct WorkbenchTab: Identifiable, Hashable, Sendable {

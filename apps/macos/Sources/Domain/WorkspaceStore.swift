@@ -242,6 +242,9 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var loadingResourceIds: Set<String> = []
     @Published private(set) var loadingProjectId: String?
     @Published private(set) var isPreparingWorkspaceIndex = false
+    /// Project resources whose shared version moved forward after the app
+    /// loaded its snapshot; they show a sync icon and can be refreshed.
+    @Published private(set) var staleResourceIds: Set<String> = []
 
     let daemon = DaemonXPCClient()
     private let bootstrap = DaemonBootstrapController()
@@ -793,6 +796,28 @@ final class WorkspaceStore: ObservableObject {
         Task { await loadContentIfNeeded(item) }
     }
 
+    /// Switches the active tab's view mode in place instead of stacking a
+    /// second tab for the same document.
+    func switchDocumentMode(_ mode: WorkbenchTabMode) {
+        guard let tab = activeVisibleTab, tab.mode != mode else { return }
+        let updated = WorkbenchTab(
+            section: tab.section,
+            projectId: tab.projectId,
+            itemId: tab.itemId,
+            mode: mode,
+            title: tab.title
+        )
+        if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+            tabs[index] = updated
+        } else {
+            tabs.append(updated)
+        }
+        navigationBackStack = navigationBackStack.map { $0 == tab.id ? updated.id : $0 }
+        navigationForwardStack = navigationForwardStack.map { $0 == tab.id ? updated.id : $0 }
+        selectedItemId = tab.itemId
+        activeTabId = updated.id
+    }
+
     func reveal(_ item: MemoryListItem) async {
         selectedSection = .memory
         selectedKind = item.kind
@@ -1207,8 +1232,92 @@ final class WorkspaceStore: ObservableObject {
             )
             syncStatusAvailable = true
             await refreshDraftInventory(includeFailed: sync.pendingOperationCount > 0)
+            await refreshStaleResourcesIfNeeded(sync: sync)
         } catch {
             syncStatusAvailable = false
+        }
+    }
+
+    private func refreshStaleResourcesIfNeeded(sync: DaemonSyncStatus) async {
+        guard let projectId = activeProjectId,
+              let projectIndex = projects.firstIndex(where: { $0.id == projectId }),
+              let syncedCommitId = sync.commitSync.serverCursor,
+              syncedCommitId != projects[projectIndex].refCommitId else {
+            return
+        }
+        do {
+            let checkout = try await daemon.projectCheckout(projectId)
+            guard checkout.ready else { return }
+            let hashes = Dictionary(
+                checkout.resources.map { ($0.resourceId, $0.contentHash) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            staleResourceIds = Set(
+                resources.compactMap { resource -> String? in
+                    guard resource.projectId == projectId,
+                          let hash = hashes[resource.id],
+                          hash != resource.contentHash else { return nil }
+                    return resource.id
+                }
+            )
+            let current = projects[projectIndex]
+            projects[projectIndex] = ProjectState(
+                id: current.id,
+                name: current.name,
+                refCommitId: syncedCommitId,
+                refEtag: checkout.refEtag ?? current.refEtag,
+                selectedOrgResourceIds: current.selectedOrgResourceIds,
+                orgSelectionRevision: current.orgSelectionRevision,
+                isLoaded: current.isLoaded
+            )
+        } catch {
+            // Commit sync reports refresh failures separately; keep the
+            // previously computed stale set.
+        }
+    }
+
+    /// Pulls the latest shared version for one document:
+    /// - a behind draft opens the shared-change review flow;
+    /// - a stale resource (no local draft) is refreshed from the synced checkout.
+    func syncDocument(_ item: MemoryListItem) {
+        if let draft = item.draft, draft.freshness == .behind {
+            open(item)
+            pendingDocumentCommand = .reviewSharedChanges(itemId: item.id, draft: draft)
+            return
+        }
+        guard let resource = item.resource, staleResourceIds.contains(resource.id) else { return }
+        Task { await syncStaleResource(resource.id) }
+    }
+
+    private func syncStaleResource(_ resourceId: String) async {
+        guard let projectId = resources.first(where: { $0.id == resourceId })?.projectId
+            ?? activeProjectId else { return }
+        do {
+            let checkout = try await daemon.projectCheckout(projectId)
+            guard checkout.ready,
+                  let checkoutResource = checkout.resources.first(where: { $0.resourceId == resourceId }),
+                  let index = resources.firstIndex(where: { $0.id == resourceId }) else { return }
+            let current = resources[index]
+            resources[index] = .init(
+                id: current.id,
+                scope: current.scope,
+                projectId: current.projectId,
+                projectName: current.projectName,
+                kind: current.kind,
+                contentHash: checkoutResource.contentHash,
+                updatedAt: current.updatedAt,
+                refCommitId: checkout.commitId,
+                contentLoaded: true,
+                document: .init(
+                    title: URL(fileURLWithPath: checkoutResource.path)
+                        .deletingPathExtension().lastPathComponent,
+                    path: checkoutResource.path,
+                    body: checkoutResource.content.content
+                )
+            )
+            staleResourceIds.remove(resourceId)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

@@ -148,6 +148,47 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(presentation.help, "Shared update has conflicts")
     }
 
+    func testStaleResourceWithoutDraftShowsSyncAccessory() throws {
+        let presentation = try XCTUnwrap(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: nil,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .unknown,
+                isStale: true
+            )
+        )
+
+        XCTAssertEqual(
+            presentation.symbolName,
+            "arrow.trianglehead.2.clockwise.rotate.90"
+        )
+        XCTAssertEqual(presentation.help, "A newer shared version is available")
+    }
+
+    func testSyncedResourceWithoutDraftShowsNoAccessory() {
+        XCTAssertNil(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: nil,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .unknown,
+                isStale: false
+            )
+        )
+    }
+
+    func testBehindDraftTakesPrecedenceOverStaleResource() throws {
+        let presentation = try XCTUnwrap(
+            SharedUpdateStatusPresentation.resolve(
+                freshness: .behind,
+                hasUpstreamResourceChanges: false,
+                reconciliation: .clean,
+                isStale: true
+            )
+        )
+
+        XCTAssertEqual(presentation.help, "Draft base is behind the shared version")
+    }
+
     func testNilItemUsesPrimaryTone() {
         XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: nil), .primary)
     }
