@@ -389,7 +389,11 @@ impl StoreInput {
             draft_id: None,
             base_commit_id: None,
             project_id: project_id.to_owned(),
-            scope: DaemonDraftScope::Project,
+            // Project Memory is an overlay on Organization authority. The
+            // Project id carries the LocalDraft; the Draft itself targets the
+            // Organization Ref so an eventual Review cannot create a second
+            // Project-owned authority.
+            scope: DaemonDraftScope::Org,
             resource,
             op: operation,
             source: Some(DaemonDraftOperationSource::McpStore),
@@ -1481,7 +1485,7 @@ mod tests {
         let AgentRuntimeRequest::Store(request) = request else {
             panic!("unexpected request variant");
         };
-        assert_eq!(request.scope, DaemonDraftScope::Project);
+        assert_eq!(request.scope, DaemonDraftScope::Org);
         assert_eq!(request.resource, DaemonDraftResourceKind::Memory);
         assert_eq!(request.source, Some(DaemonDraftOperationSource::McpStore));
         assert!(request.op.create.is_some());

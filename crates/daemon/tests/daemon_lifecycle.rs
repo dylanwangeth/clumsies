@@ -2285,7 +2285,7 @@ async fn deleting_a_draft_created_resource_discards_the_draft() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2308,7 +2308,7 @@ async fn deleting_a_draft_created_resource_discards_the_draft() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,

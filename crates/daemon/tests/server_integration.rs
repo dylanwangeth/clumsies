@@ -330,6 +330,16 @@ async fn cache_root_for_commit(
     std::path::PathBuf::from(cache.active_generation_path.unwrap())
 }
 
+async fn current_project_commit_id(repository: &ServerRepository, project_id: &str) -> String {
+    repository
+        .get_project_commit_state(project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap()
+}
+
 #[tokio::test]
 async fn project_creation_proxy_preserves_idempotency_and_replays_the_result() {
     let postgres = common::start_postgres().await;
@@ -479,7 +489,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -597,7 +607,7 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             draft_id: Some(local_draft.draft_id.clone()),
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -674,14 +684,14 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
                 title: "Seed context".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/original.md".to_owned()),
                 },
                 operations: vec![DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/original.md".to_owned()),
                     },
@@ -702,9 +712,9 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         None,
     )
     .await;
-    let seed_commit_id = seed_merge.commit_id.unwrap();
+    let seed_org_commit_id = seed_merge.commit_id.unwrap();
     let context_id = repository
-        .list_project_memories(&bootstrap.project_id)
+        .list_org_memories(&bootstrap.org_id)
         .await
         .unwrap()
         .items
@@ -790,7 +800,7 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -814,7 +824,7 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             draft_id: Some(update_draft.draft_id.clone()),
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -842,10 +852,10 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         &repository,
         update_projection.draft.server_draft_id.as_deref().unwrap(),
         update_projection.draft.server_version,
-        Some(&seed_commit_id),
+        Some(&seed_org_commit_id),
     )
     .await;
-    let update_commit_id = update_merge.commit_id.unwrap();
+    let update_org_commit_id = update_merge.commit_id.unwrap();
     service
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::All,
@@ -854,6 +864,14 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         .unwrap();
     let merged_update = service.get_draft(&update_draft.draft_id).await.unwrap();
     assert_eq!(merged_update.draft.status, DaemonLocalDraftStatus::Merged);
+    let update_project_commit_id = repository
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+    assert_ne!(update_project_commit_id, update_org_commit_id);
     let cache = service
         .memory_cache(DaemonMemoryCacheRequest {
             project_id: bootstrap.project_id.clone(),
@@ -886,14 +904,14 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
                 update: None,
                 rename: None,
                 delete: Some(DaemonDeleteDraftOperation {
-                    id: context_id,
+                    id: context_id.clone(),
                     description: None,
                 }),
                 discard: None,
@@ -914,10 +932,10 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         &repository,
         delete_projection.draft.server_draft_id.as_deref().unwrap(),
         delete_projection.draft.server_version,
-        Some(&update_commit_id),
+        Some(&update_org_commit_id),
     )
     .await;
-    let delete_commit_id = delete_merge.commit_id.unwrap();
+    let delete_org_commit_id = delete_merge.commit_id.unwrap();
     service
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::All,
@@ -926,6 +944,14 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         .unwrap();
     let merged_delete = service.get_draft(&delete_draft.draft_id).await.unwrap();
     assert_eq!(merged_delete.draft.status, DaemonLocalDraftStatus::Merged);
+    let delete_project_commit_id = repository
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+    assert_ne!(delete_project_commit_id, delete_org_commit_id);
     let deleted_cache = service
         .memory_cache(DaemonMemoryCacheRequest {
             project_id: bootstrap.project_id.clone(),
@@ -934,7 +960,7 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
         .unwrap();
     assert_eq!(
         deleted_cache.commit_id.as_deref(),
-        Some(delete_commit_id.as_str())
+        Some(delete_project_commit_id.as_str())
     );
     let deleted_cache_root =
         std::path::PathBuf::from(deleted_cache.active_generation_path.unwrap());
@@ -945,14 +971,12 @@ async fn merged_context_drafts_are_terminal_across_update_rename_and_delete() {
             .join("cache/memory/context/renamed.md")
             .exists()
     );
-    assert!(
+    assert!(matches!(
         repository
-            .list_project_memories(&bootstrap.project_id)
-            .await
-            .unwrap()
-            .items
-            .is_empty()
-    );
+            .get_org_memory(&bootstrap.org_id, &context_id)
+            .await,
+        Err(server::repository::ServerError::NotFound { .. })
+    ));
 
     server_task.abort();
 }
@@ -978,14 +1002,14 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
                 title: "Seed conflict base".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/base.md".to_owned()),
                 },
                 operations: vec![DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/base.md".to_owned()),
                     },
@@ -1069,7 +1093,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -1116,14 +1140,14 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
                 title: "Advance the remote Ref".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/remote-change.md".to_owned()),
                 },
                 operations: vec![DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/remote-change.md".to_owned()),
                     },
@@ -1241,7 +1265,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             draft_id: Some(local_draft.draft_id.clone()),
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -1500,13 +1524,24 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
         .unwrap();
     let merged = service.get_draft(&local_draft.draft_id).await.unwrap();
     assert_eq!(merged.draft.status, DaemonLocalDraftStatus::Merged);
+    let final_project_commit_id = repository
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+    assert_ne!(final_project_commit_id, final_commit_id);
     let cache = service
         .memory_cache(DaemonMemoryCacheRequest {
             project_id: bootstrap.project_id,
         })
         .await
         .unwrap();
-    assert_eq!(cache.commit_id.as_deref(), Some(final_commit_id.as_str()));
+    assert_eq!(
+        cache.commit_id.as_deref(),
+        Some(final_project_commit_id.as_str())
+    );
     let cache_root = std::path::PathBuf::from(cache.active_generation_path.unwrap());
     assert_eq!(
         std::fs::read_to_string(cache_root.join("cache/memory/context/offline-conflict.md"))
@@ -1574,7 +1609,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let create_rule = create_resource_draft(
         &service,
         &bootstrap.project_id,
-        DaemonDraftScope::Project,
+        DaemonDraftScope::Org,
         DaemonDraftResourceKind::Memory,
         "rules/memory-review",
         rule_content(
@@ -1583,10 +1618,10 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         DaemonDraftOperationSource::Desktop,
     )
     .await;
-    let rule_create_commit =
+    let rule_create_org_commit =
         sync_local_draft_and_merge(&service, &repository, &create_rule, None).await;
     let rule_meta = repository
-        .list_project_memories(&bootstrap.project_id)
+        .list_org_memories(&bootstrap.org_id)
         .await
         .unwrap()
         .items
@@ -1595,7 +1630,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         .unwrap();
     let rule_id = rule_meta.memory_id;
     let created_rule = repository
-        .get_project_memory(&bootstrap.project_id, &rule_id)
+        .get_org_memory(&bootstrap.org_id, &rule_id)
         .await
         .unwrap();
     assert_eq!(created_rule.memory.name, "memory-review");
@@ -1603,8 +1638,11 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         created_rule.content,
         "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview every memory change before merge.\n\nTags: memory, review"
     );
+    let rule_create_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(rule_create_project_commit, rule_create_org_commit);
     let rule_create_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &rule_create_commit).await;
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_create_project_commit).await;
     assert_eq!(
         std::fs::read_to_string(rule_create_root.join("cache/memory/rules/memory-review")).unwrap(),
         created_rule.content
@@ -1613,7 +1651,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let create_workflow = create_resource_draft(
         &service,
         &bootstrap.project_id,
-        DaemonDraftScope::Project,
+        DaemonDraftScope::Org,
         DaemonDraftResourceKind::Memory,
         "workflow/memory-publication",
         workflow_content(&format!(
@@ -1622,15 +1660,15 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         DaemonDraftOperationSource::Desktop,
     )
     .await;
-    let workflow_create_commit = sync_local_draft_and_merge(
+    let workflow_create_org_commit = sync_local_draft_and_merge(
         &service,
         &repository,
         &create_workflow,
-        Some(&rule_create_commit),
+        Some(&rule_create_org_commit),
     )
     .await;
     let workflow_meta = repository
-        .list_project_memories(&bootstrap.project_id)
+        .list_org_memories(&bootstrap.org_id)
         .await
         .unwrap()
         .items
@@ -1639,7 +1677,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         .unwrap();
     let workflow_id = workflow_meta.memory_id;
     let created_workflow = repository
-        .get_project_memory(&bootstrap.project_id, &workflow_id)
+        .get_org_memory(&bootstrap.org_id, &workflow_id)
         .await
         .unwrap();
     assert_eq!(
@@ -1648,8 +1686,15 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
             "# Memory publication\n\nPublish durable memory safely.\n\n1. Apply rule `{rule_id}`.\n2. Verify the materialized generation."
         )
     );
-    let workflow_create_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_create_commit).await;
+    let workflow_create_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(workflow_create_project_commit, workflow_create_org_commit);
+    let workflow_create_root = cache_root_for_commit(
+        &service,
+        &bootstrap.project_id,
+        &workflow_create_project_commit,
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(
             workflow_create_root.join("cache/memory/workflow/memory-publication")
@@ -1663,7 +1708,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let update_rule = update_and_rename_resource_draft(
         &service,
         &bootstrap.project_id,
-        (DaemonDraftScope::Project, DaemonDraftResourceKind::Memory),
+        (DaemonDraftScope::Org, DaemonDraftResourceKind::Memory),
         &rule_id,
         rule_content(
             "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview the change and its materialized result before merge.\n\nTags: memory, review, verification",
@@ -1672,15 +1717,15 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         DaemonDraftOperationSource::McpStore,
     )
     .await;
-    let rule_update_commit = sync_local_draft_and_merge(
+    let rule_update_org_commit = sync_local_draft_and_merge(
         &service,
         &repository,
         &update_rule,
-        Some(&workflow_create_commit),
+        Some(&workflow_create_org_commit),
     )
     .await;
     let updated_rule = repository
-        .get_project_memory(&bootstrap.project_id, &rule_id)
+        .get_org_memory(&bootstrap.org_id, &rule_id)
         .await
         .unwrap();
     assert_eq!(updated_rule.memory.path, "rules/memory-review-policy");
@@ -1688,8 +1733,11 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         updated_rule.content,
         "# Memory review discipline\n\nApply when publishing durable memory.\n\nReview the change and its materialized result before merge.\n\nTags: memory, review, verification"
     );
+    let rule_update_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(rule_update_project_commit, rule_update_org_commit);
     let rule_update_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &rule_update_commit).await;
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_update_project_commit).await;
     assert!(
         !rule_update_root
             .join("cache/memory/rules/memory-review")
@@ -1709,7 +1757,7 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let update_workflow = update_and_rename_resource_draft(
         &service,
         &bootstrap.project_id,
-        (DaemonDraftScope::Project, DaemonDraftResourceKind::Memory),
+        (DaemonDraftScope::Org, DaemonDraftResourceKind::Memory),
         &workflow_id,
         workflow_content(&format!(
             "# Memory publication\n\nPublish and verify durable memory.\n\n1. Verify the materialized generation.\n2. Apply rule `{rule_id}`."
@@ -1718,15 +1766,15 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
         DaemonDraftOperationSource::Desktop,
     )
     .await;
-    let workflow_update_commit = sync_local_draft_and_merge(
+    let workflow_update_org_commit = sync_local_draft_and_merge(
         &service,
         &repository,
         &update_workflow,
-        Some(&rule_update_commit),
+        Some(&rule_update_org_commit),
     )
     .await;
     let updated_workflow = repository
-        .get_project_memory(&bootstrap.project_id, &workflow_id)
+        .get_org_memory(&bootstrap.org_id, &workflow_id)
         .await
         .unwrap();
     assert_eq!(updated_workflow.memory.path, "workflow/memory-publish");
@@ -1736,8 +1784,15 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
             "# Memory publication\n\nPublish and verify durable memory.\n\n1. Verify the materialized generation.\n2. Apply rule `{rule_id}`."
         )
     );
-    let workflow_update_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_update_commit).await;
+    let workflow_update_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(workflow_update_project_commit, workflow_update_org_commit);
+    let workflow_update_root = cache_root_for_commit(
+        &service,
+        &bootstrap.project_id,
+        &workflow_update_project_commit,
+    )
+    .await;
     assert!(
         !workflow_update_root
             .join("cache/memory/workflow/memory-publication")
@@ -1759,26 +1814,33 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let delete_workflow = delete_resource_draft(
         &service,
         &bootstrap.project_id,
-        DaemonDraftScope::Project,
+        DaemonDraftScope::Org,
         DaemonDraftResourceKind::Memory,
         &workflow_id,
     )
     .await;
-    let workflow_delete_commit = sync_local_draft_and_merge(
+    let workflow_delete_org_commit = sync_local_draft_and_merge(
         &service,
         &repository,
         &delete_workflow,
-        Some(&workflow_update_commit),
+        Some(&workflow_update_org_commit),
     )
     .await;
     assert!(matches!(
         repository
-            .get_project_memory(&bootstrap.project_id, &workflow_id)
+            .get_org_memory(&bootstrap.org_id, &workflow_id)
             .await,
         Err(server::repository::ServerError::NotFound { .. })
     ));
-    let workflow_delete_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &workflow_delete_commit).await;
+    let workflow_delete_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(workflow_delete_project_commit, workflow_delete_org_commit);
+    let workflow_delete_root = cache_root_for_commit(
+        &service,
+        &bootstrap.project_id,
+        &workflow_delete_project_commit,
+    )
+    .await;
     assert!(
         !workflow_delete_root
             .join("cache/memory/workflow/memory-publish")
@@ -1793,26 +1855,27 @@ async fn rule_and_workflow_crud_preserve_materialized_markdown() {
     let delete_rule = delete_resource_draft(
         &service,
         &bootstrap.project_id,
-        DaemonDraftScope::Project,
+        DaemonDraftScope::Org,
         DaemonDraftResourceKind::Memory,
         &rule_id,
     )
     .await;
-    let rule_delete_commit = sync_local_draft_and_merge(
+    let rule_delete_org_commit = sync_local_draft_and_merge(
         &service,
         &repository,
         &delete_rule,
-        Some(&workflow_delete_commit),
+        Some(&workflow_delete_org_commit),
     )
     .await;
     assert!(matches!(
-        repository
-            .get_project_memory(&bootstrap.project_id, &rule_id)
-            .await,
+        repository.get_org_memory(&bootstrap.org_id, &rule_id).await,
         Err(server::repository::ServerError::NotFound { .. })
     ));
+    let rule_delete_project_commit =
+        current_project_commit_id(&repository, &bootstrap.project_id).await;
+    assert_ne!(rule_delete_project_commit, rule_delete_org_commit);
     let rule_delete_root =
-        cache_root_for_commit(&service, &bootstrap.project_id, &rule_delete_commit).await;
+        cache_root_for_commit(&service, &bootstrap.project_id, &rule_delete_project_commit).await;
     assert!(
         !rule_delete_root
             .join("cache/memory/rules/memory-review-policy")
@@ -1936,15 +1999,23 @@ async fn selected_hub_rule_and_workflow_changes_converge_without_reselection() {
     let workflow_id = workflow.memory_id;
 
     let selection = repository
-        .replace_project_org_selection(
-            &bootstrap.project_id,
-            0,
-            ReplaceProjectOrgSelectionRequest {
-                resource_ids: vec![rule_id.clone(), workflow_id.clone()],
-            },
-        )
+        .get_project_org_selection(&bootstrap.project_id)
         .await
         .unwrap();
+    assert_eq!(selection.revision, 2);
+    assert_eq!(selection.memories.len(), 2);
+    assert!(
+        selection
+            .memories
+            .iter()
+            .any(|memory| memory.memory_id == rule_id)
+    );
+    assert!(
+        selection
+            .memories
+            .iter()
+            .any(|memory| memory.memory_id == workflow_id)
+    );
     service
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::Commits,
@@ -2527,14 +2598,14 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
                 title: "Add synchronized context".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/commit-sync.md".to_owned()),
                 },
                 operations: vec![DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/commit-sync.md".to_owned()),
                     },
@@ -2585,7 +2656,23 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         )
         .await
         .unwrap();
-    let project_commit_id = merge.commit_id.unwrap();
+    let org_commit_id = merge.commit_id.unwrap();
+    let commit_sync_id = repository
+        .list_org_memories(&bootstrap.org_id)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|memory| memory.path == "context/commit-sync.md")
+        .unwrap()
+        .memory_id;
+    let initial_selection = repository
+        .get_project_org_selection(&bootstrap.project_id)
+        .await
+        .unwrap();
+    assert_eq!(initial_selection.revision, 1);
+    assert_eq!(initial_selection.memories.len(), 1);
+    assert_eq!(initial_selection.memories[0].memory_id, commit_sync_id);
     let org_context_id = repository
         .create_org_context(
             &bootstrap.org_id,
@@ -2594,12 +2681,12 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         )
         .await
         .unwrap();
-    repository
+    let selection = repository
         .replace_project_org_selection(
             &bootstrap.project_id,
-            0,
+            initial_selection.revision,
             ReplaceProjectOrgSelectionRequest {
-                resource_ids: vec![org_context_id.clone()],
+                resource_ids: vec![commit_sync_id.clone(), org_context_id.clone()],
             },
         )
         .await
@@ -2611,7 +2698,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         .reference
         .commit_id
         .unwrap();
-    assert_ne!(commit_id, project_commit_id);
+    assert_ne!(commit_id, org_commit_id);
 
     let mut roots = Vec::new();
     for service in [&service_a, &service_b] {
@@ -2653,13 +2740,12 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             .unwrap();
         assert!(checkout.ready);
         assert_eq!(checkout.commit_id.as_deref(), Some(commit_id.as_str()));
-        assert_eq!(checkout.org_selection_revision, 1);
-        assert_eq!(
-            checkout.selected_org_resource_ids,
-            vec![org_context_id.clone()]
-        );
+        assert_eq!(checkout.org_selection_revision, selection.revision);
+        assert_eq!(checkout.selected_org_resource_ids.len(), 2);
+        assert!(checkout.selected_org_resource_ids.contains(&commit_sync_id));
+        assert!(checkout.selected_org_resource_ids.contains(&org_context_id));
         assert!(checkout.resources.iter().any(|resource| {
-            resource.scope == DaemonDraftScope::Project
+            resource.scope == DaemonDraftScope::Org
                 && resource.path == "context/commit-sync.md"
                 && resource.content
                     == context_content("# Commit sync\n\nInstalled from an immutable Commit.")
