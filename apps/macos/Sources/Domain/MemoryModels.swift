@@ -157,6 +157,14 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Identifies one editor/sync session in the Project view that owns it.
+/// Org authority and each Project overlay can address the same resource id,
+/// so the bare resource id is not a safe key for mutable document state.
+struct MemoryDocumentSessionKey: Hashable, Sendable {
+    let projectId: String
+    let itemId: String
+}
+
 struct PersonalBundle: Identifiable, Hashable, Sendable {
     let id: String
     var name: String

@@ -239,6 +239,26 @@ final class FileTreeSelectionTests: XCTestCase {
         }
     }
 
+    func testLegacyProjectMemoryUsesReadOnlyLockWithoutChangingTitleTone() {
+        let item = memoryItem(
+            id: "legacy-project-memory",
+            path: "legacy.md",
+            scope: .project,
+            projectId: "project"
+        )
+
+        let accessory = MemoryFileTreeRowAccessory.resolve(item: item)
+        XCTAssertEqual(accessory, .legacyProjectReadOnly)
+        XCTAssertEqual(accessory.help, "Legacy Project memory — read-only")
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .primary)
+    }
+
+    func testOrgMemoryDoesNotUseLegacyReadOnlyLock() {
+        let item = memoryItem(id: "org-memory", path: "org.md")
+
+        XCTAssertEqual(MemoryFileTreeRowAccessory.resolve(item: item), .none)
+    }
+
     func testThreeWayLocalChangeShowsRemovalThenInsertion() {
         let lines = ThreeWayDiff.lines(base: "a\nb", local: "a\nB", remote: "a\nb")
         XCTAssertEqual(lines.map(\.kind), [.context, .removal, .insertion])
@@ -471,13 +491,18 @@ final class FileTreeSelectionTests: XCTestCase {
         )
     }
 
-    private func memoryItem(id: String, path: String) -> MemoryListItem {
+    private func memoryItem(
+        id: String,
+        path: String,
+        scope: MemoryScope = .org,
+        projectId: String? = nil
+    ) -> MemoryListItem {
         .init(
             id: id,
             resource: .init(
                 id: id,
-                scope: .org,
-                projectId: nil,
+                scope: scope,
+                projectId: projectId,
                 projectName: nil,
                 kind: .context,
                 contentHash: "sha256:\(id)",

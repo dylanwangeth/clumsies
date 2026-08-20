@@ -108,8 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if menuItem.action == #selector(newMemory(_:)) {
             guard store.selectedSection == .memory else { return false }
-            let scope: MemoryScope = store.activeProjectId == nil ? .org : .project
-            return store.canCreateMemory(kind: store.selectedKind, scope: scope)
+            return store.canCreateMemory(kind: store.selectedKind, scope: .org)
         }
         if menuItem.action == #selector(closeActiveTab(_:)) {
             return store.activeVisibleTab != nil
@@ -556,8 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func newMemory(_ sender: Any?) {
         guard store.selectedSection == .memory else { return }
-        let scope: MemoryScope = store.activeProjectId == nil ? .org : .project
-        Task { await store.createMemory(kind: store.selectedKind, scope: scope) }
+        Task { await store.createMemory(kind: store.selectedKind, scope: .org) }
     }
 
     @objc private func newProject(_ sender: Any?) {

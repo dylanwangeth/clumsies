@@ -2,7 +2,13 @@ import XCTest
 @testable import Clumsies
 
 final class MemoryFileTreeMenuTests: XCTestCase {
-    private func resourceItem(_ id: String, scope: MemoryScope, inherited: Bool, projectId: String? = nil) -> MemoryListItem {
+    private func resourceItem(
+        _ id: String,
+        scope: MemoryScope,
+        inherited: Bool,
+        projectId: String? = nil,
+        draft: LocalDraft? = nil
+    ) -> MemoryListItem {
         MemoryListItem(
             id: id,
             resource: MemoryResource(
@@ -17,36 +23,50 @@ final class MemoryFileTreeMenuTests: XCTestCase {
                 contentLoaded: false,
                 document: EditableMemoryDocument(title: id, path: "\(id).md", body: "")
             ),
-            draft: nil,
+            draft: draft,
             inherited: inherited
         )
     }
 
-    private func draftItem(_ id: String, scope: MemoryScope) -> MemoryListItem {
-        MemoryListItem(
+    private func localDraft(
+        _ id: String,
+        scope: MemoryScope,
+        targetId: String? = nil,
+        isDeletion: Bool = false
+    ) -> LocalDraft {
+        LocalDraft(
             id: id,
+            projectId: "p1",
+            serverId: nil,
+            serverVersion: 0,
+            baseCommitId: nil,
+            currentCommitId: nil,
+            freshness: .current,
+            hasUpstreamResourceChanges: false,
+            reconciliation: .clean,
+            reconciliationCandidateId: nil,
+            scope: scope,
+            kind: .context,
+            targetId: targetId,
+            status: .open,
+            origin: .desktop,
+            syncStatus: .queued,
+            updatedAt: "2026-01-01T00:00:00Z",
+            document: EditableMemoryDocument(title: id, path: "\(id).md", body: ""),
+            isDeletion: isDeletion
+        )
+    }
+
+    private func draftItem(
+        _ id: String,
+        scope: MemoryScope,
+        targetId: String? = nil,
+        isDeletion: Bool = false
+    ) -> MemoryListItem {
+        MemoryListItem(
+            id: targetId ?? id,
             resource: nil,
-            draft: LocalDraft(
-                id: id,
-                projectId: "p1",
-                serverId: nil,
-                serverVersion: 0,
-                baseCommitId: nil,
-                currentCommitId: nil,
-                freshness: .current,
-                hasUpstreamResourceChanges: false,
-                reconciliation: .clean,
-                reconciliationCandidateId: nil,
-                scope: scope,
-                kind: .context,
-                targetId: nil,
-                status: .open,
-                origin: .desktop,
-                syncStatus: .queued,
-                updatedAt: "2026-01-01T00:00:00Z",
-                document: EditableMemoryDocument(title: id, path: "\(id).md", body: ""),
-                isDeletion: false
-            ),
+            draft: localDraft(id, scope: scope, targetId: targetId, isDeletion: isDeletion),
             inherited: false
         )
     }
@@ -70,13 +90,20 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertTrue(MemoryFileTreeMenu.removable(items, inOrgView: true).isEmpty)
     }
 
-    func testOrgViewTrashableExcludesPureDrafts() {
+    func testOrgViewIsReadOnlyForAuthorityMutations() {
         let items = [
             resourceItem("org-a", scope: .org, inherited: false),
             draftItem("draft-a", scope: .org),
         ]
-        XCTAssertEqual(MemoryFileTreeMenu.trashable(items, inOrgView: true).map(\.id), ["org-a"])
-        XCTAssertTrue(MemoryFileTreeMenu.isManageable(items[1], inOrgView: true))
+        XCTAssertTrue(MemoryFileTreeMenu.trashable(items, inOrgView: true).isEmpty)
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(items[0], inOrgView: true))
+        XCTAssertFalse(
+            MemoryFileTreeMenu.canProposeOrganizationDeletion(items[0], inOrgView: true)
+        )
+    }
+
+    func testOrgViewDoesNotOfferNewMemoryCreation() {
+        XCTAssertNil(MemoryFileTreeMenu.creationScope(inOrgView: true))
     }
 
     // MARK: - Project view
@@ -98,20 +125,79 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeMenu.removable(items, inOrgView: false).map(\.id), ["org-ref"])
     }
 
-    func testProjectViewManageableIncludesSelectedOrgDraftTargets() {
+    func testProjectViewAuthorityActionsOnlyIncludeSelectedOrgResources() {
         let items = [
             resourceItem("org-ref", scope: .org, inherited: true),
             resourceItem("org-unref", scope: .org, inherited: false),
             resourceItem("own-a", scope: .project, inherited: false, projectId: "p1"),
         ]
         XCTAssertEqual(
-            items.map { MemoryFileTreeMenu.isManageable($0, inOrgView: false) },
-            [true, false, true]
+            items.map { MemoryFileTreeMenu.canRename($0, inOrgView: false) },
+            [true, false, false]
         )
         XCTAssertEqual(
             MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id),
-            ["org-ref", "own-a"]
+            ["org-ref"]
         )
+    }
+
+    func testProjectViewCreatesProjectBoundOrgProposals() {
+        XCTAssertEqual(MemoryFileTreeMenu.creationScope(inOrgView: false), .org)
+    }
+
+    func testSelectedOrgAuthorityOffersExplicitMutationActionsInProjectView() {
+        let item = resourceItem("org-ref", scope: .org, inherited: true)
+
+        XCTAssertTrue(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertTrue(MemoryFileTreeMenu.canProposeOrganizationDeletion(item, inOrgView: false))
+        XCTAssertEqual(MemoryFileTreeMenu.trashable([item], inOrgView: false), [item])
+    }
+
+    func testUnselectedOrgAuthorityDoesNotOfferMutationActionsInProjectView() {
+        let item = resourceItem("org-unselected", scope: .org, inherited: false)
+
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertFalse(MemoryFileTreeMenu.canProposeOrganizationDeletion(item, inOrgView: false))
+        XCTAssertTrue(MemoryFileTreeMenu.trashable([item], inOrgView: false).isEmpty)
+    }
+
+    func testTargetBackedDraftOnlyRowDoesNotOfferAuthorityMutationActions() {
+        let item = draftItem("draft", scope: .org, targetId: "org-removed")
+
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertFalse(MemoryFileTreeMenu.canProposeOrganizationDeletion(item, inOrgView: false))
+        XCTAssertTrue(MemoryFileTreeMenu.trashable([item], inOrgView: false).isEmpty)
+    }
+
+    func testDeletionDraftDoesNotOfferDeletionAgain() {
+        let item = resourceItem(
+            "org-ref",
+            scope: .org,
+            inherited: true,
+            draft: localDraft(
+                "draft-delete",
+                scope: .org,
+                targetId: "org-ref",
+                isDeletion: true
+            )
+        )
+
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertFalse(MemoryFileTreeMenu.canProposeOrganizationDeletion(item, inOrgView: false))
+        XCTAssertTrue(MemoryFileTreeMenu.trashable([item], inOrgView: false).isEmpty)
+    }
+
+    func testLegacyProjectAuthorityDoesNotOfferOrganizationMutationActions() {
+        let item = resourceItem(
+            "legacy-project",
+            scope: .project,
+            inherited: false,
+            projectId: "p1"
+        )
+
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertFalse(MemoryFileTreeMenu.canProposeOrganizationDeletion(item, inOrgView: false))
+        XCTAssertTrue(MemoryFileTreeMenu.trashable([item], inOrgView: false).isEmpty)
     }
 
     // MARK: - Mixed selection stays predictable
@@ -125,7 +211,7 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeMenu.removable(items, inOrgView: false).map(\.id), ["org-ref"])
         XCTAssertEqual(
             MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id),
-            ["org-ref", "own-a"]
+            ["org-ref"]
         )
     }
 }

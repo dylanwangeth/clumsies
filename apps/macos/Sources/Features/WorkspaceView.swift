@@ -163,7 +163,8 @@ struct WorkspaceView: View {
 
     private var documentReconciliationState: DocumentReconciliationToolbarState? {
         guard let state = store.documentReconciliationToolbarState,
-              state.itemId == store.currentItem?.id else { return nil }
+              let currentItem = store.currentItem,
+              state.sessionKey == store.documentSessionKey(for: currentItem) else { return nil }
         return state
     }
 
@@ -204,7 +205,7 @@ struct WorkspaceView: View {
                             Button {
                                 if let state = documentReconciliationState {
                                     store.pendingDocumentCommand = .closeReconciliation(
-                                        itemId: state.itemId
+                                        sessionKey: state.sessionKey
                                     )
                                 } else {
                                     store.goBack()
@@ -300,7 +301,7 @@ struct WorkspaceView: View {
                                 } else {
                                     Button {
                                         store.pendingDocumentCommand = .applyReconciliation(
-                                            itemId: state.itemId
+                                            sessionKey: state.sessionKey
                                         )
                                     } label: {
                                         Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
@@ -361,40 +362,48 @@ struct WorkspaceView: View {
                             .help("Document View")
                             .accessibilityLabel("Document View")
 
-                            Menu {
-                                if let draft = item.draft,
-                                   draft.status == .open,
-                                   WorkspaceStore.canRequestReview(draft) {
-                                    Button("Request Review") {
-                                        store.pendingDocumentCommand = .requestReview(
-                                            itemId: item.id,
-                                            draft: draft
-                                        )
+                            if hasDocumentActions(item) {
+                                Menu {
+                                    if canRequestDocumentReview(item),
+                                       let draft = item.draft,
+                                       let sessionKey = store.documentSessionKey(for: item) {
+                                        Button("Request Review") {
+                                            store.pendingDocumentCommand = .requestReview(
+                                                sessionKey: sessionKey,
+                                                draft: draft
+                                            )
+                                        }
+                                        Divider()
                                     }
-                                    Divider()
-                                }
-                                if let draft = item.draft {
-                                    Button("Discard Draft") {
-                                        store.pendingDocumentCommand = .discardDraft(
-                                            itemId: item.id,
-                                            draft: draft
-                                        )
+                                    if canDiscardDocumentDraft(item),
+                                       let draft = item.draft,
+                                       let sessionKey = store.documentSessionKey(for: item) {
+                                        Button("Discard Draft") {
+                                            store.pendingDocumentCommand = .discardDraft(
+                                                sessionKey: sessionKey,
+                                                draft: draft
+                                            )
+                                        }
                                     }
-                                }
-                                if store.canEditMemory(item)
-                                    && (item.resource != nil || item.draft?.targetId != nil)
-                                    && item.draft?.isDeletion != true {
-                                    Button("Move to Trash", role: .destructive) {
-                                        store.pendingDocumentCommand = .moveToTrash(itemId: item.id)
+                                    if canProposeOrganizationDeletion(item),
+                                       let sessionKey = store.documentSessionKey(for: item) {
+                                        Button(
+                                            "Propose Organization Deletion",
+                                            role: .destructive
+                                        ) {
+                                            store.pendingDocumentCommand = .moveToTrash(
+                                                sessionKey: sessionKey
+                                            )
+                                        }
                                     }
+                                } label: {
+                                    Image(systemName: "ellipsis")
                                 }
-                            } label: {
-                                Image(systemName: "ellipsis")
+                                .disabled(store.isSynchronizingDocument(item.id))
+                                .menuIndicator(.hidden)
+                                .help("Document Actions")
+                                .accessibilityLabel("Document Actions")
                             }
-                            .disabled(store.isSynchronizingDocument(item.id))
-                            .menuIndicator(.hidden)
-                            .help("Document Actions")
-                            .accessibilityLabel("Document Actions")
                         }
                     }
 
@@ -1152,6 +1161,34 @@ struct WorkspaceView: View {
         return store.currentItem?.supportsMarkdownPreview == true
             ? [.preview, .source, .diff]
             : [.source, .diff]
+    }
+
+    private func canRequestDocumentReview(_ item: MemoryListItem) -> Bool {
+        guard store.activeProjectId != nil,
+              let draft = item.draft else {
+            return false
+        }
+        return draft.status == .open
+            && draft.scope == .org
+            && WorkspaceStore.canRequestReview(draft)
+    }
+
+    private func canProposeOrganizationDeletion(_ item: MemoryListItem) -> Bool {
+        store.canEditMemory(item)
+            && MemoryFileTreeMenu.canProposeOrganizationDeletion(
+                item,
+                inOrgView: store.activeProjectId == nil
+            )
+    }
+
+    private func canDiscardDocumentDraft(_ item: MemoryListItem) -> Bool {
+        store.activeProjectId != nil && item.draft != nil
+    }
+
+    private func hasDocumentActions(_ item: MemoryListItem) -> Bool {
+        canRequestDocumentReview(item)
+            || canDiscardDocumentDraft(item)
+            || canProposeOrganizationDeletion(item)
     }
 
     private var documentMode: Binding<WorkbenchTabMode> {
