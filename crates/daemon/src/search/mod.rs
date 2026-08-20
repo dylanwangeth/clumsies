@@ -1803,7 +1803,7 @@ mod tests {
                     delete: None,
                     discard: None,
                 },
-                source: Some(DaemonDraftOperationSource::McpStore),
+                source: Some(DaemonDraftOperationSource::Desktop),
             })
             .await
             .unwrap();
@@ -2248,12 +2248,21 @@ mod tests {
     #[tokio::test]
     async fn mcp_text_replacements_are_atomic_and_persist_as_complete_content() {
         let (_temp, state) = test_state().await;
+        sqlx::query(
+            "INSERT INTO cached_refs (
+                ref_key, name, scope, org_id, project_id, commit_id, etag, server_updated_at
+             ) VALUES ('org:org_test', 'refs/heads/main', 'org', 'org_test', NULL,
+                       'commit_test', '\"commit_test\"', '2026-07-21T00:00:00Z')",
+        )
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
         let central_pool = state.inner.pool.clone();
         let service = DaemonIpcService::new(state);
         let original = service
             .load_memory(LoadMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                ids: vec!["ctx_retrieval".to_owned()],
+                ids: vec!["rule_testing".to_owned()],
                 known_hashes: BTreeMap::new(),
             })
             .await
@@ -2272,16 +2281,16 @@ mod tests {
                     "resource": "memory",
                     "op": {
                         "update": {
-                            "id": "ctx_retrieval",
+                            "id": "rule_testing",
                             "expected_hash": original.content_hash,
                             "replacements": [
                                 {
-                                    "old_text": "Hybrid search",
-                                    "new_text": "Memory activation"
+                                    "old_text": "Apply when changing retrieval.",
+                                    "new_text": "Apply when changing retrieval behavior."
                                 },
                                 {
-                                    "old_text": "dense vectors",
-                                    "new_text": "vector retrieval"
+                                    "old_text": "Run integration tests.",
+                                    "new_text": "Run integration and regression tests."
                                 }
                             ]
                         }
@@ -2301,14 +2310,16 @@ mod tests {
         let loaded = service
             .load_memory(LoadMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                ids: vec!["ctx_retrieval".to_owned()],
+                ids: vec!["rule_testing".to_owned()],
                 known_hashes: BTreeMap::new(),
             })
             .await
             .unwrap();
         assert_eq!(
             loaded.resources[0].content.as_deref(),
-            Some("# Retrieval\n\nMemory activation combines BM25 and vector retrieval.")
+            Some(
+                "# Testing\n\nApply when changing retrieval behavior.\n\nRun integration and regression tests.\n\nTags: testing"
+            )
         );
         let updated_hash = loaded.resources[0].content_hash.clone();
 
@@ -2329,11 +2340,11 @@ mod tests {
                         "resource": "memory",
                         "op": {
                             "update": {
-                                "id": "ctx_retrieval",
+                                "id": "rule_testing",
                                 "expected_hash": updated_hash,
                                 "replacements": [{
-                                    "old_text": "Memory activation",
-                                    "new_text": "Agent memory activation"
+                                    "old_text": "Run integration and regression tests.",
+                                    "new_text": "Run integration, regression, and smoke tests."
                                 }]
                             }
                         },
@@ -2363,10 +2374,10 @@ mod tests {
                     "resource": "memory",
                     "op": {
                         "update": {
-                            "id": "ctx_retrieval",
+                            "id": "rule_testing",
                             "expected_hash": original.content_hash,
                             "replacements": [{
-                                "old_text": "Memory activation",
+                                "old_text": "Run integration and regression tests.",
                                 "new_text": "stale write"
                             }]
                         }
@@ -2396,11 +2407,186 @@ mod tests {
             update.content,
             DaemonDraftContent {
                 description: None,
-                content:
-                    "# Retrieval\n\nAgent memory activation combines BM25 and vector retrieval."
-                        .to_owned()
+                content: "# Testing\n\nApply when changing retrieval behavior.\n\nRun integration, regression, and smoke tests.\n\nTags: testing"
+                    .to_owned()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_target_mutations_reject_legacy_project_authority_without_local_pollution() {
+        let (_temp, state) = test_state().await;
+        let pool = state.inner.pool.clone();
+        let service = DaemonIpcService::new(state);
+        let original = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["ctx_retrieval".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap()
+            .resources
+            .into_iter()
+            .next()
+            .unwrap();
+
+        let requests = [
+            json!({
+                "update": {
+                    "id": "ctx_retrieval",
+                    "expected_hash": original.content_hash,
+                    "replacements": [{
+                        "old_text": "Hybrid search",
+                        "new_text": "Forbidden update"
+                    }]
+                }
+            }),
+            json!({
+                "rename": {
+                    "id": "ctx_retrieval",
+                    "new_path": "architecture/renamed.md"
+                }
+            }),
+            json!({
+                "delete": {
+                    "id": "ctx_retrieval"
+                }
+            }),
+        ];
+        for op in requests {
+            let response = service
+                .dispatch(DaemonIpcRequest::new(
+                    "store_draft_operation",
+                    json!({
+                        "project_id": "prj_test",
+                        "scope": "org",
+                        "resource": "memory",
+                        "op": op,
+                        "source": "mcp_store"
+                    }),
+                ))
+                .await;
+            assert!(!response.ok);
+            let error = response
+                .error
+                .expect("legacy mutation must return an error");
+            assert_eq!(error.code, "invalid_request");
+            assert!(
+                error
+                    .message
+                    .contains("legacy Project Memory ctx_retrieval")
+            );
+            assert!(error.message.contains("read-only"));
+        }
+
+        let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let operation_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM local_draft_operations")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(draft_count, 0);
+        assert_eq!(operation_count, 0);
+
+        let unchanged = service
+            .load_memory(LoadMemoryRequest {
+                project_id: "prj_test".to_owned(),
+                ids: vec!["ctx_retrieval".to_owned()],
+                known_hashes: BTreeMap::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(unchanged.resources[0].path, original.path);
+        assert_eq!(
+            unchanged.resources[0].content.as_deref(),
+            original.content.as_deref()
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_discard_resolves_existing_legacy_draft_scope_without_fabricating_a_draft() {
+        let (_temp, state) = test_state().await;
+        let pool = state.inner.pool.clone();
+        let service = DaemonIpcService::new(state);
+        let draft = service
+            .store_draft_operation(DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: None,
+                project_id: "prj_test".to_owned(),
+                scope: crate::DaemonDraftScope::Project,
+                resource: crate::DaemonDraftResourceKind::Memory,
+                op: DaemonDraftOperation {
+                    create: None,
+                    update: Some(DaemonUpdateDraftOperation::Content(
+                        DaemonContentDraftUpdate {
+                            id: "ctx_retrieval".to_owned(),
+                            content: DaemonDraftContent {
+                                description: None,
+                                content: "# Legacy draft\n\nCleanup only.".to_owned(),
+                            },
+                            description: None,
+                        },
+                    )),
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .await
+            .unwrap();
+
+        let discarded = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "org",
+                    "resource": "memory",
+                    "op": {"discard": {"id": draft.draft_id}},
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(discarded.ok, "discard failed: {:?}", discarded.error);
+        let response: DaemonDraftOperationResponse =
+            serde_json::from_value(discarded.payload).unwrap();
+        assert_eq!(response.draft_id, draft.draft_id);
+        let detail = service.get_draft(&draft.draft_id).await.unwrap();
+        assert_eq!(detail.draft.scope, crate::DaemonDraftScope::Project);
+        assert_eq!(
+            detail.draft.status,
+            crate::DaemonLocalDraftStatus::Discarded
+        );
+        let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(draft_count, 1);
+
+        let missing = service
+            .dispatch(DaemonIpcRequest::new(
+                "store_draft_operation",
+                json!({
+                    "project_id": "prj_test",
+                    "scope": "org",
+                    "resource": "memory",
+                    "op": {"discard": {"id": "draft_missing"}},
+                    "source": "mcp_store"
+                }),
+            ))
+            .await;
+        assert!(!missing.ok);
+        assert_eq!(missing.error.unwrap().code, "not_found");
+        let final_draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(final_draft_count, 1);
     }
 
     #[tokio::test]
@@ -2481,11 +2667,11 @@ mod tests {
                 "store_draft_operation",
                 json!({
                     "project_id": "prj_test",
-                    "scope": "project",
+                    "scope": "org",
                     "resource": "memory",
                     "op": {
                         "discard": {
-                            "id": "rule_testing"
+                            "id": stored.draft_id
                         }
                     },
                     "source": "mcp_store"
@@ -2494,7 +2680,7 @@ mod tests {
             .await;
         assert!(
             discarded.ok,
-            "daemon rejected discarding an org draft with project scope: {:?}",
+            "daemon rejected discarding an org draft: {:?}",
             discarded.error
         );
         let detail = service.get_draft(&stored.draft_id).await.unwrap();

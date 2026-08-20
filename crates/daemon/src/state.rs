@@ -4,16 +4,23 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::*;
+use crate::draft::daemon_draft_scope_from_str;
 
 const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const LAZY_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const CREDENTIAL_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
+
+fn legacy_project_memory_read_only_error(resource_id: &str) -> DaemonError {
+    DaemonError::InvalidRequest(format!(
+        "legacy Project Memory {resource_id} is read-only; MCP mutations may target only selected Organization Memory"
+    ))
+}
 
 #[derive(Default)]
 pub(crate) struct CredentialRecovery {
@@ -1161,20 +1168,113 @@ impl DaemonState {
         request: DaemonDraftOperationRequest,
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
         request.op.validate(request.resource)?;
-        if request.op.has_text_update() {
+        let has_text_update = request.op.has_text_update();
+        let is_mcp_target_mutation = request.source == Some(DaemonDraftOperationSource::McpStore)
+            && request.op.discard.is_none()
+            && (request.op.update.is_some()
+                || request.op.rename.is_some()
+                || request.op.delete.is_some());
+        if has_text_update || is_mcp_target_mutation {
             let _sync_guard = self.inner.sync_lock.lock().await;
             let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
-            let request = self.materialize_text_update(request).await?;
+            let request = if has_text_update {
+                self.materialize_text_update(request).await?
+            } else {
+                self.normalize_mcp_target_mutation(request).await?
+            };
             return self.persist_draft_operation(request).await;
         }
         if request.op.delete.is_some() || request.op.discard.is_some() {
             let _sync_guard = self.inner.sync_lock.lock().await;
             let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
+            let request = if request.source == Some(DaemonDraftOperationSource::McpStore)
+                && request.op.discard.is_some()
+            {
+                self.normalize_mcp_discard(request).await?
+            } else {
+                request
+            };
             return self.persist_draft_operation(request).await;
         }
 
         let _mutation_guard = self.inner.draft_mutation_lock.lock().await;
         self.persist_draft_operation(request).await
+    }
+
+    async fn normalize_mcp_target_mutation(
+        &self,
+        mut request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationRequest, DaemonError> {
+        let target_id = request.op.target_id().ok_or_else(|| {
+            DaemonError::InvalidRequest(
+                "target-backed MCP mutation requires a stable Memory resource id".to_owned(),
+            )
+        })?;
+        // A create Draft is itself the effective resource until publication.
+        // Resolve that local identity before consulting the materialized
+        // Project index: delete must become Discard even when no Project Ref
+        // has been activated yet, and rename must keep the Draft's real scope.
+        if let Some(local) = sqlx::query(
+            "SELECT draft_id, resource_scope
+             FROM local_drafts
+             WHERE draft_id = $1
+               AND project_id = $2
+               AND resource_kind = $3
+               AND target_id IS NULL
+               AND status IN ('open', 'submitted')",
+        )
+        .bind(target_id)
+        .bind(&request.project_id)
+        .bind(request.resource.as_str())
+        .fetch_optional(&self.inner.pool)
+        .await?
+        {
+            request.draft_id = Some(local.try_get("draft_id")?);
+            request.scope = daemon_draft_scope_from_str(
+                local.try_get::<String, _>("resource_scope")?.as_str(),
+            )?;
+            return Ok(request);
+        }
+        let resource = self
+            .load_stable_mutation_target(&request, target_id)
+            .await?;
+        request.scope = match resource.scope {
+            SourceScope::Org => DaemonDraftScope::Org,
+            SourceScope::Project => {
+                return Err(legacy_project_memory_read_only_error(&resource.resource_id));
+            }
+        };
+        Ok(request)
+    }
+
+    async fn load_stable_mutation_target(
+        &self,
+        request: &DaemonDraftOperationRequest,
+        target_id: &str,
+    ) -> Result<LoadedMemoryResource, DaemonError> {
+        let loaded = search::load_memory(
+            self,
+            LoadMemoryRequest {
+                project_id: request.project_id.clone(),
+                ids: vec![target_id.to_owned()],
+                known_hashes: BTreeMap::new(),
+            },
+        )
+        .await?;
+        let resource = loaded.resources.into_iter().next().ok_or_else(|| {
+            DaemonError::NotFound(format!("memory resource {target_id} is not available"))
+        })?;
+        if resource.resource_id != target_id {
+            return Err(DaemonError::InvalidRequest(
+                "draft mutation id must be a stable resource id, not a path".to_owned(),
+            ));
+        }
+        if !memory_kind_matches_resource(resource.kind, request.resource) {
+            return Err(DaemonError::InvalidRequest(
+                "draft mutation resource kind does not match its target".to_owned(),
+            ));
+        }
+        Ok(resource)
     }
 
     async fn materialize_text_update(
@@ -1191,27 +1291,17 @@ impl DaemonState {
                     "draft operation does not contain a text replacement update".to_owned(),
                 )
             })?;
-        let loaded = search::load_memory(
-            self,
-            LoadMemoryRequest {
-                project_id: request.project_id.clone(),
-                ids: vec![update.id.clone()],
-                known_hashes: BTreeMap::new(),
-            },
-        )
-        .await?;
-        let resource = loaded.resources.into_iter().next().ok_or_else(|| {
-            DaemonError::NotFound(format!("memory resource {} is not available", update.id))
-        })?;
-        if resource.resource_id != update.id {
-            return Err(DaemonError::InvalidRequest(
-                "text replacement update id must be a stable resource id, not a path".to_owned(),
-            ));
-        }
-        if !memory_kind_matches_resource(resource.kind, request.resource) {
-            return Err(DaemonError::InvalidRequest(
-                "text replacement resource kind does not match its target".to_owned(),
-            ));
+        let resource = self
+            .load_stable_mutation_target(&request, &update.id)
+            .await?;
+        match resource.scope {
+            SourceScope::Org => request.scope = DaemonDraftScope::Org,
+            SourceScope::Project
+                if request.source == Some(DaemonDraftOperationSource::McpStore) =>
+            {
+                return Err(legacy_project_memory_read_only_error(&resource.resource_id));
+            }
+            SourceScope::Project => request.scope = DaemonDraftScope::Project,
         }
         if resource.content_hash != update.expected_hash {
             return Err(DaemonError::State {
@@ -1221,13 +1311,6 @@ impl DaemonState {
                     update.id, update.expected_hash, resource.content_hash
                 ),
             });
-        }
-        let resolved_scope = match resource.scope {
-            SourceScope::Org => DaemonDraftScope::Org,
-            SourceScope::Project => DaemonDraftScope::Project,
-        };
-        if request.scope != resolved_scope {
-            request.scope = resolved_scope;
         }
         let content = resource.content.ok_or_else(|| DaemonError::State {
             code: "memory_content_unavailable",
@@ -1245,6 +1328,39 @@ impl DaemonState {
             },
         ));
         request.op.validate(request.resource)?;
+        Ok(request)
+    }
+
+    async fn normalize_mcp_discard(
+        &self,
+        mut request: DaemonDraftOperationRequest,
+    ) -> Result<DaemonDraftOperationRequest, DaemonError> {
+        let draft_id = request
+            .op
+            .discard
+            .as_ref()
+            .map(|discard| discard.id.as_str())
+            .ok_or_else(|| {
+                DaemonError::InvalidRequest(
+                    "MCP discard requires an existing local Draft id".to_owned(),
+                )
+            })?;
+        let row = sqlx::query(
+            "SELECT draft_id, resource_scope
+             FROM local_drafts
+             WHERE draft_id = $1
+               AND project_id = $2
+               AND resource_kind = $3",
+        )
+        .bind(draft_id)
+        .bind(&request.project_id)
+        .bind(request.resource.as_str())
+        .fetch_optional(&self.inner.pool)
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("local draft not found: {draft_id}")))?;
+        request.draft_id = Some(row.try_get("draft_id")?);
+        request.scope =
+            daemon_draft_scope_from_str(row.try_get::<String, _>("resource_scope")?.as_str())?;
         Ok(request)
     }
 
