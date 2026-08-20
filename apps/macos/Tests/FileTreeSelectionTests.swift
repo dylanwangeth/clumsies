@@ -198,39 +198,45 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .primary)
     }
 
-    func testInheritedResourceUsesSecondaryTone() {
+    func testInheritedResourceWithoutDraftUsesPrimaryTone() {
         let item = MemoryListItem(id: "res", resource: nil, draft: nil, inherited: true)
-        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .secondary)
+        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .primary)
     }
 
-    func testNewDraftUsesGreenTone() {
-        let item = MemoryListItem(
-            id: "new",
-            resource: nil,
-            draft: draft(targetId: nil),
-            inherited: false
-        )
-        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .newDraft)
+    func testNewDraftUsesGreenToneRegardlessOfInheritance() {
+        for inherited in [false, true] {
+            let item = MemoryListItem(
+                id: "new",
+                resource: nil,
+                draft: draft(targetId: nil),
+                inherited: inherited
+            )
+            XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .newDraft)
+        }
     }
 
-    func testModifiedDraftUsesYellowTone() {
-        let item = MemoryListItem(
-            id: "res",
-            resource: nil,
-            draft: draft(targetId: "res"),
-            inherited: false
-        )
-        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .modifiedDraft)
+    func testModifiedDraftUsesYellowToneRegardlessOfInheritance() {
+        for inherited in [false, true] {
+            let item = MemoryListItem(
+                id: "res",
+                resource: nil,
+                draft: draft(targetId: "res"),
+                inherited: inherited
+            )
+            XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .modifiedDraft)
+        }
     }
 
-    func testDeletionDraftUsesRedTone() {
-        let item = MemoryListItem(
-            id: "res",
-            resource: nil,
-            draft: draft(targetId: "res", isDeletion: true),
-            inherited: false
-        )
-        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .deletedDraft)
+    func testDeletionDraftUsesRedToneRegardlessOfInheritance() {
+        for inherited in [false, true] {
+            let item = MemoryListItem(
+                id: "res",
+                resource: nil,
+                draft: draft(targetId: "res", isDeletion: true),
+                inherited: inherited
+            )
+            XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .deletedDraft)
+        }
     }
 
     func testThreeWayLocalChangeShowsRemovalThenInsertion() {
@@ -248,6 +254,74 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(lines.map(\.kind), [.removal, .remoteInsertion, .insertion])
     }
 
+    func testThreeWayIdenticalLocalAndRemoteReplacementIsEmittedOnce() {
+        let lines = ThreeWayDiff.lines(base: "a", local: "x", remote: "x")
+
+        XCTAssertEqual(lines.map(\.kind), [.removal, .insertion])
+        XCTAssertEqual(lines.map(\.text), ["a", "x"])
+        XCTAssertEqual(lines.map(\.oldLineNumber), [1, nil])
+        XCTAssertEqual(lines.map(\.newLineNumber), [nil, 1])
+        XCTAssertEqual(lines.map(\.remoteLineNumber), [nil, 1])
+    }
+
+    func testThreeWayMultiLineConflictKeepsRemoteAndLocalGroupsContiguous() {
+        let lines = ThreeWayDiff.lines(
+            base: "old 1\nold 2",
+            local: "local 1\nlocal 2",
+            remote: "remote 1\nremote 2"
+        )
+
+        XCTAssertEqual(lines.map(\.kind), [
+            .removal,
+            .removal,
+            .remoteInsertion,
+            .remoteInsertion,
+            .insertion,
+            .insertion,
+        ])
+        XCTAssertEqual(lines.map(\.text), [
+            "old 1",
+            "old 2",
+            "remote 1",
+            "remote 2",
+            "local 1",
+            "local 2",
+        ])
+        XCTAssertEqual(lines.compactMap(\.remoteLineNumber), [1, 2])
+        XCTAssertEqual(lines.compactMap(\.newLineNumber), [1, 2])
+    }
+
+    func testThreeWayConflictEmitsSharedPrefixAndSuffixOnce() {
+        let lines = ThreeWayDiff.lines(
+            base: "old prefix\nold middle\nold suffix",
+            local: "shared prefix\nlocal middle\nshared suffix",
+            remote: "shared prefix\nremote middle\nshared suffix"
+        )
+
+        XCTAssertEqual(lines.map(\.kind), [
+            .removal,
+            .removal,
+            .removal,
+            .insertion,
+            .remoteInsertion,
+            .insertion,
+            .insertion,
+        ])
+        XCTAssertEqual(lines.map(\.text), [
+            "old prefix",
+            "old middle",
+            "old suffix",
+            "shared prefix",
+            "remote middle",
+            "local middle",
+            "shared suffix",
+        ])
+        XCTAssertEqual(lines.compactMap(\.newLineNumber), [1, 2, 3])
+        XCTAssertEqual(lines.compactMap(\.remoteLineNumber), [1, 2, 3])
+        XCTAssertEqual(lines.filter { $0.text == "shared prefix" }.count, 1)
+        XCTAssertEqual(lines.filter { $0.text == "shared suffix" }.count, 1)
+    }
+
     func testThreeWayEmptyBaseYieldsPureInsertions() {
         let lines = ThreeWayDiff.lines(base: "", local: "a\nb", remote: "")
         XCTAssertEqual(lines.map(\.kind), [.insertion, .insertion])
@@ -258,21 +332,116 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(lines.map(\.kind), [.remoteInsertion, .insertion])
     }
 
+    func testThreeWayPureRemoteInsertionFromEmptyBaseUsesRemoteCoordinatesAndLabel() throws {
+        let lines = ThreeWayDiff.lines(base: "", local: "", remote: "remote 1\nremote 2")
+
+        XCTAssertEqual(lines.map(\.kind), [.remoteInsertion, .remoteInsertion])
+        XCTAssertEqual(lines.map(\.text), ["remote 1", "remote 2"])
+        XCTAssertEqual(lines.map(\.oldLineNumber), [nil, nil])
+        XCTAssertEqual(lines.map(\.newLineNumber), [nil, nil])
+        XCTAssertEqual(lines.map(\.remoteLineNumber), [1, 2])
+
+        let presentation = UnifiedDiffPresentation(lines: lines)
+        XCTAssertTrue(presentation.showsRemoteLineNumbers)
+        let block = try XCTUnwrap(presentation.blocks.first)
+        guard case .hunk(let label) = block.kind else {
+            return XCTFail("Expected a three-way hunk")
+        }
+        XCTAssertEqual(label, "@@ base 0,0 · local 0,0 · remote 1,2 @@")
+    }
+
+    func testThreeWayHunkLabelKeepsInsertionBoundaryForEmptyAxes() throws {
+        let lines = ThreeWayDiff.lines(
+            base: "a\nb\nc",
+            local: "a\nx\nb\nc",
+            remote: "a\nb\nc"
+        )
+
+        let presentation = UnifiedDiffPresentation(lines: lines, contextLineCount: 0)
+        let block = try XCTUnwrap(presentation.blocks.first { block in
+            if case .hunk = block.kind { return true }
+            return false
+        })
+        guard case .hunk(let label) = block.kind else {
+            return XCTFail("Expected a three-way hunk")
+        }
+        XCTAssertEqual(label, "@@ base 1,0 · local 2,1 · remote 1,0 @@")
+    }
+
+    func testThreeWayHunkLabelKeepsDeletionBoundaryForEmptyAxis() throws {
+        let lines = ThreeWayDiff.lines(
+            base: "a\nb\nc",
+            local: "a\nc",
+            remote: "a\nb\nc"
+        )
+
+        let presentation = UnifiedDiffPresentation(lines: lines, contextLineCount: 0)
+        let block = try XCTUnwrap(presentation.blocks.first { block in
+            if case .hunk = block.kind { return true }
+            return false
+        })
+        guard case .hunk(let label) = block.kind else {
+            return XCTFail("Expected a three-way hunk")
+        }
+        XCTAssertEqual(label, "@@ base 2,1 · local 1,0 · remote 2,1 @@")
+    }
+
+    func testThreeWayRemoteReplacementPreservesTextAndThreeCoordinateSpaces() throws {
+        let lines = ThreeWayDiff.lines(base: "a\nb", local: "a\nb", remote: "a\nB")
+
+        XCTAssertEqual(lines.map(\.text), ["a", "b", "B"])
+        XCTAssertEqual(lines.map(\.oldLineNumber), [1, 2, nil])
+        XCTAssertEqual(lines.map(\.newLineNumber), [1, 2, nil])
+        XCTAssertEqual(lines.map(\.remoteLineNumber), [1, nil, 2])
+
+        let presentation = UnifiedDiffPresentation(lines: lines)
+        let block = try XCTUnwrap(presentation.blocks.first)
+        guard case .hunk(let label) = block.kind else {
+            return XCTFail("Expected a three-way hunk")
+        }
+        XCTAssertEqual(label, "@@ base 1,2 · local 1,2 · remote 1,2 @@")
+    }
+
+    func testThreeWayDiffRetainsRepeatedBaseLines() {
+        let lines = ThreeWayDiff.lines(
+            base: "repeat\nrepeat\nend",
+            local: "repeat\nlocal\nrepeat\nend",
+            remote: "repeat\nremote\nrepeat\nend"
+        )
+        let context = lines.filter { $0.kind == .context }
+
+        XCTAssertEqual(context.map(\.text), ["repeat", "repeat", "end"])
+        XCTAssertEqual(context.compactMap(\.oldLineNumber), [1, 2, 3])
+        XCTAssertEqual(
+            lines.filter { $0.kind == .remoteInsertion }.map(\.text),
+            ["remote"]
+        )
+        XCTAssertEqual(
+            lines.filter { $0.kind == .insertion }.map(\.text),
+            ["local"]
+        )
+    }
+
+    func testTwoWayUnifiedPresentationKeepsStandardHeaderAndTwoCoordinates() throws {
+        let presentation = UnifiedDiffPresentation(model: SplitDiffModel.make(
+            original: "old",
+            modified: "new"
+        ))
+
+        XCTAssertFalse(presentation.showsRemoteLineNumbers)
+        let block = try XCTUnwrap(presentation.blocks.first)
+        guard case .hunk(let label) = block.kind else {
+            return XCTFail("Expected a two-way hunk")
+        }
+        XCTAssertEqual(label, "@@ -1,1 +1,1 @@")
+        XCTAssertTrue(block.lines.allSatisfy { $0.remoteLineNumber == nil })
+    }
+
     func testThreeWayUnchangedStreamYieldsNoBlocks() {
         let presentation = UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
             base: "a", local: "a", remote: "a"
         ))
         XCTAssertEqual(presentation.changedLineCount, 0)
-    }
-
-    func testDraftToneTakesPrecedenceOverInherited() {
-        let item = MemoryListItem(
-            id: "res",
-            resource: nil,
-            draft: draft(targetId: "res"),
-            inherited: true
-        )
-        XCTAssertEqual(MemoryFileTreeTitleTone.resolve(item: item), .modifiedDraft)
     }
 
     private func draft(

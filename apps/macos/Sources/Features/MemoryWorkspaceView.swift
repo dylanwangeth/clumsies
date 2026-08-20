@@ -36,12 +36,25 @@ struct MemoryMainPane: View {
 
                 if let tab = store.activeVisibleTab,
                    let item = store.item(for: tab) {
-                    if item.contentLoaded {
+                    let presentsUnavailableStaleDiff = tab.mode == .diff
+                        && item.resource.map { store.staleResourceIds.contains($0.id) } == true
+                    let presentsUnavailableDraftDiff = tab.mode == .diff
+                        && item.draft?.documentBaselineAvailable == false
+                    if item.contentLoaded || presentsUnavailableStaleDiff
+                        || presentsUnavailableDraftDiff {
                         DocumentSessionView(store: store, item: item, mode: tab.mode)
                             .id(tab.id)
+                    } else if item.draft?.documentBaselineAvailable == false {
+                        ContentUnavailableView(
+                            "Draft Source Unavailable",
+                            systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                            description: Text(
+                                "The shared file was removed. Open Diff or Sync to reconcile this draft safely."
+                            )
+                        )
                     } else {
                         ResourceLoadingView()
-                            .task { await store.loadContentIfNeeded(item) }
+                            .task(id: item) { await store.loadContentIfNeeded(item) }
                     }
                 } else {
                     emptyState
@@ -221,6 +234,10 @@ private struct FileTreeView: View {
     }
 
     private func beginRenaming(_ item: MemoryListItem) {
+        guard !store.isSynchronizingDocument(item.id) else {
+            store.errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
+            return
+        }
         proposedName = item.document.path.split(separator: "/").last.map(String.init)
             ?? item.document.path
         itemToRename = item
@@ -228,6 +245,12 @@ private struct FileTreeView: View {
 
     private func renameSelectedItem() {
         guard let item = itemToRename else { return }
+        guard !store.isSynchronizingDocument(item.id) else {
+            itemToRename = nil
+            proposedName = ""
+            store.errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
+            return
+        }
         let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isValidProposedName else { return }
         var document = item.document
@@ -240,7 +263,7 @@ private struct FileTreeView: View {
         proposedName = ""
         Task {
             do {
-                try await store.save(item, document: document)
+                try await store.rename(item, to: document.path)
             } catch {
                 store.errorMessage = error.localizedDescription
             }
@@ -304,12 +327,27 @@ private struct FileTreeView: View {
         let addableItems = MemoryFileTreeMenu.addable(targetItems, inOrgView: isOrgView)
         let removableItems = MemoryFileTreeMenu.removable(targetItems, inOrgView: isOrgView)
         let trashableItems = MemoryFileTreeMenu.trashable(targetItems, inOrgView: isOrgView)
+            .filter { store.canEditMemory($0) }
         let singleManageable = singleItem.map {
             MemoryFileTreeMenu.isManageable($0, inOrgView: isOrgView)
+                && store.canEditMemory($0)
+        } ?? false
+        let singleRenameable = singleItem.map {
+            MemoryFileTreeMenu.canRename($0, inOrgView: isOrgView)
+                && store.canEditMemory($0)
         } ?? false
         let singleStale = singleItem.map { item in
             item.resource.map { store.staleResourceIds.contains($0.id) } == true
         } ?? false
+        let singleSynchronizing = singleItem.map {
+            store.isSynchronizingDocument($0.id)
+        } ?? false
+        let selectionContainsSynchronizingDocument = targetItems.contains {
+            store.isSynchronizingDocument($0.id)
+        }
+        let trashSelectionContainsSynchronizingDocument = trashableItems.contains {
+            store.isSynchronizingDocument($0.id)
+        }
         let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
             || (singleItem?.draft != nil) || singleStale
 
@@ -320,11 +358,15 @@ private struct FileTreeView: View {
                 Button("Open Source") { store.open(singleItem, mode: .source) }
             }
             if singleManageable {
-                Button("Rename…") { beginRenaming(singleItem) }
-                if singleItem.resource != nil {
+                if singleRenameable {
+                    Button("Rename…") { beginRenaming(singleItem) }
+                        .disabled(singleSynchronizing)
+                }
+                if singleItem.resource != nil && singleItem.draft?.isDeletion != true {
                     Button("Move to Trash", role: .destructive) {
                         Task { await store.delete(singleItem) }
                     }
+                    .disabled(singleSynchronizing)
                 }
             }
         } else if !targetItems.isEmpty {
@@ -333,6 +375,7 @@ private struct FileTreeView: View {
                 Button(moveToTrashTitle(count: trashableItems.count), role: .destructive) {
                     deleteItems(trashableItems)
                 }
+                .disabled(trashSelectionContainsSynchronizingDocument)
             }
         }
 
@@ -353,21 +396,46 @@ private struct FileTreeView: View {
                     }
                 }
             }
-            .disabled(!store.canManageOrgSelection || store.projects.isEmpty)
+            .disabled(
+                !store.canManageOrgSelection
+                    || store.projects.isEmpty
+                    || selectionContainsSynchronizingDocument
+            )
         }
         if !removableItems.isEmpty {
             Button(removeFromProjectTitle(count: removableItems.count)) {
                 removeFromProject(removableItems)
             }
-            .disabled(!store.canManageOrgSelection)
+            .disabled(!store.canManageOrgSelection || selectionContainsSynchronizingDocument)
         }
         if let singleItem {
-            if singleItem.draft?.freshness == .behind {
-                Button(singleItem.draft?.hasUpstreamResourceChanges == true ? "Review Changes" : "Sync") {
-                    store.syncDocument(singleItem)
+            let resourceIsStale = singleItem.resource.map {
+                store.staleResourceIds.contains($0.id)
+            } == true
+            if store.isSynchronizingDocument(singleItem.id) {
+                Button("Preparing Shared Changes…") {}
+                    .disabled(true)
+            } else if let draft = singleItem.draft,
+                      draft.freshness == .behind || resourceIsStale {
+                switch draft.syncStatus {
+                case .queued, .syncing, .retrying:
+                    Button("Waiting for Draft Sync…") {}
+                        .disabled(true)
+                case .failed:
+                    Button("Retry Draft Sync") {
+                        Task { await store.retrySync() }
+                    }
+                case .synced:
+                    if draft.serverId == nil {
+                        Button("Draft Not Ready") {}
+                            .disabled(true)
+                    } else {
+                        Button(draft.hasUpstreamResourceChanges ? "Review Changes" : "Sync") {
+                            store.syncDocument(singleItem)
+                        }
+                    }
                 }
-            } else if let resource = singleItem.resource,
-                      store.staleResourceIds.contains(resource.id) {
+            } else if resourceIsStale {
                 Button("Sync") {
                     store.syncDocument(singleItem)
                 }
@@ -376,6 +444,7 @@ private struct FileTreeView: View {
                 Button("Discard Draft") {
                     Task { await store.discard(draft) }
                 }
+                .disabled(singleSynchronizing)
             }
         }
 
@@ -433,10 +502,12 @@ private struct FileTreeView: View {
     }
 
     private func removeFromProject(_ items: [MemoryListItem]) {
+        guard let projectId = store.activeProjectId else { return }
         Task {
             do {
-                try await store.removeOrgMemoriesFromActiveProject(
-                    resourceIds: Set(items.map(\.id))
+                try await store.removeOrgMemories(
+                    resourceIds: Set(items.map(\.id)),
+                    fromProject: projectId
                 )
             } catch {
                 store.errorMessage = error.localizedDescription
@@ -456,16 +527,13 @@ private struct FileTreeView: View {
 /// Git-style title color for a memory file-tree row.
 enum MemoryFileTreeTitleTone: Equatable {
     case primary
-    case secondary
     case newDraft
     case modifiedDraft
     case deletedDraft
 
     static func resolve(item: MemoryListItem?) -> Self {
         guard let item else { return .primary }
-        guard let draft = item.draft else {
-            return item.inherited ? .secondary : .primary
-        }
+        guard let draft = item.draft else { return .primary }
         if draft.isDeletion { return .deletedDraft }
         if draft.targetId == nil { return .newDraft }
         return .modifiedDraft
@@ -474,7 +542,6 @@ enum MemoryFileTreeTitleTone: Equatable {
     var color: Color {
         switch self {
         case .primary: return .primary
-        case .secondary: return .secondary
         case .newDraft: return .green
         case .modifiedDraft: return Color(red: 0.8, green: 0.6, blue: 0.1) // amber, legible in light mode
         case .deletedDraft: return .red
@@ -513,13 +580,6 @@ private struct FileTreeRow: View {
             isExpanded: isExpanded,
             titleColor: titleColor
         ) {
-            if item?.inherited == true {
-                Image(systemName: "building.2")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help("Inherited from Organization")
-                    .accessibilityLabel("Inherited from Organization")
-            }
             SharedUpdateIndicator(
                 freshness: item?.draft?.freshness,
                 hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
@@ -527,7 +587,7 @@ private struct FileTreeRow: View {
                 isStale: isStale
             )
         }
-        .help(item?.inherited == true ? "Inherited from Organization" : entry.node.name)
+        .help(entry.node.name)
     }
 
     private var titleColor: Color {
@@ -712,57 +772,76 @@ struct FileTreeNode: Identifiable {
     }
 }
 
+private struct DocumentDiffIdentity: Hashable {
+    let item: MemoryListItem
+    let localDocument: EditableMemoryDocument
+    let staleResourceGeneration: UUID?
+    let retryRequest: Int
+}
+
 private struct DocumentSessionView: View {
     @ObservedObject var store: WorkspaceStore
     let item: MemoryListItem
     let mode: WorkbenchTabMode
 
     @State private var document: EditableMemoryDocument
+    @State private var authoritativeDocument: EditableMemoryDocument
     @State private var suppressesSaving = false
     @State private var reviewDraft: LocalDraft?
-    @State private var reconciliationCandidate: DraftReconciliationCandidate?
-    @State private var loadsReconciliation = false
     @State private var reconciliationUpdateRequest = 0
     @State private var documentDiffPresentation: UnifiedDiffPresentation?
+    @State private var documentPathChanges: [DocumentPathChange] = []
     @State private var loadsDocumentDiff = false
+    @State private var documentDiffError: String?
+    @State private var documentDiffRetryRequest = 0
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
         self.item = item
         self.mode = mode
-        _document = State(initialValue: item.document)
+        _document = State(initialValue: store.pendingDocument(for: item) ?? item.document)
+        _authoritativeDocument = State(initialValue: item.document)
     }
 
     var body: some View {
         Group {
-            if let candidate = reconciliationCandidate {
+            if let candidate = store.pendingDocumentReconciliationCandidates[item.id] {
                 DraftReconciliationView(
                     candidate: candidate,
                     updateRequest: reconciliationUpdateRequest,
                     usesContextualUpdateAction: true,
+                    initialResolvedState: store.documentReconciliationResolution(for: item.id),
+                    onResolvedStateChange: {
+                        store.updateDocumentReconciliationResolution($0, for: item.id)
+                    },
                     onUpdateStateChange: publishReconciliationToolbarState,
                     onCancel: closeReconciliation,
                     onApplied: closeReconciliation
                 ) { resolvedState in
-                    guard let draft = activeDraft, let serverId = draft.serverId else {
-                        throw ReviewRequestError.draftNotSynchronized
-                    }
                     try await store.applyReconciliation(
-                        draftId: serverId,
-                        draftVersion: draft.serverVersion,
+                        draftId: candidate.draftId,
                         candidate: candidate,
-                        resolvedState: resolvedState
+                        resolvedState: resolvedState,
+                        documentItemId: item.id
                     )
                 }
+                .id(candidate.candidateId)
             } else {
                 documentContent
             }
         }
-        .onChange(of: document) { _, _ in scheduleSave() }
+        .onChange(of: item.document) { _, latest in
+            adoptAuthoritativeDocument(latest)
+        }
+        .onChange(of: store.documentContentGeneration(for: item.id)) { _, _ in
+            adoptAuthoritativeDocument(item.document)
+        }
         .onChange(of: store.pendingDocumentCommand) { _, command in
             handleDocumentCommand(command)
         }
-        .onAppear { handleDocumentCommand(store.pendingDocumentCommand) }
+        .onAppear {
+            handleDocumentCommand(store.pendingDocumentCommand)
+        }
         .onDisappear {
             flushSave()
             clearReconciliationToolbarState()
@@ -785,7 +864,9 @@ private struct DocumentSessionView: View {
 
     private var documentContent: some View {
         Group {
-            if item.draft?.isDeletion == true {
+            if mode == .diff {
+                documentDiff
+            } else if item.draft?.isDeletion == true {
                 ContentUnavailableView(
                     "Pending deletion",
                     systemImage: "trash",
@@ -793,86 +874,142 @@ private struct DocumentSessionView: View {
                 )
             } else if mode == .preview {
                 MarkdownPreview(source: renderedSource)
-            } else if mode == .diff {
-                documentDiff
             } else {
                 editor
-                    .disabled(item.inherited)
+                    .disabled(
+                        !store.canEditMemory(item)
+                            || store.isSwitchingMemoryContext
+                            || store.isSynchronizingDocument(item.id)
+                    )
             }
         }
     }
 
     @ViewBuilder
     private var documentDiff: some View {
+        let identity = documentDiffIdentity
         // The pane contract for a document view is the same one Preview
         // uses: the root is a greedy vertical ScrollView that fills the
         // remaining height, with content pinned to the top. The unified
         // diff stays a content-sized fragment (as in Reviews) and this
         // outer scroll handles vertical overflow.
-        ScrollView([.vertical]) {
-            VStack(alignment: .leading, spacing: 0) {
-                if let rename = renameSummary {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.right")
-                            .foregroundStyle(.secondary)
-                        Text("Path: \(rename.from) → \(rename.to)")
-                            .textSelection(.enabled)
+        GeometryReader { geometry in
+            ScrollView([.vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if !documentPathChanges.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(documentPathChanges.indices, id: \.self) { index in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.right")
+                                        .foregroundStyle(.secondary)
+                                    Text(pathChangeSummary(documentPathChanges[index]))
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                        .background(Color.accentColor.opacity(0.06))
                     }
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                    .background(Color.accentColor.opacity(0.06))
-                }
 
-                if let presentation = documentDiffPresentation {
-                    UnifiedDiffView(presentation: presentation)
-                } else if loadsDocumentDiff {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity, minHeight: 320)
-                } else {
-                    ContentUnavailableView(
-                        "No Changes",
-                        systemImage: "doc.text",
-                        description: Text("No local or remote changes to show for this document.")
-                    )
+                    if let presentation = documentDiffPresentation,
+                       presentation.changedLineCount > 0 {
+                        UnifiedDiffView(presentation: presentation)
+                    } else if loadsDocumentDiff {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if let documentDiffError {
+                        ContentUnavailableView {
+                            Label("Unable to Load Diff", systemImage: "exclamationmark.triangle")
+                        } description: {
+                            Text(documentDiffError)
+                        } actions: {
+                            Button("Retry") { documentDiffRetryRequest += 1 }
+                        }
+                    } else if documentPathChanges.isEmpty {
+                        ContentUnavailableView(
+                            "No Changes",
+                            systemImage: "doc.text",
+                            description: Text("No local or remote changes to show for this document.")
+                        )
+                    }
                 }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: geometry.size.height,
+                    alignment: centersDocumentDiffStatus ? .center : .topLeading
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .onAppear { loadDocumentDiff() }
-        .onChange(of: documentDiffIdentity) { _, _ in loadDocumentDiff() }
+        .task(id: identity) {
+            await loadDocumentDiff(for: identity)
+        }
     }
 
-    /// A draft that only moves the file (rename) has no content diff;
-    /// surface the path change so the pane never looks empty.
-    private var renameSummary: (from: String, to: String)? {
-        guard let draft = item.draft,
-              let resource = item.resource,
-              draft.document.path != resource.document.path else { return nil }
-        return (resource.document.path, draft.document.path)
+    private var centersDocumentDiffStatus: Bool {
+        documentPathChanges.isEmpty
+            && (documentDiffPresentation?.changedLineCount ?? 0) == 0
     }
 
-    private var documentDiffIdentity: String {
-        [
-            item.draft?.id ?? "no-draft",
-            item.draft?.freshness.rawValue ?? "-",
-            item.resource?.contentHash ?? "-",
-            String(store.staleResourceIds.contains(item.resource?.id ?? "")),
-        ].joined(separator: ":")
+    /// A path-only change has no content diff. Surface draft and shared
+    /// additions, removals, and renames so the pane never looks empty.
+    private func pathChangeSummary(_ change: DocumentPathChange) -> String {
+        let owner = switch change.source {
+        case .draft: "Draft"
+        case .shared: "Shared"
+        case .draftAndShared: "Draft + Shared"
+        }
+        switch (change.from, change.to) {
+        case let (from?, to?):
+            return "\(owner) path: \(from) → \(to)"
+        case let (nil, to?):
+            return "\(owner) added: \(to)"
+        case let (from?, nil):
+            return "\(owner) deleted: \(from)"
+        case (nil, nil):
+            return owner
+        }
     }
 
-    private func loadDocumentDiff() {
-        guard mode == .diff, !loadsDocumentDiff else { return }
+    private var documentDiffIdentity: DocumentDiffIdentity {
+        DocumentDiffIdentity(
+            item: item,
+            localDocument: document,
+            staleResourceGeneration: item.resource.flatMap {
+                store.staleResourceGeneration(for: $0.id)
+            },
+            retryRequest: documentDiffRetryRequest
+        )
+    }
+
+    private func loadDocumentDiff(for identity: DocumentDiffIdentity) async {
+        guard mode == .diff else { return }
         documentDiffPresentation = nil
+        documentDiffError = nil
+        documentPathChanges = store.documentPathChanges(for: identity.item)
         loadsDocumentDiff = true
-        Task {
-            defer { loadsDocumentDiff = false }
-            documentDiffPresentation = await store.documentDiffPresentation(
-                for: item,
-                localText: document.body
+
+        do {
+            let result = try await store.documentDiffPresentation(
+                for: identity.item,
+                localText: identity.localDocument.body
             )
+            try Task.checkCancellation()
+            guard identity == documentDiffIdentity, mode == .diff else { return }
+            documentDiffPresentation = result?.presentation
+            documentPathChanges = result?.pathChanges ?? []
+            loadsDocumentDiff = false
+        } catch is CancellationError {
+            // `.task(id:)` immediately starts a replacement for a changed
+            // identity. Let that task remain the owner of loading state.
+        } catch {
+            guard !Task.isCancelled,
+                  identity == documentDiffIdentity,
+                  mode == .diff else { return }
+            documentDiffError = error.localizedDescription
+            loadsDocumentDiff = false
         }
     }
 
@@ -880,44 +1017,48 @@ private struct DocumentSessionView: View {
     private var editor: some View {
         switch item.kind {
         case .context, .rules, .workflows:
-            NativeTextEditor(text: $document.body)
+            NativeTextEditor(text: editorText)
         }
+    }
+
+    private var editorText: Binding<String> {
+        Binding(
+            get: { document.body },
+            set: { nextBody in
+                guard nextBody != document.body else { return }
+                var nextDocument = document
+                nextDocument.body = nextBody
+                document = nextDocument
+                stageSave(nextDocument)
+            }
+        )
     }
 
     private var renderedSource: String {
-        let sourceDocument = mode == .preview ? item.document : document
         switch item.kind {
         case .context, .rules, .workflows:
-            return sourceDocument.body
+            return document.body
         }
     }
 
-    private var activeDraft: LocalDraft? {
-        guard let draft = item.draft else { return nil }
-        return store.drafts.first(where: { $0.id == draft.id }) ?? draft
-    }
-
-    private func loadReconciliation(for draft: LocalDraft) {
-        guard !loadsReconciliation else { return }
-        loadsReconciliation = true
-        store.documentReconciliationToolbarState = .init(
-            itemId: item.id,
-            isLoading: true,
-            canUpdate: false,
-            isUpdating: false
-        )
-        Task {
-            defer { loadsReconciliation = false }
-            do {
-                try await store.flushDocumentSave(item.id)
-                let latest = store.drafts.first {
-                    $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
-                } ?? draft
-                reconciliationCandidate = try await store.reconciliationCandidate(for: latest)
-            } catch {
-                clearReconciliationToolbarState()
-                store.errorMessage = error.localizedDescription
-            }
+    private func adoptAuthoritativeDocument(_ latest: EditableMemoryDocument) {
+        let previous = authoritativeDocument
+        authoritativeDocument = latest
+        // A resource sync can replace the authoritative document while this
+        // session stays alive. Adopt it only when the editor still matches the
+        // previous snapshot so an in-flight local edit is never lost.
+        if document == previous {
+            document = latest
+            return
+        }
+        // A file-tree rename is independent of a dirty Source body. Merge
+        // path/title changes from the authoritative draft while keeping the
+        // user's in-flight text, so the next autosave cannot rename it back.
+        if document.path == previous.path {
+            document.path = latest.path
+        }
+        if document.title == previous.title {
+            document.title = latest.title
         }
     }
 
@@ -929,8 +1070,6 @@ private struct DocumentSessionView: View {
             reviewDraft = draft
         case .discardDraft(_, let draft):
             discard(draft)
-        case .reviewSharedChanges(_, let draft):
-            loadReconciliation(for: draft)
         case .applyReconciliation:
             reconciliationUpdateRequest += 1
         case .closeReconciliation:
@@ -950,7 +1089,7 @@ private struct DocumentSessionView: View {
     }
 
     private func closeReconciliation() {
-        reconciliationCandidate = nil
+        store.finishDocumentReconciliation(for: item.id)
         clearReconciliationToolbarState()
     }
 
@@ -959,16 +1098,19 @@ private struct DocumentSessionView: View {
         store.documentReconciliationToolbarState = nil
     }
 
-    private func scheduleSave() {
-        guard !suppressesSaving, !item.inherited, mode == .source else { return }
-        store.stageDocumentSave(item, document: document)
+    private func stageSave(_ nextDocument: EditableMemoryDocument) {
+        guard !suppressesSaving,
+              store.canEditMemory(item),
+              !store.isSwitchingMemoryContext,
+              !store.isSynchronizingDocument(item.id),
+              mode == .source,
+              nextDocument != item.document else { return }
+        store.stageDocumentSave(item, document: nextDocument)
     }
 
     private func flushSave() {
         guard !suppressesSaving,
-              !item.inherited,
-              mode == .source,
-              document != item.document else { return }
+              mode == .source else { return }
         Task {
             do {
                 try await store.flushDocumentSave(item.id)
@@ -986,9 +1128,7 @@ private struct DocumentSessionView: View {
         resolvedState: ReconciliationResourceState?
     ) async throws {
         try await store.flushDocumentSave(item.id)
-        let latest = store.drafts.first {
-            $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
-        } ?? draft
+        let latest = store.drafts.first { $0.id == draft.id } ?? draft
         try await store.requestReview(
             for: latest,
             title: title,
@@ -1000,22 +1140,26 @@ private struct DocumentSessionView: View {
 
     private func loadReviewCandidate(_ draft: LocalDraft) async throws -> DraftReconciliationCandidate {
         try await store.flushDocumentSave(item.id)
-        let latest = store.drafts.first {
-            $0.id == draft.id || (draft.targetId != nil && $0.targetId == draft.targetId)
-        } ?? draft
+        let latest = store.drafts.first { $0.id == draft.id } ?? draft
         return try await store.reconciliationCandidate(for: latest)
     }
 
     private func discard(_ draft: LocalDraft) {
         suppressesSaving = true
         store.cancelDocumentSave(item.id)
-        Task { await store.discard(draft) }
+        Task {
+            await store.discard(draft)
+            suppressesSaving = false
+        }
     }
 
     private func moveToTrash() {
         suppressesSaving = true
         store.cancelDocumentSave(item.id)
-        Task { await store.delete(item) }
+        Task {
+            await store.delete(item)
+            suppressesSaving = false
+        }
     }
 }
 
@@ -1023,6 +1167,7 @@ struct DraftReconciliationView: View {
     let candidate: DraftReconciliationCandidate
     let updateRequest: Int
     let usesContextualUpdateAction: Bool
+    let onResolvedStateChange: ((ReconciliationResourceState) -> Void)?
     let onUpdateStateChange: ((Bool, Bool) -> Void)?
     let onCancel: () -> Void
     let onApplied: () -> Void
@@ -1038,6 +1183,8 @@ struct DraftReconciliationView: View {
         candidate: DraftReconciliationCandidate,
         updateRequest: Int = 0,
         usesContextualUpdateAction: Bool = false,
+        initialResolvedState: ReconciliationResourceState? = nil,
+        onResolvedStateChange: ((ReconciliationResourceState) -> Void)? = nil,
         onUpdateStateChange: ((Bool, Bool) -> Void)? = nil,
         onCancel: @escaping () -> Void,
         onApplied: (() -> Void)? = nil,
@@ -1046,14 +1193,20 @@ struct DraftReconciliationView: View {
         self.candidate = candidate
         self.updateRequest = updateRequest
         self.usesContextualUpdateAction = usesContextualUpdateAction
+        self.onResolvedStateChange = onResolvedStateChange
         self.onUpdateStateChange = onUpdateStateChange
         self.onCancel = onCancel
         self.onApplied = onApplied ?? onCancel
         self.onApply = onApply
-        let initial = candidate.proposedState ?? candidate.draftState
+        let initial = initialResolvedState ?? candidate.proposedState ?? candidate.draftState
         _resolvedExists = State(initialValue: initial.exists)
         _resolvedPath = State(initialValue: initial.resource.path ?? "")
-        _resolvedContent = State(initialValue: initial.content?.primaryText ?? "")
+        _resolvedContent = State(
+            initialValue: Self.resolutionContentTemplate(
+                for: candidate,
+                preferredState: initial
+            ).primaryText
+        )
     }
 
     var body: some View {
@@ -1103,6 +1256,9 @@ struct DraftReconciliationView: View {
         .onAppear { publishUpdateState() }
         .onChange(of: canApply) { _, _ in publishUpdateState() }
         .onChange(of: isApplying) { _, _ in publishUpdateState() }
+        .onChange(of: resolvedExists) { _, _ in publishResolution() }
+        .onChange(of: resolvedPath) { _, _ in publishResolution() }
+        .onChange(of: resolvedContent) { _, _ in publishResolution() }
         .onChange(of: updateRequest) { _, _ in
             guard usesContextualUpdateAction else { return }
             apply()
@@ -1130,6 +1286,10 @@ struct DraftReconciliationView: View {
     private func publishUpdateState() {
         guard usesContextualUpdateAction else { return }
         onUpdateStateChange?(canApply, isApplying)
+    }
+
+    private func publishResolution() {
+        onResolvedStateChange?(resolvedState)
     }
 
     @ViewBuilder
@@ -1267,6 +1427,10 @@ struct DraftReconciliationView: View {
 
     private var resolvedState: ReconciliationResourceState {
         let template = candidate.proposedState ?? candidate.draftState
+        let contentTemplate = Self.resolutionContentTemplate(
+            for: candidate,
+            preferredState: template
+        )
         let resource = ServerDraftResourceReference(
             scope: template.resource.scope,
             id: template.resource.id,
@@ -1276,9 +1440,20 @@ struct DraftReconciliationView: View {
             exists: resolvedExists,
             resource: resource,
             content: resolvedExists
-                ? template.content?.replacingPrimaryText(with: resolvedContent)
+                ? contentTemplate.replacingPrimaryText(with: resolvedContent)
                 : nil
         )
+    }
+
+    static func resolutionContentTemplate(
+        for candidate: DraftReconciliationCandidate,
+        preferredState: ReconciliationResourceState
+    ) -> DaemonDraftContent {
+        preferredState.content
+            ?? candidate.currentState.content
+            ?? candidate.draftState.content
+            ?? candidate.baseState.content
+            ?? .init(description: nil, content: "")
     }
 }
 
@@ -1416,21 +1591,32 @@ private struct ReviewRequestSheet: View {
 /// Pure classification of file-tree context menu operations (design v2).
 ///
 /// Menu = generic document operations (standard macOS conventions) + domain
-/// operations (Memory scope relationships and drafts). Add to Project exists
-/// only in the Org view; Remove from Project exists only in the Project view
-/// for inherited items; Rename/Trash apply only to items owned by the current
-/// view context.
+/// operations (Memory project membership and drafts). Add to Project exists
+/// only in the Org view; Remove from Project exists only in the Project view.
 enum MemoryFileTreeMenu {
-    /// Items that can be renamed or trashed in the current view context:
-    /// org memories in the Org view, project-owned memories in the Project
-    /// view. Inherited and org-unreferenced items are view-only.
+    /// Editing never mutates authority directly; it creates or updates the
+    /// current view's local Draft. An unselected Org resource is not
+    /// manageable from a Project context, but it is also filtered out of the
+    /// Project tree.
     static func isManageable(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
-        !item.inherited && (inOrgView ? item.scope == .org : item.scope == .project)
+        if inOrgView { return item.scope == .org }
+        return item.scope == .project || item.inherited || item.draft?.projectId != nil
+    }
+
+    /// A target-backed memory supports a path-only rename. A pure create
+    /// draft has no stable resource id for the daemon's rename operation and
+    /// must become shared before it can be renamed safely.
+    static func canRename(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
+        isManageable(item, inOrgView: inOrgView)
+            && item.draft?.isDeletion != true
+            && (item.resource != nil || item.draft?.targetId != nil)
     }
 
     /// Org memories that may be added to a project: only in the Org view.
     static func addable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
-        inOrgView ? items.filter { $0.scope == .org } : []
+        inOrgView ? items.filter {
+            $0.scope == .org && $0.resource != nil && $0.draft?.isDeletion != true
+        } : []
     }
 
     /// Items inherited by the active project that may be removed from it:
@@ -1442,6 +1628,10 @@ enum MemoryFileTreeMenu {
     /// Items that support batch Move to Trash: manageable items that back a
     /// resource (pure drafts are discarded, not trashed).
     static func trashable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
-        items.filter { isManageable($0, inOrgView: inOrgView) && $0.resource != nil }
+        items.filter {
+            isManageable($0, inOrgView: inOrgView)
+                && $0.resource != nil
+                && $0.draft?.isDeletion != true
+        }
     }
 }

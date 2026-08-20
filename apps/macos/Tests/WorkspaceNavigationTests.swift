@@ -288,6 +288,39 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(store.selectedItemId, secondLocalTab.itemId)
     }
 
+    func testProjectSelectionSideEffectsAreSerialized() async {
+        let gate = ProjectSelectionSideEffectGate()
+        let releaseFirst = WorkspaceNavigationTestLatch()
+        let firstEntered = expectation(description: "first selection entered daemon side effect")
+        let secondRequested = expectation(description: "second selection requested daemon side effect")
+        var events: [String] = []
+
+        let first = Task { @MainActor in
+            await gate.run {
+                events.append("first-start")
+                firstEntered.fulfill()
+                await releaseFirst.wait()
+                events.append("first-end")
+            }
+        }
+        await fulfillment(of: [firstEntered], timeout: 1)
+
+        let second = Task { @MainActor in
+            secondRequested.fulfill()
+            await gate.run {
+                events.append("second")
+            }
+        }
+        await fulfillment(of: [secondRequested], timeout: 1)
+        await Task.yield()
+        XCTAssertEqual(events, ["first-start"])
+
+        await releaseFirst.open()
+        await first.value
+        await second.value
+        XCTAssertEqual(events, ["first-start", "first-end", "second"])
+    }
+
     func testOpeningMarkdownDefaultsToPreview() {
         let store = WorkspaceStore()
 
@@ -302,6 +335,550 @@ final class WorkspaceNavigationTests: XCTestCase {
         store.open(item(path: "context/notes.txt"))
 
         XCTAssertEqual(store.activeVisibleTab?.mode, .source)
+    }
+
+    func testDocumentTabIdentityIsStableAcrossModes() {
+        var tab = WorkbenchTab(
+            section: .memory,
+            projectId: "project",
+            itemId: "memory",
+            mode: .preview,
+            title: "Memory"
+        )
+        let previewId = tab.id
+
+        tab.mode = .diff
+
+        XCTAssertEqual(tab.id, previewId)
+    }
+
+    func testOpeningAndSwitchingModesKeepsOneTabPerDocument() {
+        let store = WorkspaceStore()
+        let document = item(path: "context/architecture.md")
+
+        store.open(document)
+        let stableId = store.activeTabId
+        store.open(document, mode: .source)
+        store.open(document)
+
+        XCTAssertEqual(store.activeVisibleTab?.mode, .source)
+
+        store.switchDocumentMode(.diff)
+
+        XCTAssertEqual(store.tabs.count, 1)
+        XCTAssertEqual(store.activeTabId, stableId)
+        XCTAssertEqual(store.activeVisibleTab?.mode, .diff)
+    }
+
+    func testStaleResourcePlanRejectsAnOlderDaemonCheckout() {
+        let displayed = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "hash-new",
+            commitId: "commit-new"
+        )
+        let checkout = projectCheckout(
+            commitId: "commit-old",
+            resources: [checkoutResource(id: "memory", path: "memory.md", hash: "hash-old")]
+        )
+
+        let plan = WorkspaceStore.staleResourcePlan(
+            displayedResources: [displayed],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-new",
+            authoritativeCommitId: "commit-new",
+            serverCursor: "commit-old",
+            checkout: checkout
+        )
+
+        XCTAssertNil(plan)
+    }
+
+    func testStaleCachedAuthoritativeRefCannotBuildRollbackPlan() {
+        let displayed = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "hash-new",
+            commitId: "commit-new"
+        )
+        let checkout = projectCheckout(
+            commitId: "commit-old",
+            resources: [checkoutResource(id: "memory", path: "memory.md", hash: "hash-old")]
+        )
+
+        let plan = WorkspaceStore.staleResourcePlan(
+            displayedResources: [displayed],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-new",
+            authoritativeCommitId: "commit-old",
+            serverCursor: "commit-old",
+            checkout: checkout,
+            authoritativeResponseIsStale: true
+        )
+
+        XCTAssertNil(plan)
+    }
+
+    func testStaleCacheHeaderIsRecognizedCaseInsensitively() {
+        XCTAssertTrue(DaemonServerResponse(
+            status: 200,
+            headers: ["X-ClUmSiEs-CaChE": "StAlE"],
+            body: "{}"
+        ).isStaleCache)
+        XCTAssertFalse(DaemonServerResponse(
+            status: 200,
+            headers: ["x-clumsies-cache": "live"],
+            body: "{}"
+        ).isStaleCache)
+    }
+
+    func testStaleResourcePlanIsEmptyWhenDisplayedRefIsAuthoritative() {
+        let displayed = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "hash",
+            commitId: "commit-current"
+        )
+        let checkout = projectCheckout(
+            commitId: "commit-current",
+            resources: [checkoutResource(id: "memory", path: "memory.md", hash: "other-hash")]
+        )
+
+        let plan = WorkspaceStore.staleResourcePlan(
+            displayedResources: [displayed],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-current",
+            authoritativeCommitId: "commit-current",
+            serverCursor: "commit-current",
+            checkout: checkout
+        )
+
+        XCTAssertEqual(plan, [:])
+    }
+
+    func testStaleResourcePlanCapturesStructuralChangesAndIgnoresPinnedOrgRows() {
+        let renamed = projectResource(id: "renamed", path: "old.md", hash: "same-hash")
+        let deleted = projectResource(id: "deleted", path: "deleted.md", hash: "deleted-hash")
+        let unchanged = projectResource(id: "unchanged", path: "same.md", hash: "same")
+        let org = MemoryResource(
+            id: "org-memory",
+            scope: .org,
+            projectId: nil,
+            projectName: nil,
+            kind: .context,
+            contentHash: "org-old",
+            updatedAt: "2026-08-19T00:00:00Z",
+            refCommitId: "org-commit",
+            contentLoaded: true,
+            document: .init(title: "Org", path: "org.md", body: "old org")
+        )
+        let checkout = projectCheckout(
+            commitId: "commit-new",
+            resources: [
+                checkoutResource(id: "renamed", path: "new.md", hash: "same-hash"),
+                checkoutResource(id: "unchanged", path: "same.md", hash: "same"),
+                checkoutResource(id: "added", path: "added.md", hash: "added-hash"),
+                checkoutResource(
+                    id: "org-memory",
+                    path: "org.md",
+                    hash: "org-new",
+                    scope: .org
+                ),
+            ]
+        )
+
+        let plan = WorkspaceStore.staleResourcePlan(
+            displayedResources: [renamed, deleted, unchanged, org],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-old",
+            authoritativeCommitId: "commit-new",
+            serverCursor: "commit-new",
+            checkout: checkout,
+            authoritativeRefEtag: "\"server-commit-new\"",
+            generation: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        )
+
+        XCTAssertEqual(
+            Set(plan?.keys.map { $0 } ?? []),
+            ["renamed", "deleted", "added"]
+        )
+        XCTAssertEqual(plan?["renamed"]?.local?.document.path, "old.md")
+        XCTAssertEqual(plan?["renamed"]?.remote?.document.path, "new.md")
+        XCTAssertNotNil(plan?["deleted"]?.local)
+        XCTAssertNil(plan?["deleted"]?.remote)
+        XCTAssertNil(plan?["added"]?.local)
+        XCTAssertNotNil(plan?["added"]?.remote)
+        XCTAssertNil(plan?["org-memory"])
+        XCTAssertEqual(plan?["renamed"]?.authoritativeRefEtag, "\"server-commit-new\"")
+        XCTAssertNil(plan?["unchanged"])
+    }
+
+    func testStaleResourcePlanKeepsAProvisionalAdditionPending() {
+        let provisional = projectResource(
+            id: "added",
+            path: "added.md",
+            hash: "added-hash",
+            commitId: "commit-new"
+        )
+        let checkout = projectCheckout(
+            commitId: "commit-new",
+            resources: [checkoutResource(id: "added", path: "added.md", hash: "added-hash")]
+        )
+
+        let plan = WorkspaceStore.staleResourcePlan(
+            displayedResources: [provisional],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-old",
+            authoritativeCommitId: "commit-new",
+            serverCursor: "commit-new",
+            checkout: checkout,
+            provisionalResourceIds: ["added"]
+        )
+
+        XCTAssertNil(plan?["added"]?.local)
+        XCTAssertNotNil(plan?["added"]?.remote)
+    }
+
+    func testEquivalentStalePlansIgnoreDetectionGeneration() {
+        let displayed = projectResource(id: "memory", path: "memory.md", hash: "old")
+        let checkout = projectCheckout(
+            commitId: "commit-new",
+            resources: [checkoutResource(id: "memory", path: "memory.md", hash: "new")]
+        )
+        let first = WorkspaceStore.staleResourcePlan(
+            displayedResources: [displayed],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-old",
+            authoritativeCommitId: "commit-new",
+            serverCursor: "commit-new",
+            checkout: checkout,
+            generation: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        ) ?? [:]
+        let second = WorkspaceStore.staleResourcePlan(
+            displayedResources: [displayed],
+            projectName: "Project",
+            observedProjectRefCommitId: "commit-old",
+            authoritativeCommitId: "commit-new",
+            serverCursor: "commit-new",
+            checkout: checkout,
+            generation: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        ) ?? [:]
+
+        XCTAssertNotEqual(first["memory"]?.generation, second["memory"]?.generation)
+        XCTAssertTrue(WorkspaceStore.staleResourcePlansMatch(first, second))
+    }
+
+    func testDocumentPathChangesAttributeRemoteRenameAndDeletionToShared() {
+        XCTAssertEqual(
+            WorkspaceStore.documentPathChanges(
+                basePath: "old.md",
+                localPath: "old.md",
+                remotePath: "new.md"
+            ),
+            [.init(source: .shared, from: "old.md", to: "new.md")]
+        )
+        XCTAssertEqual(
+            WorkspaceStore.documentPathChanges(
+                basePath: "old.md",
+                localPath: "old.md",
+                remotePath: nil
+            ),
+            [.init(source: .shared, from: "old.md", to: nil)]
+        )
+    }
+
+    func testDocumentPathChangesKeepDivergentDraftAndSharedRenamesSeparate() {
+        XCTAssertEqual(
+            WorkspaceStore.documentPathChanges(
+                basePath: "base.md",
+                localPath: "draft.md",
+                remotePath: "shared.md"
+            ),
+            [
+                .init(source: .draft, from: "base.md", to: "draft.md"),
+                .init(source: .shared, from: "base.md", to: "shared.md"),
+            ]
+        )
+    }
+
+    func testMemoryContentValidationRejectsStaleAndMismatchedBodies() throws {
+        let hash = "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        let resource = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: hash,
+            commitId: "commit-current"
+        )
+        let metadata = MemoryMetadata(
+            memoryId: "memory",
+            scope: "project",
+            projectId: "project",
+            path: "memory.md",
+            name: "Memory",
+            description: "",
+            contentHash: hash,
+            status: "active",
+            updatedAt: "2026-08-19T00:00:00Z"
+        )
+        let live = DaemonServerResponse(status: 200, headers: [:], body: "{}")
+
+        XCTAssertEqual(
+            try WorkspaceLoader.validatedMemoryContent(
+                for: resource,
+                detail: .init(memory: metadata, content: "hello", etag: "etag"),
+                response: live
+            ),
+            "hello"
+        )
+        XCTAssertThrowsError(try WorkspaceLoader.validatedMemoryContent(
+            for: resource,
+            detail: .init(memory: metadata, content: "wrong body", etag: "etag"),
+            response: live
+        ))
+        XCTAssertThrowsError(try WorkspaceLoader.validatedMemoryContent(
+            for: resource,
+            detail: .init(memory: metadata, content: "hello", etag: "etag"),
+            response: .init(
+                status: 200,
+                headers: ["x-clumsies-cache": "stale"],
+                body: "{}"
+            )
+        ))
+    }
+
+    func testResourceGenerationComparisonRejectsCommitAndHashChanges() {
+        let old = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "old",
+            commitId: "commit-old"
+        )
+        let current = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "new",
+            commitId: "commit-new"
+        )
+
+        XCTAssertFalse(WorkspaceStore.resourceGenerationMatches(old, current))
+        XCTAssertTrue(WorkspaceStore.resourceGenerationMatches(current, current))
+    }
+
+    func testRenameOnlyDraftDoesNotTreatAnUnloadedOrphanBaselineAsEditableContent() {
+        var unloaded = projectResource(
+            id: "removed-memory",
+            path: "old.md",
+            hash: "sha256:old",
+            commitId: "commit-old"
+        )
+        unloaded.contentLoaded = false
+        unloaded.document.body = ""
+        let summary = DaemonDraftSummary(
+            draftId: "draft",
+            projectId: "project",
+            serverDraftId: "server-draft",
+            serverVersion: 1,
+            baseCommitId: "commit-old",
+            currentCommitId: "commit-new",
+            freshness: .behind,
+            hasUpstreamResourceChanges: true,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
+            scope: .project,
+            resourceKind: .memory,
+            targetId: "removed-memory",
+            path: "old.md",
+            status: .open,
+            createdAt: "2026-08-19T00:00:00Z",
+            updatedAt: "2026-08-19T00:00:00Z",
+            pendingOperationCount: 0,
+            failedOperationCount: 0
+        )
+        let operation = DaemonLocalDraftOperation(
+            localOperationId: "operation",
+            resourceKind: .memory,
+            operation: .rename(
+                id: "removed-memory",
+                newPath: "renamed.md",
+                description: nil
+            ),
+            source: .desktop,
+            syncStatus: .synced,
+            lastError: nil,
+            createdAt: "2026-08-19T00:00:00Z",
+            updatedAt: "2026-08-19T00:00:00Z"
+        )
+
+        let mapped = WorkspaceLoader.mapDraft(
+            .init(draft: summary, operations: [operation]),
+            resources: [unloaded]
+        )
+
+        XCTAssertFalse(mapped.documentBaselineAvailable)
+        XCTAssertEqual(mapped.document.path, "renamed.md")
+    }
+
+    func testUnloadedResourceRenamePlanCarriesNoPlaceholderContent() {
+        var resource = projectResource(
+            id: "memory",
+            path: "old.md",
+            hash: "sha256:body"
+        )
+        resource.contentLoaded = false
+        resource.document.body = ""
+        let item = MemoryListItem(
+            id: resource.id,
+            resource: resource,
+            draft: nil,
+            inherited: false
+        )
+
+        let plan = WorkspaceStore.documentRenamePlan(
+            for: item,
+            currentDraft: nil,
+            newPath: "renamed.md"
+        )
+
+        XCTAssertEqual(
+            plan,
+            .init(targetId: "memory", newPath: "renamed.md")
+        )
+        XCTAssertTrue(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+
+        let dirty = EditableMemoryDocument(
+            title: "old.md",
+            path: "old.md",
+            body: "unsaved body"
+        )
+        let retargeted = WorkspaceStore.documentByRetargetingPendingSave(
+            dirty,
+            to: "renamed.md"
+        )
+        XCTAssertEqual(retargeted.path, "renamed.md")
+        XCTAssertEqual(retargeted.body, "unsaved body")
+    }
+
+    func testPureCreateDraftDoesNotOfferATargetBackedRename() {
+        let draft = localDraft(id: "draft", targetId: nil)
+        let item = MemoryListItem(
+            id: draft.id,
+            resource: nil,
+            draft: draft,
+            inherited: false
+        )
+
+        XCTAssertNil(WorkspaceStore.documentRenamePlan(
+            for: item,
+            currentDraft: draft,
+            newPath: "renamed.md"
+        ))
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+    }
+
+    func testDraftUploadBarrierRequiresASettledServerDraft() {
+        XCTAssertEqual(
+            WorkspaceStore.draftUploadBarrierDecision(
+                serverDraftId: nil,
+                pendingOperationCount: 1,
+                failedOperationCount: 0,
+                operationStates: [.queued],
+                failureMessage: nil
+            ),
+            .wait
+        )
+        XCTAssertEqual(
+            WorkspaceStore.draftUploadBarrierDecision(
+                serverDraftId: "server-draft",
+                pendingOperationCount: 0,
+                failedOperationCount: 0,
+                operationStates: [.synced],
+                failureMessage: nil
+            ),
+            .ready
+        )
+        XCTAssertEqual(
+            WorkspaceStore.draftUploadBarrierDecision(
+                serverDraftId: "server-draft",
+                pendingOperationCount: 0,
+                failedOperationCount: 1,
+                operationStates: [.failed],
+                failureMessage: "upload failed"
+            ),
+            .failed("upload failed")
+        )
+    }
+
+    func testStaleDiffRefusesAnUnloadedHistoricalBaseline() {
+        var local = projectResource(id: "memory", path: "memory.md", hash: "old")
+        local.contentLoaded = false
+        local.document.body = ""
+        let remote = projectResource(
+            id: "memory",
+            path: "memory.md",
+            hash: "new",
+            commitId: "commit-new"
+        )
+        let snapshot = StaleResourceSyncSnapshot(
+            projectId: "project",
+            observedProjectRefCommitId: "commit-old",
+            observedSelectedOrgResourceIds: [],
+            observedOrgSelectionRevision: 1,
+            authoritativeCommitId: "commit-new",
+            authoritativeRefEtag: "\"commit-new\"",
+            selectedOrgResourceIds: [],
+            orgSelectionRevision: 1,
+            generation: UUID(),
+            local: local,
+            remote: remote
+        )
+
+        XCTAssertThrowsError(try WorkspaceStore.staleDocumentDiffTexts(snapshot)) { error in
+            XCTAssertEqual(error as? DocumentDiffError, .baselineUnavailable)
+        }
+    }
+
+    func testUnrepresentedDraftsKeepsTargetBackedDraftWhenAuthoritativeTargetIsMissing() {
+        let missingTarget = localDraft(
+            id: "draft-for-removed-resource",
+            targetId: "removed-resource"
+        )
+
+        let unrepresented = WorkspaceStore.unrepresentedDrafts(
+            [missingTarget],
+            authoritativeResourceIds: []
+        )
+
+        XCTAssertEqual(unrepresented.map(\.id), [missingTarget.id])
+    }
+
+    func testUnrepresentedDraftsFiltersDraftWithAnAuthoritativeTarget() {
+        let represented = localDraft(
+            id: "draft-for-current-resource",
+            targetId: "current-resource"
+        )
+
+        let unrepresented = WorkspaceStore.unrepresentedDrafts(
+            [represented],
+            authoritativeResourceIds: ["current-resource"]
+        )
+
+        XCTAssertTrue(unrepresented.isEmpty)
+    }
+
+    func testMissingTargetDraftUsesTargetIdAsItsStableItemIdentity() {
+        let missingTarget = localDraft(
+            id: "local-draft-id",
+            targetId: "removed-authoritative-resource"
+        )
+        let unrepresented = WorkspaceStore.unrepresentedDrafts(
+            [missingTarget],
+            authoritativeResourceIds: []
+        )
+
+        let itemIds = unrepresented.map { $0.targetId ?? $0.id }
+
+        XCTAssertEqual(itemIds, ["removed-authoritative-resource"])
+        XCTAssertNotEqual(itemIds.first, missingTarget.id)
     }
 
     func testCenteredTextViewUsesMinimumInsetInNarrowPane() {
@@ -329,6 +906,54 @@ final class WorkspaceNavigationTests: XCTestCase {
             DocumentSessionCommand.closeReconciliation(itemId: "document").itemId,
             "document"
         )
+    }
+
+    func testKeepFileAfterDeleteConflictUsesCurrentContentTemplate() {
+        let resource = ServerDraftResourceReference(
+            scope: "project",
+            id: "memory",
+            path: "memory.md"
+        )
+        let deleted = ReconciliationResourceState(
+            exists: false,
+            resource: resource,
+            content: nil
+        )
+        let candidate = DraftReconciliationCandidate(
+            candidateId: "candidate",
+            draftId: "draft",
+            draftVersion: 2,
+            baseCommitId: "base",
+            currentCommitId: "current",
+            status: .conflicts,
+            baseState: .init(
+                exists: true,
+                resource: resource,
+                content: .init(description: "base description", content: "Base body")
+            ),
+            currentState: .init(
+                exists: true,
+                resource: resource,
+                content: .init(description: "current description", content: "Remote body")
+            ),
+            draftState: deleted,
+            proposedState: deleted,
+            conflicts: [
+                .init(kind: "delete_modify", field: "exists", base: "true", current: "true", draft: "false")
+            ],
+            resultHash: nil,
+            valid: true,
+            createdAt: "2026-08-19T00:00:00Z",
+            invalidatedAt: nil
+        )
+
+        let template = DraftReconciliationView.resolutionContentTemplate(
+            for: candidate,
+            preferredState: deleted
+        )
+
+        XCTAssertEqual(template.primaryText, "Remote body")
+        XCTAssertEqual(template.description, "current description")
     }
 
     func testOpeningOrgScopedItemWithDraftStaysVisibleInOrgView() {
@@ -381,6 +1006,172 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertTrue(store.visibleTabs.contains { $0.id == store.activeTabId })
     }
 
+    func testMemoryTreeResourcesUseOrgCatalogInOrgView() {
+        let selectedOrg = orgResource(id: "selected-org")
+        let unselectedOrg = orgResource(id: "unselected-org")
+        let project = projectResource(id: "project", path: "project.md", hash: "project-hash")
+
+        let visible = WorkspaceStore.memoryTreeResources(
+            [selectedOrg, unselectedOrg, project],
+            activeProjectId: nil,
+            selectedOrgResourceIds: []
+        )
+
+        XCTAssertEqual(Set(visible.map(\.id)), ["selected-org", "unselected-org"])
+    }
+
+    func testMemoryTreeResourcesUseSelectedOrgAndCompatibilityProjectAuthority() {
+        let selectedOrg = orgResource(id: "selected-org")
+        let unselectedOrg = orgResource(id: "unselected-org")
+        let project = projectResource(id: "project", path: "project.md", hash: "project-hash")
+        let otherProject = projectResource(
+            id: "other-project",
+            path: "other.md",
+            hash: "other-hash",
+            projectId: "other"
+        )
+
+        let visible = WorkspaceStore.memoryTreeResources(
+            [selectedOrg, unselectedOrg, project, otherProject],
+            activeProjectId: "project",
+            selectedOrgResourceIds: ["selected-org"]
+        )
+
+        XCTAssertEqual(Set(visible.map(\.id)), ["selected-org", "project"])
+    }
+
+    func testMemoryTreeDraftsAreIsolatedByCarryingProject() {
+        let current = localDraft(id: "current", targetId: nil)
+        let other = localDraft(id: "other", targetId: nil, projectId: "other")
+        let org = localDraft(id: "org", targetId: nil, scope: .org)
+
+        XCTAssertEqual(
+            WorkspaceStore.memoryTreeDrafts(
+                [current, other, org],
+                activeProjectId: "project"
+            ).map(\.id),
+            ["current", "org"]
+        )
+        XCTAssertEqual(
+            WorkspaceStore.memoryTreeDrafts(
+                [current, other, org],
+                activeProjectId: nil
+            ).map(\.id),
+            ["org"]
+        )
+    }
+
+    func testMemoryTreePrefersTheNewestDraftForOneTarget() {
+        let older = localDraft(
+            id: "older",
+            targetId: "memory",
+            updatedAt: "2026-08-19T00:00:00Z"
+        )
+        let newer = localDraft(
+            id: "newer",
+            targetId: "memory",
+            updatedAt: "2026-08-20T00:00:00Z"
+        )
+
+        XCTAssertEqual(
+            WorkspaceStore.preferredMemoryTreeDrafts([newer, older]).map(\.id),
+            ["newer"]
+        )
+    }
+
+    func testSelectedOrgItemRetainsItsProjectDraftContext() {
+        let resource = orgResource(id: "org")
+        let item = MemoryListItem(
+            id: resource.id,
+            resource: resource,
+            draft: nil,
+            inherited: true,
+            projectContextId: "project"
+        )
+
+        XCTAssertEqual(item.projectId, "project")
+    }
+
+    func testProjectLocalCreateCannotRequestReviewUntilOrgPublishingExists() {
+        let localCreate = localDraft(id: "local", targetId: nil)
+        let legacyProjectUpdate = localDraft(id: "legacy", targetId: "project-memory")
+        let orgCreate = localDraft(id: "org", targetId: nil, scope: .org)
+
+        XCTAssertFalse(WorkspaceStore.canRequestReview(localCreate))
+        XCTAssertTrue(WorkspaceStore.canRequestReview(legacyProjectUpdate))
+        XCTAssertTrue(WorkspaceStore.canRequestReview(orgCreate))
+    }
+
+    func testMemoryTabsAreScopedToTheProjectViewContext() {
+        let orgTab = tab(itemId: "shared", projectId: nil)
+        let projectTab = tab(itemId: "shared", projectId: "project")
+
+        XCTAssertTrue(orgTab.isVisible(in: .memory, projectId: nil))
+        XCTAssertFalse(orgTab.isVisible(in: .memory, projectId: "project"))
+        XCTAssertTrue(projectTab.isVisible(in: .memory, projectId: "project"))
+        XCTAssertFalse(projectTab.isVisible(in: .memory, projectId: nil))
+    }
+
+    func testProjectMemoryTabRequiresSelectionOrALocalDraft() {
+        let org = orgResource(id: "org")
+
+        XCTAssertFalse(WorkspaceStore.memoryTabIsAvailable(
+            itemId: org.id,
+            projectId: "project",
+            selectedOrgResourceIds: [],
+            resources: [org],
+            drafts: []
+        ))
+        XCTAssertTrue(WorkspaceStore.memoryTabIsAvailable(
+            itemId: org.id,
+            projectId: "project",
+            selectedOrgResourceIds: [org.id],
+            resources: [org],
+            drafts: []
+        ))
+        XCTAssertTrue(WorkspaceStore.memoryTabIsAvailable(
+            itemId: org.id,
+            projectId: "project",
+            selectedOrgResourceIds: [],
+            resources: [org],
+            drafts: [localDraft(id: "draft", targetId: org.id, scope: .org)]
+        ))
+
+        XCTAssertFalse(WorkspaceStore.memoryTabIsAvailable(
+            itemId: "discarded-create",
+            projectId: "project",
+            selectedOrgResourceIds: [],
+            resources: [],
+            drafts: []
+        ))
+        XCTAssertTrue(WorkspaceStore.memoryTabIsAvailable(
+            itemId: "still-loading",
+            projectId: "project",
+            selectedOrgResourceIds: [],
+            resources: [],
+            drafts: [],
+            allowsUnresolved: true
+        ))
+    }
+
+    func testOrgMemoryTabClosesAfterItsLocalCreateDisappears() {
+        XCTAssertFalse(WorkspaceStore.orgMemoryTabIsAvailable(
+            itemId: "discarded-create",
+            resources: [],
+            drafts: []
+        ))
+        XCTAssertTrue(WorkspaceStore.orgMemoryTabIsAvailable(
+            itemId: "org-resource",
+            resources: [orgResource(id: "org-resource")],
+            drafts: []
+        ))
+        XCTAssertTrue(WorkspaceStore.orgMemoryTabIsAvailable(
+            itemId: "org-draft",
+            resources: [],
+            drafts: [localDraft(id: "org-draft", targetId: nil, scope: .org)]
+        ))
+    }
+
     private func tab(
         itemId: String,
         section: WorkspaceSection = .memory,
@@ -409,6 +1200,105 @@ final class WorkspaceNavigationTests: XCTestCase {
             document: .init(title: URL(fileURLWithPath: path).lastPathComponent, path: path, body: "")
         )
         return MemoryListItem(id: resource.id, resource: resource, draft: nil, inherited: false)
+    }
+
+    private func projectResource(
+        id: String,
+        path: String,
+        hash: String,
+        commitId: String = "commit-old",
+        projectId: String = "project"
+    ) -> MemoryResource {
+        MemoryResource(
+            id: id,
+            scope: .project,
+            projectId: projectId,
+            projectName: "Project",
+            kind: .context,
+            contentHash: hash,
+            updatedAt: "2026-08-19T00:00:00Z",
+            refCommitId: commitId,
+            contentLoaded: true,
+            document: .init(title: path, path: path, body: "body-\(id)")
+        )
+    }
+
+    private func orgResource(id: String) -> MemoryResource {
+        MemoryResource(
+            id: id,
+            scope: .org,
+            projectId: nil,
+            projectName: nil,
+            kind: .context,
+            contentHash: "hash-\(id)",
+            updatedAt: "2026-08-19T00:00:00Z",
+            refCommitId: "org-commit",
+            contentLoaded: true,
+            document: .init(title: id, path: "\(id).md", body: "body-\(id)")
+        )
+    }
+
+    private func localDraft(
+        id: String,
+        targetId: String?,
+        projectId: String = "project",
+        scope: MemoryScope = .project,
+        updatedAt: String = "2026-08-19T00:00:00Z"
+    ) -> LocalDraft {
+        LocalDraft(
+            id: id,
+            projectId: projectId,
+            serverId: "server-\(id)",
+            serverVersion: 1,
+            baseCommitId: "commit-old",
+            currentCommitId: "commit-new",
+            freshness: .behind,
+            hasUpstreamResourceChanges: true,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
+            scope: scope,
+            kind: .context,
+            targetId: targetId,
+            status: .open,
+            origin: .desktop,
+            syncStatus: .synced,
+            updatedAt: updatedAt,
+            document: .init(title: "Memory", path: "memory.md", body: "draft body"),
+            isDeletion: false
+        )
+    }
+
+    private func projectCheckout(
+        commitId: String,
+        resources: [DaemonProjectCheckoutResource]
+    ) -> DaemonProjectCheckout {
+        DaemonProjectCheckout(
+            projectId: "project",
+            commitId: commitId,
+            refEtag: "\"\(commitId)\"",
+            commitCreatedAt: "2026-08-19T01:00:00Z",
+            orgSelectionRevision: 1,
+            selectedOrgResourceIds: resources.filter { $0.scope == .org }.map(\.resourceId),
+            resources: resources,
+            ready: true
+        )
+    }
+
+    private func checkoutResource(
+        id: String,
+        path: String,
+        hash: String,
+        scope: DaemonDraftScope = .project
+    ) -> DaemonProjectCheckoutResource {
+        DaemonProjectCheckoutResource(
+            resourceId: id,
+            scope: scope,
+            resourceKind: .memory,
+            projectId: scope == .project ? "project" : nil,
+            path: path,
+            contentHash: hash,
+            content: .init(description: nil, content: "remote-\(id)")
+        )
     }
 
     private func reviewRecord(
@@ -447,4 +1337,23 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+}
+
+private actor WorkspaceNavigationTestLatch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
+    }
 }

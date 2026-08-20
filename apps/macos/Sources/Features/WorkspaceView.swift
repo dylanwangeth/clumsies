@@ -106,6 +106,13 @@ enum WorkspaceColumnLayout: Equatable {
     }
 }
 
+private enum DocumentSyncReadiness {
+    case ready
+    case pending
+    case failed
+    case unavailable
+}
+
 struct IssueBoardRoute: Hashable {
     let issueId: String
 }
@@ -205,7 +212,10 @@ struct WorkspaceView: View {
                             } label: {
                                 Image(systemName: "chevron.left")
                             }
-                            .disabled(documentReconciliationState == nil && !store.canGoBack)
+                            .disabled(
+                                documentReconciliationState?.isUpdating == true
+                                    || (documentReconciliationState == nil && !store.canGoBack)
+                            )
                             .help(documentReconciliationState == nil ? "Go Back" : "Back to Document")
                             .accessibilityLabel(
                                 documentReconciliationState == nil ? "Go Back" : "Back to Document"
@@ -302,15 +312,39 @@ struct WorkspaceView: View {
                             }
 
                             if documentReconciliationState == nil, documentNeedsSync {
-                                Button {
-                                    store.syncDocument(item)
-                                } label: {
-                                    Image(systemName: item.draft?.reconciliation == .conflicts
-                                        ? "exclamationmark.triangle"
-                                        : "arrow.trianglehead.2.clockwise.rotate.90")
+                                switch documentSyncReadiness {
+                                case .pending:
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .frame(width: 24, height: 24)
+                                        .help("Saving draft changes before sync")
+                                        .accessibilityLabel("Saving draft changes before sync")
+                                case .failed:
+                                    Button {
+                                        Task { await store.retrySync() }
+                                    } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    .help("Retry Draft Sync")
+                                    .accessibilityLabel("Retry Draft Sync")
+                                case .unavailable:
+                                    Button {} label: {
+                                        Image(systemName: "exclamationmark.triangle")
+                                    }
+                                    .disabled(true)
+                                    .help("Draft is not available on the server yet")
+                                    .accessibilityLabel("Draft is not available on the server yet")
+                                case .ready:
+                                    Button {
+                                        store.syncDocument(item)
+                                    } label: {
+                                        Image(systemName: item.draft?.reconciliation == .conflicts
+                                            ? "exclamationmark.triangle"
+                                            : "arrow.trianglehead.2.clockwise.rotate.90")
+                                    }
+                                    .help("Sync")
+                                    .accessibilityLabel("Sync")
                                 }
-                                .help("Sync")
-                                .accessibilityLabel("Sync")
                             }
 
                             Picker("Document View", selection: documentMode) {
@@ -319,12 +353,18 @@ struct WorkspaceView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
-                            .disabled(documentReconciliationState != nil)
+                            .disabled(
+                                documentReconciliationState != nil
+                                    || availableDocumentModes.count < 2
+                                    || store.isSynchronizingDocument(item.id)
+                            )
                             .help("Document View")
                             .accessibilityLabel("Document View")
 
                             Menu {
-                                if let draft = item.draft, draft.status == .open {
+                                if let draft = item.draft,
+                                   draft.status == .open,
+                                   WorkspaceStore.canRequestReview(draft) {
                                     Button("Request Review") {
                                         store.pendingDocumentCommand = .requestReview(
                                             itemId: item.id,
@@ -341,7 +381,9 @@ struct WorkspaceView: View {
                                         )
                                     }
                                 }
-                                if !item.inherited {
+                                if store.canEditMemory(item)
+                                    && (item.resource != nil || item.draft?.targetId != nil)
+                                    && item.draft?.isDeletion != true {
                                     Button("Move to Trash", role: .destructive) {
                                         store.pendingDocumentCommand = .moveToTrash(itemId: item.id)
                                     }
@@ -349,6 +391,7 @@ struct WorkspaceView: View {
                             } label: {
                                 Image(systemName: "ellipsis")
                             }
+                            .disabled(store.isSynchronizingDocument(item.id))
                             .menuIndicator(.hidden)
                             .help("Document Actions")
                             .accessibilityLabel("Document Actions")
@@ -1103,7 +1146,10 @@ struct WorkspaceView: View {
     }
 
     private var availableDocumentModes: [WorkbenchTabMode] {
-        store.currentItem?.supportsMarkdownPreview == true
+        if store.currentItem?.draft?.documentBaselineAvailable == false {
+            return [.diff]
+        }
+        return store.currentItem?.supportsMarkdownPreview == true
             ? [.preview, .source, .diff]
             : [.source, .diff]
     }
@@ -1121,8 +1167,23 @@ struct WorkspaceView: View {
     private var documentNeedsSync: Bool {
         guard let item = store.currentItem else { return false }
         if item.draft?.freshness == .behind { return true }
-        return item.draft == nil
-            && item.resource.map { store.staleResourceIds.contains($0.id) } == true
+        return item.resource.map { store.staleResourceIds.contains($0.id) } == true
+    }
+
+    private var documentSyncReadiness: DocumentSyncReadiness {
+        guard let item = store.currentItem else { return .ready }
+        if store.isSynchronizingDocument(item.id) { return .pending }
+        guard let draft = item.draft else {
+            return .ready
+        }
+        switch draft.syncStatus {
+        case .queued, .syncing, .retrying:
+            return .pending
+        case .failed:
+            return .failed
+        case .synced:
+            return draft.serverId == nil ? .unavailable : .ready
+        }
     }
 
     private var searchResults: [SearchEntry] {
@@ -1131,12 +1192,7 @@ struct WorkspaceView: View {
         var entries: [SearchEntry] = []
         switch store.selectedSection {
         case .memory:
-            entries = memorySearchEntries(needle: needle) { item in
-                if item.scope == .org {
-                    return true
-                }
-                return item.projectId == store.activeProjectId
-            }
+            entries = memorySearchEntries(needle: needle)
         case .bundles:
             for bundle in store.bundles
             where "\(bundle.name) \(bundle.description)".localizedLowercase.contains(needle) {
@@ -1154,21 +1210,8 @@ struct WorkspaceView: View {
         return Array(entries.prefix(30))
     }
 
-    private func memorySearchEntries(
-        needle: String,
-        inScope: (MemoryListItem) -> Bool
-    ) -> [SearchEntry] {
-        let resourceItems = store.resources.map { resource -> MemoryListItem in
-            let draft = store.drafts.first {
-                $0.targetId == resource.id && $0.status != .discarded && $0.status != .merged
-            }
-            return .init(id: resource.id, resource: resource, draft: draft, inherited: false)
-        }
-        let newDrafts = store.drafts.filter { $0.targetId == nil }.map {
-            MemoryListItem(id: $0.id, resource: nil, draft: $0, inherited: false)
-        }
-        return (resourceItems + newDrafts)
-            .filter(inScope)
+    private func memorySearchEntries(needle: String) -> [SearchEntry] {
+        store.visibleMemoryItems
             .compactMap { item in
                 let document = item.document
                 let haystack = "\(document.title) \(document.path) \(document.body) \(item.kind.title)"
@@ -1244,10 +1287,10 @@ private struct MemoryProjectFilter: View {
     var body: some View {
         ToolbarFilterMenu(
             selectionTitle: store.activeProject?.name ?? "Org",
-            isLoading: store.loadingProjectId != nil
+            isLoading: store.isSwitchingMemoryContext
         ) {
             Button {
-                store.showOrgMemory()
+                Task { await store.showOrgMemory() }
             } label: {
                 if store.activeProjectId == nil {
                     Label("Org", systemImage: "checkmark")
@@ -1255,6 +1298,7 @@ private struct MemoryProjectFilter: View {
                     Label("Org", systemImage: "building.2")
                 }
             }
+            .disabled(store.isSwitchingMemoryContext)
 
             if !store.projects.isEmpty {
                 Divider()
@@ -1275,7 +1319,7 @@ private struct MemoryProjectFilter: View {
                             Text(project.name)
                         }
                     }
-                    .disabled(store.loadingProjectId != nil)
+                    .disabled(store.isSwitchingMemoryContext)
                 }
             }
         }

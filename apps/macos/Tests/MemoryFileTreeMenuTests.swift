@@ -53,10 +53,11 @@ final class MemoryFileTreeMenuTests: XCTestCase {
 
     // MARK: - Org view
 
-    func testOrgViewAddableIncludesAllOrgItems() {
+    func testOrgViewAddableIncludesPublishedOrgItems() {
         let items = [
             resourceItem("org-a", scope: .org, inherited: false),
             resourceItem("org-b", scope: .org, inherited: false),
+            draftItem("draft-a", scope: .org),
         ]
         XCTAssertEqual(MemoryFileTreeMenu.addable(items, inOrgView: true).map(\.id), ["org-a", "org-b"])
     }
@@ -97,7 +98,7 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeMenu.removable(items, inOrgView: false).map(\.id), ["org-ref"])
     }
 
-    func testProjectViewManageableOnlyProjectOwned() {
+    func testProjectViewManageableIncludesSelectedOrgDraftTargets() {
         let items = [
             resourceItem("org-ref", scope: .org, inherited: true),
             resourceItem("org-unref", scope: .org, inherited: false),
@@ -105,9 +106,12 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         ]
         XCTAssertEqual(
             items.map { MemoryFileTreeMenu.isManageable($0, inOrgView: false) },
-            [false, false, true]
+            [true, false, true]
         )
-        XCTAssertEqual(MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id), ["own-a"])
+        XCTAssertEqual(
+            MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id),
+            ["org-ref", "own-a"]
+        )
     }
 
     // MARK: - Mixed selection stays predictable
@@ -119,6 +123,9 @@ final class MemoryFileTreeMenuTests: XCTestCase {
             resourceItem("org-unref", scope: .org, inherited: false),
         ]
         XCTAssertEqual(MemoryFileTreeMenu.removable(items, inOrgView: false).map(\.id), ["org-ref"])
-        XCTAssertEqual(MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id), ["own-a"])
+        XCTAssertEqual(
+            MemoryFileTreeMenu.trashable(items, inOrgView: false).map(\.id),
+            ["org-ref", "own-a"]
+        )
     }
 }
