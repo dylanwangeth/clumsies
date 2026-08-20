@@ -2097,6 +2097,187 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
 }
 
 #[tokio::test]
+async fn same_org_target_can_have_active_drafts_in_multiple_projects() {
+    let (_root, _state, service) = common::test_daemon().await;
+    let target_id = "mem_shared_org";
+    let project_p = "prj_p";
+    let project_q = "prj_q";
+
+    let q_write = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_q.to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("Q overlay"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    let p_write = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_p.to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("P overlay"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    assert_ne!(q_write.draft_id, p_write.draft_id);
+
+    let p_second_write = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: project_p.to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("P overlay again"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(p_second_write.draft_id, p_write.draft_id);
+
+    let q_detail = service.get_draft(&q_write.draft_id).await.unwrap();
+    let p_detail = service.get_draft(&p_write.draft_id).await.unwrap();
+    let q_summary = &q_detail.draft;
+    let p_summary = &p_detail.draft;
+
+    assert_eq!(q_summary.project_id, project_q);
+    assert_eq!(q_summary.scope, DaemonDraftScope::Org);
+    assert_eq!(q_summary.target_id.as_deref(), Some(target_id));
+    assert_eq!(p_summary.project_id, project_p);
+    assert_eq!(p_summary.scope, DaemonDraftScope::Org);
+    assert_eq!(p_summary.target_id.as_deref(), Some(target_id));
+    assert_eq!(q_detail.operations.len(), 1);
+    assert_eq!(p_detail.operations.len(), 2);
+}
+
+#[tokio::test]
+async fn explicit_draft_id_rejects_a_different_project_or_scope() {
+    let (_root, _state, service) = common::test_daemon().await;
+    let target_id = "mem_explicit_identity";
+    let created = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_p".to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("P overlay"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    let wrong_project = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(created.draft_id.clone()),
+            base_commit_id: None,
+            project_id: "prj_q".to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("Wrong project"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await;
+    assert!(matches!(wrong_project, Err(DaemonError::InvalidRequest(_))));
+
+    let wrong_scope = service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: Some(created.draft_id),
+            base_commit_id: None,
+            project_id: "prj_p".to_owned(),
+            scope: DaemonDraftScope::Project,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: None,
+                update: Some(DaemonUpdateDraftOperation::Content(
+                    DaemonContentDraftUpdate {
+                        id: target_id.to_owned(),
+                        content: context_content("Wrong scope"),
+                        description: None,
+                    },
+                )),
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await;
+    assert!(matches!(wrong_scope, Err(DaemonError::InvalidRequest(_))));
+}
+
+#[tokio::test]
 async fn deleting_a_draft_created_resource_discards_the_draft() {
     let (_root, _state, service) = common::test_daemon().await;
     let created = service

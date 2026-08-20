@@ -57,11 +57,15 @@ pub(crate) async fn resolve_local_draft(
         .fetch_optional(&mut **tx)
         .await?
         .ok_or_else(|| DaemonError::NotFound(format!("local draft not found: {draft_id}")))?;
+        let stored_scope: String = row.try_get("resource_scope")?;
         let stored_kind: String = row.try_get("resource_kind")?;
         let stored_project_id: String = row.try_get("project_id")?;
-        if stored_project_id != project_id || stored_kind != resource.as_str() {
+        if stored_project_id != project_id
+            || stored_scope != scope.as_str()
+            || stored_kind != resource.as_str()
+        {
             return Err(DaemonError::InvalidRequest(format!(
-                "local draft {draft_id} belongs to a different project or resource kind"
+                "local draft {draft_id} belongs to a different project, scope, or resource kind"
             )));
         }
         let stored_base_commit_id: Option<String> = row.try_get("base_commit_id")?;
@@ -119,11 +123,17 @@ pub(crate) async fn resolve_local_draft(
         "SELECT draft_id, project_id, resource_scope, resource_kind, base_commit_id
          FROM local_drafts
          WHERE (draft_id = $1 OR target_id = $1)
+           AND project_id = $2
+           AND resource_scope = $3
+           AND resource_kind = $4
            AND status IN ('open', 'submitted')
          ORDER BY updated_at DESC
          LIMIT 1",
     )
     .bind(target_id)
+    .bind(project_id)
+    .bind(scope.as_str())
+    .bind(resource.as_str())
     .fetch_optional(&mut **tx)
     .await?
     {
