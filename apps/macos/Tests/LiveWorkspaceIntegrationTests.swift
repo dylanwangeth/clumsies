@@ -79,7 +79,7 @@ final class LiveWorkspaceIntegrationTests: XCTestCase {
     @MainActor
     private func exerciseDraft(kind: MemoryKind, store: WorkspaceStore) async throws {
         let originalDraftIds = Set(store.drafts.map(\.id))
-        await store.createMemory(kind: kind, scope: .project)
+        await store.createMemory(kind: kind, scope: .org)
         let createdDraft = try XCTUnwrap(store.drafts.first { !originalDraftIds.contains($0.id) })
 
         do {

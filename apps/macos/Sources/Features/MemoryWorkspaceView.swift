@@ -100,25 +100,27 @@ private struct EmptyWorkspaceView: View {
 private struct EmptyMemoryCollectionView: View {
     @ObservedObject var store: WorkspaceStore
 
-    private var scope: MemoryScope {
-        store.activeProjectId == nil ? .org : .project
-    }
-
     var body: some View {
         ContentUnavailableView {
             Label("No Memory", systemImage: "doc")
         } description: {
-            Text("Create the first memory here.")
-        } actions: {
-            Button("New Memory") {
-                Task {
-                    await store.createMemory(kind: store.selectedKind, scope: scope)
-                }
+            if store.activeProjectId == nil {
+                Text("Select a project to propose a new organization memory.")
+            } else {
+                Text("Propose the first organization memory for this project.")
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(
-                !store.canCreateMemory(kind: store.selectedKind, scope: scope)
-            )
+        } actions: {
+            if let scope = MemoryFileTreeMenu.creationScope(inOrgView: store.activeProjectId == nil) {
+                Button("Propose New Organization Memory") {
+                    Task {
+                        await store.createMemory(kind: store.selectedKind, scope: scope)
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    !store.canCreateMemory(kind: store.selectedKind, scope: scope)
+                )
+            }
         }
     }
 }
@@ -144,6 +146,31 @@ private struct ProjectPreparationView: View {
     }
 }
 
+private struct PendingOrganizationDeletion: Identifiable {
+    let id = UUID()
+    let items: [MemoryListItem]
+
+    var title: String {
+        items.count == 1
+            ? "Propose Organization Deletion?"
+            : "Propose \(items.count) Organization Deletions?"
+    }
+
+    var confirmationTitle: String {
+        items.count == 1 ? "Propose Deletion" : "Propose Deletions"
+    }
+
+    var message: String {
+        let subject = items.count == 1
+            ? "this organization memory"
+            : "these \(items.count) organization memories"
+        let proposal = items.count == 1 ? "a deletion draft proposal" : "deletion draft proposals"
+        let object = items.count == 1 ? "it" : "them"
+        return "This creates \(proposal). If reviewed and merged, \(subject) "
+            + "will be removed for every project that includes \(object)."
+    }
+}
+
 private struct FileTreeView: View {
     @ObservedObject var store: WorkspaceStore
     let items: [MemoryListItem]
@@ -153,6 +180,7 @@ private struct FileTreeView: View {
     @State private var initializedExpansion = false
     @State private var itemToRename: MemoryListItem?
     @State private var proposedName = ""
+    @State private var pendingOrganizationDeletion: PendingOrganizationDeletion?
 
     private var roots: [FileTreeNode] {
         FileTreeNode.build(items)
@@ -205,8 +233,13 @@ private struct FileTreeView: View {
         .onChange(of: store.activeVisibleTab?.itemId ?? store.selectedItemId) { _, _ in
             synchronizeSelectionWithActiveItem()
         }
+        .onChange(of: store.activeProjectId) { _, _ in
+            itemToRename = nil
+            proposedName = ""
+            pendingOrganizationDeletion = nil
+        }
         .alert(
-            "Rename Memory",
+            "Propose Organization Rename",
             isPresented: Binding(
                 get: { itemToRename != nil },
                 set: {
@@ -221,10 +254,25 @@ private struct FileTreeView: View {
             Button("Cancel", role: .cancel) {
                 itemToRename = nil
             }
-            Button("Rename") {
+            Button("Propose Rename") {
                 renameSelectedItem()
             }
             .disabled(!isValidProposedName)
+        } message: {
+            Text(
+                "This creates a draft proposal. If it is reviewed and merged, "
+                    + "the organization memory will be renamed for every project that includes it."
+            )
+        }
+        .alert(item: $pendingOrganizationDeletion) { deletion in
+            Alert(
+                title: Text(deletion.title),
+                message: Text(deletion.message),
+                primaryButton: .destructive(Text(deletion.confirmationTitle)) {
+                    deleteItems(deletion.items)
+                },
+                secondaryButton: .cancel()
+            )
         }
     }
 
@@ -328,13 +376,12 @@ private struct FileTreeView: View {
         let removableItems = MemoryFileTreeMenu.removable(targetItems, inOrgView: isOrgView)
         let trashableItems = MemoryFileTreeMenu.trashable(targetItems, inOrgView: isOrgView)
             .filter { store.canEditMemory($0) }
-        let singleManageable = singleItem.map {
-            MemoryFileTreeMenu.isManageable($0, inOrgView: isOrgView)
-                && store.canEditMemory($0)
-        } ?? false
         let singleRenameable = singleItem.map {
             MemoryFileTreeMenu.canRename($0, inOrgView: isOrgView)
                 && store.canEditMemory($0)
+        } ?? false
+        let singleTrashable = singleItem.map { item in
+            trashableItems.contains { $0.id == item.id }
         } ?? false
         let singleStale = singleItem.map { item in
             item.resource.map { store.staleResourceIds.contains($0.id) } == true
@@ -348,8 +395,9 @@ private struct FileTreeView: View {
         let trashSelectionContainsSynchronizingDocument = trashableItems.contains {
             store.isSynchronizingDocument($0.id)
         }
+        let hasDraftAction = !isOrgView && singleItem?.draft != nil
         let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
-            || (singleItem?.draft != nil) || singleStale
+            || hasDraftAction || singleStale
 
         // ---- generic document operations (standard macOS conventions) ----
         if let singleItem {
@@ -357,23 +405,21 @@ private struct FileTreeView: View {
             if singleItem.supportsMarkdownPreview {
                 Button("Open Source") { store.open(singleItem, mode: .source) }
             }
-            if singleManageable {
-                if singleRenameable {
-                    Button("Rename…") { beginRenaming(singleItem) }
-                        .disabled(singleSynchronizing)
-                }
-                if singleItem.resource != nil && singleItem.draft?.isDeletion != true {
-                    Button("Move to Trash", role: .destructive) {
-                        Task { await store.delete(singleItem) }
-                    }
+            if singleRenameable {
+                Button("Propose Organization Rename…") { beginRenaming(singleItem) }
                     .disabled(singleSynchronizing)
+            }
+            if singleTrashable {
+                Button("Propose Organization Deletion", role: .destructive) {
+                    proposeOrganizationDeletion([singleItem])
                 }
+                .disabled(singleSynchronizing)
             }
         } else if !targetItems.isEmpty {
             Button("Open") { targetItems.forEach { store.open($0) } }
             if !trashableItems.isEmpty {
-                Button(moveToTrashTitle(count: trashableItems.count), role: .destructive) {
-                    deleteItems(trashableItems)
+                Button(organizationDeletionTitle(count: trashableItems.count), role: .destructive) {
+                    proposeOrganizationDeletion(trashableItems)
                 }
                 .disabled(trashSelectionContainsSynchronizingDocument)
             }
@@ -440,7 +486,7 @@ private struct FileTreeView: View {
                     store.syncDocument(singleItem)
                 }
             }
-            if let draft = singleItem.draft {
+            if !isOrgView, let draft = singleItem.draft {
                 Button("Discard Draft") {
                     Task { await store.discard(draft) }
                 }
@@ -449,20 +495,16 @@ private struct FileTreeView: View {
         }
 
         if targetItems.isEmpty {
-            Button("New Memory") {
-                Task {
-                    await store.createMemory(
-                        kind: store.selectedKind,
-                        scope: store.activeProjectId == nil ? .org : .project
-                    )
+            if let scope = MemoryFileTreeMenu.creationScope(inOrgView: isOrgView) {
+                Button("Propose New Organization Memory") {
+                    Task {
+                        await store.createMemory(kind: store.selectedKind, scope: scope)
+                    }
                 }
-            }
-            .disabled(
-                !store.canCreateMemory(
-                    kind: store.selectedKind,
-                    scope: store.activeProjectId == nil ? .org : .project
+                .disabled(
+                    !store.canCreateMemory(kind: store.selectedKind, scope: scope)
                 )
-            )
+            }
         }
     }
 
@@ -476,8 +518,15 @@ private struct FileTreeView: View {
         selectionAnchorId = itemId
     }
 
-    private func moveToTrashTitle(count: Int) -> String {
-        count == 1 ? "Move to Trash" : "Move \(count) Items to Trash"
+    private func organizationDeletionTitle(count: Int) -> String {
+        count == 1
+            ? "Propose Organization Deletion"
+            : "Propose \(count) Organization Deletions"
+    }
+
+    private func proposeOrganizationDeletion(_ items: [MemoryListItem]) {
+        guard !items.isEmpty else { return }
+        pendingOrganizationDeletion = .init(items: items)
     }
 
     private func deleteItems(_ items: [MemoryListItem]) {
@@ -549,6 +598,22 @@ enum MemoryFileTreeTitleTone: Equatable {
     }
 }
 
+enum MemoryFileTreeRowAccessory: Equatable {
+    case none
+    case legacyProjectReadOnly
+
+    static func resolve(item: MemoryListItem?) -> Self {
+        item?.resource?.scope == .project ? .legacyProjectReadOnly : .none
+    }
+
+    var help: String? {
+        switch self {
+        case .none: nil
+        case .legacyProjectReadOnly: "Legacy Project memory — read-only"
+        }
+    }
+}
+
 private struct FileTreeRow: View {
     let entry: VisibleFileTreeNode
     let isExpanded: Bool
@@ -580,20 +645,32 @@ private struct FileTreeRow: View {
             isExpanded: isExpanded,
             titleColor: titleColor
         ) {
-            SharedUpdateIndicator(
-                freshness: item?.draft?.freshness,
-                hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
-                reconciliation: item?.draft?.reconciliation,
-                isStale: isStale
-            )
+            HStack(spacing: 5) {
+                SharedUpdateIndicator(
+                    freshness: item?.draft?.freshness,
+                    hasUpstreamResourceChanges: item?.draft?.hasUpstreamResourceChanges == true,
+                    reconciliation: item?.draft?.reconciliation,
+                    isStale: isStale
+                )
+                if let help = rowAccessory.help {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .help(help)
+                        .accessibilityLabel(help)
+                }
+            }
         }
-        .help(entry.node.name)
+        .help(rowAccessory.help ?? entry.node.name)
     }
 
     private var titleColor: Color {
         MemoryFileTreeTitleTone.resolve(item: item).color
     }
 
+    private var rowAccessory: MemoryFileTreeRowAccessory {
+        MemoryFileTreeRowAccessory.resolve(item: item)
+    }
 }
 
 struct FileTreeDirectoryClickResult {
@@ -794,6 +871,11 @@ private struct DocumentSessionView: View {
     @State private var loadsDocumentDiff = false
     @State private var documentDiffError: String?
     @State private var documentDiffRetryRequest = 0
+    @State private var confirmsOrganizationDeletion = false
+
+    private var sessionKey: MemoryDocumentSessionKey? {
+        store.documentSessionKey(for: item)
+    }
 
     init(store: WorkspaceStore, item: MemoryListItem, mode: WorkbenchTabMode) {
         self.store = store
@@ -860,6 +942,17 @@ private struct DocumentSessionView: View {
                 )
             }
         }
+        .alert("Propose Organization Deletion?", isPresented: $confirmsOrganizationDeletion) {
+            Button("Cancel", role: .cancel) {}
+            Button("Propose Deletion", role: .destructive) {
+                moveToTrash()
+            }
+        } message: {
+            Text(
+                "This creates a deletion draft proposal. If reviewed and merged, "
+                    + "the organization memory will be removed for every project that includes it."
+            )
+        }
     }
 
     private var documentContent: some View {
@@ -868,9 +961,15 @@ private struct DocumentSessionView: View {
                 documentDiff
             } else if item.draft?.isDeletion == true {
                 ContentUnavailableView(
-                    "Pending deletion",
+                    item.draft?.scope == .org
+                        ? "Pending organization deletion"
+                        : "Pending deletion",
                     systemImage: "trash",
-                    description: Text("Discard the draft to keep this memory.")
+                    description: Text(
+                        item.draft?.scope == .org
+                            ? "Discard the draft proposal to keep this organization memory."
+                            : "Discard the draft to keep this memory."
+                    )
                 )
             } else if mode == .preview {
                 MarkdownPreview(source: renderedSource)
@@ -1063,7 +1162,7 @@ private struct DocumentSessionView: View {
     }
 
     private func handleDocumentCommand(_ command: DocumentSessionCommand?) {
-        guard let command, command.itemId == item.id else { return }
+        guard let command, command.sessionKey == sessionKey else { return }
         store.pendingDocumentCommand = nil
         switch command {
         case .requestReview(_, let draft):
@@ -1075,13 +1174,21 @@ private struct DocumentSessionView: View {
         case .closeReconciliation:
             closeReconciliation()
         case .moveToTrash:
-            moveToTrash()
+            guard store.canEditMemory(item),
+                  MemoryFileTreeMenu.canProposeOrganizationDeletion(
+                      item,
+                      inOrgView: store.activeProjectId == nil
+                  ) else {
+                return
+            }
+            confirmsOrganizationDeletion = true
         }
     }
 
     private func publishReconciliationToolbarState(canUpdate: Bool, isUpdating: Bool) {
+        guard let sessionKey else { return }
         store.documentReconciliationToolbarState = .init(
-            itemId: item.id,
+            sessionKey: sessionKey,
             isLoading: false,
             canUpdate: canUpdate,
             isUpdating: isUpdating
@@ -1089,12 +1196,13 @@ private struct DocumentSessionView: View {
     }
 
     private func closeReconciliation() {
-        store.finishDocumentReconciliation(for: item.id)
+        guard let sessionKey else { return }
+        store.finishDocumentReconciliation(for: sessionKey)
         clearReconciliationToolbarState()
     }
 
     private func clearReconciliationToolbarState() {
-        guard store.documentReconciliationToolbarState?.itemId == item.id else { return }
+        guard store.documentReconciliationToolbarState?.sessionKey == sessionKey else { return }
         store.documentReconciliationToolbarState = nil
     }
 
@@ -1113,7 +1221,7 @@ private struct DocumentSessionView: View {
               mode == .source else { return }
         Task {
             do {
-                try await store.flushDocumentSave(item.id)
+                try await store.flushDocumentSave(item)
             } catch {
                 store.errorMessage = error.localizedDescription
             }
@@ -1127,7 +1235,7 @@ private struct DocumentSessionView: View {
         candidate: DraftReconciliationCandidate?,
         resolvedState: ReconciliationResourceState?
     ) async throws {
-        try await store.flushDocumentSave(item.id)
+        try await store.flushDocumentSave(item)
         let latest = store.drafts.first { $0.id == draft.id } ?? draft
         try await store.requestReview(
             for: latest,
@@ -1139,14 +1247,14 @@ private struct DocumentSessionView: View {
     }
 
     private func loadReviewCandidate(_ draft: LocalDraft) async throws -> DraftReconciliationCandidate {
-        try await store.flushDocumentSave(item.id)
+        try await store.flushDocumentSave(item)
         let latest = store.drafts.first { $0.id == draft.id } ?? draft
         return try await store.reconciliationCandidate(for: latest)
     }
 
     private func discard(_ draft: LocalDraft) {
         suppressesSaving = true
-        store.cancelDocumentSave(item.id)
+        store.cancelDocumentSave(item)
         Task {
             await store.discard(draft)
             suppressesSaving = false
@@ -1154,8 +1262,17 @@ private struct DocumentSessionView: View {
     }
 
     private func moveToTrash() {
+        guard let activeProjectId = store.activeProjectId,
+              item.projectContextId == activeProjectId,
+              store.canEditMemory(item),
+              MemoryFileTreeMenu.canProposeOrganizationDeletion(
+                  item,
+                  inOrgView: false
+              ) else {
+            return
+        }
         suppressesSaving = true
-        store.cancelDocumentSave(item.id)
+        store.cancelDocumentSave(item)
         Task {
             await store.delete(item)
             suppressesSaving = false
@@ -1592,24 +1709,27 @@ private struct ReviewRequestSheet: View {
 ///
 /// Menu = generic document operations (standard macOS conventions) + domain
 /// operations (Memory project membership and drafts). Add to Project exists
-/// only in the Org view; Remove from Project exists only in the Project view.
+/// only in the read-only Org view; Draft proposals and Remove from Project
+/// exist only inside an explicit Project context.
 enum MemoryFileTreeMenu {
-    /// Editing never mutates authority directly; it creates or updates the
-    /// current view's local Draft. An unselected Org resource is not
-    /// manageable from a Project context, but it is also filtered out of the
-    /// Project tree.
-    static func isManageable(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
-        if inOrgView { return item.scope == .org }
-        return item.scope == .project || item.inherited || item.draft?.projectId != nil
+    /// Rename is an organization-authority proposal. Project views only
+    /// expose it for Org resources that are still selected by that project.
+    /// The Org overview is authority-only/read-only because it has no
+    /// unambiguous Project carrier for a LocalDraft.
+    /// Target-backed draft-only rows (for example, after Remove from Project)
+    /// and legacy Project authority are intentionally excluded.
+    static func canRename(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
+        guard item.resource?.scope == .org,
+              item.draft?.isDeletion != true else {
+            return false
+        }
+        return !inOrgView && item.inherited
     }
 
-    /// A target-backed memory supports a path-only rename. A pure create
-    /// draft has no stable resource id for the daemon's rename operation and
-    /// must become shared before it can be renamed safely.
-    static func canRename(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
-        isManageable(item, inOrgView: inOrgView)
-            && item.draft?.isDeletion != true
-            && (item.resource != nil || item.draft?.targetId != nil)
+    /// New memories are Project-bound proposals for Org authority. The Org
+    /// overview is read-only and therefore has no creation scope.
+    static func creationScope(inOrgView: Bool) -> MemoryScope? {
+        inOrgView ? nil : .org
     }
 
     /// Org memories that may be added to a project: only in the Org view.
@@ -1625,13 +1745,20 @@ enum MemoryFileTreeMenu {
         inOrgView ? [] : items.filter(\.inherited)
     }
 
-    /// Items that support batch Move to Trash: manageable items that back a
-    /// resource (pure drafts are discarded, not trashed).
-    static func trashable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
-        items.filter {
-            isManageable($0, inOrgView: inOrgView)
-                && $0.resource != nil
-                && $0.draft?.isDeletion != true
+    /// Items that may propose deletion of Org authority. This is the shared
+    /// predicate for single-row, batch, and document-toolbar actions.
+    static func canProposeOrganizationDeletion(
+        _ item: MemoryListItem,
+        inOrgView: Bool
+    ) -> Bool {
+        guard item.resource?.scope == .org,
+              item.draft?.isDeletion != true else {
+            return false
         }
+        return !inOrgView && item.inherited
+    }
+
+    static func trashable(_ items: [MemoryListItem], inOrgView: Bool) -> [MemoryListItem] {
+        items.filter { canProposeOrganizationDeletion($0, inOrgView: inOrgView) }
     }
 }

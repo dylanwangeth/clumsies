@@ -716,7 +716,7 @@ final class DaemonContractTests: XCTestCase {
             hasUpstreamResourceChanges: true,
             reconciliation: .clean,
             reconciliationCandidateId: "candidate-1",
-            scope: .project,
+            scope: .org,
             kind: .context,
             targetId: "context-1",
             status: .open,
