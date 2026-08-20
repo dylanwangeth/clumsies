@@ -124,6 +124,7 @@ struct LocalDraft: Identifiable, Hashable, Sendable {
     let updatedAt: String
     var document: EditableMemoryDocument
     var isDeletion: Bool
+    var documentBaselineAvailable: Bool = true
 }
 
 struct MemoryListItem: Identifiable, Hashable, Sendable {
@@ -131,6 +132,10 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
     let resource: MemoryResource?
     let draft: LocalDraft?
     let inherited: Bool
+    /// Project whose effective-memory view produced this item. This is the
+    /// stable carrier for a new local Draft on selected Org authority; it is
+    /// deliberately distinct from resource ownership.
+    var projectContextId: String? = nil
 
     var document: EditableMemoryDocument {
         draft?.document ?? resource?.document ?? .init(
@@ -142,8 +147,10 @@ struct MemoryListItem: Identifiable, Hashable, Sendable {
 
     var kind: MemoryKind { draft?.kind ?? resource?.kind ?? .context }
     var scope: MemoryScope { draft?.scope ?? resource?.scope ?? .project }
-    var projectId: String? { draft?.projectId ?? resource?.projectId }
-    var contentLoaded: Bool { draft != nil || resource?.contentLoaded == true }
+    var projectId: String? { draft?.projectId ?? resource?.projectId ?? projectContextId }
+    var contentLoaded: Bool {
+        draft?.documentBaselineAvailable ?? (resource?.contentLoaded == true)
+    }
 
     var supportsMarkdownPreview: Bool {
         draft?.isDeletion != true && kind.supportsMarkdownPreview(path: document.path)
@@ -229,20 +236,21 @@ enum WorkbenchTabMode: String, CaseIterable, Hashable, Sendable {
 
 struct WorkbenchTab: Identifiable, Hashable, Sendable {
     var id: String {
-        "\(section.rawValue):\(projectId ?? "shared"):\(itemId):\(mode.rawValue)"
+        "\(section.rawValue):\(projectId ?? "shared"):\(itemId)"
     }
 
     let section: WorkspaceSection
     let projectId: String?
     let itemId: String
-    let mode: WorkbenchTabMode
-    let title: String
+    var mode: WorkbenchTabMode
+    var title: String
 
     func isVisible(in section: WorkspaceSection, projectId: String?) -> Bool {
         guard self.section == section else { return false }
         guard section == .memory else { return true }
-        // Org-scope (Hub) tabs stay visible regardless of the active project;
-        // project-scope tabs are only visible while their project is active.
-        return self.projectId == nil || self.projectId == projectId
+        // A document tab belongs to the view context in which it was opened.
+        // This keeps an Org authority tab separate from a Project-local draft
+        // overlay of the same memory.
+        return self.projectId == projectId
     }
 }

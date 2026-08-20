@@ -1469,7 +1469,7 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertFalse(firstProjectTab.isVisible(in: .memory, projectId: "project-2"))
     }
 
-    func testOrgWorkbenchTabsDoNotDependOnTheActiveProject() {
+    func testOrgAuthorityWorkbenchTabStaysInOrgViewContext() {
         let tab = WorkbenchTab(
             section: .memory,
             projectId: nil,
@@ -1478,8 +1478,9 @@ final class DaemonContractTests: XCTestCase {
             title: "Rule"
         )
 
-        XCTAssertTrue(tab.isVisible(in: .memory, projectId: "project-1"))
-        XCTAssertTrue(tab.isVisible(in: .memory, projectId: "project-2"))
+        XCTAssertTrue(tab.isVisible(in: .memory, projectId: nil))
+        XCTAssertFalse(tab.isVisible(in: .memory, projectId: "project-1"))
+        XCTAssertFalse(tab.isVisible(in: .memory, projectId: "project-2"))
     }
 
     func testReplacingMemoryPrimaryTextReplacesMarkdown() {

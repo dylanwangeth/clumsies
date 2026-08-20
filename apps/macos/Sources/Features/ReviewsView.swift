@@ -588,7 +588,6 @@ struct ReviewDetailPage: View {
                     }
                     try await store.applyReconciliation(
                         draftId: detail.draft.draftId,
-                        draftVersion: detail.draft.version,
                         candidate: candidate,
                         resolvedState: resolvedState
                     )

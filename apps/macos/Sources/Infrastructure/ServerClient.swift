@@ -89,10 +89,7 @@ struct ServerClient: Sendable {
                 .init(method: method, path: requestPath, headers: headers, body: body)
             )
         }
-        if response.headers.contains(where: {
-            $0.key.caseInsensitiveCompare("x-clumsies-cache") == .orderedSame
-                && $0.value.caseInsensitiveCompare("stale") == .orderedSame
-        }) {
+        if response.isStaleCache {
             dataSourceTracker.markStale()
         }
         return response
@@ -191,6 +188,15 @@ struct ServerClient: Sendable {
             return body.isEmpty ? "No error details were returned." : body
         }
         return message
+    }
+}
+
+extension DaemonServerResponse {
+    var isStaleCache: Bool {
+        headers.contains {
+            $0.key.caseInsensitiveCompare("x-clumsies-cache") == .orderedSame
+                && $0.value.caseInsensitiveCompare("stale") == .orderedSame
+        }
     }
 }
 

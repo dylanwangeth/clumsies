@@ -1,10 +1,10 @@
 import Combine
+import CryptoKit
 import Foundation
 
 enum DocumentSessionCommand: Equatable, Sendable {
     case requestReview(itemId: String, draft: LocalDraft)
     case discardDraft(itemId: String, draft: LocalDraft)
-    case reviewSharedChanges(itemId: String, draft: LocalDraft)
     case applyReconciliation(itemId: String)
     case closeReconciliation(itemId: String)
     case moveToTrash(itemId: String)
@@ -13,7 +13,6 @@ enum DocumentSessionCommand: Equatable, Sendable {
         switch self {
         case .requestReview(let itemId, _),
              .discardDraft(let itemId, _),
-             .reviewSharedChanges(let itemId, _),
              .applyReconciliation(let itemId),
              .closeReconciliation(let itemId),
              .moveToTrash(let itemId):
@@ -62,11 +61,14 @@ struct LocalAgentAdapterReconciliationResult: Equatable, Sendable {
 enum WorkspaceLoadError: LocalizedError, Sendable {
     case authenticationRequired
     case noProjects
+    case sharedStateChangedDuringLoad
 
     var errorDescription: String? {
         switch self {
         case .authenticationRequired: "Sign in to connect Clumsies to your organization."
         case .noProjects: "The signed-in account has no accessible project."
+        case .sharedStateChangedDuringLoad:
+            "Shared memory changed while the workspace was loading. Refresh to load one consistent version."
         }
     }
 }
@@ -74,27 +76,106 @@ enum WorkspaceLoadError: LocalizedError, Sendable {
 enum MemoryValidationError: LocalizedError, Sendable {
     case invalidPath(String)
     case emptyRule
+    case unpublishedMemoryCannotBeRenamed
 
     var errorDescription: String? {
         switch self {
         case .invalidPath(let message): message
         case .emptyRule: "A Rule needs content."
+        case .unpublishedMemoryCannotBeRenamed:
+            "A new memory can be renamed after it becomes shared."
         }
     }
 }
 
 enum ReviewRequestError: LocalizedError, Sendable {
     case draftNotSynchronized
+    case projectLocalDraftCannotBePublished
     case reconciliationRequired
 
     var errorDescription: String? {
         switch self {
         case .draftNotSynchronized:
             "Wait for this draft to finish syncing before requesting a review."
+        case .projectLocalDraftCannotBePublished:
+            "This Project-local draft can stay local indefinitely. Publishing it to the Organization is not available yet."
         case .reconciliationRequired:
             "Merge the latest shared version before requesting a review."
         }
     }
+}
+
+enum DocumentSyncError: LocalizedError, Equatable, Sendable {
+    case checkoutNoLongerCurrent
+    case draftUploadFailed(String?)
+    case draftUploadTimedOut
+    case mutationWhileSynchronizing
+
+    var errorDescription: String? {
+        switch self {
+        case .checkoutNoLongerCurrent:
+            "The shared version changed again. Refresh sync status and try again."
+        case .draftUploadFailed(let message):
+            message ?? "The local draft could not be uploaded. Retry sync before reviewing shared changes."
+        case .draftUploadTimedOut:
+            "The local draft is still uploading. Wait a moment and try Sync again."
+        case .mutationWhileSynchronizing:
+            "Shared changes are being prepared for this document. Wait for Sync to finish before editing it."
+        }
+    }
+}
+
+enum DocumentDiffError: LocalizedError, Equatable, Sendable {
+    case baselineUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .baselineUnavailable:
+            "The previous shared content is unavailable, so an accurate Diff cannot be shown."
+        }
+    }
+}
+
+enum DraftUploadBarrierDecision: Equatable, Sendable {
+    case wait
+    case ready
+    case failed(String?)
+}
+
+struct StaleResourceSyncSnapshot: Equatable, Sendable {
+    let projectId: String
+    let observedProjectRefCommitId: String?
+    let observedSelectedOrgResourceIds: Set<String>
+    let observedOrgSelectionRevision: Int
+    let authoritativeCommitId: String
+    let authoritativeRefEtag: String?
+    let selectedOrgResourceIds: Set<String>
+    let orgSelectionRevision: Int
+    let generation: UUID
+    let local: MemoryResource?
+    let remote: MemoryResource?
+}
+
+enum DocumentPathChangeSource: String, Equatable, Sendable {
+    case draft
+    case shared
+    case draftAndShared
+}
+
+struct DocumentPathChange: Equatable, Sendable {
+    let source: DocumentPathChangeSource
+    let from: String?
+    let to: String?
+}
+
+struct DocumentDiffResult: Equatable, Sendable {
+    let presentation: UnifiedDiffPresentation?
+    let pathChanges: [DocumentPathChange]
+}
+
+struct DocumentRenamePlan: Equatable, Sendable {
+    let targetId: String
+    let newPath: String
 }
 
 enum ReviewMenuAction: Sendable, Equatable {
@@ -198,6 +279,11 @@ struct DraftInventoryPlan: Equatable, Sendable {
     let terminalIds: Set<String>
 }
 
+private struct ResourceLoadRequest: Sendable {
+    let resource: MemoryResource
+    let generation: UUID
+}
+
 @MainActor
 final class WorkspaceStore: ObservableObject {
     @Published private(set) var phase: ApplicationPhase = .launching
@@ -241,16 +327,27 @@ final class WorkspaceStore: ObservableObject {
     @Published var documentReconciliationToolbarState: DocumentReconciliationToolbarState?
     @Published private(set) var loadingResourceIds: Set<String> = []
     @Published private(set) var loadingProjectId: String?
+    @Published private(set) var isSwitchingMemoryContext = false
     @Published private(set) var isPreparingWorkspaceIndex = false
     /// Project resources whose shared version moved forward after the app
     /// loaded its snapshot; they show a sync icon and can be refreshed.
     @Published private(set) var staleResourceIds: Set<String> = []
+    /// Incremented when authoritative content replaces the document currently
+    /// held by a long-lived editor session.
+    @Published private(set) var documentContentGenerations: [String: UInt64] = [:]
+    @Published private(set) var synchronizingDocumentIds: Set<String> = []
+    @Published private(set) var pendingDocumentReconciliationCandidates:
+        [String: DraftReconciliationCandidate] = [:]
+    @Published private(set) var applyingDocumentReconciliationIds: Set<String> = []
+    @Published private(set) var projectOrgSelectionMutatingIds: Set<String> = []
 
     let daemon = DaemonXPCClient()
     private let bootstrap = DaemonBootstrapController()
     private lazy var authentication = AuthenticationClient(daemon: daemon)
     private lazy var server = ServerClient(daemon: daemon)
+    private var workspaceReloadGeneration = UUID()
     private var projectSelectionGeneration = UUID()
+    private let projectSelectionSideEffectGate = ProjectSelectionSideEffectGate()
     private let draftMutationGate = AsyncMutex()
     private let bundleMutationGate = AsyncMutex()
     private let projectOrgSelectionMutationGate = AsyncMutex()
@@ -258,6 +355,13 @@ final class WorkspaceStore: ObservableObject {
     private var documentSaveTasks: [String: Task<Void, Never>] = [:]
     private var pendingBundleSaves: [String: PendingBundleSave] = [:]
     private var bundleSaveTasks: [String: Task<Void, Never>] = [:]
+    private var staleResourceSnapshots: [String: StaleResourceSyncSnapshot] = [:]
+    private var provisionalStaleAdditionIds: Set<String> = []
+    private var resourceLoadRequests: [String: ResourceLoadRequest] = [:]
+    private var staleResourceRefreshGenerations: [String: UUID] = [:]
+    private var documentSynchronizationGenerations: [String: UUID] = [:]
+    private var documentSynchronizationTasks: [String: Task<Void, Never>] = [:]
+    private var documentReconciliationResolutions: [String: ReconciliationResourceState] = [:]
 
     var activeProject: ProjectState? {
         projects.first { $0.id == activeProjectId }
@@ -284,7 +388,25 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func canCreateMemory(kind: MemoryKind, scope: MemoryScope) -> Bool {
-        scope == .org || activeProjectId != nil
+        guard !isSwitchingMemoryContext else { return false }
+        if scope == .org {
+            return canManageOrgSelection && !projects.isEmpty
+        }
+        return activeProjectId != nil
+    }
+
+    /// Authority is never edited in place: editable documents are persisted
+    /// as local Draft operations. Org-targeted Drafts still require the
+    /// Server's organization write capability.
+    func canEditMemory(_ item: MemoryListItem) -> Bool {
+        let projectContextId = item.projectContextId
+            ?? (item.scope == .project ? item.projectId : nil)
+        if projectContextId.map(projectOrgSelectionMutatingIds.contains) == true {
+            return false
+        }
+        if item.scope == .project { return item.projectId != nil }
+        return canManageOrgSelection
+            && (item.projectId != nil || activeProjectId != nil || !projects.isEmpty)
     }
 
     var selectedItem: MemoryListItem? {
@@ -293,7 +415,81 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var visibleTabs: [WorkbenchTab] {
-        tabs.filter { $0.isVisible(in: selectedSection, projectId: activeProjectId) }
+        tabs.filter { tab in
+            guard tab.isVisible(in: selectedSection, projectId: activeProjectId) else {
+                return false
+            }
+            guard selectedSection == .memory else { return true }
+            let allowsUnresolved = phase != .ready || activeProject?.isLoaded == false
+            guard let activeProjectId else {
+                return Self.orgMemoryTabIsAvailable(
+                    itemId: tab.itemId,
+                    resources: resources,
+                    drafts: drafts,
+                    allowsUnresolved: allowsUnresolved
+                )
+            }
+            guard tab.projectId == activeProjectId else { return false }
+            return Self.memoryTabIsAvailable(
+                itemId: tab.itemId,
+                projectId: activeProjectId,
+                selectedOrgResourceIds: activeProject?.selectedOrgResourceIds ?? [],
+                resources: resources,
+                drafts: drafts,
+                allowsUnresolved: allowsUnresolved
+            )
+        }
+    }
+
+    nonisolated static func orgMemoryTabIsAvailable(
+        itemId: String,
+        resources: [MemoryResource],
+        drafts: [LocalDraft],
+        allowsUnresolved: Bool = false
+    ) -> Bool {
+        if resources.contains(where: { $0.id == itemId && $0.scope == .org }) {
+            return true
+        }
+        if drafts.contains(where: { draft in
+            (draft.id == itemId || draft.targetId == itemId)
+                && draft.scope == .org
+                && draft.status != .discarded
+                && draft.status != .merged
+        }) {
+            return true
+        }
+        return allowsUnresolved
+    }
+
+    nonisolated static func memoryTabIsAvailable(
+        itemId: String,
+        projectId: String,
+        selectedOrgResourceIds: Set<String>,
+        resources: [MemoryResource],
+        drafts: [LocalDraft],
+        allowsUnresolved: Bool = false
+    ) -> Bool {
+        let resource = resources.first(where: { $0.id == itemId })
+        if let resource {
+            switch resource.scope {
+            case .project:
+                return resource.projectId == projectId
+            case .org:
+                if selectedOrgResourceIds.contains(resource.id) { return true }
+            }
+        }
+        if drafts.contains(where: { draft in
+            (draft.id == itemId || draft.targetId == itemId)
+                && draft.projectId == projectId
+                && draft.status != .discarded
+                && draft.status != .merged
+        }) {
+            return true
+        }
+        // Keep unresolved tabs while a workspace generation is loading. A
+        // known, unselected Org resource is intentionally hidden; a document
+        // whose resource has not arrived yet must not be dropped prematurely.
+        return allowsUnresolved && resource == nil
     }
 
     var activeVisibleTab: WorkbenchTab? {
@@ -315,6 +511,131 @@ final class WorkspaceStore: ObservableObject {
 
     var currentTabMode: WorkbenchTabMode? {
         activeVisibleTab?.mode
+    }
+
+    func documentContentGeneration(for itemId: String) -> UInt64 {
+        documentContentGenerations[itemId, default: 0]
+    }
+
+    func staleResourceGeneration(for resourceId: String) -> UUID? {
+        staleResourceSnapshots[resourceId]?.generation
+    }
+
+    func isSynchronizingDocument(_ itemId: String) -> Bool {
+        synchronizingDocumentIds.contains(itemId)
+    }
+
+    func pendingDocument(for item: MemoryListItem) -> EditableMemoryDocument? {
+        [item.id, item.draft?.targetId, item.draft?.id]
+            .compactMap { $0 }
+            .lazy
+            .compactMap { self.pendingDocumentSaves[$0]?.document }
+            .first
+    }
+
+    func documentReconciliationResolution(for itemId: String) -> ReconciliationResourceState? {
+        documentReconciliationResolutions[itemId]
+    }
+
+    func updateDocumentReconciliationResolution(
+        _ resolution: ReconciliationResourceState,
+        for itemId: String
+    ) {
+        guard pendingDocumentReconciliationCandidates[itemId] != nil else { return }
+        documentReconciliationResolutions[itemId] = resolution
+    }
+
+    func finishDocumentReconciliation(for itemId: String) {
+        guard !applyingDocumentReconciliationIds.contains(itemId) else { return }
+        documentSynchronizationTasks.removeValue(forKey: itemId)?.cancel()
+        pendingDocumentReconciliationCandidates.removeValue(forKey: itemId)
+        documentReconciliationResolutions.removeValue(forKey: itemId)
+        synchronizingDocumentIds.remove(itemId)
+        documentSynchronizationGenerations.removeValue(forKey: itemId)
+        if documentReconciliationToolbarState?.itemId == itemId {
+            documentReconciliationToolbarState = nil
+        }
+        if pendingDocumentCommand?.itemId == itemId {
+            pendingDocumentCommand = nil
+        }
+    }
+
+    private func synchronizationItemId(for item: MemoryListItem) -> String? {
+        [item.id, item.resource?.id, item.draft?.targetId, item.draft?.id]
+            .compactMap { $0 }
+            .first { synchronizingDocumentIds.contains($0) }
+    }
+
+    private func synchronizationItemId(for draft: LocalDraft) -> String? {
+        [draft.targetId, draft.id]
+            .compactMap { $0 }
+            .first { synchronizingDocumentIds.contains($0) }
+    }
+
+    private func hasDocumentSynchronization(in projectId: String) -> Bool {
+        synchronizingDocumentIds.contains { itemId in
+            if resources.contains(where: { $0.id == itemId && $0.projectId == projectId }) {
+                return true
+            }
+            return drafts.contains {
+                ($0.id == itemId || $0.targetId == itemId) && $0.projectId == projectId
+            }
+        }
+    }
+
+    private func isCurrentDocumentSynchronization(_ itemId: String, generation: UUID) -> Bool {
+        synchronizingDocumentIds.contains(itemId)
+            && documentSynchronizationGenerations[itemId] == generation
+    }
+
+    private func endDocumentSynchronization(_ itemId: String, generation: UUID) {
+        guard documentSynchronizationGenerations[itemId] == generation else { return }
+        documentSynchronizationTasks.removeValue(forKey: itemId)
+        synchronizingDocumentIds.remove(itemId)
+        documentSynchronizationGenerations.removeValue(forKey: itemId)
+    }
+
+    func documentPathChanges(for item: MemoryListItem) -> [DocumentPathChange] {
+        if let draft = item.draft {
+            // The mapped document for a behind draft is based on the currently
+            // displayed resource and cannot attribute a remote rename. The
+            // candidate owns the exact base/current/draft paths instead.
+            guard draft.freshness != .behind else { return [] }
+            let basePath = item.resource?.document.path
+            return Self.documentPathChanges(
+                basePath: basePath,
+                localPath: draft.isDeletion ? nil : draft.document.path,
+                remotePath: basePath
+            )
+        }
+        guard let resource = item.resource,
+              let snapshot = staleResourceSnapshots[resource.id] else { return [] }
+        let basePath = snapshot.local?.document.path
+        return Self.documentPathChanges(
+            basePath: basePath,
+            localPath: basePath,
+            remotePath: snapshot.remote?.document.path
+        )
+    }
+
+    nonisolated static func documentPathChanges(
+        basePath: String?,
+        localPath: String?,
+        remotePath: String?
+    ) -> [DocumentPathChange] {
+        let hasLocalChange = localPath != basePath
+        let hasRemoteChange = remotePath != basePath
+        if hasLocalChange, hasRemoteChange, localPath == remotePath {
+            return [.init(source: .draftAndShared, from: basePath, to: localPath)]
+        }
+        var changes: [DocumentPathChange] = []
+        if hasLocalChange {
+            changes.append(.init(source: .draft, from: basePath, to: localPath))
+        }
+        if hasRemoteChange {
+            changes.append(.init(source: .shared, from: basePath, to: remotePath))
+        }
+        return changes
     }
 
     var selectedBundle: PersonalBundle? {
@@ -375,32 +696,26 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var visibleMemoryItems: [MemoryListItem] {
-        let authoritative: [MemoryResource]
         switch selectedSection {
         case .memory:
-            // Unified Memory: org-scope (Hub) memories are always visible;
-            // the active project's project-scope memories are merged in.
-            let orgResources = resources.filter { $0.scope == .org }
-            let projectResources = resources.filter {
-                $0.scope == .project && $0.projectId == activeProjectId
-            }
-            authoritative = orgResources + projectResources
+            break
         case .issues, .bundles, .reviews:
             return []
         }
 
-        let activeDrafts = drafts.filter { draft in
-            guard draft.status != .discarded && draft.status != .merged else {
-                return false
-            }
-            if draft.scope == .org {
-                return true
-            }
-            return draft.projectId == activeProjectId
-        }
+        let authoritative = Self.memoryTreeResources(
+            resources,
+            activeProjectId: activeProjectId,
+            selectedOrgResourceIds: activeProject?.selectedOrgResourceIds ?? []
+        )
+        let activeDrafts = Self.preferredMemoryTreeDrafts(
+            Self.memoryTreeDrafts(drafts, activeProjectId: activeProjectId)
+        )
         let draftByTarget = Dictionary(
             activeDrafts.compactMap { draft in draft.targetId.map { ($0, draft) } },
-            uniquingKeysWith: { _, latest in latest }
+            uniquingKeysWith: { current, candidate in
+                candidate.updatedAt > current.updatedAt ? candidate : current
+            }
         )
         var items = authoritative.map { resource in
             MemoryListItem(
@@ -409,23 +724,131 @@ final class WorkspaceStore: ObservableObject {
                 draft: draftByTarget[resource.id],
                 inherited: resource.scope == .org
                     && activeProjectId != nil
-                    && (activeProject?.selectedOrgResourceIds.contains(resource.id) ?? false)
+                    && (activeProject?.selectedOrgResourceIds.contains(resource.id) ?? false),
+                projectContextId: activeProjectId
             )
         }
-        items.append(contentsOf: activeDrafts.filter { $0.targetId == nil }.map {
-            MemoryListItem(id: $0.id, resource: nil, draft: $0, inherited: false)
+        let authoritativeIds = Set(authoritative.map(\.id))
+        items.append(contentsOf: Self.unrepresentedDrafts(
+            activeDrafts,
+            authoritativeResourceIds: authoritativeIds
+        ).map {
+            MemoryListItem(
+                id: $0.targetId ?? $0.id,
+                resource: nil,
+                draft: $0,
+                inherited: false,
+                projectContextId: activeProjectId
+            )
         })
         return items.sorted { $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending }
+    }
+
+    /// The Project tree is the Project's effective Memory surface: selected
+    /// Org authority plus its local Draft overlay. Existing project-scope
+    /// authority remains visible as a compatibility layer until that legacy
+    /// publication path is migrated separately.
+    nonisolated static func memoryTreeResources(
+        _ resources: [MemoryResource],
+        activeProjectId: String?,
+        selectedOrgResourceIds: Set<String>
+    ) -> [MemoryResource] {
+        guard let activeProjectId else {
+            return resources.filter { $0.scope == .org }
+        }
+        return resources.filter { resource in
+            switch resource.scope {
+            case .org:
+                selectedOrgResourceIds.contains(resource.id)
+            case .project:
+                resource.projectId == activeProjectId
+            }
+        }
+    }
+
+    nonisolated static func memoryTreeDrafts(
+        _ drafts: [LocalDraft],
+        activeProjectId: String?
+    ) -> [LocalDraft] {
+        drafts.filter { draft in
+            guard draft.status != .discarded && draft.status != .merged else {
+                return false
+            }
+            if let activeProjectId {
+                return draft.projectId == activeProjectId
+            }
+            return draft.scope == .org
+        }
+    }
+
+    nonisolated static func preferredMemoryTreeDrafts(
+        _ drafts: [LocalDraft]
+    ) -> [LocalDraft] {
+        var preferred: [String: LocalDraft] = [:]
+        for draft in drafts {
+            let key = draft.targetId ?? "draft:\(draft.id)"
+            if let current = preferred[key], current.updatedAt >= draft.updatedAt {
+                continue
+            }
+            preferred[key] = draft
+        }
+        return preferred.values.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+            return lhs.id < rhs.id
+        }
+    }
+
+    nonisolated static func unrepresentedDrafts(
+        _ activeDrafts: [LocalDraft],
+        authoritativeResourceIds: Set<String>
+    ) -> [LocalDraft] {
+        activeDrafts.filter { draft in
+            guard let targetId = draft.targetId else { return true }
+            return !authoritativeResourceIds.contains(targetId)
+        }
+    }
+
+    nonisolated static func resourceGenerationMatches(
+        _ lhs: MemoryResource,
+        _ rhs: MemoryResource
+    ) -> Bool {
+        lhs.id == rhs.id
+            && lhs.scope == rhs.scope
+            && lhs.projectId == rhs.projectId
+            && lhs.kind == rhs.kind
+            && lhs.contentHash == rhs.contentHash
+            && lhs.refCommitId == rhs.refCommitId
+            && lhs.document.path == rhs.document.path
+    }
+
+    @discardableResult
+    private func installLoadedResourceIfCurrent(_ loaded: MemoryResource) -> Bool {
+        guard let index = resources.firstIndex(where: { $0.id == loaded.id }),
+              !resources[index].contentLoaded,
+              Self.resourceGenerationMatches(resources[index], loaded) else {
+            return false
+        }
+        resources[index] = loaded
+        bumpDocumentContentGeneration(for: loaded.id)
+        return true
     }
 
     func start() {
         Task { await reload() }
     }
 
-    func reload() async {
+    func reload(allowsDuringDocumentReconciliation: Bool = false) async {
+        guard allowsDuringDocumentReconciliation
+                || applyingDocumentReconciliationIds.isEmpty else {
+            return
+        }
+        let generation = UUID()
+        workspaceReloadGeneration = generation
         if phase == .ready, hasPendingChanges, !(await flushPendingChanges()) {
             return
         }
+        guard workspaceReloadGeneration == generation else { return }
+        let preservesLoadedWorkspace = account != nil
         phase = .loading
         errorMessage = nil
         do {
@@ -434,13 +857,23 @@ final class WorkspaceStore: ObservableObject {
                 bootstrap: bootstrap,
                 server: server
             ).load { [weak self] result in
+                guard self?.workspaceReloadGeneration == generation else { return }
                 self?.applyLocalAgentAdapterResult(result)
+            }
+            guard workspaceReloadGeneration == generation else { return }
+            // Stale-cache data keeps a cold start usable while offline, but it
+            // must never replace a newer generation already held in memory.
+            guard !preservesLoadedWorkspace || snapshot.runtime.serverDataSource != "stale" else {
+                phase = .ready
+                return
             }
             apply(snapshot)
             phase = .ready
         } catch WorkspaceLoadError.authenticationRequired {
+            guard workspaceReloadGeneration == generation else { return }
             phase = .authenticationRequired
         } catch {
+            guard workspaceReloadGeneration == generation else { return }
             let messages = [error.localizedDescription, errorMessage]
                 .compactMap { $0 }
                 .filter { !$0.isEmpty }
@@ -646,8 +1079,26 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func showOrgMemory() {
-        guard activeProjectId != nil else { return }
+    func showOrgMemory() async {
+        guard activeProjectId != nil || loadingProjectId != nil else { return }
+        guard synchronizingDocumentIds.isEmpty,
+              applyingDocumentReconciliationIds.isEmpty else {
+            errorMessage = "Finish or cancel the active document Sync before switching Memory context."
+            return
+        }
+        // Showing Org supersedes every in-flight Project selection. A stale
+        // daemon reply must not be allowed to switch the UI back afterward.
+        let generation = UUID()
+        projectSelectionGeneration = generation
+        loadingProjectId = nil
+        isSwitchingMemoryContext = true
+        defer {
+            if projectSelectionGeneration == generation {
+                isSwitchingMemoryContext = false
+            }
+        }
+        guard await flushPendingDocumentChanges(),
+              projectSelectionGeneration == generation else { return }
         activeProjectId = nil
         showsProjectSettings = false
         selectedItemId = nil
@@ -657,19 +1108,40 @@ final class WorkspaceStore: ObservableObject {
 
     func selectProject(_ projectId: String) async {
         guard let project = projects.first(where: { $0.id == projectId }) else { return }
-        guard projectId != activeProjectId || !project.isLoaded else { return }
-        guard await flushPendingDocumentChanges() else { return }
+        if projectId == activeProjectId,
+           project.isLoaded,
+           loadingProjectId == nil,
+           !isSwitchingMemoryContext {
+            return
+        }
+        guard synchronizingDocumentIds.isEmpty,
+              applyingDocumentReconciliationIds.isEmpty else {
+            errorMessage = "Finish or cancel the active document Sync before switching Memory context."
+            return
+        }
         let generation = UUID()
+        // Publish the newest intent before the first suspension point. This
+        // closes the window where two clicks could both start a daemon-side
+        // selection while a pending document save was flushing.
         projectSelectionGeneration = generation
         loadingProjectId = projectId
+        isSwitchingMemoryContext = true
         defer {
             if projectSelectionGeneration == generation {
                 loadingProjectId = nil
+                isSwitchingMemoryContext = false
             }
         }
+        guard await flushPendingDocumentChanges(),
+              projectSelectionGeneration == generation else { return }
         do {
-            _ = try await daemon.selectProject(projectId)
-            guard projectSelectionGeneration == generation else { return }
+            let selectedLatestIntent = try await projectSelectionSideEffectGate.run {
+                guard projectSelectionGeneration == generation else { return false }
+                _ = try await daemon.selectProject(projectId)
+                return true
+            }
+            guard selectedLatestIntent,
+                  projectSelectionGeneration == generation else { return }
             activeProjectId = projectId
             let tab = visibleTabs.last
             activeTabId = tab?.id
@@ -691,8 +1163,7 @@ final class WorkspaceStore: ObservableObject {
                 if let index = projects.firstIndex(where: { $0.id == projectId }) {
                     projects[index] = loadedProject.state
                 }
-                resources.removeAll { $0.projectId == projectId }
-                resources += loadedProject.resources
+                replaceProjectResources(projectId: projectId, with: loadedProject.resources)
                 try await remapDrafts(projectId: projectId)
             }
             guard projectSelectionGeneration == generation else { return }
@@ -706,6 +1177,7 @@ final class WorkspaceStore: ObservableObject {
                 }
             }
         } catch {
+            guard projectSelectionGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -735,11 +1207,11 @@ final class WorkspaceStore: ObservableObject {
                 try await loader.loadProject(id: project.id, name: project.name)
             }
             for loaded in loadedProjects {
+                clearStaleResourceState(for: loaded.state.id)
                 if let index = projects.firstIndex(where: { $0.id == loaded.state.id }) {
                     projects[index] = loaded.state
                 }
-                resources.removeAll { $0.projectId == loaded.state.id }
-                resources += loaded.resources
+                replaceProjectResources(projectId: loaded.state.id, with: loaded.resources)
             }
 
             if includeContent {
@@ -748,9 +1220,7 @@ final class WorkspaceStore: ObservableObject {
                     try await loader.loadContent(for: $0)
                 }
                 for loaded in loadedResources {
-                    if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
-                        resources[index] = loaded
-                    }
+                    installLoadedResourceIfCurrent(loaded)
                 }
             }
 
@@ -765,22 +1235,29 @@ final class WorkspaceStore: ObservableObject {
     func open(_ item: MemoryListItem, mode: WorkbenchTabMode? = nil) {
         showsProjectSettings = false
         let previousTabId = activeVisibleTab?.id
-        let resolvedMode = mode ?? (item.supportsMarkdownPreview ? .preview : .source)
-        // Org-scope tabs are always visible regardless of the active project,
-        // so the tab's projectId must reflect scope (nil for Org), not the
-        // carrying project of an Org-scope draft. Reusing item.projectId here
-        // leaked the draft's carrying project and hid Org documents while the
-        // Org view (or another project) was active.
-        let tab = WorkbenchTab(
+        // Project-local overlays need a separate session from the Org
+        // authority view even when both address the same Org memory id.
+        let tabProjectId = activeProjectId ?? (item.scope == .org ? nil : item.projectId)
+        let existingMode = tabs.first {
+            $0.section == selectedSection
+                && $0.projectId == tabProjectId
+                && $0.itemId == item.id
+        }?.mode
+        let resolvedMode = mode
+            ?? existingMode
+            ?? (item.supportsMarkdownPreview ? .preview : .source)
+        let compatibleMode: WorkbenchTabMode = resolvedMode == .preview
+            && !item.supportsMarkdownPreview ? .source : resolvedMode
+        let safeMode: WorkbenchTabMode = item.draft?.documentBaselineAvailable == false
+            ? .diff : compatibleMode
+        let requestedTab = WorkbenchTab(
             section: selectedSection,
-            projectId: item.scope == .org ? nil : item.projectId,
+            projectId: tabProjectId,
             itemId: item.id,
-            mode: resolvedMode,
+            mode: safeMode,
             title: item.document.title
         )
-        if !tabs.contains(where: { $0.id == tab.id }) {
-            tabs.append(tab)
-        }
+        let tab = installDocumentTab(requestedTab)
         selectedItemId = item.id
         if let previousTabId, previousTabId != tab.id {
             navigationBackStack.append(previousTabId)
@@ -794,56 +1271,130 @@ final class WorkspaceStore: ObservableObject {
     /// second tab for the same document.
     func switchDocumentMode(_ mode: WorkbenchTabMode) {
         guard let tab = activeVisibleTab, tab.mode != mode else { return }
-        let updated = WorkbenchTab(
-            section: tab.section,
-            projectId: tab.projectId,
-            itemId: tab.itemId,
-            mode: mode,
-            title: tab.title
-        )
-        if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
-            tabs[index] = updated
-        } else {
-            tabs.append(updated)
-        }
-        navigationBackStack = navigationBackStack.map { $0 == tab.id ? updated.id : $0 }
-        navigationForwardStack = navigationForwardStack.map { $0 == tab.id ? updated.id : $0 }
+        var updated = tab
+        updated.mode = mode
+        updated = installDocumentTab(updated)
         selectedItemId = tab.itemId
         activeTabId = updated.id
+    }
+
+    /// Installs one stable tab per document. Older builds encoded the mode in
+    /// the tab identity, so this also collapses any duplicate mode tabs that
+    /// survived in memory while the view hierarchy was updating.
+    @discardableResult
+    private func installDocumentTab(_ requested: WorkbenchTab) -> WorkbenchTab {
+        let matches = tabs.indices.filter { index in
+            let candidate = tabs[index]
+            return candidate.section == requested.section
+                && candidate.projectId == requested.projectId
+                && candidate.itemId == requested.itemId
+        }
+        guard let first = matches.first else {
+            tabs.append(requested)
+            return requested
+        }
+        tabs[first] = requested
+        for index in matches.dropFirst().reversed() {
+            tabs.remove(at: index)
+        }
+        return requested
+    }
+
+    private func refreshDocumentTabs(for itemId: String) {
+        for index in tabs.indices where tabs[index].itemId == itemId {
+            guard let item = item(for: tabs[index]) else { continue }
+            tabs[index].title = item.document.title
+            if item.draft?.documentBaselineAvailable == false {
+                tabs[index].mode = .diff
+            } else if tabs[index].mode == .preview, !item.supportsMarkdownPreview {
+                tabs[index].mode = .source
+            }
+        }
+    }
+
+    private func refreshAllDocumentTabs() {
+        for itemId in Set(tabs.map(\.itemId)) {
+            refreshDocumentTabs(for: itemId)
+        }
+    }
+
+    /// Remove document sessions whose authority and active LocalDraft are
+    /// both gone. `visibleTabs` still performs context filtering, but keeping
+    /// terminal draft tabs in the backing array would resurrect stale modes
+    /// and navigation entries if an unrelated item later reused that route.
+    private func pruneOrphanedMemoryTabs() {
+        let liveItemIds = Set(resources.map(\.id)).union(
+            drafts.compactMap { draft in
+                guard draft.status != .discarded && draft.status != .merged else { return nil }
+                return draft.targetId ?? draft.id
+            }
+        )
+        let removedTabIds = Set(tabs.compactMap { tab in
+            tab.section == .memory && !liveItemIds.contains(tab.itemId) ? tab.id : nil
+        })
+        guard !removedTabIds.isEmpty else { return }
+        tabs.removeAll { removedTabIds.contains($0.id) }
+        navigationBackStack.removeAll { removedTabIds.contains($0) }
+        navigationForwardStack.removeAll { removedTabIds.contains($0) }
+        if let activeTabId, removedTabIds.contains(activeTabId) {
+            self.activeTabId = nil
+            selectedItemId = nil
+        }
     }
 
     func reveal(_ item: MemoryListItem) async {
         selectedSection = .memory
         selectedKind = item.kind
-        // Only project-scope items need a project switch; Org-scope items stay
-        // in the Org view even when their draft is carried by a project.
-        if item.scope == .project, let projectId = item.projectId {
+        if let projectId = item.projectContextId {
             await selectProject(projectId)
+            guard activeProjectId == projectId else { return }
+        } else if item.scope == .project, let projectId = item.projectId {
+            await selectProject(projectId)
+            guard activeProjectId == projectId else { return }
+        } else if activeProjectId != nil,
+                  !(activeProject?.selectedOrgResourceIds.contains(item.id) ?? false) {
+            await showOrgMemory()
+            guard activeProjectId == nil else { return }
         }
         open(item)
     }
 
     func item(for tab: WorkbenchTab) -> MemoryListItem? {
         if let resource = resources.first(where: { $0.id == tab.itemId }) {
-            let draft = drafts.first {
-                $0.targetId == resource.id && $0.status != .discarded && $0.status != .merged
+            let matchingDrafts = drafts.filter { draft in
+                draft.targetId == resource.id
+                    && draft.status != .discarded
+                    && draft.status != .merged
+                    && (tab.projectId.map { $0 == draft.projectId } ?? (draft.scope == .org))
+            }
+            let draft = Self.preferredMemoryTreeDrafts(matchingDrafts).first
+            let tabProject = tab.projectId.flatMap { projectId in
+                projects.first { $0.id == projectId }
             }
             return .init(
                 id: resource.id,
                 resource: resource,
                 draft: draft,
                 inherited: resource.scope == .org
-                    && activeProjectId != nil
-                    && (activeProject?.selectedOrgResourceIds.contains(resource.id) ?? false)
+                    && tabProject != nil
+                    && (tabProject?.selectedOrgResourceIds.contains(resource.id) ?? false),
+                projectContextId: tab.projectId
             )
         }
-        if let draft = drafts.first(where: { $0.id == tab.itemId }) {
+        let matchingDrafts = drafts.filter { draft in
+            (draft.id == tab.itemId || draft.targetId == tab.itemId)
+                && draft.status != .discarded
+                && draft.status != .merged
+                && (tab.projectId.map { $0 == draft.projectId } ?? (draft.scope == .org))
+        }
+        if let draft = Self.preferredMemoryTreeDrafts(matchingDrafts).first {
             let resource = draft.targetId.flatMap { target in resources.first { $0.id == target } }
             return .init(
-                id: resource?.id ?? draft.id,
+                id: resource?.id ?? draft.targetId ?? draft.id,
                 resource: resource,
                 draft: draft,
-                inherited: false
+                inherited: false,
+                projectContextId: tab.projectId
             )
         }
         return nil
@@ -852,27 +1403,61 @@ final class WorkspaceStore: ObservableObject {
     func loadContentIfNeeded(_ item: MemoryListItem) async {
         guard item.draft == nil,
               let resource = item.resource,
-              !resource.contentLoaded,
-              !loadingResourceIds.contains(resource.id) else { return }
+              !resource.contentLoaded else { return }
+        if let inFlight = resourceLoadRequests[resource.id],
+           Self.resourceGenerationMatches(inFlight.resource, resource) {
+            return
+        }
+        if let snapshot = staleResourceSnapshots[resource.id] {
+            guard let local = snapshot.local, local.contentLoaded else {
+                errorMessage = DocumentDiffError.baselineUnavailable.localizedDescription
+                return
+            }
+            if let index = resources.firstIndex(where: { $0.id == resource.id }) {
+                resources[index] = local
+                bumpDocumentContentGeneration(for: resource.id)
+            }
+            return
+        }
+        let generation = UUID()
+        resourceLoadRequests[resource.id] = .init(resource: resource, generation: generation)
         loadingResourceIds.insert(resource.id)
-        defer { loadingResourceIds.remove(resource.id) }
+        defer {
+            if resourceLoadRequests[resource.id]?.generation == generation {
+                resourceLoadRequests.removeValue(forKey: resource.id)
+                loadingResourceIds.remove(resource.id)
+            }
+        }
         do {
             let loaded = try await WorkspaceLoader(
                 daemon: daemon,
                 bootstrap: bootstrap,
                 server: server
             ).loadContent(for: resource)
-            if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
-                resources[index] = loaded
-            }
+            installLoadedResourceIfCurrent(loaded)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     func closeTab(_ tab: WorkbenchTab) {
-        guard let index = tabs.firstIndex(of: tab) else { return }
-        let visibleIndex = visibleTabs.firstIndex(of: tab)
+        guard !applyingDocumentReconciliationIds.contains(tab.itemId) else {
+            errorMessage = "Wait for the shared update to finish before closing this tab."
+            return
+        }
+        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        if pendingDocumentCommand?.itemId == tab.itemId {
+            pendingDocumentCommand = nil
+        }
+        if documentReconciliationToolbarState?.itemId == tab.itemId {
+            documentReconciliationToolbarState = nil
+        }
+        documentSynchronizationTasks.removeValue(forKey: tab.itemId)?.cancel()
+        pendingDocumentReconciliationCandidates.removeValue(forKey: tab.itemId)
+        documentReconciliationResolutions.removeValue(forKey: tab.itemId)
+        synchronizingDocumentIds.remove(tab.itemId)
+        documentSynchronizationGenerations.removeValue(forKey: tab.itemId)
+        let visibleIndex = visibleTabs.firstIndex(where: { $0.id == tab.id })
         tabs.remove(at: index)
         navigationBackStack.removeAll { $0 == tab.id }
         navigationForwardStack.removeAll { $0 == tab.id }
@@ -1000,6 +1585,18 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func stageDocumentSave(_ item: MemoryListItem, document: EditableMemoryDocument) {
+        guard canEditMemory(item) else {
+            errorMessage = "You do not have permission to edit this memory."
+            return
+        }
+        guard synchronizationItemId(for: item) == nil else {
+            errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
+            return
+        }
+        guard !isSwitchingMemoryContext else {
+            errorMessage = "Wait for the Memory context switch to finish before editing."
+            return
+        }
         let generation = UUID()
         pendingDocumentSaves[item.id] = .init(item: item, document: document, generation: generation)
         documentSaveTasks[item.id]?.cancel()
@@ -1014,16 +1611,29 @@ final class WorkspaceStore: ObservableObject {
         documentSaveTasks[itemId]?.cancel()
         documentSaveTasks[itemId] = nil
         guard let pending = pendingDocumentSaves[itemId] else { return }
-        try await save(pending.item, document: pending.document)
-        if pendingDocumentSaves[itemId]?.generation == pending.generation {
-            pendingDocumentSaves[itemId] = nil
-        }
+        try await save(
+            pending.item,
+            document: pending.document,
+            allowingDuringSynchronization: true,
+            pendingSaveItemId: itemId,
+            pendingSaveGeneration: pending.generation
+        )
     }
 
     func cancelDocumentSave(_ itemId: String) {
         documentSaveTasks[itemId]?.cancel()
         documentSaveTasks[itemId] = nil
         pendingDocumentSaves[itemId] = nil
+    }
+
+    private func finishPendingDocumentSaveIfCurrent(
+        itemId: String?,
+        generation: UUID?
+    ) {
+        guard let itemId, let generation,
+              pendingDocumentSaves[itemId]?.generation == generation else { return }
+        pendingDocumentSaves[itemId] = nil
+        documentSaveTasks[itemId] = nil
     }
 
     func stageBundleSave(
@@ -1094,16 +1704,56 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func save(_ item: MemoryListItem, document: EditableMemoryDocument) async throws {
+    func save(
+        _ item: MemoryListItem,
+        document: EditableMemoryDocument,
+        allowingDuringSynchronization: Bool = false,
+        pendingSaveItemId: String? = nil,
+        pendingSaveGeneration: UUID? = nil
+    ) async throws {
+        let flushesSelectionMutation = pendingSaveItemId != nil
+            && item.projectContextId.map(projectOrgSelectionMutatingIds.contains) == true
+        guard canEditMemory(item) || flushesSelectionMutation else {
+            throw ServerClientError.forbidden("You do not have permission to edit this memory.")
+        }
+        if isSwitchingMemoryContext, pendingSaveItemId == nil {
+            throw ServerClientError.forbidden(
+                "Wait for the Memory context switch to finish before editing."
+            )
+        }
+        if !allowingDuringSynchronization,
+           synchronizationItemId(for: item) != nil {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
         try validate(kind: item.kind, document: document)
         try await withDraftMutation {
+            if let pendingSaveItemId, let pendingSaveGeneration {
+                guard pendingDocumentSaves[pendingSaveItemId]?.generation
+                    == pendingSaveGeneration else { return }
+            }
+            if !allowingDuringSynchronization,
+               synchronizationItemId(for: item) != nil {
+                throw DocumentSyncError.mutationWhileSynchronizing
+            }
             let resource = item.resource
             let draft = currentDraft(for: item)
-            guard let projectId = draft?.projectId ?? item.projectId ?? activeProjectId else {
+            guard let projectId = draftCarrierProjectId(for: item, currentDraft: draft) else {
                 throw WorkspaceLoadError.noProjects
             }
-            guard item.draft == nil || draft != nil else { return }
-            guard draft?.isDeletion != true else { return }
+            if item.draft != nil, draft == nil {
+                finishPendingDocumentSaveIfCurrent(
+                    itemId: pendingSaveItemId,
+                    generation: pendingSaveGeneration
+                )
+                return
+            }
+            if draft?.isDeletion == true {
+                finishPendingDocumentSaveIfCurrent(
+                    itemId: pendingSaveItemId,
+                    generation: pendingSaveGeneration
+                )
+                return
+            }
             let draftId = draft?.id
             let projectRefCommitId = projects.first { $0.id == projectId }?.refCommitId
             let baseCommitId = draft?.baseCommitId
@@ -1155,14 +1805,142 @@ final class WorkspaceStore: ObservableObject {
                 try await refreshDraft(response.draftId)
                 selectedItemId = resource?.id ?? response.draftId
             }
+            finishPendingDocumentSaveIfCurrent(
+                itemId: pendingSaveItemId,
+                generation: pendingSaveGeneration
+            )
         }
     }
 
+    /// Renames a target-backed memory without coupling the path mutation to
+    /// whatever body happens to be loaded in the file tree. In particular,
+    /// metadata-only resources carry an empty placeholder body and must never
+    /// turn a rename into an empty-content update.
+    func rename(_ item: MemoryListItem, to newPath: String) async throws {
+        guard !isSwitchingMemoryContext else {
+            throw ServerClientError.forbidden(
+                "Wait for the Memory context switch to finish before renaming."
+            )
+        }
+        guard canEditMemory(item) else {
+            throw ServerClientError.forbidden("You do not have permission to rename this memory.")
+        }
+        guard synchronizationItemId(for: item) == nil else {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
+        try validatePath(kind: item.kind, path: newPath)
+
+        // Preserve a dirty editor before changing the path. The draft gate in
+        // save prevents an already-running debounce and this explicit flush
+        // from persisting the same generation twice.
+        let initialSaveIds = Set([item.id, item.draft?.id, item.draft?.targetId].compactMap { $0 })
+        for saveId in initialSaveIds where pendingDocumentSaves[saveId] != nil {
+            try await flushDocumentSave(saveId)
+        }
+
+        try await withDraftMutation {
+            guard synchronizationItemId(for: item) == nil else {
+                throw DocumentSyncError.mutationWhileSynchronizing
+            }
+            let resource = item.resource
+            let draft = currentDraft(for: item)
+            if item.draft != nil, draft == nil { return }
+            if draft?.isDeletion == true { return }
+            guard let plan = Self.documentRenamePlan(
+                for: item,
+                currentDraft: draft,
+                newPath: newPath
+            ) else {
+                throw MemoryValidationError.unpublishedMemoryCannotBeRenamed
+            }
+            guard let projectId = draftCarrierProjectId(for: item, currentDraft: draft) else {
+                throw WorkspaceLoadError.noProjects
+            }
+            let currentPath = draft?.document.path ?? resource?.document.path
+            guard currentPath != newPath else { return }
+
+            let projectRefCommitId = projects.first { $0.id == projectId }?.refCommitId
+            let response = try await daemon.store(
+                .init(
+                    draftId: draft?.id,
+                    baseCommitId: draft?.baseCommitId
+                        ?? resource?.refCommitId
+                        ?? (item.scope == .org ? orgRefCommitId : projectRefCommitId),
+                    projectId: projectId,
+                    scope: item.scope == .org ? .org : .project,
+                    resource: item.kind.daemonKind,
+                    op: .rename(id: plan.targetId, newPath: plan.newPath, description: nil),
+                    source: .desktop
+                )
+            )
+            // Editing remains available while the daemon request is in
+            // flight. Any save staged in that window still carries the old
+            // path; retarget it so its later body update cannot rename the
+            // document back.
+            let saveIds = Set([item.id, response.draftId, plan.targetId])
+            retargetPendingDocumentSaves(saveIds, to: newPath)
+            try await refreshDraft(response.draftId)
+            retargetPendingDocumentSaves(saveIds, to: newPath)
+            selectedItemId = resource?.id ?? plan.targetId
+        }
+    }
+
+    private func retargetPendingDocumentSaves(_ itemIds: Set<String>, to newPath: String) {
+        for itemId in itemIds {
+            guard let pending = pendingDocumentSaves[itemId] else { continue }
+            pendingDocumentSaves[itemId] = .init(
+                item: pending.item,
+                document: Self.documentByRetargetingPendingSave(
+                    pending.document,
+                    to: newPath
+                ),
+                generation: pending.generation
+            )
+        }
+    }
+
+    static func documentRenamePlan(
+        for item: MemoryListItem,
+        currentDraft: LocalDraft?,
+        newPath: String
+    ) -> DocumentRenamePlan? {
+        guard let targetId = item.resource?.id ?? currentDraft?.targetId else { return nil }
+        return .init(targetId: targetId, newPath: newPath)
+    }
+
+    static func documentByRetargetingPendingSave(
+        _ document: EditableMemoryDocument,
+        to newPath: String
+    ) -> EditableMemoryDocument {
+        var retargeted = document
+        retargeted.path = newPath
+        return retargeted
+    }
+
     func delete(_ item: MemoryListItem) async {
-        guard let projectId = item.projectId ?? activeProjectId,
+        guard item.draft?.isDeletion != true else { return }
+        guard !isSwitchingMemoryContext else {
+            errorMessage = "Wait for the Memory context switch to finish before deleting."
+            return
+        }
+        guard canEditMemory(item) else {
+            errorMessage = "You do not have permission to delete this memory."
+            return
+        }
+        guard synchronizationItemId(for: item) == nil else {
+            errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
+            return
+        }
+        for itemId in Set([item.id, item.draft?.id, item.draft?.targetId].compactMap { $0 }) {
+            cancelDocumentSave(itemId)
+        }
+        guard let projectId = draftCarrierProjectId(for: item, currentDraft: item.draft),
               let targetId = item.resource?.id ?? item.draft?.targetId else { return }
         do {
             try await withDraftMutation {
+                guard synchronizationItemId(for: item) == nil else {
+                    throw DocumentSyncError.mutationWhileSynchronizing
+                }
                 let draft = currentDraft(for: item)
                 let response = try await daemon.store(
                     .init(
@@ -1183,8 +1961,18 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func discard(_ draft: LocalDraft) async {
+        guard synchronizationItemId(for: draft) == nil else {
+            errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
+            return
+        }
+        for itemId in Set([draft.id, draft.targetId].compactMap { $0 }) {
+            cancelDocumentSave(itemId)
+        }
         do {
             try await withDraftMutation {
+                guard synchronizationItemId(for: draft) == nil else {
+                    throw DocumentSyncError.mutationWhileSynchronizing
+                }
                 _ = try await daemon.store(
                     .init(
                         draftId: draft.id,
@@ -1197,6 +1985,7 @@ final class WorkspaceStore: ObservableObject {
                     )
                 )
                 drafts.removeAll { $0.id == draft.id }
+                pruneOrphanedMemoryTabs()
                 selectedItemId = nil
             }
         } catch {
@@ -1232,41 +2021,231 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    nonisolated static func staleResourcePlan(
+        displayedResources: [MemoryResource],
+        projectName: String,
+        observedProjectRefCommitId: String?,
+        observedSelectedOrgResourceIds: Set<String> = [],
+        observedOrgSelectionRevision: Int = 0,
+        authoritativeCommitId: String?,
+        serverCursor: String?,
+        checkout: DaemonProjectCheckout,
+        authoritativeRefEtag: String? = nil,
+        authoritativeResponseIsStale: Bool = false,
+        provisionalResourceIds: Set<String> = [],
+        generation: UUID = UUID()
+    ) -> [String: StaleResourceSyncSnapshot]? {
+        // A cursor mismatch has no direction information. Only a fresh Server
+        // commit-state response can prove that the installed checkout is the
+        // current shared version rather than an older checkout catching up.
+        guard !authoritativeResponseIsStale,
+              checkout.ready,
+              let authoritativeCommitId,
+              serverCursor == authoritativeCommitId,
+              checkout.commitId == authoritativeCommitId else {
+            return nil
+        }
+        guard observedProjectRefCommitId != authoritativeCommitId else { return [:] }
+
+        let projectId = checkout.projectId
+        let localProjectResources = displayedResources.filter {
+            $0.scope == .project
+                && $0.projectId == projectId
+                && !provisionalResourceIds.contains($0.id)
+        }
+        // A Project checkout may include a pinned selection of Org memories,
+        // but that is not proof of the current Org head. Applying those rows
+        // to the global Org resource collection could roll it backward.
+        let checkoutResources = checkout.resources.filter { $0.scope == .project }
+        let localById = Dictionary(
+            localProjectResources.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let remoteById = Dictionary(
+            checkoutResources.map { resource -> (String, MemoryResource) in
+                let scope: MemoryScope = resource.scope == .org ? .org : .project
+                let local = localById[resource.resourceId]
+                return (
+                    resource.resourceId,
+                    MemoryResource(
+                        id: resource.resourceId,
+                        scope: scope,
+                        projectId: scope == .project ? projectId : nil,
+                        projectName: scope == .project ? projectName : nil,
+                        kind: .init(resource.resourceKind),
+                        contentHash: resource.contentHash,
+                        updatedAt: checkout.commitCreatedAt ?? local?.updatedAt ?? "",
+                        refCommitId: scope == .project
+                            ? authoritativeCommitId
+                            : local?.refCommitId,
+                        contentLoaded: true,
+                        document: .init(
+                            title: URL(fileURLWithPath: resource.path)
+                                .deletingPathExtension().lastPathComponent,
+                            path: resource.path,
+                            body: resource.content.content
+                        )
+                    )
+                )
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let projectRemoteIds = Set(checkoutResources.map(\.resourceId))
+        let ids = Set(localProjectResources.map(\.id))
+            .union(projectRemoteIds)
+        var result: [String: StaleResourceSyncSnapshot] = [:]
+        for id in ids {
+            let local = localById[id]
+            let remote = remoteById[id]
+            if let local, let remote,
+               local.scope == remote.scope,
+               local.kind == remote.kind,
+               local.document.path == remote.document.path,
+               local.contentHash == remote.contentHash {
+                continue
+            }
+            result[id] = .init(
+                projectId: projectId,
+                observedProjectRefCommitId: observedProjectRefCommitId,
+                observedSelectedOrgResourceIds: observedSelectedOrgResourceIds,
+                observedOrgSelectionRevision: observedOrgSelectionRevision,
+                authoritativeCommitId: authoritativeCommitId,
+                authoritativeRefEtag: authoritativeRefEtag ?? checkout.refEtag,
+                selectedOrgResourceIds: Set(checkout.selectedOrgResourceIds),
+                orgSelectionRevision: checkout.orgSelectionRevision,
+                generation: generation,
+                local: local,
+                remote: remote
+            )
+        }
+        return result
+    }
+
+    nonisolated static func draftUploadBarrierDecision(
+        serverDraftId: String?,
+        pendingOperationCount: Int,
+        failedOperationCount: Int,
+        operationStates: [DaemonDraftSyncState],
+        failureMessage: String?
+    ) -> DraftUploadBarrierDecision {
+        if failedOperationCount > 0 || operationStates.contains(.failed) {
+            return .failed(failureMessage)
+        }
+        if pendingOperationCount == 0,
+           serverDraftId != nil,
+           operationStates.allSatisfy({ $0 == .synced }) {
+            return .ready
+        }
+        return .wait
+    }
+
+    nonisolated static func staleResourcePlansMatch(
+        _ lhs: [String: StaleResourceSyncSnapshot],
+        _ rhs: [String: StaleResourceSyncSnapshot]
+    ) -> Bool {
+        guard Set(lhs.keys) == Set(rhs.keys) else { return false }
+        return lhs.allSatisfy { resourceId, left in
+            guard let right = rhs[resourceId],
+                  left.local?.contentLoaded != false,
+                  right.local?.contentLoaded != false else { return false }
+            return left.projectId == right.projectId
+                && left.observedProjectRefCommitId == right.observedProjectRefCommitId
+                && left.observedSelectedOrgResourceIds == right.observedSelectedOrgResourceIds
+                && left.observedOrgSelectionRevision == right.observedOrgSelectionRevision
+                && left.authoritativeCommitId == right.authoritativeCommitId
+                && left.authoritativeRefEtag == right.authoritativeRefEtag
+                && left.selectedOrgResourceIds == right.selectedOrgResourceIds
+                && left.orgSelectionRevision == right.orgSelectionRevision
+                && left.local == right.local
+                && left.remote == right.remote
+        }
+    }
+
     private func refreshStaleResourcesIfNeeded(sync: DaemonSyncStatus) async {
         guard let projectId = activeProjectId,
-              let projectIndex = projects.firstIndex(where: { $0.id == projectId }),
-              let syncedCommitId = sync.commitSync.serverCursor,
-              syncedCommitId != projects[projectIndex].refCommitId else {
+              let project = projects.first(where: { $0.id == projectId }),
+              let serverCursor = sync.commitSync.serverCursor,
+              serverCursor != project.refCommitId else {
             return
         }
+        let observedRef = project.refCommitId
+        let refreshGeneration = UUID()
+        staleResourceRefreshGenerations[projectId] = refreshGeneration
         do {
-            let checkout = try await daemon.projectCheckout(projectId)
-            guard checkout.ready else { return }
-            let hashes = Dictionary(
-                checkout.resources.map { ($0.resourceId, $0.contentHash) },
-                uniquingKeysWith: { _, latest in latest }
-            )
-            staleResourceIds = Set(
-                resources.compactMap { resource -> String? in
-                    guard resource.projectId == projectId,
-                          let hash = hashes[resource.id],
-                          hash != resource.contentHash else { return nil }
-                    return resource.id
+            let commit: (value: CommitStateResponse, response: DaemonServerResponse) =
+                try await server.getWithMetadata("/api/v1/projects/\(projectId)/commit-state")
+            guard activeProjectId == projectId,
+                  projects.first(where: { $0.id == projectId }) == project,
+                  staleResourceRefreshGenerations[projectId] == refreshGeneration,
+                  !commit.response.isStaleCache else {
+                return
+            }
+            let authoritativeCommitId = commit.value.ref.commitId
+            let authoritativeRefEtag = commit.response.headers.first {
+                $0.key.caseInsensitiveCompare("etag") == .orderedSame
+            }?.value
+            if authoritativeCommitId == observedRef {
+                clearStaleResourceState(for: projectId)
+                if let authoritativeCommitId {
+                    advanceProjectRefIfPlanCompleted(
+                        projectId: projectId,
+                        authoritativeCommitId: authoritativeCommitId,
+                        authoritativeRefEtag: authoritativeRefEtag,
+                        selectedOrgResourceIds: project.selectedOrgResourceIds,
+                        orgSelectionRevision: project.orgSelectionRevision
+                    )
                 }
-            )
-            let current = projects[projectIndex]
-            projects[projectIndex] = ProjectState(
-                id: current.id,
-                name: current.name,
-                refCommitId: syncedCommitId,
-                refEtag: checkout.refEtag ?? current.refEtag,
-                selectedOrgResourceIds: current.selectedOrgResourceIds,
-                orgSelectionRevision: current.orgSelectionRevision,
-                isLoaded: current.isLoaded
-            )
+                return
+            }
+            let checkout = try await daemon.projectCheckout(projectId)
+            guard activeProjectId == projectId,
+                  projects.first(where: { $0.id == projectId }) == project,
+                  staleResourceRefreshGenerations[projectId] == refreshGeneration,
+                  let plan = Self.staleResourcePlan(
+                    displayedResources: resources,
+                    projectName: project.name,
+                    observedProjectRefCommitId: observedRef,
+                    observedSelectedOrgResourceIds: project.selectedOrgResourceIds,
+                    observedOrgSelectionRevision: project.orgSelectionRevision,
+                    authoritativeCommitId: authoritativeCommitId,
+                    serverCursor: serverCursor,
+                    checkout: checkout,
+                    authoritativeRefEtag: authoritativeRefEtag,
+                    authoritativeResponseIsStale: commit.response.isStaleCache,
+                    // Remote-only additions are inserted provisionally so the
+                    // file tree can expose their Sync action. They are not
+                    // part of the observed local generation and must not make
+                    // the next poll conclude that the plan is already applied.
+                    provisionalResourceIds: provisionalStaleAdditionIds
+                  ) else {
+                return
+            }
+            let installedPlan = staleResourceSnapshots.filter { _, snapshot in
+                snapshot.projectId == projectId
+            }
+            if !plan.isEmpty, Self.staleResourcePlansMatch(plan, installedPlan) {
+                return
+            }
+            let hydratedPlan = await hydrateStaleResourcePlan(plan)
+            guard activeProjectId == projectId,
+                  projects.first(where: { $0.id == projectId }) == project,
+                  staleResourceRefreshGenerations[projectId] == refreshGeneration else {
+                return
+            }
+            installStaleResourcePlan(hydratedPlan, for: projectId)
+            if hydratedPlan.isEmpty {
+                advanceProjectRefIfPlanCompleted(
+                    projectId: projectId,
+                    authoritativeCommitId: authoritativeCommitId ?? serverCursor,
+                    authoritativeRefEtag: authoritativeRefEtag ?? checkout.refEtag,
+                    selectedOrgResourceIds: Set(checkout.selectedOrgResourceIds),
+                    orgSelectionRevision: checkout.orgSelectionRevision
+                )
+            }
         } catch {
-            // Commit sync reports refresh failures separately; keep the
-            // previously computed stale set.
+            // Commit sync reports refresh failures separately. Retain a
+            // previously validated plan rather than replacing it with an
+            // unverified checkout.
         }
     }
 
@@ -1274,57 +2253,121 @@ final class WorkspaceStore: ObservableObject {
     /// - a behind draft opens the shared-change review flow;
     /// - a stale resource (no local draft) is refreshed from the synced checkout.
     func syncDocument(_ item: MemoryListItem) {
-        if let draft = item.draft, draft.freshness == .behind {
-            open(item)
-            pendingDocumentCommand = .reviewSharedChanges(itemId: item.id, draft: draft)
+        if let projectId = item.projectId,
+           projectOrgSelectionMutatingIds.contains(projectId) {
+            errorMessage = "Wait for the Project memory selection to finish updating before syncing this document."
             return
         }
-        guard let resource = item.resource, staleResourceIds.contains(resource.id) else { return }
-        Task { await syncStaleResource(resource.id) }
-    }
+        let behindDraft = item.draft.flatMap { $0.freshness == .behind ? $0 : nil }
+        let hasStaleResource = item.resource.map {
+            staleResourceSnapshots[$0.id] != nil
+        } ?? false
+        guard behindDraft != nil || hasStaleResource,
+              synchronizingDocumentIds.insert(item.id).inserted else { return }
 
-    private func syncStaleResource(_ resourceId: String) async {
-        guard let projectId = resources.first(where: { $0.id == resourceId })?.projectId
-            ?? activeProjectId else { return }
-        do {
-            let checkout = try await daemon.projectCheckout(projectId)
-            guard checkout.ready,
-                  let checkoutResource = checkout.resources.first(where: { $0.resourceId == resourceId }),
-                  let index = resources.firstIndex(where: { $0.id == resourceId }) else { return }
-            let current = resources[index]
-            resources[index] = .init(
-                id: current.id,
-                scope: current.scope,
-                projectId: current.projectId,
-                projectName: current.projectName,
-                kind: current.kind,
-                contentHash: checkoutResource.contentHash,
-                updatedAt: current.updatedAt,
-                refCommitId: checkout.commitId,
-                contentLoaded: true,
-                document: .init(
-                    title: URL(fileURLWithPath: checkoutResource.path)
-                        .deletingPathExtension().lastPathComponent,
-                    path: checkoutResource.path,
-                    body: checkoutResource.content.content
+        let generation = UUID()
+        documentSynchronizationGenerations[item.id] = generation
+        if behindDraft != nil {
+            openDocumentForSync(item)
+        }
+        documentSynchronizationTasks[item.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let behindDraft {
+                await prepareBehindDraftSync(
+                    itemId: item.id,
+                    draft: behindDraft,
+                    generation: generation
                 )
-            )
-            staleResourceIds.remove(resourceId)
-        } catch {
-            errorMessage = error.localizedDescription
+            } else {
+                await syncStaleResource(item, generation: generation)
+            }
         }
     }
 
-    /// The synced content of one resource from the daemon checkout,
-    /// used to render the remote layer of a stale document's diff.
-    func checkoutContent(for resourceId: String) async -> String? {
-        guard let projectId = resources.first(where: { $0.id == resourceId })?.projectId
-            ?? activeProjectId else { return nil }
-        guard let checkout = try? await daemon.projectCheckout(projectId), checkout.ready,
-              let checkoutResource = checkout.resources.first(where: { $0.resourceId == resourceId }) else {
-            return nil
+    private func openDocumentForSync(_ item: MemoryListItem) {
+        let tabProjectId = item.projectContextId ?? (item.scope == .org ? nil : item.projectId)
+        let existingMode = tabs.first {
+            $0.section == selectedSection
+                && $0.projectId == tabProjectId
+                && $0.itemId == item.id
+        }?.mode
+        // The command is consumed by a DocumentSession. Keep an existing
+        // Source/Diff mode, and use Source for a newly opened document so Sync
+        // never silently switches the user to the default Preview.
+        open(item, mode: existingMode ?? .source)
+    }
+
+    private func syncStaleResource(_ item: MemoryListItem, generation: UUID) async {
+        guard let resourceId = item.resource?.id else { return }
+        guard isCurrentDocumentSynchronization(item.id, generation: generation) else { return }
+        do {
+            // A debounce save may not have materialized its draft yet. Flush
+            // before applying a remote deletion/update so that local text can
+            // enter reconciliation instead of becoming an invisible orphan.
+            try await flushDocumentSave(resourceId)
+            guard isCurrentDocumentSynchronization(item.id, generation: generation) else { return }
+            if let draft = currentDraft(for: item) {
+                openDocumentForSync(item)
+                await prepareBehindDraftSync(
+                    itemId: item.id,
+                    draft: draft,
+                    generation: generation
+                )
+                return
+            }
+        } catch is CancellationError {
+            endDocumentSynchronization(item.id, generation: generation)
+            return
+        } catch {
+            guard isCurrentDocumentSynchronization(item.id, generation: generation) else { return }
+            endDocumentSynchronization(item.id, generation: generation)
+            errorMessage = error.localizedDescription
+            return
         }
-        return checkoutResource.content.content
+
+        // A repeated click after the first task completed is already satisfied.
+        guard let snapshot = staleResourceSnapshots[resourceId] else {
+            endDocumentSynchronization(item.id, generation: generation)
+            return
+        }
+        guard projects.first(where: { $0.id == snapshot.projectId })?.refCommitId
+            == snapshot.observedProjectRefCommitId,
+              projects.first(where: { $0.id == snapshot.projectId })?.selectedOrgResourceIds
+            == snapshot.observedSelectedOrgResourceIds,
+              projects.first(where: { $0.id == snapshot.projectId })?.orgSelectionRevision
+            == snapshot.observedOrgSelectionRevision else {
+            endDocumentSynchronization(item.id, generation: generation)
+            errorMessage = DocumentSyncError.checkoutNoLongerCurrent.localizedDescription
+            return
+        }
+        if let remote = snapshot.remote {
+            staleResourceRefreshGenerations[snapshot.projectId] = UUID()
+            if let index = resources.firstIndex(where: { $0.id == resourceId }) {
+                resources[index] = remote
+            } else {
+                resources.append(remote)
+            }
+            provisionalStaleAdditionIds.remove(resourceId)
+            refreshDocumentTabs(for: resourceId)
+        } else {
+            staleResourceRefreshGenerations[snapshot.projectId] = UUID()
+            resources.removeAll { $0.id == resourceId }
+            provisionalStaleAdditionIds.remove(resourceId)
+            if let tab = tabs.first(where: { $0.itemId == resourceId }) {
+                closeTab(tab)
+            }
+        }
+        staleResourceSnapshots.removeValue(forKey: resourceId)
+        staleResourceIds = Set(staleResourceSnapshots.keys)
+        bumpDocumentContentGeneration(for: resourceId)
+        advanceProjectRefIfPlanCompleted(
+            projectId: snapshot.projectId,
+            authoritativeCommitId: snapshot.authoritativeCommitId,
+            authoritativeRefEtag: snapshot.authoritativeRefEtag,
+            selectedOrgResourceIds: snapshot.selectedOrgResourceIds,
+            orgSelectionRevision: snapshot.orgSelectionRevision
+        )
+        endDocumentSynchronization(item.id, generation: generation)
     }
 
     /// Builds the three-way unified diff presentation for one document:
@@ -1333,33 +2376,388 @@ final class WorkspaceStore: ObservableObject {
     func documentDiffPresentation(
         for item: MemoryListItem,
         localText: String
-    ) async -> UnifiedDiffPresentation? {
-        if let draft = item.draft, !draft.isDeletion {
-            if draft.freshness == .behind,
-               let candidate = try? await reconciliationCandidate(for: draft) {
-                return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
-                    base: candidate.baseState.exists ? (candidate.baseState.content?.content ?? "") : "",
-                    local: localText,
-                    remote: candidate.currentState.exists ? (candidate.currentState.content?.content ?? "") : ""
-                ))
+    ) async throws -> DocumentDiffResult? {
+        if let draft = item.draft {
+            if draft.freshness == .behind {
+                let candidate = try await reconciliationCandidate(for: draft)
+                return .init(
+                    presentation: UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                        base: candidate.baseState.exists
+                            ? (candidate.baseState.content?.content ?? "") : "",
+                        local: candidate.draftState.exists
+                            ? (candidate.draftState.content?.content ?? "") : "",
+                        remote: candidate.currentState.exists
+                            ? (candidate.currentState.content?.content ?? "") : ""
+                    )),
+                    pathChanges: Self.documentPathChanges(
+                        basePath: candidate.baseState.exists
+                            ? candidate.baseState.resource.path : nil,
+                        localPath: candidate.draftState.exists
+                            ? candidate.draftState.resource.path : nil,
+                        remotePath: candidate.currentState.exists
+                            ? candidate.currentState.resource.path : nil
+                    )
+                )
             }
             let sharedText = item.resource?.document.body ?? ""
-            return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
-                base: sharedText,
-                local: localText,
-                remote: sharedText
-            ))
+            return .init(
+                presentation: UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                    base: sharedText,
+                    local: draft.isDeletion ? "" : localText,
+                    remote: sharedText
+                )),
+                pathChanges: documentPathChanges(for: item)
+            )
         }
-        if let resource = item.resource, staleResourceIds.contains(resource.id) {
-            guard let checkoutText = await checkoutContent(for: resource.id) else { return nil }
-            let snapshot = resource.document.body
-            return UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
-                base: snapshot,
-                local: snapshot,
-                remote: checkoutText
-            ))
+        if let resource = item.resource,
+           let snapshot = staleResourceSnapshots[resource.id] {
+            let texts = try Self.staleDocumentDiffTexts(snapshot)
+            return .init(
+                presentation: UnifiedDiffPresentation(lines: ThreeWayDiff.lines(
+                    base: texts.base,
+                    local: texts.base,
+                    remote: texts.remote
+                )),
+                pathChanges: documentPathChanges(for: item)
+            )
         }
         return nil
+    }
+
+    nonisolated static func staleDocumentDiffTexts(
+        _ snapshot: StaleResourceSyncSnapshot
+    ) throws -> (base: String, remote: String) {
+        if let local = snapshot.local, !local.contentLoaded {
+            throw DocumentDiffError.baselineUnavailable
+        }
+        return (
+            base: snapshot.local?.document.body ?? "",
+            remote: snapshot.remote?.document.body ?? ""
+        )
+    }
+
+    private func hydrateStaleResourcePlan(
+        _ plan: [String: StaleResourceSyncSnapshot]
+    ) async -> [String: StaleResourceSyncSnapshot] {
+        var hydrated = plan
+        var payloads: [String: CommitPayload] = [:]
+        var unavailableCommitIds = Set<String>()
+
+        for (resourceId, snapshot) in plan {
+            guard var local = snapshot.local else { continue }
+            // Some files may already have applied an earlier generation while
+            // the Project ref intentionally remains at the all-files barrier.
+            // Hydrate each file from its own generation first.
+            let commitId = local.refCommitId ?? snapshot.observedProjectRefCommitId
+            var historicalBody: String?
+            if let commitId, !unavailableCommitIds.contains(commitId) {
+                let payload: CommitPayload?
+                if let cached = payloads[commitId] {
+                    payload = cached
+                } else {
+                    do {
+                        let loaded = try await loadCommit(commitId)
+                        if let loaded {
+                            payloads[commitId] = loaded
+                        } else {
+                            unavailableCommitIds.insert(commitId)
+                        }
+                        payload = loaded
+                    } catch {
+                        unavailableCommitIds.insert(commitId)
+                        payload = nil
+                    }
+                }
+                if let payload,
+                   let entry = payload.tree.entries.first(where: { entry in
+                    entry.type == .memory && entry.id == local.id
+                   }),
+                   let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }),
+                   Self.contentHash(blob.content) == local.contentHash {
+                    historicalBody = blob.content
+                }
+            }
+
+            if let historicalBody {
+                local.document.body = historicalBody
+                local.contentLoaded = true
+            } else if Self.contentHash(local.document.body) == local.contentHash {
+                // A loaded body is only an acceptable fallback when its hash
+                // proves it belongs to the observed generation.
+                local.contentLoaded = true
+            } else {
+                local.document.body = ""
+                local.contentLoaded = false
+            }
+            hydrated[resourceId] = .init(
+                projectId: snapshot.projectId,
+                observedProjectRefCommitId: snapshot.observedProjectRefCommitId,
+                observedSelectedOrgResourceIds: snapshot.observedSelectedOrgResourceIds,
+                observedOrgSelectionRevision: snapshot.observedOrgSelectionRevision,
+                authoritativeCommitId: snapshot.authoritativeCommitId,
+                authoritativeRefEtag: snapshot.authoritativeRefEtag,
+                selectedOrgResourceIds: snapshot.selectedOrgResourceIds,
+                orgSelectionRevision: snapshot.orgSelectionRevision,
+                generation: snapshot.generation,
+                local: local,
+                remote: snapshot.remote
+            )
+        }
+        return hydrated
+    }
+
+    nonisolated private static func contentHash(_ content: String) -> String {
+        let digest = SHA256.hash(data: Data(content.utf8))
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func installStaleResourcePlan(
+        _ plan: [String: StaleResourceSyncSnapshot],
+        for projectId: String
+    ) {
+        let applicablePlan = plan.filter { resourceId, snapshot in
+            if let local = snapshot.local {
+                guard let current = resources.first(where: { $0.id == resourceId }) else {
+                    return false
+                }
+                return Self.resourceGenerationMatches(current, local)
+            }
+            return !resources.contains(where: { $0.id == resourceId })
+                || provisionalStaleAdditionIds.contains(resourceId)
+        }
+        clearStaleResourceState(for: projectId)
+        for (resourceId, snapshot) in applicablePlan {
+            staleResourceSnapshots[resourceId] = snapshot
+            if let local = snapshot.local,
+               local.contentLoaded,
+               let index = resources.firstIndex(where: { $0.id == resourceId }),
+               resources[index] != local {
+                resources[index] = local
+                bumpDocumentContentGeneration(for: resourceId)
+            }
+            if snapshot.local == nil,
+               let remote = snapshot.remote,
+               !resources.contains(where: { $0.id == resourceId }) {
+                resources.append(remote)
+                provisionalStaleAdditionIds.insert(resourceId)
+            }
+        }
+        staleResourceIds = Set(staleResourceSnapshots.keys)
+    }
+
+    private func clearStaleResourceState(for projectId: String) {
+        staleResourceRefreshGenerations[projectId] = UUID()
+        let ids = Set(staleResourceSnapshots.compactMap { resourceId, snapshot in
+            snapshot.projectId == projectId ? resourceId : nil
+        })
+        let provisionalIds = ids.intersection(provisionalStaleAdditionIds)
+        if !provisionalIds.isEmpty {
+            resources.removeAll { provisionalIds.contains($0.id) }
+            provisionalStaleAdditionIds.subtract(provisionalIds)
+            for resourceId in provisionalIds {
+                bumpDocumentContentGeneration(for: resourceId)
+            }
+        }
+        staleResourceSnapshots = staleResourceSnapshots.filter { _, snapshot in
+            snapshot.projectId != projectId
+        }
+        staleResourceIds = Set(staleResourceSnapshots.keys)
+    }
+
+    private func clearAllStaleResourceState() {
+        if !provisionalStaleAdditionIds.isEmpty {
+            resources.removeAll { provisionalStaleAdditionIds.contains($0.id) }
+        }
+        provisionalStaleAdditionIds.removeAll()
+        staleResourceSnapshots.removeAll()
+        staleResourceIds.removeAll()
+        staleResourceRefreshGenerations.removeAll()
+    }
+
+    private func advanceProjectRefIfPlanCompleted(
+        projectId: String,
+        authoritativeCommitId: String,
+        authoritativeRefEtag: String?,
+        selectedOrgResourceIds: Set<String>,
+        orgSelectionRevision: Int
+    ) {
+        guard !staleResourceSnapshots.values.contains(where: { $0.projectId == projectId }),
+              let index = projects.firstIndex(where: { $0.id == projectId }) else {
+            return
+        }
+        let current = projects[index]
+        projects[index] = .init(
+            id: current.id,
+            name: current.name,
+            refCommitId: authoritativeCommitId,
+            refEtag: authoritativeRefEtag ?? current.refEtag,
+            selectedOrgResourceIds: selectedOrgResourceIds,
+            orgSelectionRevision: orgSelectionRevision,
+            isLoaded: current.isLoaded
+        )
+        for resourceIndex in resources.indices
+        where resources[resourceIndex].scope == .project
+            && resources[resourceIndex].projectId == projectId
+            && resources[resourceIndex].refCommitId != authoritativeCommitId {
+            let resource = resources[resourceIndex]
+            resources[resourceIndex] = .init(
+                id: resource.id,
+                scope: resource.scope,
+                projectId: resource.projectId,
+                projectName: resource.projectName,
+                kind: resource.kind,
+                contentHash: resource.contentHash,
+                updatedAt: resource.updatedAt,
+                refCommitId: authoritativeCommitId,
+                contentLoaded: resource.contentLoaded,
+                document: resource.document
+            )
+        }
+    }
+
+    private func bumpDocumentContentGeneration(for resourceId: String) {
+        documentContentGenerations[resourceId, default: 0] &+= 1
+    }
+
+    private func replaceProjectResources(
+        projectId: String,
+        with replacements: [MemoryResource]
+    ) {
+        let previous = Dictionary(
+            resources.lazy.filter { $0.projectId == projectId }.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        resources.removeAll { $0.projectId == projectId }
+        resources += replacements
+        let next = Dictionary(
+            replacements.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        for resourceId in Set(previous.keys).union(next.keys)
+        where previous[resourceId] != next[resourceId] {
+            bumpDocumentContentGeneration(for: resourceId)
+        }
+        refreshAllDocumentTabs()
+    }
+
+    private func prepareBehindDraftSync(
+        itemId: String,
+        draft: LocalDraft,
+        generation: UUID
+    ) async {
+        guard isCurrentDocumentSynchronization(itemId, generation: generation) else { return }
+        do {
+            // Keep the editor locked across the single upload barrier and the
+            // candidate POST so a late keystroke cannot be omitted.
+            let synchronized = try await synchronizedDraftForReconciliation(
+                itemId: itemId,
+                draft: draft
+            )
+            guard isCurrentDocumentSynchronization(itemId, generation: generation) else {
+                return
+            }
+            installSynchronizedDraft(synchronized)
+            guard synchronized.freshness == .behind else {
+                // A provisional remote addition already uses the authoritative
+                // generation as its draft base. It needs adoption, not a
+                // reconciliation candidate for an already-current draft.
+                if let resourceId = synchronized.targetId {
+                    adoptCurrentStaleResource(resourceId)
+                }
+                endDocumentSynchronization(itemId, generation: generation)
+                return
+            }
+            let candidate = try await requestReconciliationCandidate(for: synchronized)
+            guard isCurrentDocumentSynchronization(itemId, generation: generation),
+                  tabs.contains(where: { $0.itemId == itemId }) else {
+                endDocumentSynchronization(itemId, generation: generation)
+                return
+            }
+            pendingDocumentReconciliationCandidates[itemId] = candidate
+                documentReconciliationResolutions[itemId] = candidate.proposedState ?? candidate.draftState
+        } catch is CancellationError {
+            endDocumentSynchronization(itemId, generation: generation)
+            return
+        } catch {
+            guard isCurrentDocumentSynchronization(itemId, generation: generation) else { return }
+            endDocumentSynchronization(itemId, generation: generation)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func adoptCurrentStaleResource(_ resourceId: String) {
+        guard let snapshot = staleResourceSnapshots.removeValue(forKey: resourceId) else { return }
+        staleResourceRefreshGenerations[snapshot.projectId] = UUID()
+        provisionalStaleAdditionIds.remove(resourceId)
+        staleResourceIds = Set(staleResourceSnapshots.keys)
+        advanceProjectRefIfPlanCompleted(
+            projectId: snapshot.projectId,
+            authoritativeCommitId: snapshot.authoritativeCommitId,
+            authoritativeRefEtag: snapshot.authoritativeRefEtag,
+            selectedOrgResourceIds: snapshot.selectedOrgResourceIds,
+            orgSelectionRevision: snapshot.orgSelectionRevision
+        )
+    }
+
+    private func synchronizedDraftForReconciliation(
+        itemId: String,
+        draft: LocalDraft
+    ) async throws -> LocalDraft {
+        let saveIds = Set([itemId, draft.id, draft.targetId].compactMap { $0 })
+        for saveId in saveIds where pendingDocumentSaves[saveId] != nil {
+            try await flushDocumentSave(saveId)
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(15))
+        var requestedRetry = false
+        while clock.now < deadline {
+            try Task.checkCancellation()
+            let detail = try await daemon.draft(draft.id)
+            let failure = detail.operations.reversed().first {
+                $0.syncStatus == .failed
+            }?.lastError
+            switch Self.draftUploadBarrierDecision(
+                serverDraftId: detail.draft.serverDraftId,
+                pendingOperationCount: detail.draft.pendingOperationCount,
+                failedOperationCount: detail.draft.failedOperationCount,
+                operationStates: detail.operations.map(\.syncStatus),
+                failureMessage: failure
+            ) {
+            case .failed(let message):
+                throw DocumentSyncError.draftUploadFailed(message)
+            case .wait:
+                if !requestedRetry {
+                    _ = try await daemon.retrySync(channel: "drafts")
+                    requestedRetry = true
+                }
+            case .ready:
+                // A user edit may have been staged while the daemon was
+                // uploading. Flush it and repeat the barrier before creating
+                // a candidate with an authoritative serverVersion.
+                let newlyPending = saveIds.filter { pendingDocumentSaves[$0] != nil }
+                if !newlyPending.isEmpty {
+                    for saveId in newlyPending {
+                        try await flushDocumentSave(saveId)
+                    }
+                    requestedRetry = false
+                    continue
+                }
+                let mapped = WorkspaceLoader.mapDraft(detail, resources: resources)
+                return mapped
+            }
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        throw DocumentSyncError.draftUploadTimedOut
+    }
+
+    private func installSynchronizedDraft(_ draft: LocalDraft) {
+        if let index = drafts.firstIndex(where: { $0.id == draft.id }) {
+            guard drafts[index].serverVersion <= draft.serverVersion else { return }
+            drafts[index] = draft
+        } else {
+            drafts.append(draft)
+        }
     }
 
     func addOrgMemories(resourceIds: Set<String>, toProject projectId: String) async throws {
@@ -1370,8 +2768,10 @@ final class WorkspaceStore: ObservableObject {
         )
     }
 
-    func removeOrgMemoriesFromActiveProject(resourceIds: Set<String>) async throws {
-        guard let projectId = activeProjectId else { throw WorkspaceLoadError.noProjects }
+    func removeOrgMemories(
+        resourceIds: Set<String>,
+        fromProject projectId: String
+    ) async throws {
         try await mutateProjectOrgSelection(
             projectId: projectId,
             resourceIds: resourceIds,
@@ -1387,17 +2787,69 @@ final class WorkspaceStore: ObservableObject {
         guard canManageOrgSelection else {
             throw ServerClientError.forbidden("Only Organization owners and admins can manage project memory.")
         }
+        guard !hasDocumentSynchronization(in: projectId) else {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
         guard projects.contains(where: { $0.id == projectId }) else {
             throw ProjectMemorySelectionError.projectUnavailable
         }
         try validateOrgResourceIds(resourceIds)
         try await withProjectOrgSelectionMutation {
+            guard canManageOrgSelection else {
+                throw ServerClientError.forbidden(
+                    "Only Organization owners and admins can manage project memory."
+                )
+            }
+            guard projects.contains(where: { $0.id == projectId }) else {
+                throw ProjectMemorySelectionError.projectUnavailable
+            }
+            try validateOrgResourceIds(resourceIds)
+            guard !hasDocumentSynchronization(in: projectId),
+                  projectOrgSelectionMutatingIds.insert(projectId).inserted else {
+                throw DocumentSyncError.mutationWhileSynchronizing
+            }
+            defer { projectOrgSelectionMutatingIds.remove(projectId) }
+            // Removing a selected Org resource can make its Project tab and
+            // tree row disappear. Materialize every dirty editor in that
+            // Project first so a failed save remains visible and recoverable
+            // as a LocalDraft instead of being stranded in a debounce buffer.
+            let pendingSaveIds = pendingDocumentSaves.compactMap { itemId, pending in
+                let pendingIds = Set(
+                    [pending.item.id, pending.item.draft?.id, pending.item.draft?.targetId]
+                        .compactMap { $0 }
+                )
+                let belongsToProject = pending.item.projectContextId == projectId
+                    || (pending.item.scope == .project && pending.item.projectId == projectId)
+                return belongsToProject && !pendingIds.isDisjoint(with: resourceIds)
+                    ? itemId
+                    : nil
+            }
+            for itemId in pendingSaveIds {
+                try await flushDocumentSave(itemId)
+            }
             let current: ProjectOrgSelection = try await server.get(
                 "/api/v1/projects/\(projectId)/org-selections"
             )
             let currentIds = projectOrgResourceIds(current)
             let nextIds = mutation.applying(resourceIds, to: currentIds)
-            guard nextIds != currentIds else { return }
+            guard nextIds != currentIds else {
+                // The Server may already reflect the requested state while a
+                // stale local snapshot does not. Treat the authoritative GET
+                // as a successful repair instead of leaving the UI behind.
+                await applyProjectOrgSelection(current, toProject: projectId)
+                return
+            }
+            guard canManageOrgSelection else {
+                throw ServerClientError.forbidden(
+                    "Only Organization owners and admins can manage project memory."
+                )
+            }
+            guard projects.contains(where: { $0.id == projectId }) else {
+                throw ProjectMemorySelectionError.projectUnavailable
+            }
+            guard !hasDocumentSynchronization(in: projectId) else {
+                throw DocumentSyncError.mutationWhileSynchronizing
+            }
             let selection = try await replaceProjectOrgSelection(
                 projectId: projectId,
                 expectedRevision: current.revision,
@@ -1411,16 +2863,19 @@ final class WorkspaceStore: ObservableObject {
         _ selection: ProjectOrgSelection,
         toProject projectId: String
     ) async {
-        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
-        let project = projects[index]
         let commit: (value: CommitStateResponse, response: DaemonServerResponse)? = try? await server.getWithMetadata(
             "/api/v1/projects/\(projectId)/commit-state"
         )
+        let freshCommit = commit.flatMap { $0.response.isStaleCache ? nil : $0 }
+        guard let index = projects.firstIndex(where: { $0.id == projectId }) else { return }
+        let project = projects[index]
+        guard selection.revision >= project.orgSelectionRevision else { return }
+        clearStaleResourceState(for: projectId)
         projects[index] = ProjectState(
             id: project.id,
             name: project.name,
-            refCommitId: commit?.value.ref.commitId ?? project.refCommitId,
-            refEtag: commit?.response.headers.first {
+            refCommitId: freshCommit?.value.ref.commitId ?? project.refCommitId,
+            refEtag: freshCommit?.response.headers.first {
                 $0.key.caseInsensitiveCompare("etag") == .orderedSame
             }?.value ?? project.refEtag,
             selectedOrgResourceIds: projectOrgResourceIds(selection),
@@ -1437,8 +2892,7 @@ final class WorkspaceStore: ObservableObject {
         expectedRevision: Int,
         resourceIds: Set<String>
     ) async throws -> ProjectOrgSelection {
-        let selected = resources.filter { $0.scope == .org && resourceIds.contains($0.id) }
-        let request = ReplaceProjectOrgSelectionRequest(resourceIds: selected.map(\.id))
+        let request = ReplaceProjectOrgSelectionRequest(resourceIds: resourceIds.sorted())
         return try await server.send(
             method: "PUT",
             path: "/api/v1/projects/\(projectId)/org-selections",
@@ -1575,6 +3029,12 @@ final class WorkspaceStore: ObservableObject {
         candidate: DraftReconciliationCandidate? = nil,
         resolvedState: ReconciliationResourceState? = nil
     ) async throws {
+        if synchronizationItemId(for: draft) != nil {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
+        guard Self.canRequestReview(draft) else {
+            throw ReviewRequestError.projectLocalDraftCannotBePublished
+        }
         guard let serverId = draft.serverId else {
             throw ReviewRequestError.draftNotSynchronized
         }
@@ -1606,6 +3066,9 @@ final class WorkspaceStore: ObservableObject {
         candidate: DraftReconciliationCandidate? = nil,
         resolvedState: ReconciliationResourceState? = nil
     ) async throws {
+        guard !Self.isProjectLocalCreate(detail.draft) else {
+            throw ReviewRequestError.projectLocalDraftCannotBePublished
+        }
         guard isReviewAuthor(review) else {
             throw ServerClientError.forbidden("Only the draft author can resubmit this Review.")
         }
@@ -1640,14 +3103,41 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func reconciliationCandidate(for draft: LocalDraft) async throws -> DraftReconciliationCandidate {
-        guard let serverId = draft.serverId else {
+        let itemId = draft.targetId ?? draft.id
+        guard synchronizingDocumentIds.insert(itemId).inserted else {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
+        let generation = UUID()
+        documentSynchronizationGenerations[itemId] = generation
+        defer { endDocumentSynchronization(itemId, generation: generation) }
+
+        let synchronized = try await synchronizedDraftForReconciliation(
+            itemId: itemId,
+            draft: draft
+        )
+        try Task.checkCancellation()
+        guard isCurrentDocumentSynchronization(itemId, generation: generation) else {
+            throw CancellationError()
+        }
+        let candidate = try await requestReconciliationCandidate(for: synchronized)
+        try Task.checkCancellation()
+        guard isCurrentDocumentSynchronization(itemId, generation: generation) else {
+            throw CancellationError()
+        }
+        return candidate
+    }
+
+    private func requestReconciliationCandidate(
+        for synchronized: LocalDraft
+    ) async throws -> DraftReconciliationCandidate {
+        guard let serverId = synchronized.serverId else {
             throw ReviewRequestError.draftNotSynchronized
         }
         return try await server.send(
             method: "POST",
             path: "/api/v1/drafts/\(serverId)/reconciliation-candidates",
             body: CreateDraftReconciliationCandidateRequest(
-                expectedDraftVersion: draft.serverVersion
+                expectedDraftVersion: synchronized.serverVersion
             )
         )
     }
@@ -1664,22 +3154,35 @@ final class WorkspaceStore: ObservableObject {
 
     func applyReconciliation(
         draftId: String,
-        draftVersion: Int,
         candidate: DraftReconciliationCandidate,
-        resolvedState: ReconciliationResourceState?
+        resolvedState: ReconciliationResourceState?,
+        documentItemId: String? = nil
     ) async throws {
+        if let documentItemId {
+            guard synchronizingDocumentIds.contains(documentItemId),
+                  pendingDocumentReconciliationCandidates[documentItemId]?.candidateId
+                    == candidate.candidateId,
+                  applyingDocumentReconciliationIds.insert(documentItemId).inserted else {
+                throw DocumentSyncError.mutationWhileSynchronizing
+            }
+        }
+        defer {
+            if let documentItemId {
+                applyingDocumentReconciliationIds.remove(documentItemId)
+            }
+        }
         let _: DraftRebaseResult = try await server.send(
             method: "POST",
             path: "/api/v1/drafts/\(draftId)/rebases",
             headers: ["If-Match": Self.refETag(candidate.currentCommitId)],
             body: CreateDraftRebaseRequest(
                 candidateId: candidate.candidateId,
-                expectedDraftVersion: draftVersion,
+                expectedDraftVersion: candidate.draftVersion,
                 resolvedState: resolvedState
             )
         )
         _ = try? await daemon.retrySync(channel: "drafts")
-        await reload()
+        await reload(allowsDuringDocumentReconciliation: true)
     }
 
     func reviewDetail(_ reviewId: String) async throws -> ReviewDetail {
@@ -1722,16 +3225,29 @@ final class WorkspaceStore: ObservableObject {
         guard canMergeReviews else {
             throw ServerClientError.forbidden("Your account cannot merge Reviews.")
         }
-        guard let project = projects.first(where: { $0.id == review.projectId }), !project.refEtag.isEmpty else {
-            throw ServerClientError.invalidResponse("The project Ref ETag is unavailable.")
+        // A Review belongs to its carrying Project, but its Draft may target
+        // either the Org or Project authority. The coordination commit is the
+        // exact target Ref generation for both scopes; the carrying Project's
+        // ETag is wrong for Org-targeted Drafts.
+        let detail = try await reviewDetail(review.id)
+        guard !Self.isProjectLocalCreate(detail.draft) else {
+            throw ReviewRequestError.projectLocalDraftCannotBePublished
         }
         let _: ReviewMergeResponse = try await server.send(
             method: "POST",
             path: "/api/v1/reviews/\(review.id)/merges",
-            headers: ["If-Match": project.refEtag],
+            headers: ["If-Match": Self.refETag(detail.draft.coordination.currentCommitId)],
             body: CreateReviewMergeRequest(expectedReviewVersion: review.version)
         )
         await reload()
+    }
+
+    nonisolated static func canRequestReview(_ draft: LocalDraft) -> Bool {
+        draft.scope == .org || draft.targetId != nil
+    }
+
+    private nonisolated static func isProjectLocalCreate(_ draft: ServerDraft) -> Bool {
+        draft.resource.scope == MemoryScope.project.rawValue && draft.resource.id == nil
     }
 
     private func currentDraft(for item: MemoryListItem) -> LocalDraft? {
@@ -1740,9 +3256,25 @@ final class WorkspaceStore: ObservableObject {
             return draft
         }
         guard let resourceId = item.resource?.id else { return item.draft }
-        return drafts.first {
-            $0.targetId == resourceId && $0.status != .discarded && $0.status != .merged
+        let projectContext = item.draft?.projectId ?? item.projectContextId ?? activeProjectId
+        return drafts.first { draft in
+            draft.targetId == resourceId
+                && draft.status != .discarded
+                && draft.status != .merged
+                && (projectContext.map { $0 == draft.projectId } ?? (draft.scope == .org))
         }
+    }
+
+    private func draftCarrierProjectId(
+        for item: MemoryListItem,
+        currentDraft: LocalDraft?
+    ) -> String? {
+        currentDraft?.projectId
+            ?? item.draft?.projectId
+            ?? item.resource?.projectId
+            ?? item.projectContextId
+            ?? activeProjectId
+            ?? (item.scope == .org ? projects.first?.id : nil)
     }
 
     private func withDraftMutation<T>(_ operation: () async throws -> T) async throws -> T {
@@ -1788,12 +3320,17 @@ final class WorkspaceStore: ObservableObject {
 
     private func persistDocumentSave(_ itemId: String, generation: UUID) async {
         guard let pending = pendingDocumentSaves[itemId], pending.generation == generation else { return }
+        guard synchronizationItemId(for: pending.item) == nil else {
+            documentSaveTasks[itemId] = nil
+            return
+        }
         do {
-            try await save(pending.item, document: pending.document)
-            if pendingDocumentSaves[itemId]?.generation == generation {
-                pendingDocumentSaves[itemId] = nil
-                documentSaveTasks[itemId] = nil
-            }
+            try await save(
+                pending.item,
+                document: pending.document,
+                pendingSaveItemId: itemId,
+                pendingSaveGeneration: generation
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -1828,6 +3365,21 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func apply(_ snapshot: WorkspaceSnapshot) {
+        let previousResources = Dictionary(
+            resources.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        clearAllStaleResourceState()
+        resourceLoadRequests.removeAll()
+        loadingResourceIds.removeAll()
+        documentSynchronizationTasks.values.forEach { $0.cancel() }
+        documentSynchronizationTasks.removeAll()
+        pendingDocumentReconciliationCandidates.removeAll()
+        documentReconciliationResolutions.removeAll()
+        pendingDocumentCommand = nil
+        documentReconciliationToolbarState = nil
+        synchronizingDocumentIds.removeAll()
+        documentSynchronizationGenerations.removeAll()
         account = snapshot.account
         organization = snapshot.organization
         capabilities = snapshot.capabilities
@@ -1839,7 +3391,17 @@ final class WorkspaceStore: ObservableObject {
         orgRefEtag = snapshot.orgRefEtag
         activeProjectId = snapshot.activeProjectId
         resources = snapshot.resources
+        let nextResources = Dictionary(
+            resources.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        for resourceId in Set(previousResources.keys).union(nextResources.keys)
+        where previousResources[resourceId] != nextResources[resourceId] {
+            bumpDocumentContentGeneration(for: resourceId)
+        }
         drafts = snapshot.drafts
+        pruneOrphanedMemoryTabs()
+        refreshAllDocumentTabs()
         bundles = snapshot.bundles
         reviews = snapshot.reviews
         runtime = snapshot.runtime
@@ -1894,18 +3456,21 @@ final class WorkspaceStore: ObservableObject {
         } else {
             drafts.append(mapped)
         }
+        refreshDocumentTabs(for: mapped.targetId ?? mapped.id)
     }
 
     private func remapDrafts(projectId: String) async throws {
         let projectDrafts = drafts.filter { $0.projectId == projectId }
+        let originalById = Dictionary(
+            projectDrafts.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let targetIds = Set(projectDrafts.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
         let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
         let loadedBaselines = try await concurrentMap(baselines) { try await loader.loadContent(for: $0) }
         for loaded in loadedBaselines {
-            if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
-                resources[index] = loaded
-            }
+            installLoadedResourceIfCurrent(loaded)
         }
         let resourceSnapshot = resources
         let mapped = try await concurrentMap(projectDrafts) { draft in
@@ -1914,8 +3479,13 @@ final class WorkspaceStore: ObservableObject {
                 resources: resourceSnapshot
             )
         }
-        drafts.removeAll { $0.projectId == projectId }
-        drafts += mapped
+        for candidate in mapped {
+            guard let original = originalById[candidate.id],
+                  let index = drafts.firstIndex(where: { $0.id == candidate.id }),
+                  drafts[index] == original else { continue }
+            drafts[index] = candidate
+            refreshDocumentTabs(for: candidate.targetId ?? candidate.id)
+        }
     }
 
     nonisolated static func draftInventoryPlan(
@@ -1983,10 +3553,15 @@ final class WorkspaceStore: ObservableObject {
         drafts.removeAll {
             plan.terminalIds.contains($0.id) && !pendingDraftIds.contains($0.id)
         }
+        pruneOrphanedMemoryTabs()
 
         let refreshIds = plan.refreshIds.subtracting(pendingDraftIds)
         guard !refreshIds.isEmpty else { return }
         let summaries = page.items.filter { refreshIds.contains($0.draftId) }
+        let originalById = Dictionary(
+            drafts.filter { refreshIds.contains($0.id) }.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let targetIds = Set(summaries.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
         let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
@@ -1995,9 +3570,7 @@ final class WorkspaceStore: ObservableObject {
         }
         if let loadedBaselines {
             for loaded in loadedBaselines {
-                if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
-                    resources[index] = loaded
-                }
+                installLoadedResourceIfCurrent(loaded)
             }
         }
 
@@ -2011,10 +3584,12 @@ final class WorkspaceStore: ObservableObject {
         guard let mappedDrafts else { return }
         for mapped in mappedDrafts {
             if let index = drafts.firstIndex(where: { $0.id == mapped.id }) {
+                guard originalById[mapped.id] == drafts[index] else { continue }
                 drafts[index] = mapped
-            } else {
+            } else if originalById[mapped.id] == nil {
                 drafts.append(mapped)
             }
+            refreshDocumentTabs(for: mapped.targetId ?? mapped.id)
         }
     }
 
@@ -2024,17 +3599,22 @@ final class WorkspaceStore: ObservableObject {
         generation: UUID
     ) async {
         do {
+            guard let observedProject = projects.first(where: { $0.id == projectId }),
+                  observedProject.name == projectName else { return }
             let loaded = try await WorkspaceLoader(
                 daemon: daemon,
                 bootstrap: bootstrap,
                 server: server
-            ).loadProject(id: projectId, name: projectName)
-            guard projectSelectionGeneration == generation, activeProjectId == projectId else { return }
+            ).loadProjectWithMetadata(id: projectId, name: projectName)
+            guard projectSelectionGeneration == generation,
+                  activeProjectId == projectId,
+                  projects.first(where: { $0.id == projectId }) == observedProject,
+                  !loaded.hasStaleServerResponse else { return }
+            clearStaleResourceState(for: projectId)
             if let index = projects.firstIndex(where: { $0.id == projectId }) {
                 projects[index] = loaded.state
             }
-            resources.removeAll { $0.projectId == projectId }
-            resources += loaded.resources
+            replaceProjectResources(projectId: projectId, with: loaded.resources)
             try await remapDrafts(projectId: projectId)
         } catch {
             // The installed Commit remains usable; commit sync reports refresh failures separately.
@@ -2070,8 +3650,21 @@ final class WorkspaceStore: ObservableObject {
         case .rules: base = "untitled.md"
         case .workflows: base = "workflow/untitled.md"
         }
-        let paths = Set(resources.filter { $0.kind == kind && $0.scope == scope }.map(\.document.path))
-            .union(drafts.filter { $0.kind == kind && $0.scope == scope }.map(\.document.path))
+        let scopedResources: [MemoryResource]
+        let scopedDrafts: [LocalDraft]
+        if scope == .project, let activeProjectId {
+            scopedResources = Self.memoryTreeResources(
+                resources,
+                activeProjectId: activeProjectId,
+                selectedOrgResourceIds: activeProject?.selectedOrgResourceIds ?? []
+            )
+            scopedDrafts = Self.memoryTreeDrafts(drafts, activeProjectId: activeProjectId)
+        } else {
+            scopedResources = resources.filter { $0.scope == scope }
+            scopedDrafts = drafts.filter { $0.scope == scope }
+        }
+        let paths = Set(scopedResources.filter { $0.kind == kind }.map(\.document.path))
+            .union(scopedDrafts.filter { $0.kind == kind }.map(\.document.path))
         guard paths.contains(base) else { return base }
         let extensionStart = base.lastIndex(of: ".") ?? base.endIndex
         let stem = String(base[..<extensionStart])
@@ -2121,8 +3714,7 @@ final class WorkspaceStore: ObservableObject {
         .init(description: nil, content: document.body)
     }
 
-    private func validate(kind: MemoryKind, document: EditableMemoryDocument) throws {
-        let path = document.path
+    private func validatePath(kind: MemoryKind, path: String) throws {
         let segments = path.split(separator: "/", omittingEmptySubsequences: false)
         if path.isEmpty
             || path.hasPrefix("/")
@@ -2136,6 +3728,10 @@ final class WorkspaceStore: ObservableObject {
         if kind == .rules && path.lowercased().hasPrefix("workflow/") {
             throw MemoryValidationError.invalidPath("Rule paths cannot use the workflow/ namespace.")
         }
+    }
+
+    private func validate(kind: MemoryKind, document: EditableMemoryDocument) throws {
+        try validatePath(kind: kind, path: document.path)
         if kind == .rules && document.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw MemoryValidationError.emptyRule
         }
@@ -2224,7 +3820,9 @@ struct WorkspaceLoader: Sendable {
         }
         let targetIds = Set(activeDrafts.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
-        let loadedBaselines = try await concurrentMap(baselines) { try await loadContent(for: $0) }
+        let loadedBaselines = try await concurrentMap(baselines) {
+            try await loadContent(for: $0, allowingStaleCache: true)
+        }
         for loaded in loadedBaselines {
             if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
                 resources[index] = loaded
@@ -2241,6 +3839,21 @@ struct WorkspaceLoader: Sendable {
             syncRequest,
             mcpRequest
         )
+        let verifiedOrgCommit: (value: CommitStateResponse, response: DaemonServerResponse) =
+            try await server.getWithMetadata("/api/v1/org/commit-state")
+        guard verifiedOrgCommit.value.ref.commitId == orgCommit.value.ref.commitId else {
+            throw WorkspaceLoadError.sharedStateChangedDuringLoad
+        }
+        if let activeProjectId,
+           let initialProject = projectStates.first(where: { $0.id == activeProjectId }),
+           let reference = me.projects.first(where: { $0.projectId == activeProjectId }) {
+            let verifiedProject = try await loadProjectStateWithMetadata(reference).state
+            guard verifiedProject.refCommitId == initialProject.refCommitId,
+                  verifiedProject.selectedOrgResourceIds == initialProject.selectedOrgResourceIds,
+                  verifiedProject.orgSelectionRevision == initialProject.orgSelectionRevision else {
+                throw WorkspaceLoadError.sharedStateChangedDuringLoad
+            }
+        }
         return .init(
             account: me.user,
             organization: me.org,
@@ -2265,13 +3878,39 @@ struct WorkspaceLoader: Sendable {
     }
 
     func loadProject(id: String, name: String) async throws -> (state: ProjectState, resources: [MemoryResource]) {
-        let state = try await loadProjectState(.init(projectId: id, name: name))
-        let resources = try await loadResources(
-            projectId: state.id,
-            projectName: state.name,
-            refCommitId: state.refCommitId
+        let loaded = try await loadProjectWithMetadata(id: id, name: name)
+        return (loaded.state, loaded.resources)
+    }
+
+    func loadProjectWithMetadata(
+        id: String,
+        name: String
+    ) async throws -> (
+        state: ProjectState,
+        resources: [MemoryResource],
+        hasStaleServerResponse: Bool
+    ) {
+        let state = try await loadProjectStateWithMetadata(.init(projectId: id, name: name))
+        let resources = try await loadResourcesWithMetadata(
+            projectId: state.state.id,
+            projectName: state.state.name,
+            refCommitId: state.state.refCommitId
         )
-        return (state, resources)
+        let verifiedState = try await loadProjectStateWithMetadata(
+            .init(projectId: id, name: name)
+        )
+        guard state.state.refCommitId == verifiedState.state.refCommitId,
+              state.state.selectedOrgResourceIds == verifiedState.state.selectedOrgResourceIds,
+              state.state.orgSelectionRevision == verifiedState.state.orgSelectionRevision else {
+            throw WorkspaceLoadError.sharedStateChangedDuringLoad
+        }
+        return (
+            state.state,
+            resources.resources,
+            state.hasStaleServerResponse
+                || resources.hasStaleServerResponse
+                || verifiedState.hasStaleServerResponse
+        )
     }
 
     func loadCachedProject(
@@ -2323,14 +3962,47 @@ struct WorkspaceLoader: Sendable {
         )
     }
 
-    func loadContent(for resource: MemoryResource) async throws -> MemoryResource {
+    func loadContent(
+        for resource: MemoryResource,
+        allowingStaleCache: Bool = false
+    ) async throws -> MemoryResource {
         guard !resource.contentLoaded else { return resource }
         let prefix = resource.projectId.map { "/api/v1/projects/\($0)" } ?? "/api/v1/org"
         var loaded = resource
-        let detail: MemoryDetail = try await server.get("\(prefix)/memories/\(resource.id)")
-        loaded.document.body = detail.content
+        let result: (value: MemoryDetail, response: DaemonServerResponse) =
+            try await server.getWithMetadata("\(prefix)/memories/\(resource.id)")
+        loaded.document.body = try Self.validatedMemoryContent(
+            for: resource,
+            detail: result.value,
+            response: result.response,
+            allowingStaleCache: allowingStaleCache
+        )
         loaded.contentLoaded = true
         return loaded
+    }
+
+    nonisolated static func validatedMemoryContent(
+        for resource: MemoryResource,
+        detail: MemoryDetail,
+        response: DaemonServerResponse,
+        allowingStaleCache: Bool = false
+    ) throws -> String {
+        guard allowingStaleCache || !response.isStaleCache else {
+            throw ServerClientError.invalidResponse(
+                "A stale cached memory body cannot be attached to the current shared version."
+            )
+        }
+        let digest = SHA256.hash(data: Data(detail.content.utf8))
+        let actualContentHash = "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+        guard detail.memory.memoryId == resource.id,
+              detail.memory.contentHash == resource.contentHash,
+              detail.memory.path == resource.document.path,
+              actualContentHash == resource.contentHash else {
+            throw ServerClientError.invalidResponse(
+                "The memory body no longer matches the requested shared version."
+            )
+        }
+        return detail.content
     }
 
     private func ensureDaemon() async throws -> DaemonHealth {
@@ -2492,21 +4164,30 @@ struct WorkspaceLoader: Sendable {
     }
 
     private func loadProjectState(_ project: ProjectReference) async throws -> ProjectState {
+        try await loadProjectStateWithMetadata(project).state
+    }
+
+    private func loadProjectStateWithMetadata(
+        _ project: ProjectReference
+    ) async throws -> (state: ProjectState, hasStaleServerResponse: Bool) {
         async let commitRequest: (value: CommitStateResponse, response: DaemonServerResponse) = server.getWithMetadata(
             "/api/v1/projects/\(project.projectId)/commit-state"
         )
-        async let selectionRequest: ProjectOrgSelection = server.get(
+        async let selectionRequest: (value: ProjectOrgSelection, response: DaemonServerResponse) = server.getWithMetadata(
             "/api/v1/projects/\(project.projectId)/org-selections"
         )
         let (commit, selection) = try await (commitRequest, selectionRequest)
-        return .init(
-            id: project.projectId,
-            name: project.name,
-            refCommitId: commit.value.ref.commitId,
-            refEtag: etag(from: commit.response),
-            selectedOrgResourceIds: Set(selection.memories.map(\.memoryId)),
-            orgSelectionRevision: selection.revision,
-            isLoaded: true
+        return (
+            .init(
+                id: project.projectId,
+                name: project.name,
+                refCommitId: commit.value.ref.commitId,
+                refEtag: etag(from: commit.response),
+                selectedOrgResourceIds: Set(selection.value.memories.map(\.memoryId)),
+                orgSelectionRevision: selection.value.revision,
+                isLoaded: true
+            ),
+            commit.response.isStaleCache || selection.response.isStaleCache
         )
     }
 
@@ -2515,9 +4196,22 @@ struct WorkspaceLoader: Sendable {
         projectName: String?,
         refCommitId: String?
     ) async throws -> [MemoryResource] {
+        try await loadResourcesWithMetadata(
+            projectId: projectId,
+            projectName: projectName,
+            refCommitId: refCommitId
+        ).resources
+    }
+
+    private func loadResourcesWithMetadata(
+        projectId: String?,
+        projectName: String?,
+        refCommitId: String?
+    ) async throws -> (resources: [MemoryResource], hasStaleServerResponse: Bool) {
         let prefix = projectId.map { "/api/v1/projects/\($0)" } ?? "/api/v1/org"
-        let metadataItems: [MemoryMetadata] = try await loadAll("\(prefix)/memories")
-        return metadataItems.map { metadata in
+        let metadata: (items: [MemoryMetadata], hasStaleServerResponse: Bool) =
+            try await loadAllWithMetadata("\(prefix)/memories")
+        return (metadata.items.map { metadata in
             .init(
                 id: metadata.memoryId,
                 scope: projectId == nil ? .org : .project,
@@ -2534,7 +4228,7 @@ struct WorkspaceLoader: Sendable {
                     body: ""
                 )
             )
-        }
+        }, metadata.hasStaleServerResponse)
     }
 
     private func loadBundles() async throws -> [PersonalBundle] {
@@ -2558,16 +4252,25 @@ struct WorkspaceLoader: Sendable {
     }
 
     private func loadAll<Item: Decodable & Sendable>(_ path: String) async throws -> [Item] {
+        try await loadAllWithMetadata(path).items
+    }
+
+    private func loadAllWithMetadata<Item: Decodable & Sendable>(
+        _ path: String
+    ) async throws -> (items: [Item], hasStaleServerResponse: Bool) {
         var output: [Item] = []
         var cursor: String?
+        var hasStaleServerResponse = false
         repeat {
             var query = [URLQueryItem(name: "limit", value: "200")]
             if let cursor { query.append(.init(name: "cursor", value: cursor)) }
-            let page: ListResponse<Item> = try await server.get(path, query: query)
-            output += page.items
-            cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor : nil
+            let page: (value: ListResponse<Item>, response: DaemonServerResponse) =
+                try await server.getWithMetadata(path, query: query)
+            output += page.value.items
+            hasStaleServerResponse = hasStaleServerResponse || page.response.isStaleCache
+            cursor = page.value.pageInfo.hasMore ? page.value.pageInfo.nextCursor : nil
         } while cursor != nil
-        return output
+        return (output, hasStaleServerResponse)
     }
 
     static func mapReview(_ detail: ReviewDetail) -> ReviewRecord {
@@ -2657,7 +4360,15 @@ struct WorkspaceLoader: Sendable {
 
     static func mapDraft(_ detail: DaemonDraftDetail, resources: [MemoryResource]) -> LocalDraft {
         let summary = detail.draft
-        let base = summary.targetId.flatMap { id in resources.first { $0.id == id } }
+        let base = summary.targetId.flatMap { id in
+            resources.first { $0.id == id && $0.contentLoaded }
+        }
+        let hasSelfContainedContent = detail.operations.contains { operation in
+            switch operation.operation {
+            case .create, .update: true
+            case .rename, .delete, .discard: false
+            }
+        }
         var document = base?.document ?? .init(
             title: title(from: summary.path ?? "Untitled"),
             path: summary.path ?? "untitled.md",
@@ -2681,6 +4392,7 @@ struct WorkspaceLoader: Sendable {
                 break
             }
         }
+        document.title = title(from: document.path)
         return .init(
             id: summary.draftId,
             projectId: summary.projectId,
@@ -2700,7 +4412,10 @@ struct WorkspaceLoader: Sendable {
             syncStatus: detail.operations.last?.syncStatus ?? .synced,
             updatedAt: summary.updatedAt,
             document: document,
-            isDeletion: deletion
+            isDeletion: deletion,
+            documentBaselineAvailable: base != nil
+                || summary.targetId == nil
+                || hasSelfContainedContent
         )
     }
 
@@ -2745,6 +4460,23 @@ private struct PendingBundleSave {
     let description: String
     let resourceIds: Set<String>
     let generation: UUID
+}
+
+@MainActor
+final class ProjectSelectionSideEffectGate {
+    private let mutex = AsyncMutex()
+
+    func run<Output>(_ operation: () async throws -> Output) async rethrows -> Output {
+        await mutex.lock()
+        do {
+            let output = try await operation()
+            await mutex.unlock()
+            return output
+        } catch {
+            await mutex.unlock()
+            throw error
+        }
+    }
 }
 
 private actor AsyncMutex {
