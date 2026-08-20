@@ -23,9 +23,9 @@ use crate::api::{
     CreateReviewRequest, CreateReviewSubmissionRequest, CreateSetupSessionRequest,
     DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
     OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
-    ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest, ResourceScope,
-    SetupOidcAuthorization, SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest,
-    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest, SetupOidcAuthorization,
+    SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest,
+    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
 use crate::db::current_schema_migration;
@@ -1192,9 +1192,6 @@ async fn create_draft(
     Extension(principal): Extension<AuthPrincipal>,
     Json(request): Json<CreateDraftRequest>,
 ) -> Result<Json<crate::api::DraftDetail>, HttpError> {
-    if request.resource.scope == ResourceScope::Org {
-        require_org_admin(&principal)?;
-    }
     state
         .repository
         .ensure_project_member(&principal, &request.project_id)

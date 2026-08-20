@@ -113,7 +113,151 @@ async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
 }
 
 #[tokio::test]
-async fn draft_review_merge_produces_project_commit() {
+async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Legacy Project Memory",
+    )
+    .await;
+    let legacy_resource = DraftResourceRef {
+        scope: ResourceScope::Project,
+        id: None,
+        path: Some("context/legacy.md".to_owned()),
+    };
+    let legacy_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_legacy".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Legacy Project draft".to_owned(),
+                description: None,
+                resource: legacy_resource.clone(),
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let create_review_error = repo
+        .create_review(
+            &bootstrap.user_id,
+            None,
+            CreateReviewRequest {
+                draft_id: legacy_draft.draft.draft_id.clone(),
+                expected_draft_version: legacy_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        create_review_error
+            .to_string()
+            .contains("project-scoped Memory authority is read-only")
+    );
+
+    let rejected_review_id = "rev_legacy_rejected";
+    sqlx::query(
+        "INSERT INTO reviews (
+            review_id, draft_id, project_id, author_user_id,
+            title, description, status, version
+         )
+         VALUES ($1, $2, $3, $4, 'Legacy rejected Review', '', 'rejected', 1)",
+    )
+    .bind(rejected_review_id)
+    .bind(&legacy_draft.draft.draft_id)
+    .bind(&bootstrap.project_id)
+    .bind(&bootstrap.user_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    let resubmit_error = repo
+        .create_review_submission(
+            rejected_review_id,
+            &bootstrap.user_id,
+            None,
+            CreateReviewSubmissionRequest {
+                expected_review_version: 1,
+                expected_draft_version: legacy_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        resubmit_error
+            .to_string()
+            .contains("project-scoped Memory authority is read-only")
+    );
+
+    let approved_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_legacy".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Legacy approved Project draft".to_owned(),
+                description: None,
+                resource: legacy_resource,
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE drafts SET status = 'submitted' WHERE draft_id = $1")
+        .bind(&approved_draft.draft.draft_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    let approved_review_id = "rev_legacy_approved";
+    sqlx::query(
+        "INSERT INTO reviews (
+            review_id, draft_id, project_id, author_user_id,
+            title, description, status, version, approved_result_hash
+         )
+         VALUES ($1, $2, $3, $4, 'Legacy approved Review', '', 'approved', 1, 'legacy')",
+    )
+    .bind(approved_review_id)
+    .bind(&approved_draft.draft.draft_id)
+    .bind(&bootstrap.project_id)
+    .bind(&bootstrap.user_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    let merge_error = repo
+        .create_review_merge(
+            approved_review_id,
+            None,
+            CreateReviewMergeRequest {
+                expected_review_version: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        merge_error
+            .to_string()
+            .contains("project-scoped Memory authority is read-only")
+    );
+}
+
+#[tokio::test]
+async fn draft_review_merge_produces_org_and_carrier_project_commits() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
     let bootstrap = common::initialize_installation(
@@ -165,6 +309,7 @@ async fn draft_review_merge_produces_project_commit() {
     assert_eq!(org_commit_state.reference.org_id, org_id);
     assert!(org_commit_state.latest.is_some());
     assert_ne!(org_ref_etag, "\"ref-none\"");
+    let org_base_commit_id = org_commit_state.latest.unwrap().commit_id;
     let org_commits: CommitListResponse = get_json(app.clone(), "/api/v1/org/commits").await;
     assert_eq!(org_commits.items.len(), 2);
 
@@ -286,11 +431,11 @@ async fn draft_review_merge_produces_project_commit() {
         &CreateDraftRequest {
             daemon_installation_id: "daemon_test".to_owned(),
             project_id: project_id.clone(),
-            base_commit_id: Some(initial_commit_id.clone()),
-            title: "Add project context".to_owned(),
-            description: Some("First project context entry".to_owned()),
+            base_commit_id: Some(org_base_commit_id.clone()),
+            title: "Add organization context".to_owned(),
+            description: Some("Organization context proposed from a Project".to_owned()),
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -321,7 +466,7 @@ async fn draft_review_merge_produces_project_commit() {
         &DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -340,7 +485,7 @@ async fn draft_review_merge_produces_project_commit() {
         &DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context/intro.md".to_owned()),
             },
@@ -370,11 +515,11 @@ async fn draft_review_merge_produces_project_commit() {
         &CreateDraftRequest {
             daemon_installation_id: "daemon_batch_origin".to_owned(),
             project_id: project_id.clone(),
-            base_commit_id: Some(initial_commit_id.clone()),
+            base_commit_id: Some(org_base_commit_id.clone()),
             title: "Batch draft".to_owned(),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context/batch.md".to_owned()),
             },
@@ -394,7 +539,7 @@ async fn draft_review_merge_produces_project_commit() {
                 operation: DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/batch.md".to_owned()),
                     },
@@ -500,7 +645,7 @@ async fn draft_review_merge_produces_project_commit() {
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
         &format!("/api/v1/reviews/{}/merges", review.review_id),
-        &initial_head_etag,
+        &org_ref_etag,
         &CreateReviewMergeRequest {
             expected_review_version: 2,
         },
@@ -521,33 +666,55 @@ async fn draft_review_merge_produces_project_commit() {
 
     let project: Project = get_json(app.clone(), &format!("/api/v1/projects/{project_id}")).await;
     assert_eq!(project.revision, 0);
-    let (commit_state, merged_head_etag): (CommitStateResponse, String) = get_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/commit-state?local_commit_id={initial_commit_id}"),
-    )
-    .await;
-    assert!(commit_state.update_available);
+    let (org_commit_state, merged_org_head_etag): (CommitStateResponse, String) =
+        get_json_with_etag(
+            app.clone(),
+            &format!("/api/v1/org/commit-state?local_commit_id={org_base_commit_id}"),
+        )
+        .await;
+    assert!(org_commit_state.update_available);
     assert_eq!(
-        commit_state
+        org_commit_state
             .latest
             .as_ref()
             .map(|commit| commit.commit_id.as_str()),
         Some(commit_id.as_str())
     );
-    assert_eq!(merged_head_etag, format!("\"{commit_id}\""));
-    let (current_commit_state, _): (CommitStateResponse, String) = get_json_with_etag(
+    assert_eq!(merged_org_head_etag, format!("\"{commit_id}\""));
+    let (current_org_commit_state, _): (CommitStateResponse, String) = get_json_with_etag(
         app.clone(),
-        &format!("/api/v1/projects/{project_id}/commit-state?local_commit_id={commit_id}"),
+        &format!("/api/v1/org/commit-state?local_commit_id={commit_id}"),
     )
     .await;
-    assert!(!current_commit_state.update_available);
+    assert!(!current_org_commit_state.update_available);
+
+    let (project_commit_state, _): (CommitStateResponse, String) = get_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/projects/{project_id}/commit-state?local_commit_id={initial_commit_id}"),
+    )
+    .await;
+    assert!(project_commit_state.update_available);
+    let project_commit_id = project_commit_state
+        .latest
+        .expect("auto-selection should create a carrier Project commit")
+        .commit_id;
+    assert_ne!(project_commit_id, commit_id);
 
     let project_context_page: MemoryListResponse = get_json(
         app.clone(),
         &format!("/api/v1/projects/{project_id}/memories"),
     )
     .await;
-    assert_eq!(project_context_page.items.len(), 1);
+    assert!(project_context_page.items.is_empty());
+
+    let org_memory_page: MemoryListResponse = get_json(app.clone(), "/api/v1/org/memories").await;
+    let created_org_memory_id = org_memory_page
+        .items
+        .iter()
+        .find(|memory| memory.path == "context/intro.md")
+        .expect("merged create should materialize Org authority")
+        .memory_id
+        .clone();
 
     let invalid_bundle = post_response(
         app.clone(),
@@ -555,7 +722,7 @@ async fn draft_review_merge_produces_project_commit() {
         &PersonalBundleRequest {
             name: "Invalid project memory".to_owned(),
             description: None,
-            resource_ids: vec![project_context_page.items[0].memory_id.clone()],
+            resource_ids: vec!["mem_missing".to_owned()],
         },
     )
     .await;
@@ -675,7 +842,7 @@ async fn draft_review_merge_produces_project_commit() {
     let current_selection: ProjectOrgSelection = put_json_with_if_match(
         app.clone(),
         &format!("/api/v1/projects/{project_id}/org-selections"),
-        2,
+        3,
         &ReplaceProjectOrgSelectionRequest {
             resource_ids: vec![org_context_id.clone()],
         },
@@ -683,7 +850,8 @@ async fn draft_review_merge_produces_project_commit() {
     .await;
     assert_eq!(current_selection.memories.len(), 1);
 
-    let commit: CommitPayload = get_json(app, &format!("/api/v1/commits/{commit_id}")).await;
+    let commit: CommitPayload =
+        get_json(app, &format!("/api/v1/commits/{project_commit_id}")).await;
     assert_eq!(
         commit.commit.project_id.as_deref(),
         Some(project_id.as_str())
@@ -707,13 +875,24 @@ async fn draft_review_merge_produces_project_commit() {
     let selection = commit
         .project_org_selection
         .expect("project commit should include org selection");
-    assert_eq!(selection.memories.len(), 2);
-    assert_eq!(selection.memories[0].memory_id, org_context_id);
-    assert_eq!(selection.memories[1].memory_id, org_reference_id);
+    assert_eq!(selection.memories.len(), 3);
+    let selected_ids = selection
+        .memories
+        .iter()
+        .map(|memory| memory.memory_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        selected_ids,
+        std::collections::BTreeSet::from([
+            org_context_id.as_str(),
+            org_reference_id.as_str(),
+            created_org_memory_id.as_str(),
+        ])
+    );
 }
 
 #[tokio::test]
-async fn org_draft_review_merge_advances_only_the_org_ref() {
+async fn org_draft_review_merge_advances_org_and_selected_project_refs() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
     let bootstrap = common::initialize_installation(
@@ -733,6 +912,15 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         )
         .await
         .unwrap();
+    repo.select_org_resource_for_project(&bootstrap.project_id, &context_id)
+        .await
+        .unwrap();
+    let project_head_before = repo
+        .get_project_commit_state(&bootstrap.project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
     let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
     let (org_state, org_ref_etag): (CommitStateResponse, String) =
         get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
@@ -802,7 +990,112 @@ async fn org_draft_review_merge_advances_only_the_org_ref() {
         &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
     )
     .await;
-    assert_eq!(project_state.reference.commit_id, None);
+    assert_ne!(project_state.reference.commit_id, project_head_before);
+}
+
+#[tokio::test]
+async fn org_create_review_merge_selects_the_new_memory_for_its_project() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Project Memory",
+    )
+    .await;
+    let secondary_project_id = repo
+        .create_project(&bootstrap.org_id, "Secondary Project", "")
+        .await
+        .unwrap();
+    let secondary_state_before = repo
+        .get_project_commit_state(&secondary_project_id, None)
+        .await
+        .unwrap();
+    let secondary_selection_before = repo
+        .get_project_org_selection(&secondary_project_id)
+        .await
+        .unwrap();
+    let (app, _) = common::authenticated_router(postgres.pool.clone()).await;
+    let (org_before, org_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
+
+    let approved = create_approved_review(
+        app.clone(),
+        CreateDraftRequest {
+            daemon_installation_id: "daemon_org_create".to_owned(),
+            project_id: bootstrap.project_id.clone(),
+            base_commit_id: org_before.reference.commit_id,
+            title: "Create shared project memory".to_owned(),
+            description: None,
+            resource: DraftResourceRef {
+                scope: ResourceScope::Org,
+                id: None,
+                path: Some("context/project-created.md".to_owned()),
+            },
+            operations: vec![DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some("context/project-created.md".to_owned()),
+                },
+                content: context_draft_content("# Project-created\n\nShared after review."),
+                new_path: None,
+            }],
+        },
+    )
+    .await;
+    let _: ReviewMergeResult = post_json_with_etag(
+        app.clone(),
+        &format!("/api/v1/reviews/{}/merges", approved.review_id),
+        &org_etag,
+        &CreateReviewMergeRequest {
+            expected_review_version: approved.version,
+        },
+    )
+    .await;
+
+    let org_memories: MemoryListResponse = get_json(app.clone(), "/api/v1/org/memories").await;
+    let created = org_memories
+        .items
+        .iter()
+        .find(|memory| memory.path == "context/project-created.md")
+        .expect("merged Org create should materialize an Organization Memory");
+    let selection: ProjectOrgSelection = get_json(
+        app.clone(),
+        &format!("/api/v1/projects/{}/org-selections", bootstrap.project_id),
+    )
+    .await;
+    assert!(
+        selection
+            .memories
+            .iter()
+            .any(|memory| memory.memory_id == created.memory_id)
+    );
+    assert_eq!(selection.revision, 1);
+    let project_state: CommitStateResponse = get_json(
+        app,
+        &format!("/api/v1/projects/{}/commit-state", bootstrap.project_id),
+    )
+    .await;
+    assert!(project_state.reference.commit_id.is_some());
+
+    let secondary_state_after = repo
+        .get_project_commit_state(&secondary_project_id, None)
+        .await
+        .unwrap();
+    let secondary_selection_after = repo
+        .get_project_org_selection(&secondary_project_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        secondary_state_after.reference.commit_id,
+        secondary_state_before.reference.commit_id
+    );
+    assert_eq!(secondary_selection_after, secondary_selection_before);
 }
 
 #[tokio::test]
@@ -1065,74 +1358,23 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     .await
     .unwrap();
 
-    let initial_project_head = repo
-        .get_project_commit_state(&bootstrap.project_id, None)
-        .await
-        .unwrap()
-        .reference
-        .commit_id;
-    let project_draft = repo
-        .create_draft(
-            &bootstrap.user_id,
-            CreateDraftRequest {
-                daemon_installation_id: "daemon_projection_rollback".to_owned(),
-                project_id: bootstrap.project_id.clone(),
-                base_commit_id: initial_project_head.clone(),
-                title: "Create colliding project context".to_owned(),
-                description: None,
-                resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
-                    id: None,
-                    path: Some("context/collision.md".to_owned()),
-                },
-                operations: vec![DraftOperationInput {
-                    action: DraftOperationAction::Create,
-                    resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
-                        id: None,
-                        path: Some("context/collision.md".to_owned()),
-                    },
-                    content: context_draft_content("# Project context"),
-                    new_path: None,
-                }],
-            },
-        )
-        .await
-        .unwrap();
-    let project_review = repo
-        .create_review(
-            &bootstrap.user_id,
-            initial_project_head.as_deref(),
-            CreateReviewRequest {
-                draft_id: project_draft.draft.draft_id,
-                expected_draft_version: project_draft.draft.version,
-                title: None,
-                description: None,
-                candidate_id: None,
-                resolved_state: None,
-            },
-        )
-        .await
-        .unwrap();
-    let project_review = repo
-        .create_review_decision(
-            &project_review.review.review_id,
-            &project_review.review.author.user_id,
-            CreateReviewDecisionRequest {
-                decision: ReviewDecision::Approved,
-                expected_review_version: project_review.review.version,
-                body: None,
-            },
-        )
-        .await
-        .unwrap();
-    repo.create_review_merge(
-        &project_review.review.review_id,
-        initial_project_head.as_deref(),
-        CreateReviewMergeRequest {
-            expected_review_version: project_review.review.version,
-        },
+    // Compatibility fixture: releases before Org-only authority could leave
+    // Project-owned rows behind. They remain readable but no Review may
+    // create or mutate them after this cutover.
+    sqlx::query(
+        "INSERT INTO resources (
+            resource_id, org_id, project_id, scope, resource_kind, path, name,
+            status, revision, content_hash, body, description
+         )
+         VALUES (
+            'mem_legacy_collision', $1, $2, 'project', 'memory',
+            'context/collision.md', 'collision', 'active', 1,
+            'sha256:legacy', '# Legacy Project context', ''
+         )",
     )
+    .bind(&bootstrap.org_id)
+    .bind(&bootstrap.project_id)
+    .execute(&postgres.pool)
     .await
     .unwrap();
 
@@ -1298,14 +1540,14 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             title: "Create review lifecycle context".to_owned(),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context/review-lifecycle.md".to_owned()),
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/review-lifecycle.md".to_owned()),
                 },
@@ -1627,7 +1869,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
 }
 
 #[tokio::test]
-async fn stale_draft_cannot_overwrite_a_new_project_ref() {
+async fn stale_draft_cannot_overwrite_a_new_org_ref() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
         postgres.pool.clone(),
@@ -1880,18 +2122,10 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
         event.draft_id == stale.draft_id && event.event_type == DraftEventType::Rebased
     }));
 
-    let context: MemoryListResponse = get_json(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/memories"),
-    )
-    .await;
+    let context: MemoryListResponse = get_json(app.clone(), "/api/v1/org/memories").await;
     assert_eq!(context.items.len(), 1);
     assert_eq!(context.items[0].path, "context/first.md");
-    let commits: CommitListResponse = get_json(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/commits"),
-    )
-    .await;
+    let commits: CommitListResponse = get_json(app.clone(), "/api/v1/org/commits").await;
     assert_eq!(commits.items.len(), 1);
     assert_eq!(commits.items[0].commit_id, first_commit_id);
 
@@ -2003,8 +2237,7 @@ async fn stale_draft_cannot_overwrite_a_new_project_ref() {
     )
     .await;
     assert!(merge.commit_id.is_some());
-    let context: MemoryListResponse =
-        get_json(app, &format!("/api/v1/projects/{project_id}/memories")).await;
+    let context: MemoryListResponse = get_json(app, "/api/v1/org/memories").await;
     assert_eq!(context.items.len(), 3);
 }
 
@@ -2023,7 +2256,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     .await;
 
     let resource = DraftResourceRef {
-        scope: ResourceScope::Project,
+        scope: ResourceScope::Org,
         id: None,
         path: Some("context/coordination.md".to_owned()),
     };
@@ -2098,7 +2331,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
         .id
         .clone();
     let existing_resource = DraftResourceRef {
-        scope: ResourceScope::Project,
+        scope: ResourceScope::Org,
         id: Some(resource_id.clone()),
         path: None,
     };
@@ -2518,6 +2751,971 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
 }
 
 #[tokio::test]
+async fn project_org_selection_preserves_every_active_org_draft_target() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Active Draft Selection",
+    )
+    .await;
+    let mut resource_ids = Vec::new();
+    for name in ["open", "submitted", "operation", "discarded", "merged"] {
+        resource_ids.push(
+            repo.create_org_context(
+                &bootstrap.org_id,
+                &format!("context/{name}.md"),
+                &format!("# {name}"),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let [open_id, submitted_id, operation_id, discarded_id, merged_id] =
+        resource_ids.clone().try_into().unwrap();
+    let mut selection = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            0,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: resource_ids.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let open_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_selection_open".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Open target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(open_id.clone()),
+                    path: None,
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let submitted_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_selection_submitted".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Submitted path target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some("context/submitted.md".to_owned()),
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE drafts SET status = 'submitted' WHERE draft_id = $1")
+        .bind(&submitted_draft.draft.draft_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    let operation_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_selection_operation".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Operation target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(open_id.clone()),
+                    path: None,
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Update,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: Some(operation_id.clone()),
+                        path: None,
+                    },
+                    content: context_draft_content("# operation draft"),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let discarded_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_selection_discarded".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Discarded target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(discarded_id.clone()),
+                    path: None,
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    repo.discard_draft(
+        &discarded_draft.draft.draft_id,
+        &bootstrap.user_id,
+        discarded_draft.draft.version,
+    )
+    .await
+    .unwrap();
+    let merged_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_selection_merged".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Merged target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(merged_id.clone()),
+                    path: None,
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE drafts SET status = 'merged' WHERE draft_id = $1")
+        .bind(&merged_draft.draft.draft_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+
+    let added_id = repo
+        .create_org_context(&bootstrap.org_id, "context/added.md", "# added")
+        .await
+        .unwrap();
+    let mut with_addition = resource_ids.clone();
+    with_addition.push(added_id.clone());
+    selection = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            selection.revision,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: with_addition.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        selection
+            .memories
+            .iter()
+            .any(|memory| memory.memory_id == added_id)
+    );
+
+    for (blocked_id, draft_id) in [
+        (&open_id, &open_draft.draft.draft_id),
+        (&submitted_id, &submitted_draft.draft.draft_id),
+        (&operation_id, &operation_draft.draft.draft_id),
+    ] {
+        let error = repo
+            .replace_project_org_selection(
+                &bootstrap.project_id,
+                selection.revision,
+                ReplaceProjectOrgSelectionRequest {
+                    resource_ids: with_addition
+                        .iter()
+                        .filter(|resource_id| *resource_id != blocked_id)
+                        .cloned()
+                        .collect(),
+                },
+            )
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(blocked_id));
+        assert!(message.contains(draft_id));
+        assert!(message.contains("active Organization Draft"));
+    }
+
+    let without_discarded = with_addition
+        .iter()
+        .filter(|resource_id| *resource_id != &discarded_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    selection = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            selection.revision,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: without_discarded.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        selection
+            .memories
+            .iter()
+            .all(|memory| memory.memory_id != discarded_id)
+    );
+
+    let without_terminal = without_discarded
+        .into_iter()
+        .filter(|resource_id| resource_id != &merged_id)
+        .collect::<Vec<_>>();
+    selection = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            selection.revision,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: without_terminal,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        selection
+            .memories
+            .iter()
+            .all(|memory| memory.memory_id != merged_id)
+    );
+}
+
+#[tokio::test]
+async fn project_org_selection_resolves_legacy_path_only_draft_after_authority_rename() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Legacy Path Draft Selection",
+    )
+    .await;
+    let old_path = "context/path-only-target.md";
+    let new_path = "context/path-only-target-renamed.md";
+    let resource_id = repo
+        .create_org_context(&bootstrap.org_id, old_path, "# Shared target")
+        .await
+        .unwrap();
+    let selection = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            0,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: vec![resource_id.clone()],
+            },
+        )
+        .await
+        .unwrap();
+    let base_commit_id = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+
+    let path_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_path_identity".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: base_commit_id.clone(),
+                title: "Update by path".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some(old_path.to_owned()),
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        path_draft.draft.resource.id.as_deref(),
+        Some(resource_id.as_str())
+    );
+    let path_draft = repo
+        .append_draft_operation(
+            &path_draft.draft.draft_id,
+            path_draft.draft.version,
+            DraftOperationInput {
+                action: DraftOperationAction::Update,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some(old_path.to_owned()),
+                },
+                content: context_draft_content("# Local update"),
+                new_path: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        path_draft.operations[0].input.resource.id.as_deref(),
+        Some(resource_id.as_str())
+    );
+
+    // Compatibility fixture: old clients persisted only paths and some old
+    // Draft shells had no base commit. The historical Org tree must still map
+    // that path to the stable resource identity after an authority rename.
+    sqlx::query("UPDATE drafts SET target_id = NULL, base_commit_id = NULL WHERE draft_id = $1")
+        .bind(&path_draft.draft.draft_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE draft_operations SET target_id = NULL WHERE draft_id = $1")
+        .bind(&path_draft.draft.draft_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+
+    let rename_project_id = repo
+        .create_project(&bootstrap.org_id, "Authority Rename Carrier", "")
+        .await
+        .unwrap();
+    repo.select_org_resource_for_project(&rename_project_id, &resource_id)
+        .await
+        .unwrap();
+    let rename_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_authority_rename".to_owned(),
+                project_id: rename_project_id.clone(),
+                base_commit_id: base_commit_id.clone(),
+                title: "Rename authority target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(resource_id.clone()),
+                    path: None,
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Rename,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: Some(resource_id.clone()),
+                        path: None,
+                    },
+                    content: None,
+                    new_path: Some(new_path.to_owned()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let review = repo
+        .create_review(
+            &bootstrap.user_id,
+            base_commit_id.as_deref(),
+            CreateReviewRequest {
+                draft_id: rename_draft.draft.draft_id,
+                expected_draft_version: rename_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let approved = repo
+        .create_review_decision(
+            &review.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    repo.create_review_merge(
+        &approved.review.review_id,
+        base_commit_id.as_deref(),
+        CreateReviewMergeRequest {
+            expected_review_version: approved.review.version,
+        },
+    )
+    .await
+    .unwrap();
+
+    let renamed_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let replacement = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_reuse_historical_path".to_owned(),
+                project_id: rename_project_id,
+                base_commit_id: renamed_head,
+                title: "Reuse the freed path".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some(old_path.to_owned()),
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replacement.draft.resource.id, None);
+    let replacement = repo
+        .append_draft_operation(
+            &replacement.draft.draft_id,
+            replacement.draft.version,
+            DraftOperationInput {
+                action: DraftOperationAction::Create,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some(old_path.to_owned()),
+                },
+                content: context_draft_content("# Replacement"),
+                new_path: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        replacement.operations[0].input.action,
+        DraftOperationAction::Create
+    );
+
+    let error = repo
+        .replace_project_org_selection(
+            &bootstrap.project_id,
+            selection.revision,
+            ReplaceProjectOrgSelectionRequest {
+                resource_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains(&resource_id));
+    assert!(message.contains(&path_draft.draft.draft_id));
+    assert!(message.contains("active Organization Draft"));
+
+    let replacement_resource_id = repo
+        .create_org_context(&bootstrap.org_id, old_path, "# Authority replacement")
+        .await
+        .unwrap();
+    assert_ne!(replacement_resource_id, resource_id);
+    sqlx::query("UPDATE drafts SET base_commit_id = $2 WHERE draft_id = $1")
+        .bind(&path_draft.draft.draft_id)
+        .bind(&base_commit_id)
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    let candidate = repo
+        .create_draft_reconciliation_candidate(
+            &path_draft.draft.draft_id,
+            server::api::CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: path_draft.draft.version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(candidate.status, ReconciliationCandidateStatus::Clean);
+    assert_eq!(
+        candidate.base_state.resource.id.as_deref(),
+        Some(resource_id.as_str())
+    );
+    assert_eq!(
+        candidate.base_state.resource.path.as_deref(),
+        Some(old_path)
+    );
+    assert_eq!(
+        candidate.current_state.resource.id.as_deref(),
+        Some(resource_id.as_str())
+    );
+    assert_eq!(
+        candidate.current_state.resource.path.as_deref(),
+        Some(new_path)
+    );
+    assert_eq!(
+        candidate.draft_state.resource.id.as_deref(),
+        Some(resource_id.as_str())
+    );
+    assert_eq!(
+        candidate.draft_state.resource.path.as_deref(),
+        Some(old_path)
+    );
+    let proposed = candidate.proposed_state.as_ref().unwrap();
+    assert_eq!(proposed.resource.id.as_deref(), Some(resource_id.as_str()));
+    assert_eq!(proposed.resource.path.as_deref(), Some(new_path));
+    assert_eq!(
+        proposed.content.as_ref().map(content_text_for_test),
+        Some("# Local update")
+    );
+}
+
+#[tokio::test]
+async fn org_draft_target_validation_serializes_with_project_selection_changes() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Draft Selection Serialization",
+    )
+    .await;
+    let create_target_id = repo
+        .create_org_context(&bootstrap.org_id, "context/create-target.md", "# create")
+        .await
+        .unwrap();
+    let append_target_id = repo
+        .create_org_context(&bootstrap.org_id, "context/append-target.md", "# append")
+        .await
+        .unwrap();
+    repo.replace_project_org_selection(
+        &bootstrap.project_id,
+        0,
+        ReplaceProjectOrgSelectionRequest {
+            resource_ids: vec![create_target_id.clone(), append_target_id.clone()],
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut selection_tx = postgres.pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+            hashtextextended('org_draft_selection:' || $1, 0)
+         )",
+    )
+    .bind(&bootstrap.org_id)
+    .execute(&mut *selection_tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "DELETE FROM project_org_resource_selections
+         WHERE project_id = $1 AND resource_id = $2",
+    )
+    .bind(&bootstrap.project_id)
+    .bind(&create_target_id)
+    .execute(&mut *selection_tx)
+    .await
+    .unwrap();
+    let create_repo = repo.clone();
+    let create_user_id = bootstrap.user_id.clone();
+    let create_project_id = bootstrap.project_id.clone();
+    let create_target = create_target_id.clone();
+    let create_task = tokio::spawn(async move {
+        create_repo
+            .create_draft(
+                &create_user_id,
+                CreateDraftRequest {
+                    daemon_installation_id: "daemon_concurrent_create".to_owned(),
+                    project_id: create_project_id,
+                    base_commit_id: None,
+                    title: "Concurrent create".to_owned(),
+                    description: None,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: Some(create_target),
+                        path: None,
+                    },
+                    operations: Vec::new(),
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    assert!(!create_task.is_finished());
+    selection_tx.commit().await.unwrap();
+    let create_error = create_task.await.unwrap().unwrap_err();
+    assert!(create_error.to_string().contains("currently selected"));
+
+    let carrier = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_concurrent_append".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: None,
+                title: "Concurrent append".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(append_target_id.clone()),
+                    path: None,
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut append_selection_tx = postgres.pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+            hashtextextended('org_draft_selection:' || $1, 0)
+         )",
+    )
+    .bind(&bootstrap.org_id)
+    .execute(&mut *append_selection_tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "DELETE FROM project_org_resource_selections
+         WHERE project_id = $1 AND resource_id = $2",
+    )
+    .bind(&bootstrap.project_id)
+    .bind(&append_target_id)
+    .execute(&mut *append_selection_tx)
+    .await
+    .unwrap();
+    let append_repo = repo.clone();
+    let append_draft_id = carrier.draft.draft_id.clone();
+    let append_version = carrier.draft.version;
+    let append_target = append_target_id.clone();
+    let append_task = tokio::spawn(async move {
+        append_repo
+            .append_draft_operation(
+                &append_draft_id,
+                append_version,
+                DraftOperationInput {
+                    action: DraftOperationAction::Update,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: Some(append_target),
+                        path: None,
+                    },
+                    content: context_draft_content("# concurrent append"),
+                    new_path: None,
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    assert!(!append_task.is_finished());
+    append_selection_tx.commit().await.unwrap();
+    let append_error = append_task.await.unwrap().unwrap_err();
+    assert!(append_error.to_string().contains("currently selected"));
+}
+
+#[tokio::test]
+async fn created_org_draft_materializes_local_identity_updates_and_renames() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Created Draft Materialization",
+    )
+    .await;
+    let current_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_created_materialization".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: current_head.clone(),
+                title: "Create then refine Organization Memory".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: None,
+                    path: Some("context/local-created.md".to_owned()),
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: None,
+                        path: Some("context/local-created.md".to_owned()),
+                    },
+                    content: context_draft_content("# Initial"),
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let draft = repo
+        .append_draft_operation(
+            &draft.draft.draft_id,
+            draft.draft.version,
+            DraftOperationInput {
+                action: DraftOperationAction::Update,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some("draft_local_created_identity".to_owned()),
+                    path: None,
+                },
+                content: context_draft_content("# Refined"),
+                new_path: None,
+            },
+        )
+        .await
+        .unwrap();
+    let draft = repo
+        .append_draft_operation(
+            &draft.draft.draft_id,
+            draft.draft.version,
+            DraftOperationInput {
+                action: DraftOperationAction::Rename,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some("draft_local_created_identity".to_owned()),
+                    path: None,
+                },
+                content: None,
+                new_path: Some("context/refined-created.md".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    let review = repo
+        .create_review(
+            &bootstrap.user_id,
+            current_head.as_deref(),
+            CreateReviewRequest {
+                draft_id: draft.draft.draft_id,
+                expected_draft_version: draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let approved = repo
+        .create_review_decision(
+            &review.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    repo.create_review_merge(
+        &approved.review.review_id,
+        current_head.as_deref(),
+        CreateReviewMergeRequest {
+            expected_review_version: approved.review.version,
+        },
+    )
+    .await
+    .unwrap();
+
+    let created = repo
+        .list_org_memories(&bootstrap.org_id)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|memory| memory.path == "context/refined-created.md")
+        .expect("materialized create should use the latest local path");
+    assert_eq!(
+        repo.get_org_memory(&bootstrap.org_id, &created.memory_id)
+            .await
+            .unwrap()
+            .content,
+        "# Refined"
+    );
+}
+
+#[tokio::test]
+async fn org_delete_merge_advances_authority_past_other_projects_active_drafts() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Acme Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Delete Merge Draft Coordination",
+    )
+    .await;
+    let resource_id = repo
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/shared-target.md",
+            "# Shared target",
+        )
+        .await
+        .unwrap();
+    repo.select_org_resource_for_project(&bootstrap.project_id, &resource_id)
+        .await
+        .unwrap();
+    let other_project_id = repo
+        .create_project(&bootstrap.org_id, "Other Project", "")
+        .await
+        .unwrap();
+    repo.select_org_resource_for_project(&other_project_id, &resource_id)
+        .await
+        .unwrap();
+    let current_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+
+    let blocking_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_other_project".to_owned(),
+                project_id: other_project_id.clone(),
+                base_commit_id: current_head.clone(),
+                title: "Update shared target elsewhere".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(resource_id.clone()),
+                    path: None,
+                },
+                operations: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let deletion_draft = repo
+        .create_draft(
+            &bootstrap.user_id,
+            CreateDraftRequest {
+                daemon_installation_id: "daemon_delete_merge".to_owned(),
+                project_id: bootstrap.project_id.clone(),
+                base_commit_id: current_head.clone(),
+                title: "Delete shared target".to_owned(),
+                description: None,
+                resource: DraftResourceRef {
+                    scope: ResourceScope::Org,
+                    id: Some(resource_id.clone()),
+                    path: None,
+                },
+                operations: vec![DraftOperationInput {
+                    action: DraftOperationAction::Delete,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: Some(resource_id.clone()),
+                        path: None,
+                    },
+                    content: None,
+                    new_path: None,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let review = repo
+        .create_review(
+            &bootstrap.user_id,
+            current_head.as_deref(),
+            CreateReviewRequest {
+                draft_id: deletion_draft.draft.draft_id,
+                expected_draft_version: deletion_draft.draft.version,
+                title: None,
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    let approved = repo
+        .create_review_decision(
+            &review.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: review.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    repo.create_review_merge(
+        &approved.review.review_id,
+        current_head.as_deref(),
+        CreateReviewMergeRequest {
+            expected_review_version: approved.review.version,
+        },
+    )
+    .await
+    .unwrap();
+    let blocking_draft = repo
+        .get_draft(&blocking_draft.draft.draft_id)
+        .await
+        .unwrap();
+    assert_eq!(blocking_draft.draft.status, DraftStatus::Open);
+    assert_eq!(
+        blocking_draft.draft.coordination.freshness,
+        DraftFreshness::Behind
+    );
+    assert!(
+        repo.get_project_org_selection(&bootstrap.project_id)
+            .await
+            .unwrap()
+            .memories
+            .is_empty()
+    );
+    assert!(
+        repo.get_project_org_selection(&other_project_id)
+            .await
+            .unwrap()
+            .memories
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage() {
     let postgres = common::migrated_postgres().await;
     let bootstrap = common::initialize_installation(
@@ -2683,11 +3881,8 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
     .await;
     let project_id = bootstrap.project_id;
     let (app, _token) = common::authenticated_router(postgres.pool.clone()).await;
-    let (initial_state, initial_etag): (CommitStateResponse, String) = get_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/commit-state"),
-    )
-    .await;
+    let (initial_state, initial_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
 
     let rule_draft: DraftDetail = post_json(
         app.clone(),
@@ -2699,14 +3894,14 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
             title: "Add coding rule".to_owned(),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("rules/coding".to_owned()),
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("rules/coding".to_owned()),
                 },
@@ -2751,11 +3946,8 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .find(|entry| entry.path.as_deref() == Some("rules/coding"))
         .expect("rule Commit should contain the Rule");
     let rule_id = rule_entry.id.clone();
-    let rule: MemoryDetail = get_json(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/memories/{rule_id}"),
-    )
-    .await;
+    let rule: MemoryDetail =
+        get_json(app.clone(), &format!("/api/v1/org/memories/{rule_id}")).await;
     assert_eq!(rule.memory.name, "coding");
     assert_eq!(
         rule.content,
@@ -2768,11 +3960,8 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .expect("rule Blob should be present");
     assert_eq!(rule_blob.content, rule.content);
 
-    let (_, rule_ref_etag): (CommitStateResponse, String) = get_json_with_etag(
-        app.clone(),
-        &format!("/api/v1/projects/{project_id}/commit-state"),
-    )
-    .await;
+    let (_, rule_ref_etag): (CommitStateResponse, String) =
+        get_json_with_etag(app.clone(), "/api/v1/org/commit-state").await;
     let workflow_draft: DraftDetail = post_json(
         app.clone(),
         "/api/v1/drafts",
@@ -2783,14 +3972,14 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
             title: "Add coding workflow".to_owned(),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("workflow/coding".to_owned()),
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("workflow/coding".to_owned()),
                 },
@@ -2844,14 +4033,8 @@ async fn markdown_rule_and_workflow_survive_draft_review_and_commit_round_trip()
         .iter()
         .find(|entry| entry.path.as_deref() == Some("workflow/coding"))
         .expect("workflow Commit should contain the Workflow");
-    let workflow: MemoryDetail = get_json(
-        app,
-        &format!(
-            "/api/v1/projects/{project_id}/memories/{}",
-            workflow_entry.id
-        ),
-    )
-    .await;
+    let workflow: MemoryDetail =
+        get_json(app, &format!("/api/v1/org/memories/{}", workflow_entry.id)).await;
     assert_eq!(workflow.memory.name, "coding");
     assert_eq!(
         workflow.content,
@@ -2935,14 +4118,14 @@ async fn create_approved_context_review(
             title: format!("Create {path}"),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some(path.to_owned()),
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Create,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some(path.to_owned()),
                 },
@@ -3291,14 +4474,14 @@ async fn review_comments_support_line_anchors() {
             title: "Anchored comment draft".to_owned(),
             description: None,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: Some(resource_id.clone()),
                 path: None,
             },
             operations: vec![DraftOperationInput {
                 action: DraftOperationAction::Rename,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: Some(resource_id),
                     path: None,
                 },
