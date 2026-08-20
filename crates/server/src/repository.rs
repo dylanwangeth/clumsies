@@ -970,7 +970,7 @@ impl ServerRepository {
                         target_id, path, new_path, content
                  FROM draft_operations
                  WHERE draft_id = $1
-                 ORDER BY operation_id",
+                 ORDER BY ordinal",
             )
             .bind(&draft_id)
             .fetch_all(&self.pool)
@@ -1384,6 +1384,7 @@ impl ServerRepository {
         request: ReplaceProjectOrgSelectionRequest,
     ) -> Result<ProjectOrgSelection, ServerError> {
         let mut tx = self.pool.begin().await?;
+        lock_org_draft_selection_coordination_for_project(&mut tx, project_id).await?;
         let org_id = project_org_id(&mut tx, project_id).await?;
         lock_org_ref_for_project_projection(&mut tx, &org_id).await?;
         let parent_commit_id = current_project_ref(&mut tx, project_id).await?;
@@ -1395,6 +1396,12 @@ impl ServerRepository {
                 current_revision,
             ));
         }
+        ensure_removed_org_resources_have_no_active_drafts(
+            &mut tx,
+            project_id,
+            &request.resource_ids,
+        )
+        .await?;
         let next_revision = current_revision + 1;
         sqlx::query("DELETE FROM project_org_resource_selections WHERE project_id = $1")
             .bind(project_id)
@@ -1622,9 +1629,12 @@ impl ServerRepository {
     pub async fn create_draft(
         &self,
         author_user_id: &str,
-        request: CreateDraftRequest,
+        mut request: CreateDraftRequest,
     ) -> Result<DraftDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
+        if request.resource.scope == ResourceScope::Org {
+            lock_org_draft_selection_coordination_for_project(&mut tx, &request.project_id).await?;
+        }
         let org_id = project_org_id(&mut tx, &request.project_id).await?;
         user_ref(&mut tx, author_user_id).await?;
         if let Some(base_commit_id) = request.base_commit_id.as_deref() {
@@ -1640,6 +1650,17 @@ impl ServerRepository {
             validate_draft_operation_resource(&request.resource, operation)?;
         }
         validate_new_resource_draft_operations(&request.operations)?;
+        if request.resource.scope == ResourceScope::Org {
+            canonicalize_org_draft_targets_are_selected(
+                &mut tx,
+                &request.project_id,
+                &org_id,
+                request.base_commit_id.as_deref(),
+                &mut request.resource,
+                &mut request.operations,
+            )
+            .await?;
+        }
 
         let draft_id = prefixed_id("drf");
         sqlx::query(
@@ -1735,8 +1756,15 @@ impl ServerRepository {
         operation: DraftOperationInput,
     ) -> Result<DraftDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
-        append_draft_operation_in_tx(&mut tx, draft_id, expected_draft_version, operation, None)
-            .await?;
+        append_draft_operation_in_tx(
+            &mut tx,
+            draft_id,
+            expected_draft_version,
+            operation,
+            None,
+            false,
+        )
+        .await?;
         tx.commit().await?;
         self.get_draft(draft_id).await
     }
@@ -1917,6 +1945,26 @@ impl ServerRepository {
             ));
         }
         let mut tx = self.pool.begin().await?;
+        let draft_ids = request
+            .operations
+            .iter()
+            .map(|item| item.draft_id.clone())
+            .collect::<Vec<_>>();
+        let rows = sqlx::query(
+            "SELECT DISTINCT project.org_id
+             FROM drafts AS draft
+             JOIN projects AS project ON project.project_id = draft.project_id
+             WHERE draft.draft_id = ANY($1)
+               AND draft.resource_scope = 'org'
+             ORDER BY project.org_id",
+        )
+        .bind(&draft_ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        for row in rows {
+            lock_org_draft_selection_coordination(&mut tx, &row.try_get::<String, _>("org_id")?)
+                .await?;
+        }
         let mut accepted_operations = Vec::new();
         let mut cursor = None;
         let daemon_installation_id = request.daemon_installation_id;
@@ -1928,6 +1976,7 @@ impl ServerRepository {
                     item.expected_draft_version,
                     item.operation,
                     Some(&daemon_installation_id),
+                    true,
                 )
                 .await?,
             );
@@ -2048,6 +2097,7 @@ impl ServerRepository {
         }
         let project_id: String = row.try_get("project_id")?;
         let scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
+        ensure_publishable_draft_scope(scope)?;
         let current_ref = target_ref_for_draft(&mut tx, &project_id, scope).await?;
         if current_ref.as_deref() != expected_ref {
             return Err(ServerError::precondition_failed(
@@ -2104,13 +2154,22 @@ impl ServerRepository {
                 "submitted",
             ));
         }
-        if load_draft_operations(&mut tx, &request.draft_id)
-            .await?
-            .is_empty()
-        {
+        let operations = load_draft_operations(&mut tx, &request.draft_id).await?;
+        if operations.is_empty() {
             return Err(ServerError::InvalidRequest(
                 "a review draft must contain at least one operation".to_owned(),
             ));
+        }
+        if scope == ResourceScope::Org {
+            let org_id = project_org_id(&mut tx, &project_id).await?;
+            validate_stored_org_draft_operations_are_selected(
+                &mut tx,
+                &project_id,
+                &org_id,
+                current_ref.as_deref(),
+                &operations,
+            )
+            .await?;
         }
 
         let review_id = prefixed_id("rev");
@@ -2500,6 +2559,7 @@ impl ServerRepository {
         let draft_id: String = row.try_get("draft_id")?;
         let project_id: String = row.try_get("project_id")?;
         let scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
+        ensure_publishable_draft_scope(scope)?;
         let current_ref = target_ref_for_draft(&mut tx, &project_id, scope).await?;
         if current_ref.as_deref() != expected_ref {
             return Err(ServerError::precondition_failed(
@@ -2540,10 +2600,22 @@ impl ServerRepository {
                 "a current draft must not submit reconciliation data".to_owned(),
             ));
         }
-        if load_draft_operations(&mut tx, &draft_id).await?.is_empty() {
+        let operations = load_draft_operations(&mut tx, &draft_id).await?;
+        if operations.is_empty() {
             return Err(ServerError::InvalidRequest(
                 "a review draft must contain at least one operation".to_owned(),
             ));
+        }
+        if scope == ResourceScope::Org {
+            let org_id = project_org_id(&mut tx, &project_id).await?;
+            validate_stored_org_draft_operations_are_selected(
+                &mut tx,
+                &project_id,
+                &org_id,
+                current_ref.as_deref(),
+                &operations,
+            )
+            .await?;
         }
         let next_draft_version: i64 = sqlx::query_scalar(
             "UPDATE drafts
@@ -2591,6 +2663,28 @@ impl ServerRepository {
         request: CreateReviewMergeRequest,
     ) -> Result<ReviewMergeResult, ServerError> {
         let mut tx = self.pool.begin().await?;
+        let coordination = sqlx::query(
+            "SELECT draft.project_id, draft.resource_scope
+             FROM reviews AS review
+             JOIN drafts AS draft ON draft.draft_id = review.draft_id
+             WHERE review.review_id = $1",
+        )
+        .bind(review_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(coordination) = coordination
+            && resource_scope(
+                coordination
+                    .try_get::<String, _>("resource_scope")?
+                    .as_str(),
+            )? == ResourceScope::Org
+        {
+            lock_org_draft_selection_coordination_for_project(
+                &mut tx,
+                &coordination.try_get::<String, _>("project_id")?,
+            )
+            .await?;
+        }
         let row = sqlx::query(
             "SELECT r.review_id, r.draft_id, r.project_id, r.status, r.version,
                     r.approved_result_hash,
@@ -2623,6 +2717,7 @@ impl ServerRepository {
         let draft_id: String = row.try_get("draft_id")?;
         let org_id = project_org_id(&mut tx, &project_id).await?;
         let resource_scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
+        ensure_publishable_draft_scope(resource_scope)?;
         let current_head = match resource_scope {
             ResourceScope::Org => current_org_ref(&mut tx, &org_id).await?,
             ResourceScope::Project => {
@@ -2665,14 +2760,29 @@ impl ServerRepository {
 
         let operations = load_draft_operations(&mut tx, &draft_id).await?;
         let materialized_operations = materialize_draft_operations(&operations)?;
+        if resource_scope == ResourceScope::Org {
+            validate_org_draft_operation_inputs_are_selected(
+                &mut tx,
+                &project_id,
+                &org_id,
+                current_head.as_deref(),
+                &materialized_operations,
+            )
+            .await?;
+        }
         let org_resource_impact = match resource_scope {
             ResourceScope::Org => {
                 resolve_org_resource_impact(&mut tx, &org_id, &materialized_operations).await?
             }
             ResourceScope::Project => OrgResourceImpact::default(),
         };
+        let mut created_resource_ids = Vec::new();
         for operation in &materialized_operations {
-            apply_operation(&mut tx, &project_id, resource_scope, operation).await?;
+            if let Some(resource_id) =
+                apply_operation(&mut tx, &project_id, resource_scope, operation).await?
+            {
+                created_resource_ids.push(resource_id);
+            }
         }
 
         let commit_id = match resource_scope {
@@ -2682,6 +2792,15 @@ impl ServerRepository {
                 advance_org_ref(&mut tx, &org_id, &commit_id).await?;
                 refresh_projects_for_org_resource_changes(&mut tx, &org_id, &org_resource_impact)
                     .await?;
+                if !created_resource_ids.is_empty() {
+                    select_created_org_resources_for_project(
+                        &mut tx,
+                        &project_id,
+                        &org_id,
+                        &created_resource_ids,
+                    )
+                    .await?;
+                }
                 commit_id
             }
             ResourceScope::Project => {
@@ -2979,6 +3098,286 @@ fn validate_draft_operation_resource(
     }
 }
 
+fn ensure_publishable_draft_scope(scope: ResourceScope) -> Result<(), ServerError> {
+    if scope == ResourceScope::Project {
+        return Err(ServerError::InvalidRequest(
+            "project-scoped Memory authority is read-only; publish an Organization-scoped Draft"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn canonicalize_org_draft_targets_are_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    draft_resource: &mut DraftResourceRef,
+    operations: &mut [DraftOperationInput],
+) -> Result<(), ServerError> {
+    if operations
+        .first()
+        .is_some_and(|operation| operation.action == DraftOperationAction::Create)
+    {
+        return Ok(());
+    }
+    if draft_resource.id.is_some() {
+        canonicalize_org_draft_target_is_selected(
+            tx,
+            project_id,
+            org_id,
+            base_commit_id,
+            draft_resource,
+        )
+        .await?;
+    } else if draft_resource.path.is_some()
+        && let Some(resource_id) = resolve_org_draft_target_id(
+            tx,
+            org_id,
+            base_commit_id,
+            draft_resource,
+            !operations.is_empty(),
+        )
+        .await?
+    {
+        draft_resource.id = Some(resource_id);
+        validate_org_draft_target_is_selected(tx, project_id, org_id, draft_resource).await?;
+    }
+    for operation in operations {
+        if operation.action != DraftOperationAction::Create {
+            canonicalize_org_draft_target_is_selected(
+                tx,
+                project_id,
+                org_id,
+                base_commit_id,
+                &mut operation.resource,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn validate_org_draft_operation_inputs_are_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    operations: &[DraftOperationInput],
+) -> Result<(), ServerError> {
+    if operations
+        .first()
+        .is_some_and(|operation| operation.action == DraftOperationAction::Create)
+    {
+        return Ok(());
+    }
+    for operation in operations {
+        if operation.action != DraftOperationAction::Create {
+            validate_org_draft_target_is_selected_at_base(
+                tx,
+                project_id,
+                org_id,
+                base_commit_id,
+                &operation.resource,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn validate_stored_org_draft_operations_are_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    operations: &[DraftOperation],
+) -> Result<(), ServerError> {
+    if operations
+        .first()
+        .is_some_and(|operation| operation.input.action == DraftOperationAction::Create)
+    {
+        return Ok(());
+    }
+    for operation in operations {
+        if operation.input.action != DraftOperationAction::Create {
+            validate_org_draft_target_is_selected_at_base(
+                tx,
+                project_id,
+                org_id,
+                base_commit_id,
+                &operation.input.resource,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn canonicalize_org_draft_target_is_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    resource: &mut DraftResourceRef,
+) -> Result<(), ServerError> {
+    if resource.id.is_none() {
+        resource.id =
+            resolve_org_draft_target_id(tx, org_id, base_commit_id, resource, true).await?;
+    }
+    validate_org_draft_target_is_selected(tx, project_id, org_id, resource).await
+}
+
+async fn validate_org_draft_target_is_selected_at_base(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    resource: &DraftResourceRef,
+) -> Result<(), ServerError> {
+    let mut canonical = resource.clone();
+    canonicalize_org_draft_target_is_selected(
+        tx,
+        project_id,
+        org_id,
+        base_commit_id,
+        &mut canonical,
+    )
+    .await
+}
+
+async fn resolve_org_draft_target_id(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    base_commit_id: Option<&str>,
+    resource: &DraftResourceRef,
+    allow_historical_lookup: bool,
+) -> Result<Option<String>, ServerError> {
+    if let Some(resource_id) = resource.id.as_ref() {
+        return Ok(Some(resource_id.clone()));
+    }
+    let Some(path) = resource.path.as_deref() else {
+        return Ok(None);
+    };
+
+    if let Some(base_commit_id) = base_commit_id {
+        let resource_id = sqlx::query_scalar::<_, String>(
+            "SELECT entry.item_id
+             FROM commits AS commit
+             JOIN tree_entries AS entry ON entry.tree_id = commit.tree_id
+             WHERE commit.commit_id = $1
+               AND commit.org_id = $2
+               AND commit.scope = 'org'
+               AND entry.scope = 'org'
+               AND entry.resource_kind = 'memory'
+               AND entry.path = $3",
+        )
+        .bind(base_commit_id)
+        .bind(org_id)
+        .bind(path)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if resource_id.is_some() {
+            return Ok(resource_id);
+        }
+    }
+
+    let current_resource_id = sqlx::query_scalar::<_, String>(
+        "SELECT resource_id
+         FROM resources
+         WHERE org_id = $1
+           AND scope = 'org'
+           AND status = 'active'
+           AND path = $2",
+    )
+    .bind(org_id)
+    .bind(path)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if current_resource_id.is_some() || !allow_historical_lookup {
+        return Ok(current_resource_id);
+    }
+
+    let resource_ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT entry.item_id
+         FROM commits AS commit
+         JOIN tree_entries AS entry ON entry.tree_id = commit.tree_id
+         WHERE commit.org_id = $1
+           AND commit.scope = 'org'
+           AND entry.scope = 'org'
+           AND entry.resource_kind = 'memory'
+           AND entry.path = $2
+         ORDER BY entry.item_id
+         LIMIT 2",
+    )
+    .bind(org_id)
+    .bind(path)
+    .fetch_all(&mut **tx)
+    .await?;
+    match resource_ids.as_slice() {
+        [] => Ok(None),
+        [resource_id] => Ok(Some(resource_id.clone())),
+        _ => Err(ServerError::InvalidRequest(format!(
+            "Organization Memory path {path} has referred to multiple resources; target it by resource id"
+        ))),
+    }
+}
+
+async fn validate_org_draft_target_is_selected(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    resource: &DraftResourceRef,
+) -> Result<(), ServerError> {
+    let selected = if let Some(resource_id) = resource.id.as_deref() {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM project_org_resource_selections s
+                JOIN resources r ON r.resource_id = s.resource_id
+                WHERE s.project_id = $1
+                  AND r.resource_id = $2
+                  AND r.org_id = $3
+                  AND r.scope = 'org'
+                  AND r.status = 'active'
+             )",
+        )
+        .bind(project_id)
+        .bind(resource_id)
+        .bind(org_id)
+        .fetch_one(&mut **tx)
+        .await?
+    } else if let Some(path) = resource.path.as_deref() {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM project_org_resource_selections s
+                JOIN resources r ON r.resource_id = s.resource_id
+                WHERE s.project_id = $1
+                  AND r.org_id = $2
+                  AND r.scope = 'org'
+                  AND r.path = $3
+                  AND r.status = 'active'
+             )",
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .bind(path)
+        .fetch_one(&mut **tx)
+        .await?
+    } else {
+        false
+    };
+    if selected {
+        return Ok(());
+    }
+    Err(ServerError::InvalidRequest(
+        "an Organization Memory Draft may target only Memory currently selected by its carrying Project"
+            .to_owned(),
+    ))
+}
+
 fn validate_new_resource_draft_operations(
     operations: &[DraftOperationInput],
 ) -> Result<(), ServerError> {
@@ -3099,12 +3498,22 @@ async fn insert_draft_operation(
     input: DraftOperationInput,
 ) -> Result<String, ServerError> {
     let operation_id = prefixed_id("dop");
+    // Serialize every allocator, including future call sites that do not
+    // already hold the draft row lock. A per-draft MAX is safe once this lock
+    // is held and keeps replacement operation sets densely ordered.
+    sqlx::query("SELECT draft_id FROM drafts WHERE draft_id = $1 FOR UPDATE")
+        .bind(draft_id)
+        .fetch_one(&mut **tx)
+        .await?;
     sqlx::query(
         "INSERT INTO draft_operations (
             operation_id, draft_id, action, resource_scope, resource_kind, target_id, path,
-            new_path, content
+            new_path, content, ordinal
          )
-         VALUES ($1, $2, $3, $4, 'memory', $5, $6, $7, $8)",
+         SELECT $1, $2, $3, $4, 'memory', $5, $6, $7, $8,
+                COALESCE(MAX(ordinal), 0) + 1
+         FROM draft_operations
+         WHERE draft_id = $2",
     )
     .bind(&operation_id)
     .bind(draft_id)
@@ -3123,17 +3532,37 @@ async fn append_draft_operation_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft_id: &str,
     expected_draft_version: i64,
-    operation: DraftOperationInput,
+    mut operation: DraftOperationInput,
     event_daemon_installation_id: Option<&str>,
+    org_coordination_already_locked: bool,
 ) -> Result<i64, ServerError> {
+    let identity = sqlx::query(
+        "SELECT project_id, resource_scope
+         FROM drafts
+         WHERE draft_id = $1",
+    )
+    .bind(draft_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| ServerError::not_found("draft", draft_id))?;
+    let identity_scope = resource_scope(identity.try_get::<String, _>("resource_scope")?.as_str())?;
+    if identity_scope == ResourceScope::Org && !org_coordination_already_locked {
+        lock_org_draft_selection_coordination_for_project(
+            tx,
+            &identity.try_get::<String, _>("project_id")?,
+        )
+        .await?;
+    }
     let row = sqlx::query(
-        "SELECT d.status, d.version, d.resource_scope, d.resource_kind,
-                EXISTS (
-                    SELECT 1
+        "SELECT d.status, d.version, d.project_id, d.resource_scope, d.resource_kind,
+                d.base_commit_id,
+                COALESCE((
+                    SELECT operation.action = 'create'
                     FROM draft_operations AS operation
                     WHERE operation.draft_id = d.draft_id
-                      AND operation.action = 'create'
-                ) AS creates_resource
+                    ORDER BY operation.ordinal
+                    LIMIT 1
+                ), FALSE) AS creates_resource
          FROM drafts AS d
          WHERE d.draft_id = $1
          FOR UPDATE",
@@ -3144,8 +3573,9 @@ async fn append_draft_operation_in_tx(
     .ok_or_else(|| ServerError::not_found("draft", draft_id))?;
     let status: String = row.try_get("status")?;
     let version: i64 = row.try_get("version")?;
+    let scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
     let draft_resource = DraftResourceRef {
-        scope: resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?,
+        scope,
         id: None,
         path: None,
     };
@@ -3167,6 +3597,22 @@ async fn append_draft_operation_in_tx(
         ));
     }
     validate_draft_operation_resource(&draft_resource, &operation)?;
+    if scope == ResourceScope::Org
+        && !creates_resource
+        && operation.action != DraftOperationAction::Create
+    {
+        let project_id: String = row.try_get("project_id")?;
+        let org_id = project_org_id(tx, &project_id).await?;
+        let base_commit_id: Option<String> = row.try_get("base_commit_id")?;
+        canonicalize_org_draft_target_is_selected(
+            tx,
+            &project_id,
+            &org_id,
+            base_commit_id.as_deref(),
+            &mut operation.resource,
+        )
+        .await?;
+    }
 
     insert_draft_operation(tx, draft_id, operation).await?;
     let updated = sqlx::query(
@@ -3337,6 +3783,131 @@ async fn current_project_org_selection_revision(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| ServerError::not_found("project_org_selection", project_id))
+}
+
+/// Serializes transitions that can change the relationship between Project
+/// selections and active Organization Drafts: replacing a selection,
+/// creating/appending a Draft, and merging Organization authority. The lock
+/// is Organization-scoped because one delete merge projects into every
+/// selecting Project. It is acquired before Draft/ref/selection rows, works
+/// across server instances, and therefore avoids opposing row-lock orders.
+async fn lock_org_draft_selection_coordination(
+    tx: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+) -> Result<(), ServerError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(
+            hashtextextended('org_draft_selection:' || $1, 0)
+         )",
+    )
+    .bind(org_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn lock_org_draft_selection_coordination_for_project(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+) -> Result<(), ServerError> {
+    let org_id = project_org_id(tx, project_id).await?;
+    lock_org_draft_selection_coordination(tx, &org_id).await
+}
+
+async fn ensure_removed_org_resources_have_no_active_drafts(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    retained_resource_ids: &[String],
+) -> Result<(), ServerError> {
+    let blocked = sqlx::query(
+        "WITH removed AS (
+            SELECT selection.resource_id, resource.org_id
+            FROM project_org_resource_selections AS selection
+            JOIN resources AS resource
+              ON resource.resource_id = selection.resource_id
+            WHERE selection.project_id = $1
+              AND NOT (selection.resource_id = ANY($2))
+         ), active_drafts AS (
+            SELECT draft.draft_id, draft.base_commit_id, draft.created_at,
+                   draft.target_id, draft.path
+            FROM drafts AS draft
+            WHERE draft.project_id = $1
+              AND draft.resource_scope = 'org'
+              AND draft.status IN ('open', 'submitted')
+              AND NOT COALESCE((
+                    SELECT operation.action = 'create'
+                    FROM draft_operations AS operation
+                    WHERE operation.draft_id = draft.draft_id
+                    ORDER BY operation.ordinal
+                    LIMIT 1
+              ), FALSE)
+         ), targets AS (
+            SELECT draft_id, base_commit_id, created_at, target_id, path
+            FROM active_drafts
+            UNION ALL
+            SELECT draft.draft_id, draft.base_commit_id, draft.created_at,
+                   operation.target_id, operation.path
+            FROM active_drafts AS draft
+            JOIN draft_operations AS operation
+              ON operation.draft_id = draft.draft_id
+            WHERE operation.resource_scope = 'org'
+              AND operation.action <> 'create'
+         )
+         SELECT removed.resource_id, target.draft_id
+         FROM removed
+         JOIN targets AS target
+           ON COALESCE(
+                target.target_id,
+                (
+                    SELECT base_entry.item_id
+                    FROM commits AS base_commit
+                    JOIN tree_entries AS base_entry
+                      ON base_entry.tree_id = base_commit.tree_id
+                    WHERE base_commit.commit_id = target.base_commit_id
+                      AND base_commit.org_id = removed.org_id
+                      AND base_commit.scope = 'org'
+                      AND base_entry.scope = 'org'
+                      AND base_entry.resource_kind = 'memory'
+                      AND base_entry.path = target.path
+                ),
+                (
+                    SELECT resource.resource_id
+                    FROM resources AS resource
+                    WHERE resource.org_id = removed.org_id
+                      AND resource.scope = 'org'
+                      AND resource.status = 'active'
+                      AND resource.path = target.path
+                ),
+                (
+                    SELECT CASE
+                        WHEN COUNT(DISTINCT historical_entry.item_id) = 1
+                        THEN MIN(historical_entry.item_id)
+                    END
+                    FROM commits AS historical_commit
+                    JOIN tree_entries AS historical_entry
+                      ON historical_entry.tree_id = historical_commit.tree_id
+                    WHERE historical_commit.org_id = removed.org_id
+                      AND historical_commit.scope = 'org'
+                      AND historical_entry.scope = 'org'
+                      AND historical_entry.resource_kind = 'memory'
+                      AND historical_entry.path = target.path
+                )
+              ) = removed.resource_id
+         ORDER BY removed.resource_id, target.created_at, target.draft_id
+         LIMIT 1",
+    )
+    .bind(project_id)
+    .bind(retained_resource_ids)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(blocked) = blocked else {
+        return Ok(());
+    };
+    let resource_id: String = blocked.try_get("resource_id")?;
+    let draft_id: String = blocked.try_get("draft_id")?;
+    Err(ServerError::InvalidRequest(format!(
+        "cannot remove Organization Memory {resource_id} from this Project while active Organization Draft {draft_id} targets it; discard or finish the Draft first"
+    )))
 }
 
 async fn update_project_org_selection_revision(
@@ -3804,7 +4375,7 @@ async fn load_draft_operations(
                 new_path, content, created_at
          FROM draft_operations
          WHERE draft_id = $1
-         ORDER BY created_at, operation_id",
+         ORDER BY ordinal",
     )
     .bind(draft_id)
     .fetch_all(&mut **tx)
@@ -4275,7 +4846,7 @@ async fn create_reconciliation_candidate_in_tx(
     }
 
     invalidate_draft_candidates(tx, draft_id).await?;
-    let resource = DraftResourceRef {
+    let mut resource = DraftResourceRef {
         scope,
         id: row.try_get("target_id")?,
         path: row.try_get("path")?,
@@ -4284,6 +4855,12 @@ async fn create_reconciliation_candidate_in_tx(
     let allow_path_lookup = operations
         .first()
         .is_none_or(|operation| operation.input.action != DraftOperationAction::Create);
+    if scope == ResourceScope::Org && resource.id.is_none() && allow_path_lookup {
+        let org_id = project_org_id(tx, &project_id).await?;
+        resource.id =
+            resolve_org_draft_target_id(tx, &org_id, base_commit_id.as_deref(), &resource, true)
+                .await?;
+    }
     let base_state =
         resource_state_at_commit(tx, base_commit_id.as_deref(), &resource, allow_path_lookup)
             .await?;
@@ -4754,7 +5331,7 @@ async fn apply_operation(
     project_id: &str,
     scope: ResourceScope,
     operation: &DraftOperationInput,
-) -> Result<(), ServerError> {
+) -> Result<Option<String>, ServerError> {
     if operation.resource.scope != scope {
         return Err(ServerError::InvalidRequest(
             "draft operation scope does not match its draft".to_owned(),
@@ -4813,7 +5390,7 @@ async fn apply_resource_operation(
     project_id: &str,
     scope: ResourceScope,
     operation: &DraftOperationInput,
-) -> Result<(), ServerError> {
+) -> Result<Option<String>, ServerError> {
     let org_id = project_org_id(tx, project_id).await?;
     let resource_project_id = (scope == ResourceScope::Project).then_some(project_id);
     match operation.action {
@@ -4843,6 +5420,7 @@ async fn apply_resource_operation(
             .bind(&prepared.body)
             .execute(&mut **tx)
             .await?;
+            return Ok(Some(resource_id));
         }
         DraftOperationAction::Update => {
             let resource =
@@ -4897,6 +5475,39 @@ async fn apply_resource_operation(
             .await?;
         }
     }
+    Ok(None)
+}
+
+/// A new Organization Memory proposed from a Project becomes part of that
+/// Project's effective Memory when the Review merges. Existing Organization
+/// resources keep their explicit Add/Remove membership semantics.
+async fn select_created_org_resources_for_project(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: &str,
+    org_id: &str,
+    resource_ids: &[String],
+) -> Result<(), ServerError> {
+    let parent_commit_id = current_project_ref(tx, project_id).await?;
+    let current_revision = current_project_org_selection_revision(tx, project_id).await?;
+    let next_revision = current_revision + 1;
+    for resource_id in resource_ids {
+        sqlx::query(
+            "INSERT INTO project_org_resource_selections (project_id, resource_id, revision)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (project_id, resource_id)
+             DO UPDATE SET revision = EXCLUDED.revision,
+                           updated_at = now()",
+        )
+        .bind(project_id)
+        .bind(resource_id)
+        .bind(next_revision)
+        .execute(&mut **tx)
+        .await?;
+    }
+    validate_project_effective_memory(tx, project_id, org_id).await?;
+    update_project_org_selection_revision(tx, project_id, next_revision).await?;
+    let commit_id = create_project_commit(tx, project_id, parent_commit_id.as_deref()).await?;
+    advance_project_ref(tx, project_id, &commit_id).await?;
     Ok(())
 }
 

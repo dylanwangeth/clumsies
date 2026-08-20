@@ -659,15 +659,15 @@ async fn memory_export_contains_verifiable_full_state() {
     sqlx::query(
         "INSERT INTO draft_operations (
             operation_id, draft_id, action, resource_scope, resource_kind, target_id,
-            path, new_path, content
+            path, new_path, content, ordinal
          )
          VALUES
-            ('op_export_1', 'draft_export_1', 'create', 'project', 'memory',
+            ('op_export_z_create', 'draft_export_1', 'create', 'project', 'memory',
              NULL, 'rules/new.md', NULL,
-             '{\"description\": \"New memory\", \"content\": \"# New\"}'::jsonb),
-            ('op_export_2', 'draft_export_1', 'update', 'project', 'memory',
+             '{\"description\": \"New memory\", \"content\": \"# New\"}'::jsonb, 1),
+            ('op_export_a_update', 'draft_export_1', 'update', 'project', 'memory',
              'rul_legacy_project_rule', 'rules/project-rule.md', NULL,
-             '{\"content\": \"# Updated\"}'::jsonb)",
+             '{\"content\": \"# Updated\"}'::jsonb, 2)",
     )
     .execute(&postgres.pool)
     .await

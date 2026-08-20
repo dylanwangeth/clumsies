@@ -42,6 +42,17 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
         .create_project(&bootstrap.org_id, "Owner Only", "")
         .await
         .unwrap();
+    let selected_org_memory_id = repo
+        .create_org_context(&bootstrap.org_id, "context/selected.md", "# Selected")
+        .await
+        .unwrap();
+    let unselected_org_memory_id = repo
+        .create_org_context(&bootstrap.org_id, "context/unselected.md", "# Unselected")
+        .await
+        .unwrap();
+    repo.select_org_resource_for_project(&bootstrap.project_id, &selected_org_memory_id)
+        .await
+        .unwrap();
 
     let (owner_app, _) = common::authenticated_router(postgres.pool.clone()).await;
     let draft_response = owner_app
@@ -134,7 +145,7 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
                         daemon_installation_id: "daemon_member".to_owned(),
                         project_id: bootstrap.project_id.clone(),
                         base_commit_id: None,
-                        title: "Forbidden org draft".to_owned(),
+                        title: "New organization memory proposal".to_owned(),
                         description: None,
                         resource: DraftResourceRef {
                             scope: ResourceScope::Org,
@@ -149,7 +160,65 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
         )
         .await
         .unwrap();
-    assert_eq!(org_draft.status(), StatusCode::FORBIDDEN);
+    assert_eq!(org_draft.status(), StatusCode::OK);
+
+    let selected_org_draft = member_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/drafts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&CreateDraftRequest {
+                        daemon_installation_id: "daemon_member".to_owned(),
+                        project_id: bootstrap.project_id.clone(),
+                        base_commit_id: None,
+                        title: "Selected organization memory proposal".to_owned(),
+                        description: None,
+                        resource: DraftResourceRef {
+                            scope: ResourceScope::Org,
+                            id: Some(selected_org_memory_id),
+                            path: None,
+                        },
+                        operations: Vec::new(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected_org_draft.status(), StatusCode::OK);
+
+    let unselected_org_draft = member_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/drafts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&CreateDraftRequest {
+                        daemon_installation_id: "daemon_member".to_owned(),
+                        project_id: bootstrap.project_id.clone(),
+                        base_commit_id: None,
+                        title: "Unselected organization memory proposal".to_owned(),
+                        description: None,
+                        resource: DraftResourceRef {
+                            scope: ResourceScope::Org,
+                            id: Some(unselected_org_memory_id),
+                            path: None,
+                        },
+                        operations: Vec::new(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unselected_org_draft.status(), StatusCode::BAD_REQUEST);
 
     let create_project = member_app
         .clone()
