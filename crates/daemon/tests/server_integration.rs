@@ -18,7 +18,7 @@ use server::api::{
     CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     CreateReviewSubmissionRequest, DraftOperationAction, DraftOperationInput, DraftResourceContent,
     DraftResourceRef, Project, ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest,
-    ResourceScope, ReviewDecision, ReviewMergeResult,
+    ResourceScope, ReviewDecision, ReviewDraftRequest, ReviewMergeResult,
 };
 use server::repository::ServerRepository;
 use sha2::{Digest, Sha256};
@@ -117,8 +117,10 @@ async fn approve_and_merge(
             &detail.draft.author.user_id,
             expected_ref,
             CreateReviewRequest {
-                draft_id: draft_id.to_owned(),
-                expected_draft_version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: draft_id.to_owned(),
+                    expected_draft_version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -560,8 +562,10 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             &bootstrap.user_id,
             None,
             CreateReviewRequest {
-                draft_id: draft.draft.draft_id.clone(),
-                expected_draft_version: draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: draft.draft.draft_id.clone(),
+                    expected_draft_version: draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -641,7 +645,10 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
             rejected.draft.coordination.current_commit_id.as_deref(),
             CreateReviewSubmissionRequest {
                 expected_review_version: rejected.review.version,
-                expected_draft_version: edited.draft.server_version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: rejected.draft.draft_id.clone(),
+                    expected_draft_version: edited.draft.server_version,
+                }],
                 title: Some("Revised daemon context".to_owned()),
                 description: None,
                 candidate_id: None,
@@ -1375,8 +1382,10 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             &bootstrap.user_id,
             Some(&current_commit_id),
             CreateReviewRequest {
-                draft_id: server_behind.draft.draft_id.clone(),
-                expected_draft_version: server_behind.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: server_behind.draft.draft_id.clone(),
+                    expected_draft_version: server_behind.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -1481,8 +1490,10 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
             &bootstrap.user_id,
             Some(&current_commit_id),
             CreateReviewRequest {
-                draft_id: rebased.draft.draft.draft_id.clone(),
-                expected_draft_version: rebased.draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: rebased.draft.draft.draft_id.clone(),
+                    expected_draft_version: rebased.draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -2624,8 +2635,10 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             &bootstrap.user_id,
             None,
             CreateReviewRequest {
-                draft_id: draft.draft.draft_id,
-                expected_draft_version: draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: draft.draft.draft_id,
+                    expected_draft_version: draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
