@@ -163,19 +163,6 @@ fn run_hook_proxy(host: HookHost) -> Result<(), Box<dyn std::error::Error>> {
     verify_agent_runtime(&client)?;
     let binding =
         client.resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })?;
-    if should_offer_stop_decision(host, &event) {
-        let probe = event
-            .to_stop_probe_request(&binding.project_id)
-            .ok_or("Stop event did not produce a decision probe")?;
-        let response = client.record_agent_run_event(probe)?;
-        if !response.duplicate {
-            write_hook_output(&json!({
-                "decision": "block",
-                "reason": "Before stopping, make the explicit semantic Issue decision now. If the current root task is linked to an In Progress Issue and its acceptance criteria are satisfied, call kanban.request_closure with the current run_id and AgentRun revision. Otherwise leave it In Progress. Stop itself never completes or advances an Issue."
-            }))?;
-        }
-        return Ok(());
-    }
     let response = client.record_agent_run_event(event.to_record_request(&binding.project_id))?;
     if response.duplicate {
         return Ok(());
@@ -263,14 +250,6 @@ fn agent_runtime_matches(resident: &daemon::AgentRuntimeIdentity) -> bool {
         && resident.build_id == daemon::agent_runtime::AGENT_RUNTIME_BUILD_ID
 }
 
-fn should_offer_stop_decision(host: HookHost, event: &NormalizedHookEvent) -> bool {
-    matches!(host, HookHost::Codex | HookHost::ClaudeCode)
-        && event.hook_event_name() == HookEventName::Stop
-        && !event.stop_hook_active()
-        && std::env::var_os("CLUMSIES_HOOK_FORCE_FINAL_STOP").as_deref()
-            != Some(std::ffi::OsStr::new("1"))
-}
-
 fn hook_context(
     client: &DaemonIpcClient,
     project_id: &str,
@@ -307,11 +286,11 @@ fn hook_context(
         .unwrap_or_else(|| "This run is not bound to any Issue yet. ".to_owned());
     let context = match run.kind {
         AgentRunKind::Root => format!(
-            "Clumsies current root AgentRun: run_id={}, revision={}. {}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Before calling kanban.begin_work, check the Issue's active_runs via kanban.get: another AgentRun may already hold it, so claim only the Issue this run is actually working. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work. Before finishing, call kanban.request_closure only when the linked Issue's acceptance criteria are satisfied; otherwise leave it In Progress. AgentRun Stop never advances, approves, or closes an Issue.",
+            "Clumsies current root AgentRun: run_id={}, revision={}. {}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Before calling kanban.begin_work, check the Issue's active_runs via kanban.get: another AgentRun may already hold it, so claim only the Issue this run is actually working. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work.",
             run.run_id, run.revision, binding
         ),
         AgentRunKind::Subagent => format!(
-            "Clumsies current subagent AgentRun: run_id={}, revision={}. {}Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent. AgentRun Stop never advances or closes an Issue.",
+            "Clumsies current subagent AgentRun: run_id={}, revision={}. {}Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent.",
             run.run_id, run.revision, binding
         ),
     };

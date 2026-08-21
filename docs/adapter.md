@@ -1,9 +1,10 @@
 # Adapter
 
 Adapter is the daemon-owned integration layer that makes the Clumsies Agent
-runtime usable inside Codex, Claude Code, opencode, and Antigravity. It installs each host's
-MCP registration, lifecycle bridge, and necessary configuration without creating a second
-memory or runtime implementation.
+runtime usable inside Codex, Claude Code, opencode, dsh, and Antigravity. It
+installs each host's MCP registration, non-blocking lifecycle bridge, and
+necessary configuration without creating a second memory or runtime
+implementation.
 
 ## Runtime boundary
 
@@ -19,7 +20,7 @@ one of two short-lived proxy modes:
 
 ```text
 clumsiesd mcp serve
-clumsiesd _agent issue-run-event --host codex|claude-code|opencode|antigravity
+clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity
 ```
 
 The installer requires an executable whose canonical path ends in
@@ -44,6 +45,7 @@ workspace root, and host.
 | Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
 | Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
 | opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
+| dsh | profile-managed MCP registration | `.dsh/clumsies.json` routes the separately installed client bridge |
 | Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` |
 
 Every host consumes the MCP tools directly; the thin host-native skills that
@@ -58,9 +60,13 @@ array. The opencode plugin embeds the same pinned path for lifecycle events.
 
 ## Lifecycle bridge
 
-Codex and Claude Code register one managed `issue-run-event.sh` for the common
-event set. Claude Code additionally registers `StopFailure`. opencode maps the
-events its plugin API actually exposes.
+Codex and Claude Code register one managed `issue-run-event.sh` for prompt,
+subagent, and session lifecycle. Claude Code additionally registers
+`StopFailure`. Antigravity registers `PreInvocation`. None of these adapters
+registers a normal root `Stop`. The opencode plugin forwards user messages,
+failed assistant completions, and session deletion, but does not turn a normal
+assistant completion into `Stop`. The dsh client bridge follows the same
+non-blocking boundary.
 
 ```text
 host event
@@ -77,15 +83,20 @@ Lifecycle observation is fail-open: an unavailable runtime or daemon must not
 prevent the Agent host from continuing.
 
 Successful root and subagent starts return bounded context containing the
-current `run_id`, revision, binding status, and semantic Kanban instructions.
-Hooks observe and remind; only an explicit `kanban` tool call changes an Issue.
-For Codex and Claude Code, the first root Stop is stored as a non-terminal
-decision probe and asks the Agent to judge whether `request_closure` is
-appropriate. A follow-up Stop ends the run. Stop itself never advances an
-Issue.
+current `run_id`, revision, binding status, and the information needed for
+explicit Kanban work. Lifecycle integration never creates a stop-blocking
+closure prompt. Acceptance-criteria judgment and `kanban.request_closure`
+belong to an opt-in skill or a manually maintained Agent workflow.
+
+The private bridge continues to accept a legacy or manually forwarded root
+`Stop` so older installations fail open while they are cleaned up. Such an
+event is only a non-blocking AgentRun observation: it cannot call `kanban`,
+block the host, or advance an Issue. `StopFailure`, `SubagentStop`, and
+`SessionEnd` remain available because they do not create a root completion
+decision point.
 
 See [AgentRun lifecycle](/guides/agent-run-injection) for the event mapping and
-decision semantics.
+authority boundary.
 
 ## Safe install, update, and remove
 

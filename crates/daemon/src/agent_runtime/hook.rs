@@ -59,7 +59,7 @@ impl HookHost {
             Self::ClaudeCode => "prompt_id",
             Self::Opencode => "message_id",
             // The dsh plugin mints one turn id per user prompt and reuses it
-            // for the matching Stop event, mirroring the codex turn model.
+            // for a matching failure event, mirroring the codex turn model.
             Self::Dsh => "turn_id",
             Self::Antigravity => "turn_id",
         }
@@ -114,7 +114,6 @@ pub struct NormalizedHookEvent {
     outcome: Option<AgentRunOutcome>,
     display_label: Option<String>,
     workspace_path: Option<String>,
-    stop_hook_active: bool,
 }
 
 impl NormalizedHookEvent {
@@ -160,10 +159,6 @@ impl NormalizedHookEvent {
         self.workspace_path.as_deref()
     }
 
-    pub fn stop_hook_active(&self) -> bool {
-        self.stop_hook_active
-    }
-
     pub fn to_record_request(&self, project_id: impl Into<String>) -> RecordAgentRunEventRequest {
         RecordAgentRunEventRequest {
             event_id: self.event_id.clone(),
@@ -182,29 +177,6 @@ impl NormalizedHookEvent {
             summary: None,
             occurred_at: None,
         }
-    }
-
-    /// Turn the first supported Stop into a durable, non-terminal decision
-    /// probe. The host's follow-up Stop keeps the original event id and ends
-    /// the run, so transport replay cannot emit the continuation twice.
-    pub fn to_stop_probe_request(
-        &self,
-        project_id: impl Into<String>,
-    ) -> Option<RecordAgentRunEventRequest> {
-        if self.hook_event_name != HookEventName::Stop
-            || self.stop_hook_active
-            || !matches!(
-                self.host,
-                HookHost::Codex | HookHost::ClaudeCode | HookHost::Antigravity
-            )
-        {
-            return None;
-        }
-        let mut request = self.to_record_request(project_id);
-        request.event_id.push_str("_probe");
-        request.event_type = AgentRunEventType::Heartbeat;
-        request.outcome = None;
-        Some(request)
     }
 }
 
@@ -262,6 +234,8 @@ fn normalize_object(
             host_run_key = Some(root_run_key(host, object)?);
             AgentRunEventType::Started
         }
+        // Kept as an input compatibility path for existing/manual bridges.
+        // Managed adapters no longer register a normal root Stop hook.
         HookEventName::Stop => {
             kind = Some(AgentRunKind::Root);
             host_run_key = Some(root_run_key(host, object)?);
@@ -317,7 +291,6 @@ fn normalize_object(
         outcome,
         display_label,
         workspace_path,
-        stop_hook_active: bool_field(object, "stop_hook_active").unwrap_or(false),
     })
 }
 
@@ -409,10 +382,6 @@ fn bounded_display_label(value: &str) -> Option<String> {
 
 fn string_field<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a str> {
     object.get(name)?.as_str()
-}
-
-fn bool_field(object: &Map<String, Value>, name: &str) -> Option<bool> {
-    object.get(name)?.as_bool()
 }
 
 #[cfg(test)]
@@ -592,17 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn first_supported_stop_has_a_distinct_non_terminal_probe() {
+    fn legacy_root_stop_is_terminal_without_a_decision_probe() {
         let event = normalize_hook_event(
             HookHost::Codex,
-            br#"{"session_id":"thr_1","turn_id":"turn_7","hook_event_name":"Stop","stop_hook_active":false}"#,
+            br#"{"session_id":"thr_1","turn_id":"turn_7","hook_event_name":"Stop"}"#,
         )
         .unwrap();
-        let probe = event.to_stop_probe_request("prj_test").unwrap();
-        let final_event = event.to_record_request("prj_test");
-        assert_eq!(probe.event_type, AgentRunEventType::Heartbeat);
-        assert_eq!(final_event.event_type, AgentRunEventType::Ended);
-        assert_ne!(probe.event_id, final_event.event_id);
+        let request = event.to_record_request("prj_test");
+        assert_eq!(request.event_type, AgentRunEventType::Ended);
+        assert!(!request.event_id.ends_with("_probe"));
     }
 
     #[test]
@@ -645,8 +612,5 @@ mod tests {
         .unwrap();
         assert_eq!(failure.host_run_key(), Some("root:turn_43"));
         assert_eq!(failure.outcome(), Some(AgentRunOutcome::Failed));
-
-        let probe = stopped.to_stop_probe_request("prj_test").unwrap();
-        assert_eq!(probe.event_type, AgentRunEventType::Heartbeat);
     }
 }

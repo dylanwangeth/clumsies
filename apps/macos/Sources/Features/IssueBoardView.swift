@@ -1191,13 +1191,13 @@ struct IssueWorkflowHelpPopover: View {
                         workflowStep("kanban.create", detail: "Capture durable work as a native Todo Issue.")
                         workflowStep("kanban.update", detail: "Maintain structured Issue meaning from user feedback.")
                         workflowStep("kanban.begin_work", detail: "Link the hook-provided run_id to an Issue after a semantic decision.")
-                        workflowStep("kanban.request_closure", detail: "Ask for closure only after judging the acceptance criteria satisfied.")
+                        workflowStep("kanban.request_closure", detail: "Call explicitly from a skill or maintained workflow after judging the acceptance criteria satisfied.")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 Label(
-                    "A Stop hook ends an AgentRun; it never requests, approves, or closes an Issue by itself.",
+                    "Managed adapters do not install normal root Stop hooks. Lifecycle telemetry never requests, approves, or closes an Issue.",
                     systemImage: "exclamationmark.shield"
                 )
                 .font(.callout)

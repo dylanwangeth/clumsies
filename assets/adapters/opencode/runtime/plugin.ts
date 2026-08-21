@@ -5,7 +5,7 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin"
  *
  * opencode has no config-file-level hook surface; its lifecycle observation
  * surface is the plugin event bus. This plugin subscribes to session and
- * message events, normalizes them into the same daemon contract that the
+ * message events, normalizes the non-intrusive lifecycle signals that the
  * codex / claude-code shell hooks produce, and forwards each event to
  * `clumsiesd _agent issue-run-event --host opencode` over stdio.
  *
@@ -126,15 +126,15 @@ export const ClumsiesOpencode: Plugin = async (input) => {
         if (info.role === "assistant") {
           state.roles.set(info.id, "assistant")
           if (info.parentID) state.parents.set(info.id, info.parentID)
+          if (!info.error) return
           const time = (info as unknown as { time?: { completed?: number } }).time
           const isFinished = typeof time?.completed === "number"
           if (!isFinished) return
           const parent = info.parentID ?? null
           const rootMessageID = parent ? rootUserMessageID(state, parent) : null
           if (!rootMessageID) return
-          const hasError = !!info.error
           await forward(input.$, cwd, {
-            hook_event_name: hasError ? "StopFailure" : "Stop",
+            hook_event_name: "StopFailure",
             session_id: sessionID,
             message_id: rootMessageID,
           })

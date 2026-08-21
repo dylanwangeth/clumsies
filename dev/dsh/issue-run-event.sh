@@ -3,7 +3,7 @@
 # Best effort only: lifecycle observation must never block the dsh session.
 #
 # Usage:  printf '%s' "$PAYLOAD" | issue-run-event.sh
-# Payload: {"hook_event_name":"UserPromptSubmit|Stop|StopFailure|SubagentStart|SubagentStop|SessionEnd",
+# Payload: {"hook_event_name":"UserPromptSubmit|StopFailure|SubagentStart|SubagentStop|SessionEnd",
 #           "session_id":"...","turn_id":"...","agent_id":"...","agent_type":"...","cwd":"/path"}
 #
 # Resolves the App-bundled clumsiesd from the nearest .dsh/clumsies.json

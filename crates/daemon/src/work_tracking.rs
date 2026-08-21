@@ -1080,6 +1080,25 @@ pub(crate) async fn record_agent_run_event(
             existing.run_id, existing.kind
         )));
     }
+    let mut affected_runs = if request.source == AgentRunEventSource::Hook
+        && request.event_type == AgentRunEventType::Started
+        && kind == AgentRunKind::Root
+        && existing.is_none()
+        && let Some(host_session_id) = request.host_session_id.as_deref()
+    {
+        recover_prior_root_runs_for_new_hook_turn(
+            &mut tx,
+            &request.project_id,
+            request.host,
+            host_session_id,
+            host_run_key,
+            &received_at,
+            &occurred_at,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
     let parent = resolve_parent_run(&mut tx, &request, kind).await?;
     let explicit_issue_number = request
         .issue_key
@@ -1190,11 +1209,71 @@ pub(crate) async fn record_agent_run_event(
     .await?;
     tx.commit().await?;
     let response_run = run.clone();
+    affected_runs.push(run);
     Ok(RecordAgentRunEventResponse {
         run: Some(response_run),
-        affected_runs: vec![run],
+        affected_runs,
         duplicate: false,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn recover_prior_root_runs_for_new_hook_turn(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    host: AgentRunHost,
+    host_session_id: &str,
+    new_host_run_key: &str,
+    received_at: &str,
+    occurred_at: &str,
+) -> Result<Vec<AgentRun>, DaemonError> {
+    let rows = sqlx::query(
+        "SELECT run_id, project_id, issue_number, host, host_run_key, host_session_id,
+                parent_run_id, kind, phase, outcome, end_reason, display_label, summary,
+                revision, started_at, last_seen_at, lease_expires_at, ended_at
+         FROM agent_runs
+         WHERE project_id = $1 AND host = $2 AND host_session_id = $3
+           AND host_run_key <> $4 AND kind = 'root' AND phase = 'running'
+         ORDER BY last_seen_at DESC, run_id DESC",
+    )
+    .bind(project_id)
+    .bind(host.as_str())
+    .bind(host_session_id)
+    .bind(new_host_run_key)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut recovered = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut run = agent_run_from_row(&row)?;
+        run.phase = AgentRunPhase::Ended;
+        if run.end_reason.as_deref() != Some(AGENT_REPORT_REASON) {
+            run.outcome = Some(AgentRunOutcome::Unknown);
+            run.end_reason = Some(RECOVERED_END_REASON.to_owned());
+        }
+        run.revision += 1;
+        run.last_seen_at = received_at.to_owned();
+        if run.ended_at.is_none() {
+            run.ended_at = Some(occurred_at.to_owned());
+        }
+        update_run(tx, &run).await?;
+        insert_event(
+            tx,
+            &format!("arevt_{}", Uuid::new_v4().simple()),
+            None,
+            Some(&run.run_id),
+            run.host_session_id.as_deref(),
+            AgentRunEventType::Ended,
+            AgentRunEventSource::Recovery,
+            run.issue_number,
+            run.outcome,
+            None,
+            occurred_at,
+        )
+        .await?;
+        recovered.push(run);
+    }
+    Ok(recovered)
 }
 
 pub(crate) async fn start_issue_work(
@@ -4857,6 +4936,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_hook_root_turn_recovers_previous_bound_root_and_can_take_over_issue() {
+        let pool = run_pool().await;
+        native_issue(&pool, "project-1", 3).await;
+
+        let first = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_turn_one_start",
+                Some("root:turn-one"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+        let first = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(first.run_id),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(first.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .run
+        .unwrap();
+
+        let second_request = lifecycle_request(
+            "hook_turn_two_start",
+            Some("root:turn-two"),
+            AgentRunEventType::Started,
+        );
+        let second_response = record_agent_run_event(&pool, second_request.clone())
+            .await
+            .unwrap();
+        let second = second_response.run.unwrap();
+        assert_eq!(second.phase, AgentRunPhase::Running);
+        assert_eq!(second.issue_number, None);
+        assert_eq!(second_response.affected_runs.len(), 2);
+        let recovered = &second_response.affected_runs[0];
+        assert_eq!(recovered.run_id, first.run_id);
+        assert_eq!(recovered.phase, AgentRunPhase::Ended);
+        assert_eq!(recovered.outcome, Some(AgentRunOutcome::Unknown));
+        assert_eq!(recovered.end_reason.as_deref(), Some(RECOVERED_END_REASON));
+        assert_eq!(recovered.revision, first.revision + 1);
+        assert_eq!(second_response.affected_runs[1].run_id, second.run_id);
+
+        let duplicate = record_agent_run_event(&pool, second_request).await.unwrap();
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.affected_runs.len(), 1);
+        assert_eq!(duplicate.affected_runs[0].run_id, second.run_id);
+        assert_eq!(
+            load_agent_run(&pool, &first.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            recovered.revision
+        );
+        let recovery_events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_run_events
+             WHERE run_id = $1 AND event_type = 'ended' AND source = 'recovery'",
+        )
+        .bind(&first.run_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(recovery_events, 1);
+
+        let taken_over = start_issue_work(
+            &pool,
+            StartIssueWorkRequest {
+                project_id: "project-1".to_owned(),
+                run_id: Some(second.run_id.clone()),
+                issue_key: "ISSUE-003".to_owned(),
+                expected_revision: Some(second.revision),
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(taken_over.board_state, IssueBoardState::InProgress);
+        assert_eq!(
+            taken_over.run.as_ref().map(|run| run.run_id.as_str()),
+            Some(second.run_id.as_str())
+        );
+        assert_eq!(taken_over.run.unwrap().issue_number, Some(3));
+    }
+
+    #[tokio::test]
+    async fn same_key_subagent_and_mcp_manual_starts_do_not_recover_root_runs() {
+        let pool = run_pool().await;
+        let root_request = lifecycle_request(
+            "hook_same_key_start",
+            Some("root:same-key"),
+            AgentRunEventType::Started,
+        );
+        let root = record_agent_run_event(&pool, root_request)
+            .await
+            .unwrap()
+            .run
+            .unwrap();
+
+        let same_key = record_agent_run_event(
+            &pool,
+            lifecycle_request(
+                "hook_same_key_heartbeat",
+                Some("root:same-key"),
+                AgentRunEventType::Started,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(same_key.affected_runs.len(), 1);
+        assert_eq!(same_key.run.as_ref().unwrap().run_id, root.run_id);
+        assert_eq!(same_key.run.as_ref().unwrap().phase, AgentRunPhase::Running);
+
+        let mut child_request = lifecycle_request(
+            "hook_child_new_key",
+            Some("subagent:session-1:new-child"),
+            AgentRunEventType::Started,
+        );
+        child_request.kind = Some(AgentRunKind::Subagent);
+        child_request.parent_host_run_key = Some("root:same-key".to_owned());
+        let child = record_agent_run_event(&pool, child_request).await.unwrap();
+        assert_eq!(child.affected_runs.len(), 1);
+        assert_eq!(
+            load_agent_run(&pool, &root.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            AgentRunPhase::Running
+        );
+
+        let mut first_manual = lifecycle_request(
+            "mcp_manual_one_start",
+            Some("manual:turn-one"),
+            AgentRunEventType::Started,
+        );
+        first_manual.host = AgentRunHost::Manual;
+        first_manual.source = AgentRunEventSource::Mcp;
+        first_manual.host_session_id = Some("manual-session".to_owned());
+        let first_manual = record_agent_run_event(&pool, first_manual)
+            .await
+            .unwrap()
+            .run
+            .unwrap();
+        let mut second_manual = lifecycle_request(
+            "mcp_manual_two_start",
+            Some("manual:turn-two"),
+            AgentRunEventType::Started,
+        );
+        second_manual.host = AgentRunHost::Manual;
+        second_manual.source = AgentRunEventSource::Mcp;
+        second_manual.host_session_id = Some("manual-session".to_owned());
+        let second_manual = record_agent_run_event(&pool, second_manual).await.unwrap();
+        assert_eq!(second_manual.affected_runs.len(), 1);
+        assert_eq!(
+            load_agent_run(&pool, &first_manual.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            AgentRunPhase::Running
+        );
+    }
+
+    #[tokio::test]
     async fn event_id_requires_an_identical_full_request_fingerprint() {
         let pool = run_pool().await;
         let request = lifecycle_request(
@@ -5382,8 +5634,18 @@ mod tests {
         .unwrap();
         assert_eq!(started.board_state, IssueBoardState::InProgress);
 
-        // The same session cannot start the second Issue while the first is In Progress.
-        let run_a2 = session_hook_start(&pool, "session_a_2", "root:a2", "session-a").await;
+        // A non-Hook run in the same session cannot start the second Issue
+        // while the first is In Progress. Hook root turns use rollover
+        // recovery; MCP/manual starts deliberately do not.
+        let mut run_a2_request =
+            lifecycle_request("session_a_2", Some("root:a2"), AgentRunEventType::Started);
+        run_a2_request.source = AgentRunEventSource::Mcp;
+        run_a2_request.host_session_id = Some("session-a".to_owned());
+        let run_a2 = record_agent_run_event(&pool, run_a2_request)
+            .await
+            .unwrap()
+            .run
+            .unwrap();
         let conflict = start_issue_work(
             &pool,
             StartIssueWorkRequest {
@@ -6898,26 +7160,16 @@ mod tests {
             }
         ));
 
-        // A second hook run cannot claim another Issue while the session
-        // holds an In Progress one.
-        let second = record_agent_run_event(
-            &pool,
-            lifecycle_request(
-                "hook_claim_start_2",
-                Some("root:claim-2"),
-                AgentRunEventType::Started,
-            ),
-        )
-        .await
-        .unwrap()
-        .run
-        .unwrap();
+        // A hook run from another session cannot claim the same Issue while
+        // the first run remains active.
+        let second =
+            session_hook_start(&pool, "hook_claim_start_2", "root:claim-2", "session-2").await;
         let error = start_issue_work(
             &pool,
             StartIssueWorkRequest {
                 project_id: "project-1".to_owned(),
                 run_id: Some(second.run_id),
-                issue_key: "ISSUE-004".to_owned(),
+                issue_key: "ISSUE-003".to_owned(),
                 expected_revision: Some(second.revision),
                 session_id: None,
             },
@@ -7524,18 +7776,13 @@ mod tests {
         .await
         .unwrap();
         // Another run whose Issue is closed while it is still running.
-        let closed = record_agent_run_event(
+        let closed = session_hook_start(
             &pool,
-            lifecycle_request(
-                "hook_reaper_closed",
-                Some("root:closed"),
-                AgentRunEventType::Started,
-            ),
+            "hook_reaper_closed",
+            "root:closed",
+            "reaper-closed-session",
         )
-        .await
-        .unwrap()
-        .run
-        .unwrap();
+        .await;
         start_issue_work(
             &pool,
             StartIssueWorkRequest {

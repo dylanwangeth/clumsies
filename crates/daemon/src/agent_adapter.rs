@@ -198,7 +198,10 @@ impl<'de> Deserialize<'de> for ManagedFile {
         let stored = StoredManagedFile::deserialize(deserializer)?;
         if let Some(declared) = &stored.owned_fragments {
             let expected = managed_file_owned_fragments(stored.kind);
-            if declared.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+            let legacy = legacy_managed_file_owned_fragments(stored.kind);
+            if !owned_fragments_match(declared, expected)
+                && !legacy.is_some_and(|legacy| owned_fragments_match(declared, legacy))
+            {
                 return Err(serde::de::Error::custom(
                     "managed adapter manifest declares unexpected owned fragments",
                 ));
@@ -219,7 +222,6 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
         }
         ManagedFileKind::CodexHooks | ManagedFileKind::ClaudeSettings => &[
             "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-            "hooks.Stop[clumsies-issue-run-event]",
             "hooks.StopFailure[clumsies-issue-run-event]",
         ],
         ManagedFileKind::ClaudeMcp => &["mcpServers.clumsies"],
@@ -227,12 +229,31 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
             &["mcp.clumsies", "plugin[./.opencode/plugins/clumsies.ts]"]
         }
         ManagedFileKind::DshConfig => &["$file"],
-        ManagedFileKind::AntigravityHooks => &[
-            "clumsies-issue-run-event.PreInvocation",
-            "clumsies-issue-run-event.Stop",
-        ],
+        ManagedFileKind::AntigravityHooks => &["clumsies-issue-run-event.PreInvocation"],
         ManagedFileKind::Exclusive => &["$file"],
     }
+}
+
+fn legacy_managed_file_owned_fragments(kind: ManagedFileKind) -> Option<&'static [&'static str]> {
+    match kind {
+        ManagedFileKind::CodexHooks | ManagedFileKind::ClaudeSettings => Some(&[
+            "hooks.UserPromptSubmit[clumsies-issue-run-event]",
+            "hooks.Stop[clumsies-issue-run-event]",
+            "hooks.StopFailure[clumsies-issue-run-event]",
+        ]),
+        ManagedFileKind::AntigravityHooks => Some(&[
+            "clumsies-issue-run-event.PreInvocation",
+            "clumsies-issue-run-event.Stop",
+        ]),
+        _ => None,
+    }
+}
+
+fn owned_fragments_match(declared: &[String], expected: &[&str]) -> bool {
+    declared
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied())
 }
 
 #[derive(Clone, Debug)]
@@ -2714,7 +2735,17 @@ fn legacy_hook_is_proven_managed(
     }))
 }
 
-const BASE_AGENT_RUN_HOOKS: [(&str, u64); 5] = [
+const BASE_AGENT_RUN_HOOKS: [(&str, u64); 4] = [
+    ("UserPromptSubmit", 5),
+    ("SubagentStart", 5),
+    ("SubagentStop", 5),
+    ("SessionEnd", 3),
+];
+
+// Stop is intentionally absent from fresh installs, but remains in the cleanup
+// set so an update or remove can retire an exact handler owned by an older
+// adapter without touching another tool's Stop hook.
+const REMOVABLE_AGENT_RUN_HOOKS: [(&str, u64); 5] = [
     ("UserPromptSubmit", 5),
     ("Stop", 5),
     ("SubagentStart", 5),
@@ -2793,6 +2824,7 @@ fn render_hook_registry(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("The hook registry `hooks` value must be an object."))?;
 
+    retire_hook_handler(hooks, "Stop", 5, script_path, ownership)?;
     for &(event, timeout) in &BASE_AGENT_RUN_HOOKS {
         install_hook_handler(hooks, event, timeout, script_path, ownership)?;
     }
@@ -2830,6 +2862,28 @@ fn install_hook_handler(
     Ok(())
 }
 
+fn retire_hook_handler(
+    hooks: &mut Map<String, Value>,
+    event: &str,
+    timeout: u64,
+    script_path: &Path,
+    ownership: HookOwnership,
+) -> Result<(), DaemonError> {
+    let Some(value) = hooks.get_mut(event) else {
+        return Ok(());
+    };
+    let groups = value.as_array_mut().ok_or_else(|| {
+        adapter_conflict(&format!(
+            "The hook registry `{event}` value must be an array."
+        ))
+    })?;
+    remove_owned_hook_handlers(groups, script_path, timeout, ownership)?;
+    if groups.is_empty() {
+        hooks.remove(event);
+    }
+    Ok(())
+}
+
 fn remove_hook_registry(
     content: &[u8],
     script_path: &Path,
@@ -2844,7 +2898,7 @@ fn remove_hook_registry(
         return Ok(Some(content.to_vec()));
     };
 
-    let mut events = BASE_AGENT_RUN_HOOKS
+    let mut events = REMOVABLE_AGENT_RUN_HOOKS
         .iter()
         .map(|(event, _)| *event)
         .collect::<Vec<_>>();
@@ -2878,7 +2932,7 @@ fn remove_hook_registry(
 }
 
 fn timeout_for_event(event: &str) -> u64 {
-    BASE_AGENT_RUN_HOOKS
+    REMOVABLE_AGENT_RUN_HOOKS
         .iter()
         .find_map(|(candidate, timeout)| (*candidate == event).then_some(*timeout))
         .unwrap_or(5)
@@ -3105,45 +3159,29 @@ fn render_antigravity_hooks(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("The Antigravity hook registry must be a JSON object."))?;
 
-    if let Some(existing_entry) = root_object.get("clumsies-issue-run-event")
-        && !ownership.lifecycle
-        && !antigravity_hook_entry_matches(existing_entry, script_path)
-    {
-        return Err(adapter_conflict(
-            "The Antigravity `clumsies-issue-run-event` hook entry is already registered but is not owned by this Clumsies integration.",
-        ));
+    if let Some(existing_entry) = root_object.get("clumsies-issue-run-event") {
+        if !ownership.lifecycle {
+            return Err(adapter_conflict(
+                "The Antigravity `clumsies-issue-run-event` hook entry is already registered but is not owned by this Clumsies integration.",
+            ));
+        }
+        if !antigravity_hook_entry_matches(existing_entry, script_path) {
+            return Err(adapter_conflict(
+                "The managed Antigravity `clumsies-issue-run-event` hook entry changed after installation.",
+            ));
+        }
     }
 
-    let hook_entry = root_object
-        .entry("clumsies-issue-run-event")
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()
-        .ok_or_else(|| {
-            adapter_conflict(
-                "The Antigravity `clumsies-issue-run-event` entry must be a JSON object.",
-            )
-        })?;
-
     let hook_cmd = hook_command(script_path);
-    hook_entry.insert(
-        "PreInvocation".to_owned(),
-        json!([
-            {
+    root_object.insert(
+        "clumsies-issue-run-event".to_owned(),
+        json!({
+            "PreInvocation": [{
                 "type": "command",
                 "command": hook_cmd,
                 "timeout": 5
-            }
-        ]),
-    );
-    hook_entry.insert(
-        "Stop".to_owned(),
-        json!([
-            {
-                "type": "command",
-                "command": hook_cmd,
-                "timeout": 5
-            }
-        ]),
+            }]
+        }),
     );
 
     render_json(&root)
@@ -3176,18 +3214,33 @@ fn remove_antigravity_hooks(
 }
 
 fn antigravity_hook_entry_matches(entry: &Value, script_path: &Path) -> bool {
+    antigravity_current_hook_entry_matches(entry, script_path)
+        || antigravity_legacy_hook_entry_matches(entry, script_path)
+}
+
+fn antigravity_current_hook_entry_matches(entry: &Value, script_path: &Path) -> bool {
     let Some(object) = entry.as_object() else {
         return false;
     };
-    let pre_matches = object
-        .get("PreInvocation")
-        .and_then(Value::as_array)
-        .is_some_and(|arr| arr.len() == 1 && is_exact_command_handler(&arr[0], script_path, 5));
+    object.len() == 1 && antigravity_pre_invocation_matches(object, script_path)
+}
+
+fn antigravity_legacy_hook_entry_matches(entry: &Value, script_path: &Path) -> bool {
+    let Some(object) = entry.as_object() else {
+        return false;
+    };
     let stop_matches = object
         .get("Stop")
         .and_then(Value::as_array)
         .is_some_and(|arr| arr.len() == 1 && is_exact_command_handler(&arr[0], script_path, 5));
-    pre_matches && stop_matches
+    object.len() == 2 && antigravity_pre_invocation_matches(object, script_path) && stop_matches
+}
+
+fn antigravity_pre_invocation_matches(object: &Map<String, Value>, script_path: &Path) -> bool {
+    object
+        .get("PreInvocation")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| arr.len() == 1 && is_exact_command_handler(&arr[0], script_path, 5))
 }
 
 fn render_codex_config(
@@ -4339,6 +4392,7 @@ mod tests {
         assert!(prompt_commands.contains(&foreign_same_host.as_str()));
         assert!(prompt_commands.contains(&"echo foreign"));
         let stop_commands = hook_commands(&rendered, "Stop");
+        assert!(!stop_commands.contains(&current_command.as_str()));
         assert!(stop_commands.contains(&foreign_lifecycle.as_str()));
         assert!(stop_commands.contains(&"echo stop foreign"));
         if include_stop_failure {
@@ -4465,6 +4519,87 @@ mod tests {
             serde_json::from_value::<AdapterManifest>(serialized).unwrap(),
             manifest
         );
+    }
+
+    #[test]
+    fn hook_manifests_omit_stop_and_accept_only_the_exact_legacy_fragment_sets() {
+        let cases: [(ManagedFileKind, &str, &[&str], &[&str]); 3] = [
+            (
+                ManagedFileKind::CodexHooks,
+                "codex_hooks",
+                &[
+                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
+                    "hooks.StopFailure[clumsies-issue-run-event]",
+                ],
+                &[
+                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
+                    "hooks.Stop[clumsies-issue-run-event]",
+                    "hooks.StopFailure[clumsies-issue-run-event]",
+                ],
+            ),
+            (
+                ManagedFileKind::ClaudeSettings,
+                "claude_settings",
+                &[
+                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
+                    "hooks.StopFailure[clumsies-issue-run-event]",
+                ],
+                &[
+                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
+                    "hooks.Stop[clumsies-issue-run-event]",
+                    "hooks.StopFailure[clumsies-issue-run-event]",
+                ],
+            ),
+            (
+                ManagedFileKind::AntigravityHooks,
+                "antigravity_hooks",
+                &["clumsies-issue-run-event.PreInvocation"],
+                &[
+                    "clumsies-issue-run-event.PreInvocation",
+                    "clumsies-issue-run-event.Stop",
+                ],
+            ),
+        ];
+
+        for (kind, wire_kind, expected, legacy) in cases {
+            let managed = ManagedFile {
+                path: "/tmp/workspace/hooks.json".to_owned(),
+                kind,
+                installed_hash: "installed-hash".to_owned(),
+            };
+            let serialized = serde_json::to_value(&managed).unwrap();
+            assert_eq!(serialized["owned_fragments"], json!(expected));
+            assert!(
+                serialized["owned_fragments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|fragment| !fragment.as_str().unwrap().ends_with(".Stop")
+                        && !fragment.as_str().unwrap().starts_with("hooks.Stop["))
+            );
+            assert_eq!(
+                serde_json::from_value::<ManagedFile>(serialized).unwrap(),
+                managed
+            );
+
+            let legacy_manifest = json!({
+                "path": "/tmp/workspace/hooks.json",
+                "kind": wire_kind,
+                "installed_hash": "installed-hash",
+                "owned_fragments": legacy,
+            });
+            assert_eq!(
+                serde_json::from_value::<ManagedFile>(legacy_manifest.clone()).unwrap(),
+                managed
+            );
+
+            let mut forged = legacy_manifest;
+            forged["owned_fragments"]
+                .as_array_mut()
+                .unwrap()
+                .push(Value::String("foreign.fragment".to_owned()));
+            assert!(serde_json::from_value::<ManagedFile>(forged).is_err());
+        }
     }
 
     #[cfg(unix)]
@@ -4821,6 +4956,81 @@ mod tests {
     }
 
     #[test]
+    fn fresh_hook_install_rejects_an_unowned_local_stop_handler() {
+        for (script, include_stop_failure) in [
+            (
+                Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh"),
+                false,
+            ),
+            (
+                Path::new("/tmp/workspace/.claude/hooks/issue-run-event.sh"),
+                true,
+            ),
+        ] {
+            let existing = render_json(&json!({
+                "hooks": {
+                    "Stop": [{
+                        "hooks": [{
+                            "type": "command",
+                            "command": hook_command(script),
+                            "timeout": 5
+                        }]
+                    }]
+                }
+            }))
+            .unwrap();
+            let error = render_hook_registry(
+                Some(&existing),
+                script,
+                include_stop_failure,
+                HookOwnership::default(),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                DaemonError::State {
+                    code: "project_agent_adapter_conflict",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn remove_hook_registry_still_retires_an_old_managed_stop_handler() {
+        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        let existing = render_json(&json!({
+            "theme": "dark",
+            "hooks": {
+                "Stop": [
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": hook_command(script),
+                            "timeout": 5
+                        }]
+                    },
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "echo foreign",
+                            "timeout": 5
+                        }]
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        let removed = remove_hook_registry(&existing, script, false)
+            .unwrap()
+            .unwrap();
+        let removed: Value = serde_json::from_slice(&removed).unwrap();
+        assert_eq!(removed["theme"], "dark");
+        assert_eq!(hook_commands(&removed, "Stop"), vec!["echo foreign"]);
+    }
+
+    #[test]
     fn managed_hook_and_resolver_pin_the_bundled_daemon_runtime() {
         let runtime = "/Applications/Clumsies App.app/Contents/Resources/clumsiesd";
         let rendered =
@@ -4858,6 +5068,16 @@ mod tests {
         assert!(codex.iter().any(|change| {
             change.path.ends_with(".codex/hooks/issue-run-event.sh") && change.mode == 0o755
         }));
+        let codex_registry: Value = serde_json::from_slice(
+            codex
+                .iter()
+                .find(|change| change.path.ends_with(".codex/hooks.json"))
+                .and_then(|change| change.desired.as_deref())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(codex_registry["hooks"].get("Stop").is_none());
+        assert!(codex_registry["hooks"].get("StopFailure").is_none());
 
         let claude = install_plan(
             ProjectAgentAdapterKind::ClaudeCode,
@@ -4873,6 +5093,16 @@ mod tests {
         assert!(claude.iter().any(|change| {
             change.path.ends_with(".claude/hooks/issue-run-event.sh") && change.mode == 0o755
         }));
+        let claude_registry: Value = serde_json::from_slice(
+            claude
+                .iter()
+                .find(|change| change.path.ends_with(".claude/settings.json"))
+                .and_then(|change| change.desired.as_deref())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(claude_registry["hooks"].get("Stop").is_none());
+        assert_eq!(hook_commands(&claude_registry, "StopFailure").len(), 1);
     }
 
     #[test]
@@ -5049,6 +5279,9 @@ mod tests {
                 .contains("return \"/Applications/Clumsies App.app/Contents/Resources/clumsiesd\"")
         );
         assert!(!rendered.contains("process.env.CLUMSIES_BINARY"));
+        assert!(rendered.contains(r#"hook_event_name: "StopFailure""#));
+        assert!(!rendered.contains(r#"hook_event_name: "Stop""#));
+        assert!(!rendered.contains(r#"hasError ? "StopFailure" : "Stop""#));
     }
 
     #[test]
@@ -5376,7 +5609,7 @@ name: legacy
 
         let hooks_json: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(hooks_json["clumsies-issue-run-event"]["PreInvocation"].is_array());
-        assert!(hooks_json["clumsies-issue-run-event"]["Stop"].is_array());
+        assert!(hooks_json["clumsies-issue-run-event"].get("Stop").is_none());
 
         let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
         let removals = remove_plan(&manifest, workspace.path()).unwrap();
@@ -5388,6 +5621,132 @@ name: legacy
         assert!(!hook_path.exists());
         cleanup_empty_adapter_directories(&removals, workspace.path());
         assert!(!workspace.path().join(".agents").exists());
+    }
+
+    #[test]
+    fn antigravity_update_retires_legacy_stop_and_preserves_foreign_entries() {
+        let script = Path::new("/tmp/workspace/.agents/hooks/issue-run-event.sh");
+        let command = hook_command(script);
+        let legacy = render_json(&json!({
+            "lint-checker": {
+                "PostToolUse": [{"type": "command", "command": "./lint.sh"}]
+            },
+            "clumsies-issue-run-event": {
+                "PreInvocation": [{
+                    "type": "command",
+                    "command": command,
+                    "timeout": 5
+                }],
+                "Stop": [{
+                    "type": "command",
+                    "command": command,
+                    "timeout": 5
+                }]
+            }
+        }))
+        .unwrap();
+
+        let migrated = render_antigravity_hooks(
+            Some(&legacy),
+            script,
+            HookOwnership {
+                lifecycle: true,
+                legacy_prompt: false,
+            },
+        )
+        .unwrap();
+        let migrated_value: Value = serde_json::from_slice(&migrated).unwrap();
+        assert!(migrated_value.get("lint-checker").is_some());
+        assert!(migrated_value["clumsies-issue-run-event"]["PreInvocation"].is_array());
+        assert!(
+            migrated_value["clumsies-issue-run-event"]
+                .get("Stop")
+                .is_none()
+        );
+        assert_eq!(
+            render_antigravity_hooks(
+                Some(&migrated),
+                script,
+                HookOwnership {
+                    lifecycle: true,
+                    legacy_prompt: false,
+                },
+            )
+            .unwrap(),
+            migrated
+        );
+
+        let removed = remove_antigravity_hooks(&migrated, script)
+            .unwrap()
+            .unwrap();
+        let removed: Value = serde_json::from_slice(&removed).unwrap();
+        assert!(removed.get("lint-checker").is_some());
+        assert!(removed.get("clumsies-issue-run-event").is_none());
+    }
+
+    #[test]
+    fn antigravity_update_rejects_drifted_or_foreign_named_entries() {
+        let script = Path::new("/tmp/workspace/.agents/hooks/issue-run-event.sh");
+        let drifted = render_json(&json!({
+            "clumsies-issue-run-event": {
+                "PreInvocation": [{
+                    "type": "command",
+                    "command": hook_command(script),
+                    "timeout": 9
+                }],
+                "Stop": [{
+                    "type": "command",
+                    "command": hook_command(script),
+                    "timeout": 5
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(
+            render_antigravity_hooks(
+                Some(&drifted),
+                script,
+                HookOwnership {
+                    lifecycle: true,
+                    legacy_prompt: false,
+                },
+            )
+            .is_err()
+        );
+
+        let unowned_legacy = render_json(&json!({
+            "clumsies-issue-run-event": {
+                "PreInvocation": [{
+                    "type": "command",
+                    "command": hook_command(script),
+                    "timeout": 5
+                }],
+                "Stop": [{
+                    "type": "command",
+                    "command": hook_command(script),
+                    "timeout": 5
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(
+            render_antigravity_hooks(Some(&unowned_legacy), script, HookOwnership::default(),)
+                .is_err()
+        );
+
+        let foreign = render_json(&json!({
+            "clumsies-issue-run-event": {
+                "PreInvocation": [{
+                    "type": "command",
+                    "command": "./foreign.sh",
+                    "timeout": 5
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(
+            render_antigravity_hooks(Some(&foreign), script, HookOwnership::default(),).is_err()
+        );
     }
 
     #[test]

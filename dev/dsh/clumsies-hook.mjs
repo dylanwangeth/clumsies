@@ -1,9 +1,8 @@
 // DSH → Clumsies hook bridge.
 //
 // Forwards web-session lifecycle events to the local Clumsies daemon so it
-// can issue and end `dsh` AgentRuns (kanban.begin_work / request_closure
-// require a hook-issued run). Fail-open: a missing daemon or a failed
-// forward never blocks the session.
+// can issue `dsh` AgentRuns and end them on failure or session disposal.
+// Fail-open: a missing daemon or a failed forward never blocks the session.
 //
 // Install: copy to ~/.dsh/profiles/web/clumsies-hook.mjs and add to
 // cordis.patch.yml:
@@ -27,10 +26,6 @@
 // - The payload must reach the hook proxy via stdin, so we use spawn() and
 //   write the JSON ourselves — async execFile() has no input option and the
 //   child would block on stdin forever.
-// - A turn interrupted by the next prompt may never emit turn/end (dsh does
-//   not close cancelled turns). The plugin tracks the open turn per session
-//   and, on the next turn/start, first closes the stale run with a Stop so
-//   no dsh run stays 'running' until the daemon's lease reaper.
 // - Diagnostics are opt-in via CLUMSIES_HOOK_LOG (default: off).
 
 import { spawn } from 'node:child_process'
@@ -77,32 +72,69 @@ function log(line) {
 }
 
 function forward(payload, runtime) {
-  const bin = runtime || process.env.CLUMSIES_BIN || DEFAULT_BIN
-  const input = JSON.stringify(payload)
-  log('forward ' + input.slice(0, 140))
-  const child = spawn(bin, ['_agent', 'issue-run-event', '--host', 'dsh'], {
-    stdio: ['pipe', 'ignore', 'pipe'],
-    windowsHide: true,
+  return new Promise((resolve) => {
+    const bin = runtime || process.env.CLUMSIES_BIN || DEFAULT_BIN
+    const input = JSON.stringify(payload)
+    log('forward ' + input.slice(0, 140))
+    let child
+    try {
+      child = spawn(bin, ['_agent', 'issue-run-event', '--host', 'dsh'], {
+        stdio: ['pipe', 'ignore', 'pipe'],
+        windowsHide: true,
+      })
+    } catch (err) {
+      log('forward spawn error: ' + (err.message || err).slice(0, 200))
+      resolve()
+      return
+    }
+    let stderr = ''
+    let settled = false
+    let watchdog
+    const settle = () => {
+      if (settled) return
+      settled = true
+      if (watchdog) clearTimeout(watchdog)
+      resolve()
+    }
+    child.stderr?.on('data', (chunk) => { stderr += chunk })
+    child.once('error', (err) => {
+      log('forward error: ' + (err.message || err).slice(0, 200))
+      settle()
+    })
+    child.once('close', (code, signal) => {
+      log('forward close code=' + code + ' signal=' + signal + (stderr ? ' stderr=' + stderr.slice(0, 120) : ''))
+      settle()
+    })
+    child.stdin.on('error', () => { /* EPIPE when the child exits early */ })
+    child.stdin.end(input)
+    // Fail-open watchdog: release the per-session queue even if a child does
+    // not report its SIGKILL promptly.
+    watchdog = setTimeout(() => {
+      child.kill('SIGKILL')
+      settle()
+    }, 5000)
   })
-  let stderr = ''
-  child.stderr?.on('data', (chunk) => { stderr += chunk })
-  child.on('error', (err) => log('forward error: ' + (err.message || err).slice(0, 200)))
-  child.on('close', (code, signal) => {
-    log('forward close code=' + code + ' signal=' + signal + (stderr ? ' stderr=' + stderr.slice(0, 120) : ''))
-  })
-  child.stdin.on('error', () => { /* EPIPE when the child exits early */ })
-  child.stdin.end(input)
-  // Fail-open watchdog: never let a stuck hook block the session's resources.
-  const watchdog = setTimeout(() => { child.kill('SIGKILL') }, 5000)
-  child.on('close', () => clearTimeout(watchdog))
 }
 
 export default {
   name: 'clumsies-hook',
   apply(ctx) {
     log('plugin loaded, bin=' + (process.env.CLUMSIES_BIN || DEFAULT_BIN))
-    /** Open (unclosed) turn id per root session, for interrupted-turn repair. */
-    const openTurns = new Map()
+
+    // Preserve lifecycle order within one dsh session. Each forward remains
+    // fail-open, while unrelated sessions can still make progress in parallel.
+    const forwarding = new Map()
+    const enqueue = (sessionId, payload, runtime) => {
+      const previous = forwarding.get(sessionId) ?? Promise.resolve()
+      const current = previous
+        .catch((err) => log('forward queue error: ' + (err.message || err).slice(0, 200)))
+        .then(() => forward(payload, runtime))
+        .catch((err) => log('forward queue error: ' + (err.message || err).slice(0, 200)))
+      forwarding.set(sessionId, current)
+      void current.then(() => {
+        if (forwarding.get(sessionId) === current) forwarding.delete(sessionId)
+      })
+    }
 
     const emit = (session, event) => {
       const header = session?.header ?? session
@@ -122,13 +154,7 @@ export default {
         case 'turn/start': {
           const turn = event.data?.turn ?? '?'
           const turnId = sessionId + ':t' + turn
-          const stale = openTurns.get(sessionId)
-          if (stale && stale !== turnId) {
-            log('repair stale turn ' + stale)
-            forward({ hook_event_name: 'Stop', session_id: sessionId, turn_id: stale, cwd }, runtime)
-          }
-          openTurns.set(sessionId, turnId)
-          forward({
+          enqueue(sessionId, {
             hook_event_name: 'UserPromptSubmit',
             session_id: sessionId,
             turn_id: turnId,
@@ -139,15 +165,16 @@ export default {
         case 'turn/end': {
           const turn = event.data?.turn ?? '?'
           const turnId = sessionId + ':t' + turn
-          openTurns.delete(sessionId)
           const failed = event.data?.reason?.kind === 'error'
-          forward({
-            hook_event_name: failed ? 'StopFailure' : 'Stop',
-            session_id: sessionId,
-            turn_id: turnId,
-            cwd,
-            ...(failed ? { error: 'turn-failed' } : {}),
-          }, runtime)
+          if (failed) {
+            enqueue(sessionId, {
+              hook_event_name: 'StopFailure',
+              session_id: sessionId,
+              turn_id: turnId,
+              cwd,
+              error: 'turn-failed',
+            }, runtime)
+          }
           break
         }
       }
@@ -163,18 +190,7 @@ export default {
       const resolved = resolveWorkspace(header.cwd ?? FALLBACK_CWD)
       const cwd = resolved ? resolved.workspace : (header.cwd ?? FALLBACK_CWD)
       const runtime = resolved ? resolved.runtime : undefined
-      const stale = openTurns.get(sessionId)
-      if (stale) {
-        log('session disposed with open turn ' + stale)
-        forward({
-          hook_event_name: 'Stop',
-          session_id: sessionId,
-          turn_id: stale,
-          cwd,
-        }, runtime)
-        openTurns.delete(sessionId)
-      }
-      forward({
+      enqueue(sessionId, {
         hook_event_name: 'SessionEnd',
         session_id: sessionId,
         cwd,
