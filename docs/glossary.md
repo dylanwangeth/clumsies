@@ -163,9 +163,10 @@ exported for B1–B4 comparison.
 
 ## Draft and Review
 
-A Draft is local in-progress work over a Memory resource. A Review is the
-Server collaboration object that decides whether those operations may move an
-organization or project Ref.
+A Draft is local in-progress work over a Memory resource and is carried by a
+Project. A Review is the Server collaboration object that decides whether
+those operations may move an authority Ref. The carrying Project and authority
+target are separate concepts; Organization is not modeled as a Project.
 
 Draft is local-first state. Review is shared workflow.
 

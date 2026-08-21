@@ -186,12 +186,13 @@ enum ReviewMenuAction: Sendable, Equatable {
 
     func isAvailable(
         for review: ReviewRecord,
+        canDecideReviews: Bool,
         canMergeReviews: Bool,
         isAuthor: Bool
     ) -> Bool {
         switch self {
         case .approve, .reject:
-            return review.status == "open"
+            return review.status == "open" && canDecideReviews
         case .merge:
             return review.status == "approved"
                 && review.approvedResultHash?.isEmpty == false
@@ -387,6 +388,10 @@ final class WorkspaceStore: ObservableObject {
 
     var canMergeReviews: Bool {
         capabilities.contains("review:merge")
+    }
+
+    var canDecideReviews: Bool {
+        capabilities.contains("review:decide")
     }
 
     var hasPendingChanges: Bool {
@@ -811,6 +816,7 @@ final class WorkspaceStore: ObservableObject {
         }
         return action.isAvailable(
             for: review,
+            canDecideReviews: canDecideReviews,
             canMergeReviews: canMergeReviews,
             isAuthor: isReviewAuthor(review)
         )

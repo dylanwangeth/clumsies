@@ -694,6 +694,7 @@ struct WorkspaceView: View {
         return .resolve(
             surface: reviewNavigationPath.isEmpty ? .list : .detail,
             review: review,
+            canDecideReviews: store.canDecideReviews,
             canMergeReviews: store.canMergeReviews,
             isAuthor: review.map(store.isReviewAuthor) ?? false
         )

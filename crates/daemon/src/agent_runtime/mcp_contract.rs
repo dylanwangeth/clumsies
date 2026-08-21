@@ -389,10 +389,9 @@ impl StoreInput {
             draft_id: None,
             base_commit_id: None,
             project_id: project_id.to_owned(),
-            // Project Memory is an overlay on Organization authority. The
-            // Project id carries the LocalDraft; the Draft itself targets the
-            // Organization Ref so an eventual Review cannot create a second
-            // Project-owned authority.
+            // The bound Project carries this LocalDraft and is the only place
+            // its overlay is visible before merge. Org is the proposal's
+            // authority target, not a Project and not directly writable here.
             scope: DaemonDraftScope::Org,
             resource,
             op: operation,
@@ -1005,7 +1004,7 @@ pub fn tool_definitions_with_guidelines(guidelines_path: &str) -> Vec<Value> {
 
 fn memory_tool_definition(guidelines_path: &str) -> Value {
     let description = format!(
-        "Manage project memory: activate ranked memory fragments for the current task, load complete memory resources by ID or path, or create/update/rename/delete/discard memory drafts when explicitly requested. Project memory conventions and update rules are documented at {guidelines_path}; call memory with op.load to read them before making substantial memory updates. Pass exactly one tagged operation in op."
+        "Work with Effective Memory for the bound Project: activate ranked fragments, load complete resources by ID or path, or create/update/rename/delete/discard Project-carried proposal Drafts when explicitly requested. Store never writes Organization authority; publication requires an authorized Review decision and merge. Project memory conventions and update rules are documented at {guidelines_path}; call memory with op.load to read them before making substantial memory updates. Pass exactly one tagged operation in op."
     );
     json!({
         "name": MEMORY_TOOL_NAME,
@@ -1058,7 +1057,7 @@ fn memory_tool_definition(guidelines_path: &str) -> Value {
                         },
                         "store": {
                             "type": "object",
-                            "description": "Create, update, rename, delete, or discard a local Memory Draft when the user explicitly requests memory maintenance. Issues are native objects managed by the kanban tool, not Memory documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not authoritative publication. Follow project memory conventions defined at CLUMSIES.md.",
+                            "description": "Create, update, rename, delete, or discard a Memory proposal Draft carried by the bound Project when the user explicitly requests memory maintenance. Before merge its overlay affects only that Project's Effective Memory. Issues are native objects managed by the kanban tool, not Memory documents. Before update, load the complete resource and use its content_hash with exact text replacements; update never accepts a complete document body. A successful call means durable local persistence and queued synchronization, not an authorized Review decision, merge, or Organization authority publication. Follow project memory conventions defined at CLUMSIES.md.",
                             "properties": {
                                 "resource": {
                                     "type": "string",

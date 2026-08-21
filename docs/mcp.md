@@ -4,7 +4,7 @@ Clumsies exposes two agent-facing tools:
 
 | Tool | Purpose |
 |---|---|
-| `memory` | Manage project memory: retrieve ranked fragments (`activate`), read complete resources (`load`), or persist memory drafts (`store`). |
+| `memory` | Read the bound Project's Effective Memory or persist Project-carried proposal Drafts (`store`). |
 | `kanban` | Create, update, list, or semantically transition native Issues. |
 
 The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
@@ -136,6 +136,14 @@ Call `memory` with `op: { store: ... }` only when the user explicitly asks to cr
 delete, or discard managed memory. Issues are native objects managed by
 `kanban`; do not model them as Memory documents.
 
+Every MCP Draft is carried by the Project resolved from the current directory.
+Its internal `org` scope is the authority target for a future Review, not Draft
+ownership and not a direct Organization write. Before merge, the Draft overlays
+only that Project's Effective Memory. MCP exposes no Review decision, merge, or
+publish operation; those Organization authority actions require an Org
+administrator in the Review workflow. Organization is not represented by a
+synthetic Project.
+
 Operations:
 
 | Operation | Required fields | Optional fields |
@@ -199,7 +207,7 @@ atomically against the same original content. A stale hash, missing match,
 ambiguous match, or overlap rejects the complete update without creating a
 Draft operation. `new_text` may be empty to delete text.
 
-Paths are free-form within the organization or project namespace. The create
+Paths are free-form within the managed Memory namespace. The create
 `body` is the complete resource content; updates never accept a complete body
 from the agent — daemon materializes the verified replacements into the
 complete Draft result. Memory bodies are Markdown; whether a resource reads as
@@ -210,7 +218,9 @@ an explicit retrieval field. Metaprompt and `mpf` are not valid wire values.
 A successful result contains the local operation ID, Draft ID, queue status,
 and sync status. It means the operation is durably stored locally and queued
 for automatic synchronization. It does not mean a Review was merged or an
-authority Ref moved.
+authority Ref moved. Ordinary Project members may propose and submit changes,
+but only an Org owner or administrator may approve, reject, or merge an Org
+publication Review.
 
 ## Issue
 

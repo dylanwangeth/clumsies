@@ -158,17 +158,37 @@ final class WorkspaceNavigationTests: XCTestCase {
     func testMergeActionRequiresAnImmutableApprovedResult() {
         XCTAssertFalse(ReviewMenuAction.merge.isAvailable(
             for: reviewRecord(status: "approved"),
+            canDecideReviews: true,
             canMergeReviews: true,
             isAuthor: false
         ))
         XCTAssertFalse(ReviewMenuAction.merge.isAvailable(
             for: reviewRecord(status: "approved", approvedResultHash: ""),
+            canDecideReviews: true,
             canMergeReviews: true,
             isAuthor: false
         ))
         XCTAssertTrue(ReviewMenuAction.merge.isAvailable(
             for: reviewRecord(status: "approved", approvedResultHash: "sha256:result"),
+            canDecideReviews: true,
             canMergeReviews: true,
+            isAuthor: false
+        ))
+    }
+
+    func testReviewDecisionActionsRequireOrganizationAuthorityCapability() {
+        let review = reviewRecord(status: "open")
+
+        XCTAssertFalse(ReviewMenuAction.approve.isAvailable(
+            for: review,
+            canDecideReviews: false,
+            canMergeReviews: false,
+            isAuthor: false
+        ))
+        XCTAssertTrue(ReviewMenuAction.reject.isAvailable(
+            for: review,
+            canDecideReviews: true,
+            canMergeReviews: false,
             isAuthor: false
         ))
     }
@@ -202,6 +222,7 @@ final class WorkspaceNavigationTests: XCTestCase {
             ReviewToolbarOwnership.resolve(
                 surface: .list,
                 review: review,
+                canDecideReviews: false,
                 canMergeReviews: false,
                 isAuthor: false
             ).items,
@@ -211,6 +232,7 @@ final class WorkspaceNavigationTests: XCTestCase {
             ReviewToolbarOwnership.resolve(
                 surface: .detail,
                 review: review,
+                canDecideReviews: true,
                 canMergeReviews: false,
                 isAuthor: false
             ).items,

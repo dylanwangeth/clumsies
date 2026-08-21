@@ -61,6 +61,7 @@ struct ReviewToolbarOwnership: Equatable {
     static func resolve(
         surface: Surface,
         review: ReviewRecord?,
+        canDecideReviews: Bool,
         canMergeReviews: Bool,
         isAuthor: Bool
     ) -> Self {
@@ -77,6 +78,7 @@ struct ReviewToolbarOwnership: Equatable {
             ].filter {
                 $0.isAvailable(
                     for: review,
+                    canDecideReviews: canDecideReviews,
                     canMergeReviews: canMergeReviews,
                     isAuthor: isAuthor
                 )

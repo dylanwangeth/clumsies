@@ -30,7 +30,7 @@ use crate::api::{
     TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest, UpdateMemberRequest,
     UpdateProjectMemberRequest, UpdateProjectRequest, UserRef,
 };
-use crate::auth::AuthPrincipal;
+use crate::auth::{AuthPrincipal, user_capabilities};
 
 #[derive(Clone)]
 pub struct ServerRepository {
@@ -86,7 +86,7 @@ impl ServerRepository {
             },
             default_project_id: projects.first().map(|project| project.project_id.clone()),
             projects,
-            capabilities: principal_capabilities(&principal.role),
+            capabilities: user_capabilities(&principal.role),
         };
         tx.commit().await?;
         Ok(response)
@@ -6745,19 +6745,6 @@ async fn ensure_bundle_owner(
     } else {
         Err(ServerError::not_found("bundle", bundle_id))
     }
-}
-
-fn principal_capabilities(role: &str) -> Vec<String> {
-    let mut capabilities = vec![
-        "memory:read".to_owned(),
-        "draft:write".to_owned(),
-        "review:write".to_owned(),
-    ];
-    if role == "owner" || role == "admin" {
-        capabilities.push("review:merge".to_owned());
-        capabilities.push("admin:write".to_owned());
-    }
-    capabilities
 }
 
 fn prefixed_id(prefix: &str) -> String {

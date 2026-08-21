@@ -564,6 +564,7 @@ pub enum DraftOperationAction {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DraftResourceRef {
+    /// Authority namespace this proposal will target if its Review is merged.
     pub scope: ResourceScope,
     pub id: Option<String>,
     pub path: Option<String>,
@@ -596,6 +597,7 @@ pub struct DraftOperation {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Draft {
     pub draft_id: String,
+    /// Project carrying the proposal and its pre-merge Effective Memory overlay.
     pub project_id: String,
     pub base_commit_id: Option<String>,
     pub author: UserRef,

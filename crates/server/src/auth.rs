@@ -1138,7 +1138,7 @@ async fn issue_token_pair(
         refresh_token,
         token_type: "Bearer".to_owned(),
         expires_in: ACCESS_TOKEN_TTL.whole_seconds(),
-        capabilities: capabilities(&role),
+        capabilities: user_capabilities(&role),
         user,
         org: OrgRef {
             org_id: org_row.try_get("org_id")?,
@@ -1462,13 +1462,14 @@ fn enforce_email_domain(email: &str, allowed_domains: &[String]) -> Result<(), A
     }
 }
 
-fn capabilities(role: &str) -> Vec<String> {
+pub(crate) fn user_capabilities(role: &str) -> Vec<String> {
     let mut capabilities = vec![
         "memory:read".to_owned(),
         "draft:write".to_owned(),
         "review:write".to_owned(),
     ];
     if role == "owner" || role == "admin" {
+        capabilities.push("review:decide".to_owned());
         capabilities.push("review:merge".to_owned());
         capabilities.push("admin:write".to_owned());
     }
@@ -1602,5 +1603,16 @@ mod tests {
             .expect_err("null must not be accepted as an OIDC credential");
 
         assert!(matches!(error, AuthError::Configuration(_)));
+    }
+
+    #[test]
+    fn only_org_administrators_receive_review_authority_capabilities() {
+        let member = user_capabilities("member");
+        assert!(!member.iter().any(|value| value == "review:decide"));
+        assert!(!member.iter().any(|value| value == "review:merge"));
+
+        let admin = user_capabilities("admin");
+        assert!(admin.iter().any(|value| value == "review:decide"));
+        assert!(admin.iter().any(|value| value == "review:merge"));
     }
 }
