@@ -1575,6 +1575,18 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     );
     assert_eq!(visible_to_reviewer.operations, submitted.operations);
 
+    let forbidden_decision = post_response(
+        member_app.clone(),
+        &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
+        &CreateReviewDecisionRequest {
+            decision: ReviewDecision::Rejected,
+            expected_review_version: submitted.review.version,
+            body: Some("Member decision must not reach Org authority.".to_owned()),
+        },
+    )
+    .await;
+    assert_eq!(forbidden_decision.status(), StatusCode::FORBIDDEN);
+
     let stale_decision = post_response(
         owner_app.clone(),
         &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
@@ -1596,7 +1608,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
     assert_eq!(unchanged.draft.version, 2);
 
     let rejected: ReviewDetail = post_json(
-        member_app.clone(),
+        owner_app.clone(),
         &format!("/api/v1/reviews/{}/decisions", submitted.review.review_id),
         &CreateReviewDecisionRequest {
             decision: ReviewDecision::Rejected,
@@ -1613,7 +1625,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             .decided_by
             .as_ref()
             .map(|user| user.user_id.as_str()),
-        Some(member_id.as_str())
+        Some(bootstrap.user_id.as_str())
     );
     assert_eq!(
         rejected
@@ -1621,7 +1633,7 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             .decided_by
             .as_ref()
             .and_then(|user| user.display_name.as_deref()),
-        Some("Member")
+        Some("Owner")
     );
     assert!(rejected.review.decided_at.is_some());
     assert_eq!(

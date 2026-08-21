@@ -1651,6 +1651,7 @@ async fn create_review_decision(
     Path(review_id): Path<String>,
     Json(request): Json<CreateReviewDecisionRequest>,
 ) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
+    require_org_admin(&principal)?;
     state
         .repository
         .ensure_review_member(&principal, &review_id)

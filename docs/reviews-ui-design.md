@@ -134,7 +134,9 @@ the UI labels these honestly rather than pretending they are inline comments.
 
 Decision actions remain native symbol toolbar items with menu-command parity:
 
-- Open: Reject (`xmark`) and the single prominent Approve (`checkmark`).
+- Open: Org owners/admins with `review:decide` see Reject (`xmark`) and the
+  single prominent Approve (`checkmark`); ordinary members remain read/comment
+  participants and see neither authority action.
 - Approved: Merge (`arrow.triangle.merge`) when permitted and the Server
   supplied a nonempty approved result hash. Legacy approvals without that
   immutable result identity remain visible but cannot be merged.

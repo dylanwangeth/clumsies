@@ -737,7 +737,8 @@ paths:
       - $ref: "#/components/parameters/ReviewId"
     post:
       operationId: createReviewDecision
-      summary: Create a review decision.
+      summary: Create an organization-authorized review decision.
+      description: Requires the caller to be an Organization owner or administrator and a member of the carrying Project.
       requestBody:
         required: true
         content:
@@ -1251,6 +1252,7 @@ components:
           type: string
         project_id:
           type: string
+          description: Project that will carry the Draft and its pre-merge Effective Memory overlay; it is not an Organization Project.
         base_commit_id:
           type: [string, "null"]
         title:
@@ -1304,6 +1306,7 @@ components:
           type: string
         project_id:
           type: string
+          description: Project carrying the Draft and its pre-merge Effective Memory overlay; it is not an Organization Project.
         base_commit_id:
           type: [string, "null"]
         author:
@@ -1370,6 +1373,7 @@ components:
         scope:
           type: string
           enum: [org, project]
+          description: Authority namespace the proposal targets if its Review is merged; Draft ownership is defined by its carrying project_id.
         id:
           type: [string, "null"]
         path:
@@ -1677,6 +1681,7 @@ components:
           type: string
         project_id:
           type: string
+          description: Project carrying the reviewed Draft; the Draft resource scope identifies the authority target.
         draft_id:
           type: string
         author:

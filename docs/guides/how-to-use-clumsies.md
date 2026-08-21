@@ -39,12 +39,12 @@ automatically synchronizes it to Server. Saving a draft does not publish it.
 
 The collaboration flow is:
 
-1. edit an organization- or project-scope Memory resource
+1. create a proposal or edit selected Organization Memory inside a Project
 2. keep editing normally while newer shared Commits synchronize
 3. review and explicitly merge the latest shared version when prompted
 4. submit the coordinated draft for review
-5. review comments and a decision
-6. merge an approved current review
+5. an Organization owner/admin records the Review decision
+6. an Organization owner/admin merges an approved current Review
 7. receive the new authority Commit
 
 When the target Ref advances, Desktop continuously shows **共享版本已有更新**.
@@ -67,7 +67,7 @@ The MCP server exposes:
 
 - `activate` to return task-relevant, directly usable memory fragments
 - `load` to read a known complete resource by stable ID or exact path
-- `store` to create or update a local project draft
+- `store` to create or update a proposal Draft carried by the bound Project
 
 Each MCP process resolves its Project from the current directory through the
 always-on daemon. This binding is durable and does not follow the Project shown
@@ -76,8 +76,11 @@ directory fails with `project_binding_not_found`; it is never silently attached
 to a default Project.
 
 MCP `store` and Desktop editing use the same daemon queue, so a change created
-by an agent appears in Desktop for review. Organization-scoped MCP writes are
-not exposed yet; organization-scope edits remain explicit Desktop operations.
+by an agent appears in Desktop for review. The Draft changes only the bound
+Project's Effective Memory before merge. Its publication target is Organization
+authority, but MCP cannot approve, merge, or publish it; an Org administrator
+must do that through the Review workflow. Organization is not represented as a
+Project.
 
 ## Bundles
 

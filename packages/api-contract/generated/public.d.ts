@@ -480,7 +480,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a review decision. */
+        /**
+         * Create an organization-authorized review decision.
+         * @description Requires the caller to be an Organization owner or administrator and a member of the carrying Project.
+         */
         post: operations["createReviewDecision"];
         delete?: never;
         options?: never;
@@ -727,6 +730,7 @@ export interface components {
         };
         CreateDraftRequest: {
             daemon_installation_id: string;
+            /** @description Project that will carry the Draft and its pre-merge Effective Memory overlay; it is not an Organization Project. */
             project_id: string;
             base_commit_id?: string | null;
             title: string;
@@ -746,6 +750,7 @@ export interface components {
         };
         Draft: {
             draft_id: string;
+            /** @description Project carrying the Draft and its pre-merge Effective Memory overlay; it is not an Organization Project. */
             project_id: string;
             base_commit_id: string | null;
             author: components["schemas"]["UserRef"];
@@ -778,7 +783,10 @@ export interface components {
             content: string;
         };
         DraftResourceRef: {
-            /** @enum {string} */
+            /**
+             * @description Authority namespace the proposal targets if its Review is merged; Draft ownership is defined by its carrying project_id.
+             * @enum {string}
+             */
             scope: "org" | "project";
             id: string | null;
             /** @description Portable normalized relative resource path using slash separators. */
@@ -908,6 +916,7 @@ export interface components {
         };
         Review: {
             review_id: string;
+            /** @description Project carrying the reviewed Draft; the Draft resource scope identifies the authority target. */
             project_id: string;
             draft_id: string;
             author: components["schemas"]["UserRef"];

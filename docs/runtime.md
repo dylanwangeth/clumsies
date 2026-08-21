@@ -79,8 +79,10 @@ resident daemon. It does not initialize `DaemonState`, open SQLite, load models,
 or start background workers.
 
 MCP keeps the public `memory` (`op.store`) tool shape. Internally it adds the
-current bound project ID and project scope before sending the operation to
-daemon. At process startup, MCP gives its current working directory to daemon;
+current bound Project as the Draft carrier and marks Organization authority as
+the proposal target. These are separate axes: the Project owns the pre-merge
+overlay; `org` describes the Ref an approved Review may eventually move. At
+process startup, MCP gives its current working directory to daemon;
 daemon canonicalizes the path and resolves the nearest bound ancestor in
 SQLite. MCP never treats a legacy Workspace ID as a Project ID. The Rust MCP
 contract tests exercise the exact Agent-facing envelopes before they are mapped
@@ -105,9 +107,11 @@ When the caller omits `base_commit_id`, daemon reads it from the installed
 project Ref before creating the local draft. A missing Ref produces a draft
 with no base; daemon never invents a Commit ID.
 
-MCP does not currently expose organization scope in `store`; interpreting the
-same call as an organization-scope write would be ambiguous.
-Organization-scope writes are explicit in Desktop.
+MCP does not expose a caller-selectable scope, Review decision, merge, or
+publish operation. `store` can only create a Project-carried proposal. Before
+merge it affects that Project's Effective Memory overlay; Organization
+authority changes only after an Org administrator approves and merges the
+Review. Organization is an authority namespace, not a synthetic Project.
 
 The daemon combines the installed authority generation with current
 `open`/`submitted` Draft operations before both `activate` and `load`. For a

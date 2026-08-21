@@ -67,9 +67,11 @@ organization Commit + Project Commit + local Draft overlay
   -> activate / load
 ```
 
-`store` writes a durable local Project Draft through daemon. It does not update
-the authority Ref. Desktop shows the same Draft for coordination, Review, and
-merge.
+`store` writes a durable proposal Draft carried by the bound Project through
+daemon. Its pre-merge overlay is visible only in that Project. The Draft may
+target Organization authority, but it does not update the Org Ref. Desktop
+shows the same Draft for coordination and submission; an Org administrator
+must decide and merge its Review.
 
 ## Project Local Storage
 
