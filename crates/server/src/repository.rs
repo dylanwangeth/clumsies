@@ -2061,7 +2061,6 @@ impl ServerRepository {
         expected_ref: Option<&str>,
         request: CreateReviewRequest,
     ) -> Result<ReviewDetail, ServerError> {
-        let mut tx = self.pool.begin().await?;
         let requested_drafts = request
             .drafts
             .iter()
@@ -2089,6 +2088,33 @@ impl ServerRepository {
                 "reconcile every draft before requesting a multi-file review".to_owned(),
             ));
         }
+        if let Some(existing) = sqlx::query(
+            "SELECT review_id, version
+             FROM reviews
+             WHERE draft_id = $1 AND status = 'rejected'",
+        )
+        .bind(&primary_draft_id)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return self
+                .create_review_submission(
+                    &existing.try_get::<String, _>("review_id")?,
+                    author_user_id,
+                    expected_ref,
+                    CreateReviewSubmissionRequest {
+                        expected_review_version: existing.try_get("version")?,
+                        drafts: request.drafts,
+                        title: request.title,
+                        description: request.description,
+                        candidate_id: request.candidate_id,
+                        resolved_state: request.resolved_state,
+                    },
+                )
+                .await;
+        }
+
+        let mut tx = self.pool.begin().await?;
         let mut row = sqlx::query(
             "SELECT draft_id, project_id, author_user_id, title, description, status, version,
                     base_commit_id, resource_scope
@@ -2641,27 +2667,22 @@ impl ServerRepository {
         request: CreateReviewSubmissionRequest,
     ) -> Result<ReviewDetail, ServerError> {
         let mut tx = self.pool.begin().await?;
-        let review_draft_ids = load_review_draft_ids(&mut tx, review_id).await?;
-        if request.drafts.len() != review_draft_ids.len()
-            || request
-                .drafts
-                .iter()
-                .zip(&review_draft_ids)
-                .any(|(requested, expected)| requested.draft_id != *expected)
-        {
-            return Err(ServerError::InvalidRequest(
-                "resubmission must include every review draft in its original order".to_owned(),
-            ));
-        }
-        let Some(primary_expected_version) = request
-            .drafts
-            .first()
-            .map(|draft| draft.expected_draft_version)
-        else {
+        let Some(primary_request) = request.drafts.first() else {
             return Err(ServerError::InvalidRequest(
                 "a review must contain at least one draft".to_owned(),
             ));
         };
+        let primary_expected_version = primary_request.expected_draft_version;
+        let distinct_draft_ids = request
+            .drafts
+            .iter()
+            .map(|draft| &draft.draft_id)
+            .collect::<BTreeSet<_>>();
+        if distinct_draft_ids.len() != request.drafts.len() {
+            return Err(ServerError::InvalidRequest(
+                "a review must not contain duplicate drafts".to_owned(),
+            ));
+        }
         let row = sqlx::query(
             "SELECT r.draft_id, r.status AS review_status, r.version AS review_version,
                     d.project_id, d.author_user_id, d.status AS draft_status,
@@ -2716,6 +2737,11 @@ impl ServerRepository {
         }
 
         let draft_id: String = row.try_get("draft_id")?;
+        if primary_request.draft_id != draft_id {
+            return Err(ServerError::InvalidRequest(
+                "a resubmission must keep the review's primary draft first".to_owned(),
+            ));
+        }
         let project_id: String = row.try_get("project_id")?;
         let scope = resource_scope(row.try_get::<String, _>("resource_scope")?.as_str())?;
         ensure_publishable_draft_scope(scope)?;
@@ -2759,7 +2785,7 @@ impl ServerRepository {
                 "a current draft must not submit reconciliation data".to_owned(),
             ));
         }
-        if review_draft_ids.len() > 1
+        if request.drafts.len() > 1
             && (request.candidate_id.is_some() || request.resolved_state.is_some())
         {
             return Err(ServerError::InvalidRequest(
@@ -2784,6 +2810,20 @@ impl ServerRepository {
             .await?;
         }
         for requested in request.drafts.iter().skip(1) {
+            let linked_review_id: Option<String> =
+                sqlx::query_scalar("SELECT review_id FROM review_drafts WHERE draft_id = $1")
+                    .bind(&requested.draft_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if linked_review_id
+                .as_deref()
+                .is_some_and(|linked_review_id| linked_review_id != review_id)
+            {
+                return Err(ServerError::already_exists(
+                    "review for draft",
+                    &requested.draft_id,
+                ));
+            }
             let additional = sqlx::query(
                 "SELECT project_id, author_user_id, status, version, base_commit_id, resource_scope
                  FROM drafts WHERE draft_id = $1 FOR UPDATE",
@@ -2896,6 +2936,22 @@ impl ServerRepository {
                 submitted.try_get("version")?,
                 None,
             )
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM review_drafts WHERE review_id = $1")
+            .bind(review_id)
+            .execute(&mut *tx)
+            .await?;
+        for (ordinal, requested) in request.drafts.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO review_drafts (review_id, draft_id, ordinal)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(review_id)
+            .bind(&requested.draft_id)
+            .bind(ordinal as i32)
+            .execute(&mut *tx)
             .await?;
         }
 
