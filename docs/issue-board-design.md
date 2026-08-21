@@ -225,14 +225,20 @@ UserPromptSubmit records/upserts the root AgentRun and injects its exact identit
 plus instructions to choose existing/new/no Issue. The instruction names
 `kanban.create`; it never tells the Agent to create a Memory document.
 
-Before root Stop, the host-specific hook reminds the Agent to request closure
-only after a semantic acceptance-criteria check. Normal Stop ends telemetry
-without an outcome-based Issue transition. Subagent Stop records telemetry only.
+Adapter-managed lifecycle integration does not install or synthesize a normal
+root Stop and never blocks the host to create a closure decision point. An
+opt-in skill or manually maintained Agent workflow performs the semantic
+acceptance-criteria check and explicitly calls `kanban.request_closure`.
+
+The private bridge accepts a legacy or manually forwarded normal Stop only for
+cleanup compatibility. It records AgentRun telemetry without returning a block
+decision or changing Issue state. Subagent Stop records telemetry only.
 
 Codex and Claude Code use managed shell Hooks; opencode uses its plugin API;
 the DeepSeek Harness (dsh) forwards the same lifecycle vocabulary through
-`clumsiesd _agent issue-run-event --host dsh`. StopFailure records a failed
-outcome; SessionEnd ends remaining runs for the session.
+`clumsiesd _agent issue-run-event --host dsh`. New integrations omit normal
+root Stop forwarding. StopFailure records a failed outcome; SessionEnd ends
+remaining runs for the session.
 
 ## 7. macOS composition
 

@@ -330,20 +330,24 @@ validates the tagged input and forwards the operation.
 
 Lifecycle hooks do not call the agent-facing `kanban` tool. Adapter-managed
 scripts pipe the host event to the private command
-`clumsiesd _agent issue-run-event --host codex|claude-code|opencode`. The
+`clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity`. The
 short-lived Rust proxy resolves the repository's daemon Project binding,
 reduces the host payload to bounded identifiers and lifecycle fields, and
 calls `record_agent_run_event`. It emits a bounded current-run context
-containing `run_id`, revision, and the semantic decision instruction after a
-successful root or subagent start. For Codex and Claude Code, the first root
-Stop is a non-terminal decision probe; a follow-up Stop records the end. All
-parsing, binding, IPC, and daemon failures remain fail-open.
+containing `run_id`, revision, and binding state after a successful root or
+subagent start. Managed adapters neither install nor synthesize a normal root
+`Stop`, and the proxy never blocks a host to force a closure decision.
+`StopFailure`, `SubagentStop`, and `SessionEnd` remain non-blocking lifecycle
+observations. All parsing, binding, IPC, and daemon failures remain fail-open.
 
 The private bridge does not persist raw hook JSON, prompts, transcripts, tool
 payloads, or assistant messages. `record_agent_run_event` is not exposed as an
 MCP tool; agents use `kanban.begin_work` and `kanban.request_closure` for explicit
-semantic updates. Prompt text is not matched to an Issue automatically, and a
-normal Stop records no semantic outcome.
+semantic updates. Closure judgment is supplied by an opt-in skill or a
+manually maintained workflow, not by a lifecycle callback. Prompt text is not
+matched to an Issue automatically. The bridge accepts a legacy or manually
+forwarded normal `Stop` for compatibility, but records only AgentRun telemetry
+and never blocks or mutates an Issue.
 
 Every valid `activate_memory` call also writes one local Retrieval Run from the
 same ranked candidate trace used for the response. This does not add fields to

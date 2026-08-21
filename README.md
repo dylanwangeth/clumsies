@@ -38,7 +38,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 - **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Memory objects in Org and Project scopes. Changes are proposed as Drafts, verified through Peer Reviews, and merged atomically into immutable Commit history.
 - **Hybrid Retrieval & Precise Activation**: Combines SQLite FTS5 BM25 text search, local dense vector embeddings, Reciprocal Rank Fusion (RRF), and Cross-Encoder reranking. Agents retrieve task-relevant fragments on demand without exhausting token budgets.
 - **Agent-Native Asynchronous Kanban**: Agents autonomously claim tasks (`begin_work`), build dependency DAGs, evaluate blocking predicates, and record structured verification steps. Human approval gates (`approve_closure`) ensure only verified work transitions to Done.
-- **Pure MCP & Lifecycle Hooks**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`) with zero thin-skill pollution.
+- **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.
 - **Self-Hosted Authority**: Run the Rust Server and PostgreSQL in your own infrastructure with organization OIDC, while the local resident daemon owns fast local state and XPC transport.
 
 ---
@@ -47,11 +47,11 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 
 | Agent Host | Protocol Surface | Managed Files | Supported Lifecycle |
 | :--- | :--- | :--- | :--- |
-| **Google Antigravity** | MCP + Lifecycle Hook | `.mcp.json`, `.agents/hooks.json` | `PreInvocation`, `Stop` (Decision Probe) |
-| **Claude Code** | MCP + Lifecycle Hook | `.mcp.json`, `.claude/hooks.json` | `PreInvocation`, `PostInvocation` |
-| **OpenAI Codex** | MCP + Config Hook | `codex.json`, `.codex/hooks/` | Pre/Post Execution |
-| **opencode** | MCP Server | `.opencode/mcp.json` | Task Dispatch |
-| **DeepSeek Harness (dsh)**| Hook Bridge | `.dsh/hooks/` | Run Telemetry & Session Binding |
+| **Google Antigravity** | MCP + Lifecycle Hook | `.mcp.json`, `.agents/hooks.json` | `PreInvocation`; no root `Stop` |
+| **Claude Code** | MCP + Lifecycle Hook | `.mcp.json`, `.claude/settings.json` | Prompt, subagent, failure, and session events; no root `Stop` |
+| **OpenAI Codex** | MCP + Config Hook | `.codex/config.toml`, `.codex/hooks.json` | Prompt, subagent, and session events; no root `Stop` |
+| **opencode** | MCP + Plugin | `opencode.json`, `.opencode/plugins/clumsies.ts` | Prompt, failure, and session events; no normal root `Stop` |
+| **DeepSeek Harness (dsh)** | MCP + Hook Bridge | `.dsh/clumsies.json` | Prompt, failure, and session events; no normal root `Stop` |
 
 ---
 

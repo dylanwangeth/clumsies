@@ -41,14 +41,20 @@ unbound, and one active Issue cannot be claimed by a second active run.
 
 | Host | Observed events | Integration surface |
 | --- | --- | --- |
-| Codex | `UserPromptSubmit`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd` | `.codex/hooks.json` → managed shell Hook |
-| Claude Code | the common set plus `StopFailure` | `.claude/settings.json` → managed shell Hook |
-| opencode | user message, completed/failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `Stop`/`StopFailure`, and `SessionEnd` |
-| dsh | the same hook vocabulary (`UserPromptSubmit`, `Stop`/`StopFailure`, `SubagentStart`/`SubagentStop`, `SessionEnd`) | dsh client plugin pipes events to `clumsiesd _agent issue-run-event --host dsh` |
+| Codex | `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` | `.codex/hooks.json` → managed shell Hook; no root `Stop` registration |
+| Claude Code | the Codex set plus `StopFailure` | `.claude/settings.json` → managed shell Hook; no root `Stop` registration |
+| Antigravity | `PreInvocation` | `.agents/hooks.json` → managed shell Hook; no root `Stop` registration |
+| opencode | user message, failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `StopFailure`, and `SessionEnd`; successful completion emits no `Stop` |
+| dsh | turn start, failed turn, session disposal | dsh client plugin forwards non-blocking root events to `clumsiesd _agent issue-run-event --host dsh`; successful completion emits no `Stop` |
 
 The resident daemon upserts a run by Project, host, and host run key. Stable
 event IDs make delivery idempotent; replaying the same event is a no-op, while
 reusing an ID with different content is rejected.
+
+When a new root turn starts in the same host session, the daemon recovery-ends
+any still-running prior root turn before creating the new run. This rollover is
+only lifecycle bookkeeping: it does not advance the prior Issue or decide that
+the new turn continues it. `SessionEnd` closes the final outstanding turn.
 
 ## Injected context
 
@@ -61,26 +67,28 @@ Root context tells the Agent to:
 1. use `kanban.list` or `kanban.get` to inspect real board state;
 2. create durable work only when appropriate;
 3. call `kanban.begin_work` only for the active line of work and only when no
-   other run already holds the Issue;
-4. call `kanban.request_closure` only after judging acceptance criteria;
-5. otherwise leave the Issue In Progress.
+   other run already holds the Issue.
+
+Closure policy is not injected by a lifecycle callback. An opt-in skill or a
+manually maintained workflow decides when acceptance criteria are satisfied
+and explicitly calls `kanban.request_closure`; otherwise the Issue stays In
+Progress.
 
 Subagent context allows explicit work binding but forbids requesting closure;
 the subagent reports findings to the root Agent instead.
 
-## Stop is a reminder, not a decision
+## Normal root Stop is not managed
 
-For Codex and Claude Code, the first root Stop becomes a distinct non-terminal
-heartbeat probe. The proxy asks the host to continue once so the Agent can make
-the semantic Kanban decision itself. If the Issue is ready, the Agent calls
-`kanban.request_closure`; if it is not ready, the Agent makes no state change.
+Managed integrations do not register or synthesize a normal root `Stop` and
+the proxy never asks a host to continue so that it can inject a closure
+reminder. This avoids making lifecycle telemetry part of the Agent's control
+flow. `StopFailure` records a failed root outcome, `SubagentStop` ends a
+subagent observation, and `SessionEnd` ends remaining runs for the session.
 
-The follow-up Stop records the run end. A duplicate probe does not ask again.
-`StopFailure` records a failed outcome, and `SessionEnd` ends remaining runs for
-the session. No Stop event advances, approves, or closes an Issue.
-
-opencode forwards the lifecycle events exposed by its plugin API but does not
-synthesize an unsupported stop-blocking exchange.
+For cleanup compatibility, the private bridge still accepts `Stop` from an
+older installation or a manually maintained hook. It records a terminal
+AgentRun observation without returning a block decision, calling `kanban`, or
+advancing an Issue. New adapters do not produce that input.
 
 ## Privacy and failure behavior
 
@@ -99,8 +107,8 @@ mismatch, and IPC failure must not prevent the Agent host from continuing.
 The two paths are deliberately separate:
 
 ```text
-Hook lifecycle event -> record_agent_run_event -> AgentRun observation
-Agent judgment       -> MCP kanban operation   -> Issue transition
+Hook lifecycle event        -> record_agent_run_event -> AgentRun observation
+Skill/manual Agent judgment -> MCP kanban operation   -> Issue transition
 ```
 
 The private bridge is not an MCP tool. Conversely, `kanban.begin_work`, pause,
@@ -111,7 +119,7 @@ events. This keeps transport telemetry from becoming product intent.
 
 | Concern | Active path |
 | --- | --- |
-| Proxy dispatch, runtime identity gate, and injected context | `crates/daemon/src/main.rs` |
+| Proxy dispatch, runtime identity gate, and injected run context | `crates/daemon/src/main.rs` |
 | Host payload normalization | `crates/daemon/src/agent_runtime/hook.rs` |
 | AgentRun persistence and Issue transitions | `crates/daemon/src/work_tracking.rs` |
 | Adapter rendering and migration | `crates/daemon/src/agent_adapter.rs` |

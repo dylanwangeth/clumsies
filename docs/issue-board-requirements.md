@@ -121,14 +121,15 @@ For (1), call `kanban.begin_work`. For (2), call `kanban.create`, then call
 unrelated problem is discovered while doing other work, call `kanban.create`
 without `begin_work`; this is the primary source of Todo cards.
 
-### Before stopping
+### Before handing off completed work
 
 The root Agent calls `kanban.request_closure` only after it judges every
 acceptance criterion satisfied. When the Issue's `verification_level` requires
 human verification (`human_required` or `mixed`), the Agent must first attach
 the human `verification_steps` with `kanban.update`; `request_closure` is
 rejected while they are missing. Otherwise it makes no lifecycle mutation.
-Hooks create this decision point but never make the decision themselves.
+Skills or a manually maintained workflow create this decision point; lifecycle
+hooks neither create it nor make the decision.
 
 Subagents may bind to an existing Issue when explicitly assigned its work, but
 cannot request closure.
