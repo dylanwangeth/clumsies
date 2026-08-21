@@ -73,18 +73,15 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
         );
     }
 
-    let detail = repo
+    let first_submission = repo
         .create_review(
             &bootstrap.user_id,
             head.as_deref(),
             CreateReviewRequest {
-                drafts: drafts
-                    .iter()
-                    .map(|detail| ReviewDraftRequest {
-                        draft_id: detail.draft.draft_id.clone(),
-                        expected_draft_version: detail.draft.version,
-                    })
-                    .collect(),
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: drafts[0].draft.draft_id.clone(),
+                    expected_draft_version: drafts[0].draft.version,
+                }],
                 title: Some("Create coding skill".to_owned()),
                 description: None,
                 candidate_id: None,
@@ -93,6 +90,42 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
         )
         .await
         .unwrap();
+    let rejected = repo
+        .create_review_decision(
+            &first_submission.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Rejected,
+                expected_review_version: first_submission.review.version,
+                body: Some("Include every file in the directory.".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    let detail = repo
+        .create_review(
+            &bootstrap.user_id,
+            head.as_deref(),
+            CreateReviewRequest {
+                drafts: vec![
+                    ReviewDraftRequest {
+                        draft_id: rejected.drafts[0].draft.draft_id.clone(),
+                        expected_draft_version: rejected.drafts[0].draft.version,
+                    },
+                    ReviewDraftRequest {
+                        draft_id: drafts[1].draft.draft_id.clone(),
+                        expected_draft_version: drafts[1].draft.version,
+                    },
+                ],
+                title: Some("Create coding skill".to_owned()),
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.review.review_id, first_submission.review.review_id);
     assert_eq!(detail.review.draft_ids.len(), 2);
     assert_eq!(detail.drafts.len(), 2);
     assert!(
