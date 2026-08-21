@@ -194,6 +194,7 @@ struct ReviewMetadata: Codable, Identifiable, Hashable, Sendable {
     let reviewId: String
     let projectId: String
     let draftId: String
+    var draftIds: [String]? = nil
     let author: UserReference
     let title: String
     let description: String
@@ -257,7 +258,13 @@ struct ReviewDetail: Codable, Sendable {
     let review: ReviewMetadata
     let draft: ServerDraft
     let operations: [ServerDraftOperation]
+    var drafts: [ReviewDraftDetail]? = nil
     let comments: [ReviewComment]
+}
+
+struct ReviewDraftDetail: Codable, Sendable {
+    let draft: ServerDraft
+    let operations: [ServerDraftOperation]
 }
 
 struct DraftCoordination: Codable, Hashable, Sendable {
@@ -337,8 +344,7 @@ struct ServerDraftSyncState: Codable, Sendable {
 }
 
 struct CreateReviewRequest: Codable, Sendable {
-    let draftId: String
-    let expectedDraftVersion: Int
+    let drafts: [ReviewDraftRequest]
     let title: String
     let description: String
     let candidateId: String?
@@ -347,11 +353,16 @@ struct CreateReviewRequest: Codable, Sendable {
 
 struct CreateReviewSubmissionRequest: Codable, Sendable {
     let expectedReviewVersion: Int
-    let expectedDraftVersion: Int
+    let drafts: [ReviewDraftRequest]
     let title: String
     let description: String
     let candidateId: String?
     let resolvedState: ReconciliationResourceState?
+}
+
+struct ReviewDraftRequest: Codable, Sendable {
+    let draftId: String
+    let expectedDraftVersion: Int
 }
 
 struct CreateReviewCommentRequest: Codable, Sendable {

@@ -15,8 +15,8 @@ use server::api::{
     MemoryDetail, MemoryListResponse, PersonalBundleDetail, PersonalBundleRequest,
     PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectOrgSelection,
     ReconciliationCandidateStatus, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
-    ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewListResponse,
-    ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
+    ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewDraftRequest,
+    ReviewListResponse, ReviewMergeResult, ReviewStatus, UpdateDraftRequest, UpdateProjectRequest,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -151,8 +151,10 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
             &bootstrap.user_id,
             None,
             CreateReviewRequest {
-                draft_id: legacy_draft.draft.draft_id.clone(),
-                expected_draft_version: legacy_draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: legacy_draft.draft.draft_id.clone(),
+                    expected_draft_version: legacy_draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -189,7 +191,10 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
             None,
             CreateReviewSubmissionRequest {
                 expected_review_version: 1,
-                expected_draft_version: legacy_draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: legacy_draft.draft.draft_id.clone(),
+                    expected_draft_version: legacy_draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -1423,8 +1428,10 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
             &bootstrap.user_id,
             org_head_before.as_deref(),
             CreateReviewRequest {
-                draft_id: org_draft.draft.draft_id,
-                expected_draft_version: org_draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: org_draft.draft.draft_id,
+                    expected_draft_version: org_draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -1703,7 +1710,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: 1,
-            expected_draft_version: edited.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: edited.draft.draft_id.clone(),
+                expected_draft_version: edited.draft.version,
+            }],
             title: None,
             description: None,
             candidate_id: None,
@@ -1719,7 +1729,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
-            expected_draft_version: edited.draft.version - 1,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: edited.draft.draft_id.clone(),
+                expected_draft_version: edited.draft.version - 1,
+            }],
             title: None,
             description: None,
             candidate_id: None,
@@ -1735,7 +1748,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
-            expected_draft_version: edited.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: edited.draft.draft_id.clone(),
+                expected_draft_version: edited.draft.version,
+            }],
             title: None,
             description: None,
             candidate_id: None,
@@ -1760,7 +1776,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
-            expected_draft_version: edited.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: edited.draft.draft_id.clone(),
+                expected_draft_version: edited.draft.version,
+            }],
             title: Some("Revised review lifecycle context".to_owned()),
             description: None,
             candidate_id: None,
@@ -1808,7 +1827,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: rejected.review.version,
-            expected_draft_version: edited.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: edited.draft.draft_id.clone(),
+                expected_draft_version: edited.draft.version,
+            }],
             title: Some("Revised review lifecycle context".to_owned()),
             description: None,
             candidate_id: Some(candidate_id),
@@ -1847,7 +1869,10 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
         &submission_ref_etag,
         &CreateReviewSubmissionRequest {
             expected_review_version: resubmitted.review.version,
-            expected_draft_version: resubmitted.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: resubmitted.draft.draft_id.clone(),
+                expected_draft_version: resubmitted.draft.version,
+            }],
             title: None,
             description: None,
             candidate_id: None,
@@ -2299,8 +2324,10 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
             &bootstrap.user_id,
             None,
             CreateReviewRequest {
-                draft_id: seed.draft.draft_id,
-                expected_draft_version: seed.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: seed.draft.draft_id,
+                    expected_draft_version: seed.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -2375,8 +2402,10 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
             &bootstrap.user_id,
             Some(&base_commit_id),
             CreateReviewRequest {
-                draft_id: local_update.draft.draft_id.clone(),
-                expected_draft_version: local_update.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: local_update.draft.draft_id.clone(),
+                    expected_draft_version: local_update.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -2446,8 +2475,10 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
             &bootstrap.user_id,
             Some(&base_commit_id),
             CreateReviewRequest {
-                draft_id: remote.draft.draft_id,
-                expected_draft_version: remote.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: remote.draft.draft_id,
+                    expected_draft_version: remote.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -3149,8 +3180,10 @@ async fn project_org_selection_resolves_legacy_path_only_draft_after_authority_r
             &bootstrap.user_id,
             base_commit_id.as_deref(),
             CreateReviewRequest {
-                draft_id: rename_draft.draft.draft_id,
-                expected_draft_version: rename_draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: rename_draft.draft.draft_id,
+                    expected_draft_version: rename_draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -3531,8 +3564,10 @@ async fn created_org_draft_materializes_local_identity_updates_and_renames() {
             &bootstrap.user_id,
             current_head.as_deref(),
             CreateReviewRequest {
-                draft_id: draft.draft.draft_id,
-                expected_draft_version: draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: draft.draft.draft_id,
+                    expected_draft_version: draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -3670,8 +3705,10 @@ async fn org_delete_merge_advances_authority_past_other_projects_active_drafts()
             &bootstrap.user_id,
             current_head.as_deref(),
             CreateReviewRequest {
-                draft_id: deletion_draft.draft.draft_id,
-                expected_draft_version: deletion_draft.draft.version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: deletion_draft.draft.draft_id,
+                    expected_draft_version: deletion_draft.draft.version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,
@@ -4086,8 +4123,10 @@ async fn create_review_for_draft(app: axum::Router, draft: &DraftDetail) -> Revi
         "/api/v1/reviews",
         &ref_etag,
         &CreateReviewRequest {
-            draft_id: draft.draft.draft_id.clone(),
-            expected_draft_version: draft.draft.version,
+            drafts: vec![ReviewDraftRequest {
+                draft_id: draft.draft.draft_id.clone(),
+                expected_draft_version: draft.draft.version,
+            }],
             title: None,
             description: None,
             candidate_id: None,

@@ -736,6 +736,25 @@ final class DaemonContractTests: XCTestCase {
         }
     }
 
+    func testReviewRequestUsesRequiredDraftArray() throws {
+        let request = CreateReviewRequest(
+            drafts: [
+                .init(draftId: "draft-1", expectedDraftVersion: 1),
+                .init(draftId: "draft-2", expectedDraftVersion: 2),
+            ],
+            title: "Directory update",
+            description: "",
+            candidateId: nil,
+            resolvedState: nil
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONCoding.encoder().encode(request))
+                as? [String: Any]
+        )
+        XCTAssertEqual((object["drafts"] as? [[String: Any]])?.count, 2)
+        XCTAssertNil(object["draft_id"])
+    }
+
     func testReconciliationCandidateAndRebaseWireContract() throws {
         let json = """
         {
@@ -806,7 +825,10 @@ final class DaemonContractTests: XCTestCase {
 
         let submission = CreateReviewSubmissionRequest(
             expectedReviewVersion: 4,
-            expectedDraftVersion: candidate.draftVersion,
+            drafts: [.init(
+                draftId: candidate.draftId,
+                expectedDraftVersion: candidate.draftVersion
+            )],
             title: "Guide",
             description: "",
             candidateId: candidate.candidateId,
@@ -818,7 +840,8 @@ final class DaemonContractTests: XCTestCase {
         )
         XCTAssertEqual(submissionObject["candidate_id"] as? String, "candidate-1")
         XCTAssertEqual(submissionObject["expected_review_version"] as? Int, 4)
-        XCTAssertEqual(submissionObject["expected_draft_version"] as? Int, 7)
+        let submissionDrafts = try XCTUnwrap(submissionObject["drafts"] as? [[String: Any]])
+        XCTAssertEqual(submissionDrafts.first?["expected_draft_version"] as? Int, 7)
     }
 
     func testDraftProjectionPreservesMarkdown() {

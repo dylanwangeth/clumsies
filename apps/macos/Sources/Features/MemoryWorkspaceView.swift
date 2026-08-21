@@ -171,6 +171,12 @@ private struct PendingOrganizationDeletion: Identifiable {
     }
 }
 
+private struct PendingDirectoryReview: Identifiable {
+    let id = UUID()
+    let drafts: [LocalDraft]
+    let initialTitle: String
+}
+
 private struct FileTreeView: View {
     @ObservedObject var store: WorkspaceStore
     let items: [MemoryListItem]
@@ -181,6 +187,7 @@ private struct FileTreeView: View {
     @State private var itemToRename: MemoryListItem?
     @State private var proposedName = ""
     @State private var pendingOrganizationDeletion: PendingOrganizationDeletion?
+    @State private var pendingDirectoryReview: PendingDirectoryReview?
 
     private var roots: [FileTreeNode] {
         FileTreeNode.build(items)
@@ -237,6 +244,7 @@ private struct FileTreeView: View {
             itemToRename = nil
             proposedName = ""
             pendingOrganizationDeletion = nil
+            pendingDirectoryReview = nil
         }
         .alert(
             "Propose Organization Rename",
@@ -273,6 +281,18 @@ private struct FileTreeView: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+        .sheet(item: $pendingDirectoryReview) { request in
+            ReviewRequestSheet(
+                initialTitle: request.initialTitle,
+                loadCandidate: { throw ReviewRequestError.reconcileDirectoryDrafts }
+            ) { title, description, _, _ in
+                try await store.requestReview(
+                    for: request.drafts,
+                    title: title,
+                    description: description
+                )
+            }
         }
     }
 
@@ -395,9 +415,16 @@ private struct FileTreeView: View {
         let trashSelectionContainsSynchronizingDocument = trashableItems.contains {
             store.isSynchronizingDocument($0.id)
         }
+        let reviewDrafts = MemoryFileTreeMenu.reviewableDrafts(
+            targetItems,
+            inOrgView: isOrgView
+        )
+        let reviewSelectionIsReady = !reviewDrafts.isEmpty && reviewDrafts.allSatisfy {
+            $0.syncStatus == .synced && $0.serverId != nil && $0.freshness == .current
+        }
         let hasDraftAction = !isOrgView && singleItem?.draft != nil
         let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
-            || hasDraftAction || singleStale
+            || hasDraftAction || !reviewDrafts.isEmpty || singleStale
 
         // ---- generic document operations (standard macOS conventions) ----
         if let singleItem {
@@ -453,6 +480,15 @@ private struct FileTreeView: View {
                 removeFromProject(removableItems)
             }
             .disabled(!store.canManageOrgSelection || selectionContainsSynchronizingDocument)
+        }
+        if !isOrgView, !reviewDrafts.isEmpty {
+            Button(reviewRequestTitle(count: reviewDrafts.count)) {
+                pendingDirectoryReview = .init(
+                    drafts: reviewDrafts,
+                    initialTitle: directoryReviewTitle(for: nodeIds, draftCount: reviewDrafts.count)
+                )
+            }
+            .disabled(!reviewSelectionIsReady || selectionContainsSynchronizingDocument)
         }
         if let singleItem {
             let resourceIsStale = singleItem.resource.map {
@@ -522,6 +558,20 @@ private struct FileTreeView: View {
         count == 1
             ? "Propose Organization Deletion"
             : "Propose \(count) Organization Deletions"
+    }
+
+    private func reviewRequestTitle(count: Int) -> String {
+        count == 1 ? "Request Review…" : "Request Review for \(count) Changes…"
+    }
+
+    private func directoryReviewTitle(for nodeIds: Set<String>, draftCount: Int) -> String {
+        if nodeIds.count == 1,
+           let nodeId = nodeIds.first,
+           let node = FileTreeNode.node(withId: nodeId, in: roots),
+           node.item == nil {
+            return "Update \(node.name)"
+        }
+        return draftCount == 1 ? "Update memory" : "Update \(draftCount) memories"
     }
 
     private func proposeOrganizationDeletion(_ items: [MemoryListItem]) {
@@ -1712,6 +1762,18 @@ private struct ReviewRequestSheet: View {
 /// only in the read-only Org view; Draft proposals and Remove from Project
 /// exist only inside an explicit Project context.
 enum MemoryFileTreeMenu {
+    /// One directory Review contains every open Organization Draft below the
+    /// selection. Unchanged files and legacy Project authority are excluded.
+    static func reviewableDrafts(
+        _ items: [MemoryListItem],
+        inOrgView: Bool
+    ) -> [LocalDraft] {
+        guard !inOrgView else { return [] }
+        return items.compactMap(\.draft).filter {
+            $0.status == .open && WorkspaceStore.canRequestReview($0)
+        }
+    }
+
     /// Rename is an organization-authority proposal. Project views only
     /// expose it for Org resources that are still selected by that project.
     /// The Org overview is authority-only/read-only because it has no

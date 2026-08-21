@@ -890,8 +890,7 @@ export interface components {
             page_info: components["schemas"]["PageInfo"];
         };
         CreateReviewRequest: {
-            draft_id: string;
-            expected_draft_version: number;
+            drafts: components["schemas"]["ReviewDraftRequest"][];
             title?: string;
             description?: string;
             candidate_id?: string;
@@ -900,7 +899,7 @@ export interface components {
         };
         CreateReviewSubmissionRequest: {
             expected_review_version: number;
-            expected_draft_version: number;
+            drafts: components["schemas"]["ReviewDraftRequest"][];
             title?: string;
             description?: string;
             /** @description Confirmed reconciliation candidate to apply atomically before resubmission when the Draft is behind. */
@@ -908,10 +907,19 @@ export interface components {
             /** @description Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate. */
             resolved_state?: components["schemas"]["ReconciliationResourceState"] | null;
         };
+        ReviewDraftRequest: {
+            draft_id: string;
+            expected_draft_version: number;
+        };
+        ReviewDraftDetail: {
+            draft: components["schemas"]["Draft"];
+            operations: components["schemas"]["DraftOperation"][];
+        };
         ReviewDetail: {
             review: components["schemas"]["Review"];
             draft: components["schemas"]["Draft"];
             operations: components["schemas"]["DraftOperation"][];
+            drafts: components["schemas"]["ReviewDraftDetail"][];
             comments: components["schemas"]["ReviewComment"][];
         };
         Review: {
@@ -919,6 +927,7 @@ export interface components {
             /** @description Project carrying the reviewed Draft; the Draft resource scope identifies the authority target. */
             project_id: string;
             draft_id: string;
+            draft_ids: string[];
             author: components["schemas"]["UserRef"];
             title: string;
             description: string;

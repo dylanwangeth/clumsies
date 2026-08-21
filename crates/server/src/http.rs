@@ -1570,10 +1570,12 @@ async fn create_review(
     headers: HeaderMap,
     Json(request): Json<CreateReviewRequest>,
 ) -> Result<Json<crate::api::ReviewDetail>, HttpError> {
-    state
-        .repository
-        .ensure_draft_owner(&principal, &request.draft_id)
-        .await?;
+    for draft in &request.drafts {
+        state
+            .repository
+            .ensure_draft_owner(&principal, &draft.draft_id)
+            .await?;
+    }
     let expected_ref = parse_ref_if_match(&headers)?;
     Ok(Json(
         state

@@ -32,7 +32,8 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         _ id: String,
         scope: MemoryScope,
         targetId: String? = nil,
-        isDeletion: Bool = false
+        isDeletion: Bool = false,
+        status: DaemonLocalDraftStatus = .open
     ) -> LocalDraft {
         LocalDraft(
             id: id,
@@ -48,7 +49,7 @@ final class MemoryFileTreeMenuTests: XCTestCase {
             scope: scope,
             kind: .context,
             targetId: targetId,
-            status: .open,
+            status: status,
             origin: .desktop,
             syncStatus: .queued,
             updatedAt: "2026-01-01T00:00:00Z",
@@ -143,6 +144,38 @@ final class MemoryFileTreeMenuTests: XCTestCase {
 
     func testProjectViewCreatesProjectBoundOrgProposals() {
         XCTAssertEqual(MemoryFileTreeMenu.creationScope(inOrgView: false), .org)
+    }
+
+    func testDirectoryReviewIncludesOnlyOpenOrganizationDraftsInProjectView() {
+        let openOrg = resourceItem(
+            "org-open",
+            scope: .org,
+            inherited: true,
+            draft: localDraft("draft-open", scope: .org, targetId: "org-open")
+        )
+        let submittedOrg = resourceItem(
+            "org-submitted",
+            scope: .org,
+            inherited: true,
+            draft: localDraft(
+                "draft-submitted",
+                scope: .org,
+                targetId: "org-submitted",
+                status: .submitted
+            )
+        )
+        let project = draftItem("project-draft", scope: .project)
+
+        XCTAssertEqual(
+            MemoryFileTreeMenu.reviewableDrafts(
+                [openOrg, submittedOrg, project],
+                inOrgView: false
+            ).map(\.id),
+            ["draft-open"]
+        )
+        XCTAssertTrue(
+            MemoryFileTreeMenu.reviewableDrafts([openOrg], inOrgView: true).isEmpty
+        )
     }
 
     func testSelectedOrgAuthorityOffersExplicitMutationActionsInProjectView() {
