@@ -796,9 +796,14 @@ pub struct DraftOperationBatchResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateReviewRequest {
+pub struct ReviewDraftRequest {
     pub draft_id: String,
     pub expected_draft_version: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateReviewRequest {
+    pub drafts: Vec<ReviewDraftRequest>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub candidate_id: Option<String>,
@@ -808,7 +813,7 @@ pub struct CreateReviewRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateReviewSubmissionRequest {
     pub expected_review_version: i64,
-    pub expected_draft_version: i64,
+    pub drafts: Vec<ReviewDraftRequest>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub candidate_id: Option<String>,
@@ -829,6 +834,7 @@ pub struct Review {
     pub review_id: String,
     pub project_id: String,
     pub draft_id: String,
+    pub draft_ids: Vec<String>,
     pub author: UserRef,
     pub title: String,
     pub description: String,
@@ -851,7 +857,14 @@ pub struct ReviewDetail {
     pub review: Review,
     pub draft: Draft,
     pub operations: Vec<DraftOperation>,
+    pub drafts: Vec<ReviewDraftDetail>,
     pub comments: Vec<ReviewComment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewDraftDetail {
+    pub draft: Draft,
+    pub operations: Vec<DraftOperation>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

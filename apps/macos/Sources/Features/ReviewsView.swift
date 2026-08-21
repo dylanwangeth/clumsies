@@ -500,11 +500,11 @@ struct ReviewFileDescriptor: Identifiable, Hashable, Sendable {
 
     static func resolve(
         reviewId: String,
-        detail: ReviewDetail,
+        detail: ReviewDraftDetail,
         sources: ReviewChangeSources
     ) -> ReviewFileDescriptor {
         let path = sources.proposedPath ?? detail.draft.resource.path ?? "Untitled"
-        let id = detail.draft.resource.id ?? "review-file:\(reviewId):\(path)"
+        let id = detail.draft.resource.id ?? "review-file:\(reviewId):\(detail.draft.draftId)"
         return .init(id: id, path: path)
     }
 }
@@ -515,6 +515,7 @@ struct ReviewDetailPage: View {
     let loadsRemoteContent: Bool
 
     @State private var detail: ReviewDetail?
+    @State private var fileChanges: [ReviewFileChange] = []
     @State private var changeSources: ReviewChangeSources?
     @State private var diffModel: SplitDiffModel?
     @State private var loading = true
@@ -544,6 +545,27 @@ struct ReviewDetailPage: View {
 
     private var storedReviewDecisionSignature: ReviewDecisionReadiness? {
         store.reviews.first { $0.id == reviewId }.map(ReviewDecisionReadiness.init)
+    }
+
+    private var fileDescriptors: [ReviewFileDescriptor] {
+        fileChanges.map {
+            ReviewFileDescriptor.resolve(
+                reviewId: reviewId,
+                detail: $0.detail,
+                sources: $0.sources
+            )
+        }
+    }
+
+    private var selectedFileChange: ReviewFileChange? {
+        guard let selectedFileId else { return fileChanges.first }
+        return fileChanges.first {
+            ReviewFileDescriptor.resolve(
+                reviewId: reviewId,
+                detail: $0.detail,
+                sources: $0.sources
+            ).id == selectedFileId
+        }
     }
 
     private var commentPlacement: ReviewCommentPlacement {
@@ -585,11 +607,8 @@ struct ReviewDetailPage: View {
                         Task { await refreshDetail() }
                     }
                 ) { resolvedState in
-                    guard let detail else {
-                        throw ServerClientError.invalidResponse("Review detail is unavailable.")
-                    }
                     try await store.applyReconciliation(
-                        draftId: detail.draft.draftId,
+                        draftId: candidate.draftId,
                         candidate: candidate,
                         resolvedState: resolvedState
                     )
@@ -607,8 +626,8 @@ struct ReviewDetailPage: View {
                         Task { await load() }
                     }
                 }
-            } else if let review, let detail, let changeSources {
-                content(review, detail: detail, sources: changeSources)
+            } else if let review, let detail, !fileChanges.isEmpty {
+                content(review, detail: detail)
             } else {
                 ContentUnavailableView(
                     "Review Unavailable",
@@ -631,6 +650,9 @@ struct ReviewDetailPage: View {
         .onChange(of: store.pendingReviewReconciliationId) { _, reviewId in
             handlePendingReconciliation(reviewId)
         }
+        .onChange(of: selectedFileId) { _, _ in
+            selectCurrentFile()
+        }
         .onChange(of: storedReviewDecisionSignature) { _, signature in
             guard let signature,
                   detail.map({ ReviewDecisionReadiness(review: WorkspaceLoader.mapReview($0.review)) })
@@ -642,36 +664,33 @@ struct ReviewDetailPage: View {
 
     private func content(
         _ review: ReviewRecord,
-        detail: ReviewDetail,
-        sources: ReviewChangeSources
+        detail: ReviewDetail
     ) -> some View {
-        let file = ReviewFileDescriptor.resolve(
-            reviewId: reviewId,
-            detail: detail,
-            sources: sources
-        )
         return HSplitView {
             ReviewFileNavigator(
-                files: [file],
+                files: fileDescriptors,
                 selection: $selectedFileId
             )
             .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
 
             Group {
-                if selectedFileId == nil || selectedFileId == file.id {
+                if let selectedFileChange {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
                             reviewHeader(review)
 
                             if review.freshness == .behind {
-                                readinessChip(review, detail: detail)
+                                readinessChip(
+                                    review,
+                                    detail: selectedFileChange.detail
+                                )
                             }
 
                             if showsGeneralComments {
                                 generalCommentsPanel
                             }
 
-                            diffPanel(detail: detail)
+                            diffPanel(detail: selectedFileChange.detail)
                         }
                         .frame(maxWidth: 1180, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .top)
@@ -692,7 +711,7 @@ struct ReviewDetailPage: View {
         }
         .onAppear {
             if selectedFileId == nil {
-                selectedFileId = file.id
+                selectedFileId = fileDescriptors.first?.id
             }
         }
     }
@@ -755,7 +774,7 @@ struct ReviewDetailPage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func readinessChip(_ review: ReviewRecord, detail: ReviewDetail) -> some View {
+    private func readinessChip(_ review: ReviewRecord, detail: ReviewDraftDetail) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Label(
                 review.reconciliation == .conflicts
@@ -899,7 +918,7 @@ struct ReviewDetailPage: View {
     }
 
     @ViewBuilder
-    private func diffPanel(detail: ReviewDetail) -> some View {
+    private func diffPanel(detail: ReviewDraftDetail) -> some View {
         if detail.operations.last?.action == "delete" {
             Label {
                 Text("This Review deletes the selected memory. There is no proposed file to render.")
@@ -956,6 +975,7 @@ struct ReviewDetailPage: View {
         loading = true
         loadError = nil
         detail = nil
+        fileChanges = []
         changeSources = nil
         diffModel = nil
         composing = nil
@@ -969,10 +989,10 @@ struct ReviewDetailPage: View {
         }
         do {
             let loadedDetail = try await store.reviewDetail(reviewId)
-            let loadedSources = try await store.reviewChangeSources(for: loadedDetail)
+            let loadedChanges = try await store.reviewFileChanges(for: loadedDetail)
             applyLoadedDetail(
                 loadedDetail,
-                sources: loadedSources,
+                changes: loadedChanges,
                 request: request
             )
         } catch {
@@ -988,10 +1008,10 @@ struct ReviewDetailPage: View {
         let request = beginDetailRequest()
         do {
             let loadedDetail = try await store.reviewDetail(reviewId)
-            let loadedSources = try await store.reviewChangeSources(for: loadedDetail)
+            let loadedChanges = try await store.reviewFileChanges(for: loadedDetail)
             applyLoadedDetail(
                 loadedDetail,
-                sources: loadedSources,
+                changes: loadedChanges,
                 request: request
             )
         } catch {
@@ -1029,7 +1049,7 @@ struct ReviewDetailPage: View {
 
     private func applyLoadedDetail(
         _ loadedDetail: ReviewDetail,
-        sources loadedSources: ReviewChangeSources,
+        changes loadedChanges: [ReviewFileChange],
         request: DetailRequest
     ) {
         guard !Task.isCancelled,
@@ -1045,17 +1065,23 @@ struct ReviewDetailPage: View {
         }
 
         detail = loadedDetail
-        changeSources = loadedSources
-        diffModel = makeDiffModel(from: loadedSources)
+        fileChanges = loadedChanges
         loading = false
         loadError = nil
-        selectedFileId = ReviewFileDescriptor.resolve(
-            reviewId: reviewId,
-            detail: loadedDetail,
-            sources: loadedSources
-        ).id
+        let availableIds = Set(fileDescriptors.map(\.id))
+        if selectedFileId == nil || !availableIds.contains(selectedFileId!) {
+            selectedFileId = fileDescriptors.first?.id
+        }
+        selectCurrentFile()
         store.replaceReview(with: loadedReview)
         store.reviewDecisionReadiness = loadedSignature
+    }
+
+    private func selectCurrentFile() {
+        changeSources = selectedFileChange?.sources
+        diffModel = selectedFileChange.flatMap { makeDiffModel(from: $0.sources) }
+        composing = nil
+        commentDraft = ""
     }
 
     private func markCurrentDetailDecisionReady() {
@@ -1104,7 +1130,7 @@ struct ReviewDetailPage: View {
         }
     }
 
-    private func loadReconciliation(detail: ReviewDetail?) {
+    private func loadReconciliation(detail: ReviewDraftDetail?) {
         guard let detail, !loadsReconciliation else { return }
         clearDecisionReadiness()
         loadsReconciliation = true
@@ -1120,7 +1146,7 @@ struct ReviewDetailPage: View {
     }
 
     private func handlePendingReconciliation(_ reviewId: String?) {
-        guard reviewId == self.reviewId, let detail else { return }
+        guard reviewId == self.reviewId, let detail = selectedFileChange?.detail else { return }
         store.pendingReviewReconciliationId = nil
         loadReconciliation(detail: detail)
     }

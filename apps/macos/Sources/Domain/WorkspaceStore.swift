@@ -92,6 +92,8 @@ enum ReviewRequestError: LocalizedError, Sendable {
     case draftNotSynchronized
     case legacyProjectDraftCannotBePublished
     case reconciliationRequired
+    case reconcileDirectoryDrafts
+    case mixedProjects
 
     var errorDescription: String? {
         switch self {
@@ -101,6 +103,10 @@ enum ReviewRequestError: LocalizedError, Sendable {
             "Legacy Project-scoped drafts are read-only and cannot be published."
         case .reconciliationRequired:
             "Merge the latest shared version before requesting a review."
+        case .reconcileDirectoryDrafts:
+            "Sync every changed file in this directory before requesting one review."
+        case .mixedProjects:
+            "All drafts in a review must belong to the same Project."
         }
     }
 }
@@ -3674,12 +3680,72 @@ final class WorkspaceStore: ObservableObject {
             path: "/api/v1/reviews",
             headers: ["If-Match": Self.refETag(candidate?.currentCommitId ?? draft.currentCommitId)],
             body: CreateReviewRequest(
-                draftId: serverId,
-                expectedDraftVersion: candidate?.draftVersion ?? draft.serverVersion,
+                drafts: [ReviewDraftRequest(
+                    draftId: serverId,
+                    expectedDraftVersion: candidate?.draftVersion ?? draft.serverVersion
+                )],
                 title: title,
                 description: description,
                 candidateId: candidate?.candidateId,
                 resolvedState: resolvedState
+            )
+        )
+        let record = WorkspaceLoader.mapReview(detail)
+        reviews.insert(record, at: 0)
+        selectedReviewId = record.id
+        selectedSection = .reviews
+    }
+
+    func requestReview(
+        for drafts: [LocalDraft],
+        title: String,
+        description: String
+    ) async throws {
+        let selectedDrafts = drafts.sorted {
+            $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending
+        }
+        guard let selectedPrimary = selectedDrafts.first else { return }
+        guard selectedDrafts.allSatisfy({ $0.projectId == selectedPrimary.projectId }) else {
+            throw ReviewRequestError.mixedProjects
+        }
+        guard selectedDrafts.allSatisfy(Self.canRequestReview) else {
+            throw ReviewRequestError.legacyProjectDraftCannotBePublished
+        }
+        guard selectedDrafts.allSatisfy({ synchronizationItemId(for: $0) == nil }) else {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
+        var drafts = [LocalDraft]()
+        drafts.reserveCapacity(selectedDrafts.count)
+        for draft in selectedDrafts {
+            drafts.append(
+                try await synchronizedDraftForReconciliation(
+                    itemId: draft.targetId ?? draft.id,
+                    draft: draft
+                )
+            )
+        }
+        guard let primary = drafts.first else { return }
+        guard drafts.allSatisfy({ $0.freshness == .current }) else {
+            throw ReviewRequestError.reconcileDirectoryDrafts
+        }
+        guard drafts.allSatisfy({ $0.serverId != nil }) else {
+            throw ReviewRequestError.draftNotSynchronized
+        }
+        let detail: ReviewDetail = try await server.send(
+            method: "POST",
+            path: "/api/v1/reviews",
+            headers: ["If-Match": Self.refETag(primary.currentCommitId)],
+            body: CreateReviewRequest(
+                drafts: drafts.map {
+                    ReviewDraftRequest(
+                        draftId: $0.serverId!,
+                        expectedDraftVersion: $0.serverVersion
+                    )
+                },
+                title: title,
+                description: description,
+                candidateId: nil,
+                resolvedState: nil
             )
         )
         let record = WorkspaceLoader.mapReview(detail)
@@ -3713,7 +3779,16 @@ final class WorkspaceStore: ObservableObject {
             ],
             body: CreateReviewSubmissionRequest(
                 expectedReviewVersion: review.version,
-                expectedDraftVersion: candidate?.draftVersion ?? detail.draft.version,
+                drafts: (detail.drafts ?? [
+                    ReviewDraftDetail(draft: detail.draft, operations: detail.operations)
+                ]).map {
+                    ReviewDraftRequest(
+                        draftId: $0.draft.draftId,
+                        expectedDraftVersion: $0.draft.draftId == detail.draft.draftId
+                            ? candidate?.draftVersion ?? $0.draft.version
+                            : $0.draft.version
+                    )
+                },
                 title: review.title,
                 description: review.description,
                 candidateId: candidate?.candidateId,
@@ -3723,11 +3798,31 @@ final class WorkspaceStore: ObservableObject {
         replaceReview(with: WorkspaceLoader.mapReview(updated))
     }
 
-    func reviewChangeSources(for detail: ReviewDetail) async throws -> ReviewChangeSources {
-        async let baseRequest: CommitPayload? = loadCommit(detail.draft.baseCommitId)
-        async let currentRequest: CommitPayload? = loadCommit(detail.draft.coordination.currentCommitId)
-        let (base, current) = try await (baseRequest, currentRequest)
-        return try WorkspaceLoader.mapReviewChangeSources(detail: detail, base: base, current: current)
+    func reviewFileChanges(for detail: ReviewDetail) async throws -> [ReviewFileChange] {
+        let draftDetails = detail.drafts ?? [
+            ReviewDraftDetail(draft: detail.draft, operations: detail.operations)
+        ]
+        var changes = [ReviewFileChange]()
+        changes.reserveCapacity(draftDetails.count)
+        for draftDetail in draftDetails {
+            async let baseRequest: CommitPayload? = loadCommit(draftDetail.draft.baseCommitId)
+            async let currentRequest: CommitPayload? = loadCommit(
+                draftDetail.draft.coordination.currentCommitId
+            )
+            let (base, current) = try await (baseRequest, currentRequest)
+            changes.append(
+                ReviewFileChange(
+                    detail: draftDetail,
+                    sources: try WorkspaceLoader.mapReviewChangeSources(
+                        draft: draftDetail.draft,
+                        operations: draftDetail.operations,
+                        base: base,
+                        current: current
+                    )
+                )
+            )
+        }
+        return changes
     }
 
     func reconciliationCandidate(for draft: LocalDraft) async throws -> DraftReconciliationCandidate {
@@ -3774,6 +3869,14 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func reconciliationCandidate(for detail: ReviewDetail) async throws -> DraftReconciliationCandidate {
+        try await reconciliationCandidate(
+            for: ReviewDraftDetail(draft: detail.draft, operations: detail.operations)
+        )
+    }
+
+    func reconciliationCandidate(
+        for detail: ReviewDraftDetail
+    ) async throws -> DraftReconciliationCandidate {
         guard !isSwitchingMemoryContext else {
             throw DocumentSyncError.mutationWhileSynchronizing
         }
@@ -4983,21 +5086,35 @@ struct WorkspaceLoader: Sendable {
         base: CommitPayload?,
         current: CommitPayload?
     ) throws -> ReviewChangeSources {
-        let terminalOperation = detail.operations.last
+        try mapReviewChangeSources(
+            draft: detail.draft,
+            operations: detail.operations,
+            base: base,
+            current: current
+        )
+    }
+
+    static func mapReviewChangeSources(
+        draft: ServerDraft,
+        operations: [ServerDraftOperation],
+        base: CommitPayload?,
+        current: CommitPayload?
+    ) throws -> ReviewChangeSources {
+        let terminalOperation = operations.last
         let draftContent: String?
         let resolutionContent: String?
         if terminalOperation?.action == "delete" {
             draftContent = nil
             resolutionContent = nil
         } else {
-            let content = detail.operations.reversed().first {
+            let content = operations.reversed().first {
                 ($0.action == "create" || $0.action == "update") && $0.content != nil
             }?.content
             draftContent = content?.renderedText
             resolutionContent = content?.primaryText
         }
-        let initialPath = detail.operations.first?.resource.path ?? detail.draft.resource.path
-        let finalPath = detail.operations.reduce(initialPath) { path, operation in
+        let initialPath = operations.first?.resource.path ?? draft.resource.path
+        let finalPath = operations.reduce(initialPath) { path, operation in
             if let newPath = operation.newPath { return newPath }
             if operation.action == "create", let createdPath = operation.resource.path { return createdPath }
             return path
@@ -5005,7 +5122,7 @@ struct WorkspaceLoader: Sendable {
         let operationLabels: [String]
         if terminalOperation?.action == "delete" {
             operationLabels = ["Delete \(finalPath ?? "the selected memory")"]
-        } else if detail.operations.first?.action == "create" {
+        } else if operations.first?.action == "create" {
             operationLabels = ["Create \(finalPath ?? "memory")"]
         } else if finalPath != initialPath, let finalPath {
             operationLabels = ["Rename to \(finalPath)"]
@@ -5013,8 +5130,8 @@ struct WorkspaceLoader: Sendable {
             operationLabels = []
         }
         return try .init(
-            baseContent: commitResourceText(base, resource: detail.draft.resource),
-            currentContent: commitResourceText(current, resource: detail.draft.resource),
+            baseContent: commitResourceText(base, resource: draft.resource),
+            currentContent: commitResourceText(current, resource: draft.resource),
             draftContent: draftContent,
             resolutionContent: resolutionContent,
             proposedPath: finalPath,

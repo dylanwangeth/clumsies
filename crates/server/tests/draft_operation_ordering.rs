@@ -3,7 +3,7 @@ mod common;
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationInput,
-    DraftResourceContent, DraftResourceRef, ResourceScope, ReviewDecision,
+    DraftResourceContent, DraftResourceRef, ResourceScope, ReviewDecision, ReviewDraftRequest,
 };
 use server::repository::ServerRepository;
 
@@ -12,6 +12,132 @@ fn memory_content(content: &str) -> Option<DraftResourceContent> {
         description: None,
         content: content.to_owned(),
     })
+}
+
+#[tokio::test]
+async fn multi_draft_review_merges_every_file_in_one_commit() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Directory Review",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Directory Review",
+    )
+    .await;
+    let head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+
+    let mut drafts = Vec::new();
+    for (index, path) in [
+        "skills/coding/SKILL.md",
+        "skills/coding/references/workflow.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        drafts.push(
+            repo.create_draft(
+                &bootstrap.user_id,
+                CreateDraftRequest {
+                    daemon_installation_id: format!("daemon_directory_{index}"),
+                    project_id: bootstrap.project_id.clone(),
+                    base_commit_id: head.clone(),
+                    title: format!("Create {path}"),
+                    description: None,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: None,
+                        path: Some(path.to_owned()),
+                    },
+                    operations: vec![DraftOperationInput {
+                        action: DraftOperationAction::Create,
+                        resource: DraftResourceRef {
+                            scope: ResourceScope::Org,
+                            id: None,
+                            path: Some(path.to_owned()),
+                        },
+                        content: memory_content(&format!("# File {index}")),
+                        new_path: None,
+                    }],
+                },
+            )
+            .await
+            .unwrap(),
+        );
+    }
+
+    let detail = repo
+        .create_review(
+            &bootstrap.user_id,
+            head.as_deref(),
+            CreateReviewRequest {
+                drafts: drafts
+                    .iter()
+                    .map(|detail| ReviewDraftRequest {
+                        draft_id: detail.draft.draft_id.clone(),
+                        expected_draft_version: detail.draft.version,
+                    })
+                    .collect(),
+                title: Some("Create coding skill".to_owned()),
+                description: None,
+                candidate_id: None,
+                resolved_state: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.review.draft_ids.len(), 2);
+    assert_eq!(detail.drafts.len(), 2);
+    assert!(
+        detail
+            .drafts
+            .iter()
+            .all(|item| item.draft.status == server::api::DraftStatus::Submitted)
+    );
+
+    let approved = repo
+        .create_review_decision(
+            &detail.review.review_id,
+            &bootstrap.user_id,
+            CreateReviewDecisionRequest {
+                decision: ReviewDecision::Approved,
+                expected_review_version: detail.review.version,
+                body: None,
+            },
+        )
+        .await
+        .unwrap();
+    let merged = repo
+        .create_review_merge(
+            &detail.review.review_id,
+            head.as_deref(),
+            CreateReviewMergeRequest {
+                expected_review_version: approved.review.version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(merged.applied_operation_count, 2);
+
+    let commit = repo
+        .get_commit_payload(merged.commit_id.as_deref().unwrap())
+        .await
+        .unwrap();
+    let paths = commit
+        .tree
+        .entries
+        .iter()
+        .filter_map(|entry| entry.path.as_deref())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"skills/coding/SKILL.md"));
+    assert!(paths.contains(&"skills/coding/references/workflow.md"));
 }
 
 async fn approve_and_merge(
@@ -26,8 +152,10 @@ async fn approve_and_merge(
             user_id,
             expected_ref,
             CreateReviewRequest {
-                draft_id: draft_id.to_owned(),
-                expected_draft_version,
+                drafts: vec![ReviewDraftRequest {
+                    draft_id: draft_id.to_owned(),
+                    expected_draft_version,
+                }],
                 title: None,
                 description: None,
                 candidate_id: None,

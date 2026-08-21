@@ -203,6 +203,11 @@ struct ReviewChangeSources: Sendable {
     let operationLabels: [String]
 }
 
+struct ReviewFileChange: Sendable {
+    let detail: ReviewDraftDetail
+    let sources: ReviewChangeSources
+}
+
 struct ProjectState: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
