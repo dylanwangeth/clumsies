@@ -738,7 +738,7 @@ paths:
     post:
       operationId: createReviewDecision
       summary: Create an organization-authorized review decision.
-      description: Requires the caller to be an Organization owner or administrator and a member of the carrying Project.
+      description: Requires the caller to be an Organization owner or administrator and a member of the carrying Project. New clients use this endpoint for rejection; the approved decision value remains wire-compatible for older two-step clients, while current clients approve atomically through the merge endpoint.
       requestBody:
         required: true
         content:
@@ -794,7 +794,7 @@ paths:
       - $ref: "#/components/parameters/ReviewId"
     post:
       operationId: createReviewMerge
-      summary: Merge an approved review and produce authoritative external-memory resources.
+      summary: Atomically approve and merge an open review, or merge a historical approved review.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
@@ -805,7 +805,7 @@ paths:
               $ref: "#/components/schemas/CreateReviewMergeRequest"
       responses:
         "200":
-          description: Merge result.
+          description: Atomic approval and merge result.
           content:
             application/json:
               schema:

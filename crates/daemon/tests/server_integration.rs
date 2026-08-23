@@ -144,6 +144,7 @@ async fn approve_and_merge(
     repository
         .create_review_merge(
             &approved.review.review_id,
+            &approved.review.author.user_id,
             expected_ref,
             CreateReviewMergeRequest {
                 expected_review_version: approved.review.version,
@@ -1517,6 +1518,7 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
     let final_merge = repository
         .create_review_merge(
             &approved.review.review_id,
+            &approved.review.author.user_id,
             Some(&current_commit_id),
             CreateReviewMergeRequest {
                 expected_review_version: approved.review.version,
@@ -2662,6 +2664,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let merge = repository
         .create_review_merge(
             &approved.review.review_id,
+            &approved.review.author.user_id,
             None,
             CreateReviewMergeRequest {
                 expected_review_version: approved.review.version,

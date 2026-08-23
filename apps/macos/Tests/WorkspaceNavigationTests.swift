@@ -147,6 +147,11 @@ final class WorkspaceNavigationTests: XCTestCase {
             version: 8
         )))
         XCTAssertFalse(readiness.matches(reviewRecord(
+            status: "rejected",
+            id: reviewId,
+            version: 7
+        )))
+        XCTAssertFalse(readiness.matches(reviewRecord(
             status: "open",
             freshness: .behind,
             id: reviewId,
@@ -183,6 +188,18 @@ final class WorkspaceNavigationTests: XCTestCase {
             for: review,
             canDecideReviews: false,
             canMergeReviews: false,
+            isAuthor: false
+        ))
+        XCTAssertFalse(ReviewMenuAction.approve.isAvailable(
+            for: review,
+            canDecideReviews: true,
+            canMergeReviews: false,
+            isAuthor: false
+        ))
+        XCTAssertTrue(ReviewMenuAction.approve.isAvailable(
+            for: review,
+            canDecideReviews: true,
+            canMergeReviews: true,
             isAuthor: false
         ))
         XCTAssertTrue(ReviewMenuAction.reject.isAvailable(
@@ -233,7 +250,7 @@ final class WorkspaceNavigationTests: XCTestCase {
                 surface: .detail,
                 review: review,
                 canDecideReviews: true,
-                canMergeReviews: false,
+                canMergeReviews: true,
                 isAuthor: false
             ).items,
             [.decision(.reject), .decision(.approve)]

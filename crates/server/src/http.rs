@@ -1707,7 +1707,12 @@ async fn create_review_merge(
     Ok(Json(
         state
             .repository
-            .create_review_merge(&review_id, expected_ref.as_deref(), request)
+            .create_review_merge(
+                &review_id,
+                &principal.user_id,
+                expected_ref.as_deref(),
+                request,
+            )
             .await?,
     ))
 }

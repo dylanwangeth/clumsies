@@ -94,6 +94,7 @@ enum ReviewRequestError: LocalizedError, Sendable {
     case reconciliationRequired
     case reconcileDirectoryDrafts
     case mixedProjects
+    case reviewChanged
 
     var errorDescription: String? {
         switch self {
@@ -107,6 +108,8 @@ enum ReviewRequestError: LocalizedError, Sendable {
             "Sync every changed file in this directory before requesting one review."
         case .mixedProjects:
             "All drafts in a review must belong to the same Project."
+        case .reviewChanged:
+            "This Review changed on the Server. Review its latest state before deciding."
         }
     }
 }
@@ -197,7 +200,9 @@ enum ReviewMenuAction: Sendable, Equatable {
         isAuthor: Bool
     ) -> Bool {
         switch self {
-        case .approve, .reject:
+        case .approve:
+            return review.status == "open" && canDecideReviews && canMergeReviews
+        case .reject:
             return review.status == "open" && canDecideReviews
         case .merge:
             return review.status == "approved"
@@ -837,7 +842,7 @@ final class WorkspaceStore: ObservableObject {
         do {
             switch action {
             case .approve:
-                try await decide(review, decision: "approved", note: "")
+                try await merge(review)
             case .reject:
                 try await decide(review, decision: "rejected", note: "")
             case .merge:
@@ -3984,6 +3989,11 @@ final class WorkspaceStore: ObservableObject {
         // exact target Ref generation for both scopes; the carrying Project's
         // ETag is wrong for Org-targeted Drafts.
         let detail = try await reviewDetail(review.id)
+        let currentReview = WorkspaceLoader.mapReview(detail)
+        replaceReview(with: currentReview)
+        guard ReviewDecisionReadiness(review: review).matches(currentReview) else {
+            throw ReviewRequestError.reviewChanged
+        }
         guard Self.isOrganizationDraft(detail.draft) else {
             throw ReviewRequestError.legacyProjectDraftCannotBePublished
         }

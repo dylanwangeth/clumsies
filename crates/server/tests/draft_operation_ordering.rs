@@ -150,6 +150,7 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
     let merged = repo
         .create_review_merge(
             &detail.review.review_id,
+            &bootstrap.user_id,
             head.as_deref(),
             CreateReviewMergeRequest {
                 expected_review_version: approved.review.version,
@@ -211,6 +212,7 @@ async fn approve_and_merge(
         .unwrap();
     repo.create_review_merge(
         &approved.review.review_id,
+        user_id,
         expected_ref,
         CreateReviewMergeRequest {
             expected_review_version: approved.review.version,

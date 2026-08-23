@@ -26,43 +26,55 @@ global sidebar | NavigationStack (Review list -> Review detail)
 
 ## 2. Review list
 
-Use a native inset `List`. Do not draw card borders, custom selection stripes,
-or web-style status pills.
+Use a native inset `List` with information-rich rows and visible row separators.
+A single click pushes the Review detail. The scroll area fills its content
+region without drawing an outer border; record boundaries come from system
+separators, focus, selection, hover, and inactive-window behavior. Do not enable
+alternating row backgrounds: AppKit continues their stripes through empty table
+space, making nonexistent Reviews look like blank rows. Pin the separator's
+leading alignment to the row rather than allowing trailing metadata such as the
+relative update time to shorten it.
 
-The list is a review queue, not a summary card. Each row answers five scan
-questions: what changed, where it belongs, who submitted it, when its Review
-record last changed, and what the current viewer can do next. It has at most
-two useful lines:
+The list is a review queue. Each row answers five scan questions: what changed,
+where it belongs, who submitted it, when its Review record last changed, and
+what the current viewer can do next:
 
 ```
 review title                     symbol + one semantic workflow state
-project · author                              relative update time
+description excerpt
+Submitted by author for project · updated relative time
 ```
 
-- Keep descriptions in the detail page.
-- Keep the relative time in its own trailing column so a long Project or author
-  cannot remove it. If a Project name or timestamp cannot be resolved, omit the
-  value; never expose an opaque Project ID or raw protocol timestamp.
+- Keep descriptions to a one-line excerpt; the complete description stays in
+  the detail page.
+- Express Project, author, and relative update time as one muted sentence in the
+  GitHub Issue metadata style. The author is the submitter, not necessarily the
+  person who last updated the Review record, so never label the update as theirs.
+  If a Project name or timestamp cannot be resolved, omit the value; never expose
+  an opaque Project ID or raw protocol timestamp.
 - Resolve one workflow state for the row. Precedence is `Merged`, `Conflicts`,
   `Update Required`/`Out of Date`, then the viewer-aware lifecycle state:
-  `Needs Review`, `Ready to Merge`/`Approved`, or `Resubmit`/`Awaiting Author`.
+  `Needs Review`, legacy `Ready to Merge`/`Approved`, or
+  `Resubmit`/`Awaiting Author`.
   A merged Review never displays stale merely because the merge advanced the
-  current Project ref. `Ready to Merge` also requires a nonempty approved result
-  hash; capability alone does not make a legacy approval mergeable.
+  current Project ref. `Ready to Merge` applies only to historical two-step
+  approvals and also requires a nonempty approved result hash; capability alone
+  does not make a legacy approval mergeable.
 - The workflow state is a plain system `Label` with an SF Symbol and semantic
   foreground color. It is neither a button nor a capsule. Never stack a status
-  icon and freshness icon that require hover to distinguish. In `All`, show the
-  lifecycle label. In a single-status scope, omit the repetitive baseline label
-  and show only queue signals that change the next step. At narrow widths, the
-  label may reduce to its symbol so the primary Review title retains priority.
-- Let macOS draw focus, hover/press feedback, separators, and inactive-window
-  state. In this push-navigation list, `NavigationLink` and the stack path are
-  the only navigation state; do not add a parallel `List(selection:)` binding
-  that can push the same route twice during a programmatic deep-link.
+  icon and freshness icon that require hover to distinguish. Always show the
+  resolved state because it anchors the row's workflow meaning even inside a
+  filtered scope. At narrow widths, the label may reduce to its symbol so the
+  primary Review title retains priority.
+- Let macOS draw separators, focus, hover/press feedback, and inactive-window
+  state. Do not draw an outer list border, per-row cards, or empty-space zebra
+  stripes. `NavigationLink` and the stack path are the only navigation state;
+  do not add a parallel `List(selection:)` binding that can push the same route
+  twice during a programmatic deep-link.
 - The status Filter menu belongs to the list page's leading/navigation toolbar
   area. Its collapsed label communicates the selected scope; counts remain in
-  the menu, help, and accessibility value. The menu contains Open, Approved,
-  Rejected, Merged, and All with counts.
+  the menu, help, and accessibility value. The menu contains Open, Approved
+  (for historical records), Rejected, Merged, and All with counts.
 - Search is an independent window-level action and remains the trailing-most
   Review tool. Sync and decision actions are not grouped with Filter.
 - Loading without cached Reviews uses a labeled `ProgressView`. Existing cached
@@ -70,9 +82,9 @@ project · author                              relative update time
   `ContentUnavailableView`; filtered-empty includes `Show All Reviews`.
 
 The GitHub pull-request list informs the information order — title first,
-scope/author/time second, and a small number of workflow signals — but not the
-visual chrome. Do not copy its bordered Web container, row rules, blue links,
-colored pills, PR numbers, avatar stacks, comment counters, or pagination. The
+scope/author/time second, and a small number of workflow signals — but not its
+Web chrome. Do not copy blue links, colored pills, PR numbers, avatar stacks,
+comment counters, or pagination. The
 Server does not currently provide unread counts, unresolved-thread counts, or a
 true last-activity timestamp, and the macOS client must not invent them from
 `updatedAt`.
@@ -134,12 +146,14 @@ the UI labels these honestly rather than pretending they are inline comments.
 
 Decision actions remain native symbol toolbar items with menu-command parity:
 
-- Open: Org owners/admins with `review:decide` see Reject (`xmark`) and the
-  single prominent Approve (`checkmark`); ordinary members remain read/comment
-  participants and see neither authority action.
-- Approved: Merge (`arrow.triangle.merge`) when permitted and the Server
-  supplied a nonempty approved result hash. Legacy approvals without that
-  immutable result identity remain visible but cannot be merged.
+- Open: Org owners/admins with `review:decide` and `review:merge` see Reject
+  (`xmark`) and the single prominent Approve (`checkmark`). Approve records the
+  decision and merges into authority in one Server transaction; ordinary
+  members remain read/comment participants and see neither authority action.
+- Approved: historical records retain Merge (`arrow.triangle.merge`) when
+  permitted and the Server supplied a nonempty approved result hash. Legacy
+  approvals without that immutable result identity remain visible but cannot
+  be merged.
 - Rejected: Resubmit (`arrow.clockwise`) for the Draft author.
 
 Filter belongs only to the list page. Decision tools belong only to an active
