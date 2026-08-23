@@ -43,9 +43,8 @@ The collaboration flow is:
 2. keep editing normally while newer shared Commits synchronize
 3. review and explicitly merge the latest shared version when prompted
 4. submit the coordinated draft for review
-5. an Organization owner/admin records the Review decision
-6. an Organization owner/admin merges an approved current Review
-7. receive the new authority Commit
+5. an Organization owner/admin rejects it or approves and merges it atomically
+6. receive the new authority Commit
 
 When the target Ref advances, Desktop continuously shows **共享版本已有更新**.
 Viewing the candidate does not change the Draft. **合并最新版本** shows the
@@ -57,9 +56,9 @@ applied.
 Creating or resubmitting a Review must use the latest Ref. If it moves again
 during confirmation, Clumsies recalculates instead of overwriting authority.
 An existing Review may remain behind and continue to receive comments, but it
-must be coordinated before merge. An update that changes the final resource
-result invalidates prior approval; a Base-only change with byte-identical final
-result preserves it.
+must be coordinated before approval. Approval uses `If-Match` as a final guard;
+if the Ref moves, the Review remains Open rather than stopping in a partially
+approved state. Historical Approved Reviews can still be merged.
 
 ## Agent workflow
 

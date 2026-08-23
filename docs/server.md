@@ -53,12 +53,15 @@ revision before atomically changing `base_commit_id` and operations.
 Applying a clean candidate always uses the Server's canonical proposed result;
 only a conflicts candidate accepts a complete user-resolved state.
 
-Creating or resubmitting a Review and merging an approved Review are coordination
-boundaries. A Project member may propose, submit, inspect, and comment; only an
-Organization owner or administrator may approve, reject, or merge an Org
-publication Review. Review creation/submission can apply a confirmed candidate
-in the same Ref-locked transaction. Merge never performs the first stale check
-as a normal workflow; it retains `If-Match`/CAS as the final concurrency guard.
+Creating or resubmitting a Review and approving it for publication are
+coordination boundaries. A Project member may propose, submit, inspect, and
+comment; only an Organization owner or administrator may approve or reject an
+Org publication Review. Approval records the decision and advances the target
+Ref in one transaction, moving an Open Review directly to Merged. The merge
+endpoint still accepts historical Approved Reviews. Review creation/submission
+can apply a confirmed candidate in the same Ref-locked transaction. Publication
+never performs the first stale check as a normal workflow; it retains
+`If-Match`/CAS as the final concurrency guard.
 
 The detailed state model and failure semantics are maintained in the Obsidian
 architecture document `architecture/draft-reconciliation.md`.

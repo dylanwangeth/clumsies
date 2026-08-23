@@ -2963,6 +2963,7 @@ impl ServerRepository {
     pub async fn create_review_merge(
         &self,
         review_id: &str,
+        actor_user_id: &str,
         expected_project_ref: Option<&str>,
         request: CreateReviewMergeRequest,
     ) -> Result<ReviewMergeResult, ServerError> {
@@ -3002,7 +3003,7 @@ impl ServerRepository {
 
         let status: String = row.try_get("status")?;
         let version: i64 = row.try_get("version")?;
-        if status != "approved" {
+        if status != "open" && status != "approved" {
             return Err(ServerError::invalid_transition("review", &status, "merged"));
         }
         if version != request.expected_review_version {
@@ -3012,7 +3013,6 @@ impl ServerRepository {
                 version,
             ));
         }
-
         let project_id: String = row.try_get("project_id")?;
         let draft_ids = load_review_draft_ids(&mut tx, review_id).await?;
         let mut draft_rows = Vec::with_capacity(draft_ids.len());
@@ -3088,7 +3088,7 @@ impl ServerRepository {
 
         let approved_result_hash: Option<String> = row.try_get("approved_result_hash")?;
         let current_result_hash = review_result_hash(&mut tx, &draft_ids).await?;
-        if approved_result_hash.as_deref() != Some(&current_result_hash) {
+        if status == "approved" && approved_result_hash.as_deref() != Some(&current_result_hash) {
             return Err(ServerError::InvalidTransition {
                 entity: "review",
                 from: "approval_for_previous_content".to_owned(),
@@ -3153,10 +3153,18 @@ impl ServerRepository {
         };
         sqlx::query(
             "UPDATE reviews
-             SET status = 'merged', version = version + 1, updated_at = now()
+             SET status = 'merged', version = version + 1,
+                 decision_body = CASE WHEN $2 THEN NULL ELSE decision_body END,
+                 approved_result_hash = CASE WHEN $2 THEN $3 ELSE approved_result_hash END,
+                 decided_by_user_id = CASE WHEN $2 THEN $4 ELSE decided_by_user_id END,
+                 decided_at = CASE WHEN $2 THEN now() ELSE decided_at END,
+                 updated_at = now()
              WHERE review_id = $1",
         )
         .bind(review_id)
+        .bind(status == "open")
+        .bind(&current_result_hash)
+        .bind(actor_user_id)
         .execute(&mut *tx)
         .await?;
         sqlx::query(

@@ -247,6 +247,7 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
     let merge_error = repo
         .create_review_merge(
             approved_review_id,
+            &bootstrap.user_id,
             None,
             CreateReviewMergeRequest {
                 expected_review_version: 1,
@@ -616,49 +617,72 @@ async fn draft_review_merge_produces_org_and_carrier_project_commits() {
     .await;
     assert_eq!(review_detail.comments, comments.items);
 
-    let review_detail: ReviewDetail = post_json(
+    let stale_approval = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/reviews/{}/merges", review.review_id))
+                .header("content-type", "application/json")
+                .header(
+                    "if-match",
+                    "\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"",
+                )
+                .body(Body::from(
+                    serde_json::to_vec(&CreateReviewMergeRequest {
+                        expected_review_version: review.version,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_approval.status(), StatusCode::PRECONDITION_FAILED);
+    let unchanged: ReviewDetail = get_json(
         app.clone(),
-        &format!("/api/v1/reviews/{}/decisions", review.review_id),
-        &CreateReviewDecisionRequest {
-            decision: ReviewDecision::Approved,
-            expected_review_version: 1,
-            body: Some("Looks good".to_owned()),
-        },
+        &format!("/api/v1/reviews/{}", review.review_id),
     )
     .await;
-    let review = review_detail.review;
-    assert_eq!(review.status, ReviewStatus::Approved);
-    assert_eq!(
-        review.decided_by.as_ref().map(|user| user.user_id.as_str()),
-        Some(user_id.as_str())
-    );
-    assert_eq!(
-        review
-            .decided_by
-            .as_ref()
-            .and_then(|user| user.display_name.as_deref()),
-        Some("Owner")
-    );
-    let approved_at = review.decided_at.expect("approval time should be recorded");
-    let incomplete_decision_metadata =
-        sqlx::query("UPDATE reviews SET decided_by_user_id = NULL WHERE review_id = $1")
-            .bind(&review.review_id)
-            .execute(&postgres.pool)
-            .await;
-    assert!(incomplete_decision_metadata.is_err());
+    assert_eq!(unchanged.review.status, ReviewStatus::Open);
+    assert_eq!(unchanged.review.decided_by, None);
+    assert_eq!(unchanged.review.decided_at, None);
 
     let merge: ReviewMergeResult = post_json_with_etag(
         app.clone(),
         &format!("/api/v1/reviews/{}/merges", review.review_id),
         &org_ref_etag,
         &CreateReviewMergeRequest {
-            expected_review_version: 2,
+            expected_review_version: review.version,
         },
     )
     .await;
     assert_eq!(merge.review.status, ReviewStatus::Merged);
-    assert_eq!(merge.review.decided_by, review.decided_by);
-    assert_eq!(merge.review.decided_at, Some(approved_at));
+    assert_eq!(merge.review.version, review.version + 1);
+    assert_eq!(
+        merge
+            .review
+            .decided_by
+            .as_ref()
+            .map(|user| user.user_id.as_str()),
+        Some(user_id.as_str())
+    );
+    assert_eq!(
+        merge
+            .review
+            .decided_by
+            .as_ref()
+            .and_then(|user| user.display_name.as_deref()),
+        Some("Owner")
+    );
+    assert!(merge.review.decided_at.is_some());
+    assert!(merge.review.approved_result_hash.is_some());
+    let incomplete_decision_metadata =
+        sqlx::query("UPDATE reviews SET decided_by_user_id = NULL WHERE review_id = $1")
+            .bind(&merge.review.review_id)
+            .execute(&postgres.pool)
+            .await;
+    assert!(incomplete_decision_metadata.is_err());
     assert_eq!(merge.applied_operation_count, 1);
     let commit_id = merge.commit_id.expect("merge should create a commit");
     let merged_draft: DraftDetail = get_json(
@@ -1455,6 +1479,7 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     let error = repo
         .create_review_merge(
             &org_review.review.review_id,
+            &bootstrap.user_id,
             org_head_before.as_deref(),
             CreateReviewMergeRequest {
                 expected_review_version: org_review.review.version,
@@ -2351,6 +2376,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     let base_commit_id = repo
         .create_review_merge(
             &seed_review.review.review_id,
+            &bootstrap.user_id,
             None,
             CreateReviewMergeRequest {
                 expected_review_version: seed_review.review.version,
@@ -2502,6 +2528,7 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
     let current_commit_id = repo
         .create_review_merge(
             &remote_review.review.review_id,
+            &bootstrap.user_id,
             Some(&base_commit_id),
             CreateReviewMergeRequest {
                 expected_review_version: remote_review.review.version,
@@ -3206,6 +3233,7 @@ async fn project_org_selection_resolves_legacy_path_only_draft_after_authority_r
         .unwrap();
     repo.create_review_merge(
         &approved.review.review_id,
+        &bootstrap.user_id,
         base_commit_id.as_deref(),
         CreateReviewMergeRequest {
             expected_review_version: approved.review.version,
@@ -3590,6 +3618,7 @@ async fn created_org_draft_materializes_local_identity_updates_and_renames() {
         .unwrap();
     repo.create_review_merge(
         &approved.review.review_id,
+        &bootstrap.user_id,
         current_head.as_deref(),
         CreateReviewMergeRequest {
             expected_review_version: approved.review.version,
@@ -3732,6 +3761,7 @@ async fn org_delete_merge_advances_authority_past_other_projects_active_drafts()
 
     repo.create_review_merge(
         &approved.review.review_id,
+        &bootstrap.user_id,
         current_head.as_deref(),
         CreateReviewMergeRequest {
             expected_review_version: approved.review.version,

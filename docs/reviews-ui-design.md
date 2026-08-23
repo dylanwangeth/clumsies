@@ -54,10 +54,12 @@ Submitted by author for project · updated relative time
   an opaque Project ID or raw protocol timestamp.
 - Resolve one workflow state for the row. Precedence is `Merged`, `Conflicts`,
   `Update Required`/`Out of Date`, then the viewer-aware lifecycle state:
-  `Needs Review`, `Ready to Merge`/`Approved`, or `Resubmit`/`Awaiting Author`.
+  `Needs Review`, legacy `Ready to Merge`/`Approved`, or
+  `Resubmit`/`Awaiting Author`.
   A merged Review never displays stale merely because the merge advanced the
-  current Project ref. `Ready to Merge` also requires a nonempty approved result
-  hash; capability alone does not make a legacy approval mergeable.
+  current Project ref. `Ready to Merge` applies only to historical two-step
+  approvals and also requires a nonempty approved result hash; capability alone
+  does not make a legacy approval mergeable.
 - The workflow state is a plain system `Label` with an SF Symbol and semantic
   foreground color. It is neither a button nor a capsule. Never stack a status
   icon and freshness icon that require hover to distinguish. Always show the
@@ -71,8 +73,8 @@ Submitted by author for project · updated relative time
   twice during a programmatic deep-link.
 - The status Filter menu belongs to the list page's leading/navigation toolbar
   area. Its collapsed label communicates the selected scope; counts remain in
-  the menu, help, and accessibility value. The menu contains Open, Approved,
-  Rejected, Merged, and All with counts.
+  the menu, help, and accessibility value. The menu contains Open, Approved
+  (for historical records), Rejected, Merged, and All with counts.
 - Search is an independent window-level action and remains the trailing-most
   Review tool. Sync and decision actions are not grouped with Filter.
 - Loading without cached Reviews uses a labeled `ProgressView`. Existing cached
@@ -144,12 +146,14 @@ the UI labels these honestly rather than pretending they are inline comments.
 
 Decision actions remain native symbol toolbar items with menu-command parity:
 
-- Open: Org owners/admins with `review:decide` see Reject (`xmark`) and the
-  single prominent Approve (`checkmark`); ordinary members remain read/comment
-  participants and see neither authority action.
-- Approved: Merge (`arrow.triangle.merge`) when permitted and the Server
-  supplied a nonempty approved result hash. Legacy approvals without that
-  immutable result identity remain visible but cannot be merged.
+- Open: Org owners/admins with `review:decide` and `review:merge` see Reject
+  (`xmark`) and the single prominent Approve (`checkmark`). Approve records the
+  decision and merges into authority in one Server transaction; ordinary
+  members remain read/comment participants and see neither authority action.
+- Approved: historical records retain Merge (`arrow.triangle.merge`) when
+  permitted and the Server supplied a nonempty approved result hash. Legacy
+  approvals without that immutable result identity remain visible but cannot
+  be merged.
 - Rejected: Resubmit (`arrow.clockwise`) for the Draft author.
 
 Filter belongs only to the list page. Decision tools belong only to an active

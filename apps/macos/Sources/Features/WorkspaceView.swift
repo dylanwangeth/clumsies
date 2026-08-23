@@ -751,8 +751,8 @@ struct WorkspaceView: View {
                     )
                     .help(review.freshness == .behind
                         ? "Review the latest shared changes before deciding"
-                        : "Approve this Review")
-                    .accessibilityLabel("Approve Review")
+                        : "Approve and merge this Review")
+                    .accessibilityLabel("Approve and Merge Review")
                     .accessibilityIdentifier("review-toolbar-approve")
                 }
             }
