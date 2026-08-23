@@ -178,10 +178,10 @@ struct ReviewListPage: View {
                             ReviewRow(
                                 review: review,
                                 projectName: projectName(for: review),
-                                state: state,
-                                showsState: statusFilter == .all || state.isQueueSignal
+                                state: state
                             )
                         }
+                        .listRowSeparator(.visible)
                         .accessibilityIdentifier("review-row-\(review.id)")
                     }
                 }
@@ -329,63 +329,82 @@ struct ReviewRow: View {
     let review: ReviewRecord
     let projectName: String?
     let state: ReviewQueueStatePresentation
-    let showsState: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(review.title)
-                    .font(.body)
-                    .lineLimit(1)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
                     .layoutPriority(1)
+                    .help(review.title)
 
                 Spacer(minLength: 8)
 
-                if showsState {
-                    ViewThatFits(in: .horizontal) {
-                        Label(state.title, systemImage: state.symbolName)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
+                ViewThatFits(in: .horizontal) {
+                    Label(state.title, systemImage: state.symbolName)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
 
-                        Image(systemName: state.symbolName)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(state.tone.color)
-                    .help(state.title)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(state.title)
+                    Image(systemName: state.symbolName)
                 }
+                .font(.caption)
+                .foregroundStyle(state.tone.color)
+                .help(state.title)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(state.title)
             }
 
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(context)
+            if !description.isEmpty {
+                Text(description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-
-                Spacer(minLength: 8)
-
-                if let updatedAt = IssueTiming.date(from: review.updatedAt) {
-                    Text(updatedAt, style: .relative)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .help(IssueTiming.absoluteText(review.updatedAt) ?? "")
-                }
+                    .help(review.description)
             }
+
+            metadata
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(metadataHelp)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
     }
 
+    private var author: String {
+        review.author.displayName ?? review.author.email
+    }
+
+    private var description: String {
+        review.description.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var context: String {
-        let author = review.author.displayName ?? review.author.email
         guard let projectName, !projectName.isEmpty else { return author }
         return "\(projectName) · \(author)"
+    }
+
+    private var metadata: Text {
+        var text = Text("Submitted by \(author)")
+        if let projectName, !projectName.isEmpty {
+            text = text + Text(" for \(projectName)")
+        }
+        if let updatedAt = IssueTiming.date(from: review.updatedAt) {
+            text = text + Text(" · updated ") + Text(updatedAt, style: .relative)
+        }
+        return text
+    }
+
+    private var metadataHelp: String {
+        IssueTiming.absoluteText(review.updatedAt)
+            .map { "Last Review record update: \($0)" }
+            ?? "Review submission"
     }
 
     private var accessibilityText: String {
