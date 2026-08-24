@@ -177,7 +177,7 @@ struct WorkspaceView: View {
             issuesWorkspace
         case .reviews:
             reviewsWorkspace
-        case .recall:
+        case .sessions:
             recallWorkspace
         default:
             regularWorkspace
@@ -681,7 +681,7 @@ struct WorkspaceView: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
-        case .recall: "Search Recall"
+        case .sessions: "Search Activity"
         }
     }
 
@@ -938,8 +938,8 @@ struct WorkspaceView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .help("Refresh Recall")
-            .accessibilityLabel("Refresh Recall")
+            .help("Refresh Activity")
+            .accessibilityLabel("Refresh Activity")
         }
     }
 
@@ -1176,7 +1176,7 @@ struct WorkspaceView: View {
             ToolbarItem {
                 EmptyView()
             }
-        case .recall:
+        case .sessions:
             ToolbarItem {
                 EmptyView()
             }
@@ -1194,7 +1194,7 @@ struct WorkspaceView: View {
             EmptyView()
         case .reviews:
             EmptyView()
-        case .recall:
+        case .sessions:
             EmptyView()
         }
     }
@@ -1220,7 +1220,7 @@ struct WorkspaceView: View {
             EmptyView()
         case .reviews:
             EmptyView()
-        case .recall:
+        case .sessions:
             EmptyView()
         }
     }
@@ -1314,7 +1314,7 @@ struct WorkspaceView: View {
             }
         case .issues:
             break
-        case .recall:
+        case .sessions:
             break
         }
         return Array(entries.prefix(30))
@@ -1532,7 +1532,7 @@ private struct WorkspaceSearchPopover: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
-        case .recall: "Search Recall"
+        case .sessions: "Search Activity"
         }
     }
 
@@ -1625,8 +1625,8 @@ private struct GlobalSidebar: View {
                 SidebarDestinationLabel(section: .reviews)
                     .tag(GlobalSidebarDestination.section(.reviews))
 
-                SidebarDestinationLabel(section: .recall)
-                    .tag(GlobalSidebarDestination.section(.recall))
+                SidebarDestinationLabel(section: .sessions)
+                    .tag(GlobalSidebarDestination.section(.sessions))
             } header: {
                 HStack(spacing: 7) {
                     Image("BrandMark", bundle: .main)

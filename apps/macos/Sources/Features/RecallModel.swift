@@ -31,4 +31,18 @@ final class RecallModel: ObservableObject {
     var selectedSession: RecallSession? {
         sessions.first { $0.id == selectedSessionId }
     }
+
+    func loadFragment(
+        workspaceRoot: String,
+        runId: String,
+        unitKey: String
+    ) async throws -> RecallFragment {
+        try await daemon.recallFragment(
+            GetRecallFragmentRequest(
+                workspaceRoot: workspaceRoot,
+                runId: runId,
+                unitKey: unitKey
+            )
+        ).fragment
+    }
 }

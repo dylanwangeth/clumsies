@@ -155,6 +155,7 @@ pub(super) fn activation_response(
         known,
     })?);
     Ok(ActivateMemoryResponse {
+        run_id: None,
         index_revision: revision_id.to_owned(),
         profile: RANKING_CONFIG_VERSION.to_owned(),
         next_state,

@@ -1100,6 +1100,13 @@ impl DaemonState {
         recall::list_recalls(self, request).await
     }
 
+    pub async fn get_recall_fragment(
+        &self,
+        request: GetRecallFragmentRequest,
+    ) -> Result<GetRecallFragmentResponse, DaemonError> {
+        recall::get_recall_fragment(self, request).await
+    }
+
     pub async fn create_evaluation_case(
         &self,
         request: CreateEvaluationCaseRequest,
@@ -1951,6 +1958,13 @@ impl DaemonIpcService {
         self.state.list_recalls(request).await
     }
 
+    pub async fn get_recall_fragment(
+        &self,
+        request: GetRecallFragmentRequest,
+    ) -> Result<GetRecallFragmentResponse, DaemonError> {
+        self.state.get_recall_fragment(request).await
+    }
+
     pub async fn create_evaluation_case(
         &self,
         request: CreateEvaluationCaseRequest,
@@ -2112,6 +2126,9 @@ impl DaemonIpcService {
             }
             "get_retrieval_run" => dispatch_async!(self, request.payload, get_retrieval_run),
             "list_recalls" => dispatch_async!(self, request.payload, list_recalls),
+            "get_recall_fragment" => {
+                dispatch_async!(self, request.payload, get_recall_fragment)
+            }
             "create_evaluation_case" => {
                 dispatch_async!(self, request.payload, create_evaluation_case)
             }

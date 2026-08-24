@@ -61,8 +61,8 @@ pub use project_storage::{
     DaemonProjectStorageResetRequest,
 };
 pub use recall::{
-    ListRecallsRequest, ListRecallsResponse, RecallActivation, RecallFragment, RecallSession,
-    RecallTask,
+    GetRecallFragmentRequest, GetRecallFragmentResponse, ListRecallsRequest, ListRecallsResponse,
+    RecallActivation, RecallFragment, RecallSession, RecallTask,
 };
 pub use retrieval_history::{
     ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,

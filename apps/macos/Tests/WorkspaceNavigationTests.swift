@@ -12,6 +12,82 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSection.memory.title, "Memory")
     }
 
+    func testSessionWorkspaceTitleIsActivity() {
+        XCTAssertEqual(WorkspaceSection.sessions.title, "Activity")
+    }
+
+    func testRecallDeliveryLabelsExplainInternalActions() {
+        XCTAssertEqual(recallFragment(action: "add").deliveryTitle, "Sent to agent")
+        XCTAssertEqual(recallFragment(action: "replace").deliveryTitle, "Updated for agent")
+        XCTAssertEqual(recallFragment(action: "reuse").deliveryTitle, "Already available")
+        XCTAssertNil(recallFragment(action: "unknown").deliveryTitle)
+    }
+
+    func testRecallFragmentIdentityUsesTheChunkUnitKey() {
+        let first = recallFragment(action: "add", unitKey: "memory-1#0")
+        let second = recallFragment(action: "add", unitKey: "memory-1#1")
+
+        XCTAssertNotEqual(first.id, second.id)
+    }
+
+    func testActivityTitleFallsBackToFirstUserRequest() {
+        let session = RecallSession(
+            host: .codex,
+            sessionId: "session-1",
+            title: nil,
+            workspaceRoot: "/repo",
+            createdAt: nil,
+            tasks: [
+                RecallTask(
+                    messageId: "message-1",
+                    text: "Explain the memory retrieval design",
+                    time: nil,
+                    activations: []
+                )
+            ]
+        )
+
+        XCTAssertEqual(session.activityDisplayTitle, "Explain the memory retrieval design")
+    }
+
+    func testSessionIdentityIncludesItsHost() {
+        let dsh = RecallSession(
+            host: .dsh,
+            sessionId: "shared-id",
+            title: nil,
+            workspaceRoot: "/repo",
+            createdAt: nil,
+            tasks: []
+        )
+        let codex = RecallSession(
+            host: .codex,
+            sessionId: "shared-id",
+            title: nil,
+            workspaceRoot: "/repo",
+            createdAt: nil,
+            tasks: []
+        )
+
+        XCTAssertNotEqual(dsh.id, codex.id)
+    }
+
+    private func recallFragment(
+        action: String?,
+        unitKey: String = "memory-1#0"
+    ) -> RecallFragment {
+        RecallFragment(
+            action: action,
+            unitKey: unitKey,
+            resourceId: "memory-1",
+            scope: .project,
+            path: "memory/example.md",
+            headingPath: ["Example"],
+            content: "Example",
+            finalRank: 1,
+            truncated: false
+        )
+    }
+
     func testReviewsAndKanbanUseSidebarWithPushNavigatedDetail() {
         XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
         XCTAssertEqual(WorkspaceColumnLayout(section: .reviews), .sidebarDetail)
@@ -19,6 +95,7 @@ final class WorkspaceNavigationTests: XCTestCase {
         for section in [
             WorkspaceSection.memory,
             .bundles,
+            .sessions,
         ] {
             XCTAssertEqual(
                 WorkspaceColumnLayout(section: section),

@@ -1215,9 +1215,20 @@ struct ListRecallsResponse: Codable, Sendable {
     let workspaceRoots: [String]
 }
 
-struct RecallSession: Codable, Identifiable, Sendable {
-    var id: String { sessionId }
+struct GetRecallFragmentRequest: Codable, Sendable {
+    let workspaceRoot: String
+    let runId: String
+    let unitKey: String
+}
 
+struct GetRecallFragmentResponse: Codable, Sendable {
+    let fragment: RecallFragment
+}
+
+struct RecallSession: Codable, Identifiable, Sendable {
+    var id: String { "\(host.rawValue):\(sessionId)" }
+
+    let host: AgentRunHost
     let sessionId: String
     let title: String?
     let workspaceRoot: String
@@ -1249,11 +1260,15 @@ struct RecallActivation: Codable, Identifiable, Sendable {
 }
 
 struct RecallFragment: Codable, Identifiable, Sendable {
-    var id: String { "\(resourceId)\u{0}\(path)\u{0}\(action ?? "")" }
+    var id: String { unitKey }
 
     let action: String?
+    let unitKey: String
     let resourceId: String
+    let scope: DaemonDraftScope?
     let path: String
+    let headingPath: [String]
     let content: String
+    let finalRank: UInt64?
+    let truncated: Bool
 }
-

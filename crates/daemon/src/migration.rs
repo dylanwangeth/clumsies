@@ -151,6 +151,10 @@ pub(crate) async fn migrate_local_db(pool: &SqlitePool) -> Result<(), DaemonErro
         migrate_local_schema_38_to_39(pool).await?;
         existing_schema_version = 39;
     }
+    if existing_schema_version == 39 {
+        migrate_local_schema_39_to_40(pool).await?;
+        existing_schema_version = 40;
+    }
     if existing_schema_version != 0 && existing_schema_version != CURRENT_LOCAL_SCHEMA_VERSION {
         return Err(DaemonError::InvalidConfig(format!(
             "local database schema version {existing_schema_version} is incompatible with version {CURRENT_LOCAL_SCHEMA_VERSION}; recreate the daemon database"
@@ -1949,6 +1953,151 @@ pub(crate) async fn migrate_local_schema_38_to_39(pool: &SqlitePool) -> Result<(
     result
 }
 
+/// Widens persisted retrieval-history resource kinds to accept `memory`.
+pub(crate) async fn migrate_local_schema_39_to_40(pool: &SqlitePool) -> Result<(), DaemonError> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let result = async {
+        let mut tx = connection.begin().await?;
+
+        let candidates_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'retrieval_run_candidates'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if candidates_sql
+            .as_deref()
+            .is_some_and(|sql| !sql.contains("'memory'"))
+        {
+            for statement in [
+                "CREATE TABLE retrieval_run_candidates_v40 (
+                    run_id TEXT NOT NULL,
+                    candidate_order BIGINT NOT NULL CHECK (candidate_order >= 0),
+                    unit_key TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
+                    kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
+                    path TEXT NOT NULL,
+                    heading_path_json TEXT NOT NULL,
+                    locator_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    resource_content_hash TEXT NOT NULL,
+                    token_count BIGINT NOT NULL CHECK (token_count >= 0),
+                    evidence_excerpt TEXT NOT NULL,
+                    exact_rank BIGINT,
+                    bm25_rank BIGINT,
+                    bm25_score REAL,
+                    vector_rank BIGINT,
+                    vector_score REAL,
+                    rrf_rank BIGINT,
+                    rrf_score REAL,
+                    reranker_rank BIGINT,
+                    reranker_logit REAL,
+                    reranker_relevance REAL,
+                    final_rank BIGINT,
+                    selected INTEGER NOT NULL CHECK (selected IN (0, 1)),
+                    exclusion_reason TEXT NOT NULL CHECK (exclusion_reason IN (
+                        'selected', 'below_relevance', 'overlap', 'per_resource_limit',
+                        'token_budget', 'fragment_limit', 'not_reranked'
+                    )),
+                    delta_action TEXT CHECK (delta_action IN ('add', 'replace', 'reuse')),
+                    PRIMARY KEY (run_id, unit_key)
+                )",
+                "INSERT INTO retrieval_run_candidates_v40
+                 SELECT * FROM retrieval_run_candidates",
+                "DROP TABLE retrieval_run_candidates",
+                "ALTER TABLE retrieval_run_candidates_v40 RENAME TO retrieval_run_candidates",
+                "CREATE INDEX idx_retrieval_candidates_run_order
+                 ON retrieval_run_candidates (run_id, candidate_order)",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        let resources_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'retrieval_run_resources'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if resources_sql
+            .as_deref()
+            .is_some_and(|sql| !sql.contains("'memory'"))
+        {
+            for statement in [
+                "CREATE TABLE retrieval_run_resources_v40 (
+                    run_id TEXT NOT NULL,
+                    resource_order BIGINT NOT NULL CHECK (resource_order >= 0),
+                    resource_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
+                    kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
+                    path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    content_preview TEXT NOT NULL,
+                    source_commit_id TEXT,
+                    draft_id TEXT,
+                    draft_revision TEXT,
+                    PRIMARY KEY (run_id, resource_id)
+                )",
+                "INSERT INTO retrieval_run_resources_v40
+                 SELECT * FROM retrieval_run_resources",
+                "DROP TABLE retrieval_run_resources",
+                "ALTER TABLE retrieval_run_resources_v40 RENAME TO retrieval_run_resources",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        let corpus_resources_sql: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'evaluation_corpus_resources'",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if corpus_resources_sql
+            .as_deref()
+            .is_some_and(|sql| !sql.contains("'memory'"))
+        {
+            for statement in [
+                "CREATE TABLE evaluation_corpus_resources_v40 (
+                    corpus_id TEXT NOT NULL,
+                    resource_order BIGINT NOT NULL CHECK (resource_order >= 0),
+                    resource_id TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('org', 'project')),
+                    kind TEXT NOT NULL CHECK (kind IN ('context', 'rule', 'workflow', 'memory')),
+                    path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    content_preview TEXT NOT NULL,
+                    source_commit_id TEXT,
+                    draft_id TEXT,
+                    draft_revision TEXT,
+                    PRIMARY KEY (corpus_id, resource_id)
+                )",
+                "INSERT INTO evaluation_corpus_resources_v40
+                 SELECT * FROM evaluation_corpus_resources",
+                "DROP TABLE evaluation_corpus_resources",
+                "ALTER TABLE evaluation_corpus_resources_v40
+                 RENAME TO evaluation_corpus_resources",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2218,6 +2367,212 @@ mod tests {
         // Re-running migration is idempotent
         migrate_local_schema_38_to_39(&pool).await.unwrap();
     }
+
+    #[tokio::test]
+    async fn schema_39_to_40_preserves_retrieval_history_and_accepts_memory() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE daemon_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ('schema_version', '39')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        retrieval_history::migrate(&pool).await.unwrap();
+
+        // Recreate the three tables with their v39 kind CHECK while keeping
+        // the rest of the production schema byte-for-byte equivalent.
+        for table in [
+            "retrieval_run_candidates",
+            "retrieval_run_resources",
+            "evaluation_corpus_resources",
+        ] {
+            let current_sql: String = sqlx::query_scalar(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = $1",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let old_table = format!("{table}_v39");
+            let stale_sql = current_sql
+                .replacen(
+                    &format!("CREATE TABLE {table}"),
+                    &format!("CREATE TABLE {old_table}"),
+                    1,
+                )
+                .replace(", 'memory'", "");
+            sqlx::query(&stale_sql).execute(&pool).await.unwrap();
+            sqlx::query(&format!("INSERT INTO {old_table} SELECT * FROM {table}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(&format!("DROP TABLE {table}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(&format!("ALTER TABLE {old_table} RENAME TO {table}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "CREATE INDEX idx_retrieval_candidates_run_order
+             ON retrieval_run_candidates (run_id, candidate_order)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO retrieval_run_candidates (
+                run_id, candidate_order, unit_key, resource_id, scope, kind, path,
+                heading_path_json, locator_json, content_hash, resource_content_hash,
+                token_count, evidence_excerpt, selected, exclusion_reason, delta_action
+             ) VALUES (
+                'run_old', 0, 'unit_old', 'resource_old', 'project', 'context',
+                'old.md', '[]', '{}', 'unit_hash_old', 'resource_hash_old', 1,
+                'old candidate', 1, 'selected', 'add'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO retrieval_run_resources (
+                run_id, resource_order, resource_id, scope, kind, path, title,
+                content_hash, content_preview
+             ) VALUES (
+                'run_old', 0, 'resource_old', 'project', 'context', 'old.md',
+                'Old resource', 'resource_hash_old', 'old resource'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO evaluation_corpus_resources (
+                corpus_id, resource_order, resource_id, scope, kind, path, title,
+                content_hash, content_preview
+             ) VALUES (
+                'corpus_old', 0, 'resource_old', 'project', 'context', 'old.md',
+                'Old resource', 'resource_hash_old', 'old resource'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE retrieval_candidate_annotations (
+                annotation_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                unit_key TEXT NOT NULL,
+                note TEXT NOT NULL,
+                FOREIGN KEY (run_id, unit_key)
+                    REFERENCES retrieval_run_candidates(run_id, unit_key)
+                    ON DELETE CASCADE
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO retrieval_candidate_annotations
+             VALUES ('annotation_old', 'run_old', 'unit_old', 'keep me')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_local_db(&pool).await.unwrap();
+
+        let schema_version: String =
+            sqlx::query_scalar("SELECT value FROM daemon_meta WHERE key = 'schema_version'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(schema_version, "40");
+        for table in [
+            "retrieval_run_candidates",
+            "retrieval_run_resources",
+            "evaluation_corpus_resources",
+            "retrieval_candidate_annotations",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "lost row from {table}");
+        }
+        let foreign_key_violations: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(foreign_key_violations, 0);
+        let candidate_index: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_retrieval_candidates_run_order'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(candidate_index, 1);
+
+        sqlx::query(
+            "INSERT INTO retrieval_run_candidates (
+                run_id, candidate_order, unit_key, resource_id, scope, kind, path,
+                heading_path_json, locator_json, content_hash, resource_content_hash,
+                token_count, evidence_excerpt, selected, exclusion_reason, delta_action
+             ) VALUES (
+                'run_memory', 0, 'unit_memory', 'resource_memory', 'project', 'memory',
+                'memory.md', '[]', '{}', 'unit_hash_memory', 'resource_hash_memory', 1,
+                'memory candidate', 1, 'selected', 'add'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO retrieval_run_resources (
+                run_id, resource_order, resource_id, scope, kind, path, title,
+                content_hash, content_preview
+             ) VALUES (
+                'run_memory', 0, 'resource_memory', 'project', 'memory', 'memory.md',
+                'Memory resource', 'resource_hash_memory', 'memory resource'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO evaluation_corpus_resources (
+                corpus_id, resource_order, resource_id, scope, kind, path, title,
+                content_hash, content_preview
+             ) VALUES (
+                'corpus_memory', 0, 'resource_memory', 'project', 'memory', 'memory.md',
+                'Memory resource', 'resource_hash_memory', 'memory resource'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
     async fn test_pool_with_v37_adapter_tables() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)

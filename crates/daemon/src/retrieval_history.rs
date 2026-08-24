@@ -1146,6 +1146,102 @@ pub(super) async fn get_retrieval_run(
     load_run_detail(&state.inner.pool, &request.run_id).await
 }
 
+/// Loads one selected candidate from the immutable corpus captured for its
+/// retrieval run. Activity details must never drift to the current memory.
+pub(crate) async fn load_recall_fragment_content(
+    state: &DaemonState,
+    project_id: &str,
+    run_id: &str,
+    unit_key: &str,
+) -> Result<(RetrievalCandidate, String, bool), DaemonError> {
+    let _history = state.inner.retrieval_history_lock.lock().await;
+    let actual_project: String =
+        sqlx::query_scalar("SELECT project_id FROM retrieval_runs WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_optional(&state.inner.pool)
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("Retrieval Run {run_id}")))?;
+    if actual_project != project_id {
+        return Err(DaemonError::NotFound(format!("Retrieval Run {run_id}")));
+    }
+
+    let row =
+        sqlx::query("SELECT * FROM retrieval_run_candidates WHERE run_id = $1 AND unit_key = $2")
+            .bind(run_id)
+            .bind(unit_key)
+            .fetch_optional(&state.inner.pool)
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("Retrieval candidate {unit_key}")))?;
+    let candidate = candidate_from_row(row)?;
+    if !candidate.selected {
+        return Err(DaemonError::InvalidRequest(format!(
+            "Retrieval candidate {unit_key} was not returned by this run"
+        )));
+    }
+
+    let frozen_hash: String = sqlx::query_scalar(
+        "SELECT content_hash FROM retrieval_run_resources
+         WHERE run_id = $1 AND resource_id = $2",
+    )
+    .bind(run_id)
+    .bind(&candidate.resource_id)
+    .fetch_optional(&state.inner.pool)
+    .await?
+    .ok_or_else(|| {
+        history_corrupt(format!(
+            "Candidate {unit_key} has no frozen Retrieval Run resource"
+        ))
+    })?;
+    if frozen_hash != candidate.resource_content_hash {
+        return Err(history_corrupt(format!(
+            "Candidate {unit_key} does not belong to its frozen Retrieval Run resource"
+        )));
+    }
+    let frozen_content = fs::read_to_string(corpus_blob_path(
+        &state.inner.config.root_dir,
+        &frozen_hash,
+    )?)?;
+    if content_hash(&frozen_content) != frozen_hash {
+        return Err(history_corrupt(format!(
+            "Frozen Retrieval Run resource for candidate {unit_key} is corrupt"
+        )));
+    }
+    let (content, truncated) = candidate_content(&candidate, &frozen_content)?;
+    Ok((candidate, content, truncated))
+}
+
+fn candidate_content(
+    candidate: &RetrievalCandidate,
+    frozen_content: &str,
+) -> Result<(String, bool), DaemonError> {
+    let SourceLocator::MarkdownSpan {
+        start_byte,
+        end_byte,
+        ..
+    } = &candidate.locator;
+    if *start_byte == 0 && *end_byte == 0 && candidate.unit_key.ends_with("/description") {
+        // Descriptions are indexed as synthetic units but are not part of the
+        // resource body blob. Historical runs retain only their excerpt.
+        return Ok((
+            candidate.evidence_excerpt.clone(),
+            excerpt_is_truncated(&candidate.evidence_excerpt),
+        ));
+    }
+    let content = frozen_content.get(*start_byte..*end_byte).ok_or_else(|| {
+        history_corrupt(format!(
+            "Candidate {} has an invalid frozen corpus locator",
+            candidate.unit_key
+        ))
+    })?;
+    if content_hash(content) != candidate.content_hash {
+        return Err(history_corrupt(format!(
+            "Candidate {} does not match its frozen corpus locator",
+            candidate.unit_key
+        )));
+    }
+    Ok((content.to_owned(), false))
+}
+
 async fn load_run_detail(
     pool: &SqlitePool,
     run_id: &str,
@@ -2184,6 +2280,10 @@ fn truncate_excerpt(value: &str) -> String {
     excerpt
 }
 
+pub(crate) fn excerpt_is_truncated(value: &str) -> bool {
+    value.chars().count() > RETRIEVAL_EXCERPT_CHARS
+}
+
 fn encode_cursor(cursor: &RetrievalCursor) -> Result<String, DaemonError> {
     Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?))
 }
@@ -2255,6 +2355,234 @@ fn history_corrupt(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::{
+        CredentialStore, CredentialStoreError, DaemonConfig, GetRecallFragmentRequest,
+        ServerCredentials,
+    };
+
+    struct NoCredentials;
+
+    impl CredentialStore for NoCredentials {
+        fn load(&self) -> Result<Option<ServerCredentials>, CredentialStoreError> {
+            Ok(None)
+        }
+
+        fn replace(&self, _credentials: &ServerCredentials) -> Result<(), CredentialStoreError> {
+            Ok(())
+        }
+
+        fn clear(&self) -> Result<(), CredentialStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_fragment_endpoint_reads_only_the_selected_frozen_run_chunk() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = DaemonConfig::for_root(temp.path().join("daemon"));
+        config.project.server_url = "https://clumsies.test".to_owned();
+        let state = DaemonState::initialize_with_credential_store(config, Arc::new(NoCredentials))
+            .await
+            .unwrap();
+
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("nested");
+        let child = nested.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        for (root, project_id) in [(&workspace, "prj_parent"), (&nested, "prj_nested")] {
+            sqlx::query(
+                "INSERT INTO project_bindings
+                 (server_url, workspace_root, project_id, revision)
+                 VALUES ('https://clumsies.test', $1, $2, 1)",
+            )
+            .bind(root.display().to_string())
+            .bind(project_id)
+            .execute(&state.inner.pool)
+            .await
+            .unwrap();
+        }
+
+        let frozen = "旧前言\n完整的历史召回 chunk\n旧尾声";
+        let expected = "完整的历史召回 chunk";
+        let start = frozen.find(expected).unwrap();
+        let frozen_hash = content_hash(frozen);
+        let run_id = start_run(&state, "prj_nested", "历史查询", "fingerprint")
+            .await
+            .unwrap();
+        let candidate =
+            |unit_key: &str, selected: bool, start_byte: usize, end_byte: usize, text: &str| {
+                RetrievalCandidateInput {
+                    unit_key: unit_key.to_owned(),
+                    resource_id: "memory-1".to_owned(),
+                    scope: SourceScope::Project,
+                    kind: MemoryKind::Memory,
+                    path: "memory/history.md".to_owned(),
+                    heading_path: vec!["历史".to_owned()],
+                    locator: SourceLocator::MarkdownSpan {
+                        start_byte,
+                        end_byte,
+                        heading_path: vec!["历史".to_owned()],
+                    },
+                    content_hash: content_hash(text),
+                    resource_content_hash: frozen_hash.clone(),
+                    token_count: 5,
+                    evidence_excerpt: text.to_owned(),
+                    exact_rank: None,
+                    bm25_rank: Some(1),
+                    bm25_score: Some(1.0),
+                    vector_rank: None,
+                    vector_score: None,
+                    rrf_rank: Some(1),
+                    rrf_score: Some(1.0),
+                    reranker_rank: Some(1),
+                    reranker_logit: Some(1.0),
+                    reranker_relevance: Some(1.0),
+                    final_rank: selected.then_some(1),
+                    exclusion_reason: if selected {
+                        RetrievalExclusionReason::Selected
+                    } else {
+                        RetrievalExclusionReason::NotReranked
+                    },
+                    delta_action: selected.then_some(RetrievalDeltaAction::Add),
+                }
+            };
+        finish_run(
+            &state,
+            &run_id,
+            RetrievalRunCompletion {
+                resources: vec![RetrievalCorpusResourceInput {
+                    resource_id: "memory-1".to_owned(),
+                    scope: SourceScope::Project,
+                    kind: MemoryKind::Memory,
+                    path: "memory/history.md".to_owned(),
+                    title: "History".to_owned(),
+                    content: frozen.to_owned(),
+                    content_hash: frozen_hash.clone(),
+                    source_commit_id: None,
+                    draft_id: None,
+                    draft_revision: None,
+                }],
+                candidates: vec![
+                    candidate(
+                        "memory-1/history/0/0",
+                        true,
+                        start,
+                        start + expected.len(),
+                        expected,
+                    ),
+                    candidate("memory-1/unselected/0/0", false, 0, 9, "旧前言\n"),
+                ],
+                unit_count: 2,
+                returned_fragment_count: 1,
+                ..RetrievalRunCompletion::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let response = crate::recall::get_recall_fragment(
+            &state,
+            GetRecallFragmentRequest {
+                workspace_root: child.display().to_string(),
+                run_id: run_id.clone(),
+                unit_key: "memory-1/history/0/0".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.fragment.content, expected);
+        assert_eq!(response.fragment.unit_key, "memory-1/history/0/0");
+        assert!(!response.fragment.truncated);
+
+        assert!(matches!(
+            load_recall_fragment_content(&state, "prj_parent", &run_id, "memory-1/history/0/0")
+                .await,
+            Err(DaemonError::NotFound(_))
+        ));
+        assert!(matches!(
+            load_recall_fragment_content(&state, "prj_nested", &run_id, "memory-1/unselected/0/0")
+                .await,
+            Err(DaemonError::InvalidRequest(_))
+        ));
+
+        let bad_hash = format!("sha256:{}", "0".repeat(64));
+        sqlx::query(
+            "UPDATE retrieval_run_candidates SET resource_content_hash = $3
+             WHERE run_id = $1 AND unit_key = $2",
+        )
+        .bind(&run_id)
+        .bind("memory-1/history/0/0")
+        .bind(bad_hash)
+        .execute(&state.inner.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            load_recall_fragment_content(&state, "prj_nested", &run_id, "memory-1/history/0/0")
+                .await,
+            Err(DaemonError::State {
+                code: "retrieval_history_corrupt",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn recall_fragment_uses_the_frozen_utf8_locator() {
+        let frozen = "old header\n完整的历史 chunk\nold footer";
+        let expected = "完整的历史 chunk";
+        let start = frozen.find(expected).unwrap();
+        let mut candidate = candidate("memory-1", &content_hash(frozen));
+        candidate.unit_key = "memory-1/history/0/0".to_owned();
+        candidate.locator = SourceLocator::MarkdownSpan {
+            start_byte: start,
+            end_byte: start + expected.len(),
+            heading_path: vec!["History".to_owned()],
+        };
+        candidate.content_hash = content_hash(expected);
+
+        assert_eq!(
+            candidate_content(&candidate, frozen).unwrap(),
+            (expected.to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn description_fragment_explicitly_falls_back_to_its_historical_excerpt() {
+        let description = "d".repeat(RETRIEVAL_EXCERPT_CHARS + 20);
+        let mut candidate = candidate("memory-1", "sha256:unused");
+        candidate.unit_key = "memory-1/description".to_owned();
+        candidate.locator = SourceLocator::MarkdownSpan {
+            start_byte: 0,
+            end_byte: 0,
+            heading_path: Vec::new(),
+        };
+        candidate.evidence_excerpt = truncate_excerpt(&description);
+
+        let (content, truncated) = candidate_content(&candidate, "resource body").unwrap();
+        assert_eq!(content, truncate_excerpt(&description));
+        assert!(truncated);
+    }
+
+    #[test]
+    fn recall_fragment_rejects_an_invalid_locator() {
+        let mut candidate = candidate("memory-1", "sha256:unused");
+        candidate.unit_key = "memory-1/body/0/0".to_owned();
+        candidate.locator = SourceLocator::MarkdownSpan {
+            start_byte: 1,
+            end_byte: 999,
+            heading_path: Vec::new(),
+        };
+
+        assert!(matches!(
+            candidate_content(&candidate, "short"),
+            Err(DaemonError::State {
+                code: "retrieval_history_corrupt",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn scope_violation_and_stale_result_have_independent_semantics() {
