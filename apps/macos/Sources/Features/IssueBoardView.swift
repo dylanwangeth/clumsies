@@ -306,7 +306,9 @@ struct IssueBoardView: View {
     @ObservedObject var model: IssueBoardModel
     let projectId: String?
     let projectName: String?
+    let members: [ProjectMemberRecord]
     let onOpenDetails: (IssueBoardCard) -> Void
+    let onAssign: (IssueBoardCard, ProjectMemberRecord) async throws -> Void
     @State private var selectedIssueId: String?
     @State private var mutatingIssueId: String?
     @State private var showsDiagnostics = false
@@ -494,9 +496,6 @@ struct IssueBoardView: View {
     }
 
     private func board(_ response: IssueBoardResponse) -> some View {
-        let claimsByIssueId = Dictionary(
-            uniqueKeysWithValues: response.claims.map { ($0.issueId, $0) }
-        )
         return GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 HStack(alignment: .top, spacing: IssueBoardLayout.columnSpacing) {
@@ -504,7 +503,7 @@ struct IssueBoardView: View {
                         IssueBoardColumn(
                             column: column,
                             issues: issues(for: column),
-                            claimsByIssueId: claimsByIssueId,
+                            members: members,
                             selectedIssueId: $selectedIssueId,
                             mutatingIssueId: mutatingIssueId,
                             onOpenDetails: openDetails,
@@ -512,6 +511,7 @@ struct IssueBoardView: View {
                             onOpenExternalReference: openExternalReference,
                             onCopyExternalReference: copyExternalReference,
                             onGate: applyGate,
+                            onAssign: assign,
                             onUnclaim: unclaim,
                             onResume: resume,
                             onArchive: { remove(.archive, issue: $0) },
@@ -541,6 +541,19 @@ struct IssueBoardView: View {
             defer { mutatingIssueId = nil }
             do {
                 try await model.applyGate(action, to: issue)
+            } catch {
+                mutationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func assign(_ issue: IssueBoardCard, to member: ProjectMemberRecord) {
+        guard mutatingIssueId == nil, issue.assignee?.userId != member.id else { return }
+        mutatingIssueId = issue.id
+        Task {
+            defer { mutatingIssueId = nil }
+            do {
+                try await onAssign(issue, member)
             } catch {
                 mutationError = error.localizedDescription
             }
@@ -618,12 +631,16 @@ struct IssueBoardView: View {
 struct IssueDetailView: View {
     let issueId: String
     @ObservedObject var model: IssueBoardModel
+    var members: [ProjectMemberRecord] = []
     var onGate: ((IssueGateAction, IssueBoardCard) -> Void)?
+    var onAssign: ((IssueBoardCard, ProjectMemberRecord) async throws -> Void)?
     var onUnclaim: ((IssueBoardCard) -> Void)?
     var onResume: ((IssueBoardCard) -> Void)?
     var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
     var onArchive: ((IssueBoardCard) -> Void)?
     var onDelete: ((IssueBoardCard) -> Void)?
+    @State private var assignmentError: String?
+    @State private var isAssigning = false
 
     private var issue: IssueBoardCard? {
         model.issues.first { $0.id == issueId }
@@ -741,10 +758,39 @@ struct IssueDetailView: View {
                 issue: issue,
                 claim: model.claim(for: issue),
                 detail: model.detail(for: issue),
+                members: members,
+                isAssigning: isAssigning,
+                onAssign: onAssign == nil ? nil : { member in
+                    assign(issue, to: member)
+                },
                 onToggleVerificationStep: onToggleVerificationStep
             )
             .frame(width: 240)
             .background(Color(nsColor: .controlBackgroundColor))
+        }
+        .alert(
+            "Couldn’t Assign Issue",
+            isPresented: Binding(
+                get: { assignmentError != nil },
+                set: { if !$0 { assignmentError = nil } }
+            )
+        ) {
+            Button("OK") { assignmentError = nil }
+        } message: {
+            Text(assignmentError ?? "")
+        }
+    }
+
+    private func assign(_ issue: IssueBoardCard, to member: ProjectMemberRecord) {
+        guard !isAssigning, issue.assignee?.userId != member.id, let onAssign else { return }
+        isAssigning = true
+        Task {
+            defer { isAssigning = false }
+            do {
+                try await onAssign(issue, member)
+            } catch {
+                assignmentError = error.localizedDescription
+            }
         }
     }
 }
@@ -752,7 +798,7 @@ struct IssueDetailView: View {
 private struct IssueBoardColumn: View {
     let column: BoardColumn
     let issues: [IssueBoardCard]
-    let claimsByIssueId: [String: IssueClaim]
+    let members: [ProjectMemberRecord]
     @Binding var selectedIssueId: String?
     let mutatingIssueId: String?
     let onOpenDetails: (IssueBoardCard) -> Void
@@ -760,6 +806,7 @@ private struct IssueBoardColumn: View {
     let onOpenExternalReference: (IssueExternalReference) -> Void
     let onCopyExternalReference: (IssueExternalReference) -> Void
     let onGate: (IssueGateAction, IssueBoardCard) -> Void
+    let onAssign: (IssueBoardCard, ProjectMemberRecord) -> Void
     let onUnclaim: (IssueBoardCard) -> Void
     let onResume: (IssueBoardCard) -> Void
     let onArchive: (IssueBoardCard) -> Void
@@ -795,7 +842,6 @@ private struct IssueBoardColumn: View {
                         } label: {
                             IssueCard(
                                 issue: issue,
-                                claim: claimsByIssueId[issue.issueId],
                                 isSelected: selectedIssueId == issue.id,
                                 isMutating: mutatingIssueId == issue.id
                             )
@@ -851,6 +897,25 @@ private struct IssueBoardColumn: View {
                                     }
                                 } label: {
                                     Label("External Links", systemImage: "link")
+                                }
+                            }
+
+                            if !members.isEmpty {
+                                Menu("Assign to", systemImage: "person.crop.circle") {
+                                    ForEach(members) { member in
+                                        Button {
+                                            onAssign(issue, member)
+                                        } label: {
+                                            if issue.assignee?.userId == member.id {
+                                                Label(
+                                                    member.user.displayName ?? member.user.email,
+                                                    systemImage: "checkmark"
+                                                )
+                                            } else {
+                                                Text(member.user.displayName ?? member.user.email)
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -922,7 +987,6 @@ private struct IssueBoardColumn: View {
 
 private struct IssueCard: View {
     let issue: IssueBoardCard
-    let claim: IssueClaim?
     let isSelected: Bool
     let isMutating: Bool
     @State private var isHovering = false
@@ -977,12 +1041,9 @@ private struct IssueCard: View {
                     .help(issue.description)
             }
 
-            if let claim {
+            if let assignee = issue.assignee {
                 Divider()
-                IssueClaimRow(claim: claim)
-            } else if let handler = primaryHandler {
-                Divider()
-                AgentRunRow(run: handler)
+                IssueAssigneeRow(assignee: assignee)
             }
         }
         .padding(12)
@@ -1001,13 +1062,6 @@ private struct IssueCard: View {
         .onHover { hovering in
             isHovering = hovering
         }
-    }
-
-    /// The handler shown on the card: the most recent active AgentRun, or
-    /// the latest (usually ended) run when nothing is active. Cards carry no
-    /// run timestamps — the issue lifecycle owns the card's time axis.
-    private var primaryHandler: AgentRun? {
-        issue.activeRuns.first ?? issue.latestRun
     }
 
     private var borderColor: Color {
@@ -1034,6 +1088,19 @@ private struct IssueCard: View {
             : reasons.joined(separator: "; ")
     }
 
+}
+
+private struct IssueAssigneeRow: View {
+    let assignee: UserReference
+
+    var body: some View {
+        UserIdentityLabel(
+            account: assignee,
+            displayName: assignee.displayName ?? assignee.email
+        )
+        .font(.caption)
+        .help("Issue assignee")
+    }
 }
 
 private struct IssueExternalReferencesSummary: View {
@@ -1494,12 +1561,16 @@ private struct IssueDetailInspector: View {
     let issue: IssueBoardCard
     let claim: IssueClaim?
     let detail: IssueDetailResponse?
+    let members: [ProjectMemberRecord]
+    let isAssigning: Bool
+    var onAssign: ((ProjectMemberRecord) -> Void)?
     var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 statusRow
+                assigneeRow
                 timelineRow
                 closureSummaryRow
                 verificationRow
@@ -1508,6 +1579,51 @@ private struct IssueDetailInspector: View {
             }
             .padding(16)
         }
+    }
+
+    private var assigneeRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            inspectorLabel("Assignee")
+            if let assignee = issue.assignee {
+                if let onAssign, !members.isEmpty {
+                    Menu {
+                        ForEach(members) { member in
+                            Button {
+                                onAssign(member)
+                            } label: {
+                                if member.id == assignee.userId {
+                                    Label(
+                                        member.user.displayName ?? member.user.email,
+                                        systemImage: "checkmark"
+                                    )
+                                } else {
+                                    Text(member.user.displayName ?? member.user.email)
+                                }
+                            }
+                            .disabled(member.id == assignee.userId)
+                        }
+                    } label: {
+                        UserIdentityLabel(
+                            account: assignee,
+                            displayName: assignee.displayName ?? assignee.email
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(isAssigning)
+                    .help("Change assignee")
+                } else {
+                    UserIdentityLabel(
+                        account: assignee,
+                        displayName: assignee.displayName ?? assignee.email
+                    )
+                }
+            } else {
+                Text("Unassigned")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
     }
 
     private var statusRow: some View {

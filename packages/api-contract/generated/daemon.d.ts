@@ -306,7 +306,7 @@ export interface components {
             unlinked_runs: components["schemas"]["AgentRun"][];
             diagnostics: components["schemas"]["IssueBoardDiagnostic"][];
         };
-        IssueClaimUser: {
+        IssueMember: {
             user_id: string;
             /** Format: email */
             email: string;
@@ -320,7 +320,7 @@ export interface components {
             issue_id: string;
             issue_key: string;
             run_id: string;
-            claimant: components["schemas"]["IssueClaimUser"];
+            claimant: components["schemas"]["IssueMember"];
             /** Format: date-time */
             claimed_at: string;
             /** Format: date-time */
@@ -389,6 +389,7 @@ export interface components {
             /** Format: date-time */
             state_updated_at: string | null;
             closure_summary: string | null;
+            assignee: components["schemas"]["IssueMember"] | null;
             is_stale: boolean;
             blocked: boolean;
             blocking_reasons: components["schemas"]["IssueBlockingReason"][];

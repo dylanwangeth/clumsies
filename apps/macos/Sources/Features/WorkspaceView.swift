@@ -502,6 +502,7 @@ struct WorkspaceView: View {
         IssueDetailView(
             issueId: route.issueId,
             model: issueBoardModel,
+            members: store.projectMembers,
             onGate: { action, issue in
                 Task {
                     do {
@@ -510,6 +511,10 @@ struct WorkspaceView: View {
                         store.errorMessage = error.localizedDescription
                     }
                 }
+            },
+            onAssign: { issue, member in
+                try await store.assignIssue(issue, to: member)
+                await issueBoardModel.refresh()
             },
             onUnclaim: { issue in
                 Task {
@@ -967,8 +972,13 @@ struct WorkspaceView: View {
                     model: issueBoardModel,
                     projectId: store.activeProjectId,
                     projectName: store.activeProject?.name,
+                    members: store.projectMembers,
                     onOpenDetails: { issue in
                         issueNavigationPath = [IssueBoardRoute(issueId: issue.id)]
+                    },
+                    onAssign: { issue, member in
+                        try await store.assignIssue(issue, to: member)
+                        await issueBoardModel.refresh()
                     }
                 )
                 .navigationDestination(for: IssueBoardRoute.self) { route in
@@ -1123,6 +1133,9 @@ struct WorkspaceView: View {
                     return
                 }
             }
+        }
+        .task(id: store.activeProjectId) {
+            await store.refreshProjectMembers()
         }
         .alert(
             "Clumsies",

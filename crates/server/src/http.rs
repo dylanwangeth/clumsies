@@ -17,15 +17,17 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::{
-    AcquireIssueClaimRequest, CreateDraftRebaseRequest, CreateDraftReconciliationCandidateRequest,
-    CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
-    CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
-    CreateReviewRequest, CreateReviewSubmissionRequest, CreateSetupSessionRequest,
-    DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
+    AcquireIssueClaimRequest, AssignKanbanIssueRequest, CreateDraftRebaseRequest,
+    CreateDraftReconciliationCandidateRequest, CreateDraftRequest, CreateMemberRequest,
+    CreateProjectMemberRequest, CreateProjectRequest, CreateReviewCommentRequest,
+    CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
+    CreateReviewSubmissionRequest, CreateSetupSessionRequest, DraftOperationBatchRequest,
+    DraftOperationInput, ImportKanbanIssuesRequest, OidcAuthorizationRequest, OidcCallbackRequest,
     OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
     ReleaseIssueClaimRequest, ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest,
     SetupOidcAuthorization, SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest,
-    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    UpdateDraftRequest, UpdateKanbanIssueRequest, UpdateMemberRequest, UpdateProjectMemberRequest,
+    UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
 use crate::db::current_schema_migration;
@@ -133,7 +135,17 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         patch: update_project,
         delete: delete_project,
     };
+    "/api/v1/projects/{project_id}/members" => { get: list_project_members };
     "/api/v1/projects/{project_id}/issue-claims" => { get: list_issue_claims };
+    "/api/v1/projects/{project_id}/issues" => {
+        get: list_kanban_issues,
+        post: import_kanban_issues,
+    };
+    "/api/v1/projects/{project_id}/issues/{issue_id}" => {
+        put: update_kanban_issue,
+        delete: delete_kanban_issue,
+    };
+    "/api/v1/projects/{project_id}/issues/{issue_id}/assignee" => { put: assign_kanban_issue };
     "/api/v1/projects/{project_id}/issues/{issue_id}/claim" => {
         post: acquire_issue_claim,
         delete: release_issue_claim,
@@ -1202,6 +1214,108 @@ async fn list_issue_claims(
         .ensure_project_member(&principal, &project_id)
         .await?;
     Ok(Json(state.repository.list_issue_claims(&project_id).await?))
+}
+
+async fn list_project_members(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+) -> Result<Json<crate::api::ProjectMemberListResponse>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .list_admin_project_members(&principal.org_id, &project_id, None, 0, 200)
+            .await?,
+    ))
+}
+
+async fn list_kanban_issues(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+) -> Result<Json<crate::api::KanbanIssueListResponse>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state.repository.list_kanban_issues(&project_id).await?,
+    ))
+}
+
+async fn import_kanban_issues(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+    Json(request): Json<ImportKanbanIssuesRequest>,
+) -> Result<Json<crate::api::KanbanIssueListResponse>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .import_kanban_issues(&principal, &project_id, request)
+            .await?,
+    ))
+}
+
+async fn update_kanban_issue(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((project_id, issue_id)): Path<(String, String)>,
+    Json(request): Json<UpdateKanbanIssueRequest>,
+) -> Result<Json<crate::api::KanbanIssue>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .update_kanban_issue(&project_id, &issue_id, request)
+            .await?,
+    ))
+}
+
+async fn assign_kanban_issue(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((project_id, issue_id)): Path<(String, String)>,
+    Json(request): Json<AssignKanbanIssueRequest>,
+) -> Result<Json<crate::api::KanbanIssue>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .assign_kanban_issue(&project_id, &issue_id, &request.assignee_user_id)
+            .await?,
+    ))
+}
+
+async fn delete_kanban_issue(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((project_id, issue_id)): Path<(String, String)>,
+) -> Result<Json<crate::api::DeleteResult>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .delete_kanban_issue(&project_id, &issue_id)
+            .await?,
+    ))
 }
 
 async fn acquire_issue_claim(

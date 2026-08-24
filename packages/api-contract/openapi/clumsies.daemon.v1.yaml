@@ -769,7 +769,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssueBoardDiagnostic"
-    IssueClaimUser:
+    IssueMember:
       type: object
       required: [user_id, email, display_name, avatar_url, role]
       properties:
@@ -805,7 +805,7 @@ components:
         run_id:
           type: string
         claimant:
-          $ref: "#/components/schemas/IssueClaimUser"
+          $ref: "#/components/schemas/IssueMember"
         claimed_at:
           type: string
           format: date-time
@@ -898,6 +898,7 @@ components:
         - state_revision
         - state_updated_at
         - closure_summary
+        - assignee
         - is_stale
         - blocked
         - blocking_reasons
@@ -972,6 +973,10 @@ components:
         closure_summary:
           type: [string, "null"]
           maxLength: 1000
+        assignee:
+          oneOf:
+            - $ref: "#/components/schemas/IssueMember"
+            - type: "null"
         is_stale:
           type: boolean
         blocked:

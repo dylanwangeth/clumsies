@@ -17,18 +17,20 @@ use crate::api::{
     DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
     DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
     DraftReconciliationStatus, DraftResourceContent, DraftResourceRef, DraftStatus, DraftSyncState,
-    DraftSyncStatus, IssueClaim, IssueClaimListResponse, MeResponse, Member, MemberListResponse,
-    MemberStatus, MemoryDetail, MemoryExport, MemoryExportBundle, MemoryExportDraft,
-    MemoryExportItem, MemoryExportSelection, MemoryListResponse, MemoryMeta, OrgRef, OrgRole,
-    PageInfo, PersonalBundleDetail, PersonalBundleListResponse, PersonalBundleMeta,
-    PersonalBundleRequest, PersonalBundleUpdateRequest, Project, ProjectListResponse,
-    ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole,
+    DraftSyncStatus, ImportKanbanIssuesRequest, IssueClaim, IssueClaimListResponse, KanbanIssue,
+    KanbanIssueListResponse, MeResponse, Member, MemberListResponse, MemberStatus, MemoryDetail,
+    MemoryExport, MemoryExportBundle, MemoryExportDraft, MemoryExportItem, MemoryExportSelection,
+    MemoryListResponse, MemoryMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
+    PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
+    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
+    ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole,
     ReconciliationCandidateStatus, ReconciliationConflict, ReconciliationConflictKind,
     ReconciliationResourceState, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
     ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewDraftDetail,
     ReviewListResponse, ReviewMergeResult, ReviewStatus, Tree, TreeEntry, TreeEntryKind,
     TreeEntryScope, TreeEntrySource, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest, UserRef,
+    UpdateKanbanIssueRequest, UpdateMemberRequest, UpdateProjectMemberRequest,
+    UpdateProjectRequest, UserRef,
 };
 use crate::auth::{AuthPrincipal, user_capabilities};
 
@@ -115,6 +117,199 @@ impl ServerRepository {
         } else {
             Err(ServerError::not_found("project", project_id))
         }
+    }
+
+    pub async fn list_kanban_issues(
+        &self,
+        project_id: &str,
+    ) -> Result<KanbanIssueListResponse, ServerError> {
+        let rows = sqlx::query(
+            "SELECT i.project_id, i.issue_id, i.issue_number, i.content_revision,
+                    i.payload, i.created_at, i.updated_at,
+                    u.user_id, u.email, u.display_name, u.avatar_url, u.role
+             FROM kanban_issues i
+             JOIN users u ON u.user_id = i.assignee_user_id
+             WHERE i.project_id = $1
+             ORDER BY i.issue_number",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(KanbanIssueListResponse {
+            items: rows
+                .iter()
+                .map(kanban_issue_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn import_kanban_issues(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        request: ImportKanbanIssuesRequest,
+    ) -> Result<KanbanIssueListResponse, ServerError> {
+        if request.items.is_empty() || request.items.len() > 999 {
+            return Err(ServerError::InvalidRequest(
+                "Kanban import must contain between 1 and 999 Issues".to_owned(),
+            ));
+        }
+        let mut identities = BTreeSet::new();
+        for item in &request.items {
+            validate_kanban_issue_payload(
+                project_id,
+                &item.issue_id,
+                item.issue_number,
+                item.content_revision,
+                &item.payload,
+            )?;
+            if !identities.insert((item.issue_id.clone(), item.issue_number)) {
+                return Err(ServerError::InvalidRequest(
+                    "Kanban import contains duplicate Issue identities".to_owned(),
+                ));
+            }
+        }
+        let mut tx = self.pool.begin().await?;
+        for item in request.items {
+            sqlx::query(
+                "INSERT INTO kanban_issues (
+                    project_id, issue_id, issue_number, assignee_user_id,
+                    content_revision, payload
+                 ) VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (project_id, issue_id) DO NOTHING",
+            )
+            .bind(project_id)
+            .bind(item.issue_id)
+            .bind(item.issue_number)
+            .bind(&principal.user_id)
+            .bind(item.content_revision)
+            .bind(Json(item.payload))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.list_kanban_issues(project_id).await
+    }
+
+    pub async fn update_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        request: UpdateKanbanIssueRequest,
+    ) -> Result<KanbanIssue, ServerError> {
+        let identity = request.payload.get("issue").unwrap_or(&request.payload);
+        let issue_number = identity
+            .get("issue_number")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                ServerError::InvalidRequest("Issue payload has no issue_number".to_owned())
+            })?;
+        validate_kanban_issue_payload(
+            project_id,
+            issue_id,
+            issue_number,
+            request.content_revision,
+            &request.payload,
+        )?;
+        let updated = sqlx::query(
+            "UPDATE kanban_issues
+             SET content_revision = $3, payload = $4, updated_at = now()
+             WHERE project_id = $1 AND issue_id = $2 AND content_revision = $5",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .bind(request.content_revision)
+        .bind(Json(request.payload))
+        .bind(request.expected_content_revision)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            let actual = sqlx::query_scalar::<_, i64>(
+                "SELECT content_revision FROM kanban_issues
+                 WHERE project_id = $1 AND issue_id = $2",
+            )
+            .bind(project_id)
+            .bind(issue_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| ServerError::not_found("kanban_issue", issue_id))?;
+            return Err(ServerError::version_conflict(
+                "kanban_issue",
+                request.expected_content_revision,
+                actual,
+            ));
+        }
+        self.load_kanban_issue(project_id, issue_id).await
+    }
+
+    pub async fn assign_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        assignee_user_id: &str,
+    ) -> Result<KanbanIssue, ServerError> {
+        let updated = sqlx::query(
+            "UPDATE kanban_issues i
+             SET assignee_user_id = $3, updated_at = now()
+             WHERE i.project_id = $1 AND i.issue_id = $2
+               AND EXISTS (
+                   SELECT 1 FROM project_members m
+                   JOIN users u ON u.user_id = m.user_id
+                   WHERE m.project_id = $1 AND m.user_id = $3 AND u.status <> 'disabled'
+               )",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .bind(assignee_user_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(ServerError::InvalidRequest(
+                "Assignee must be a member of this Project".to_owned(),
+            ));
+        }
+        self.load_kanban_issue(project_id, issue_id).await
+    }
+
+    pub async fn delete_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+    ) -> Result<DeleteResult, ServerError> {
+        let deleted =
+            sqlx::query("DELETE FROM kanban_issues WHERE project_id = $1 AND issue_id = $2")
+                .bind(project_id)
+                .bind(issue_id)
+                .execute(&self.pool)
+                .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(ServerError::not_found("kanban_issue", issue_id));
+        }
+        Ok(DeleteResult {
+            deleted: true,
+            id: issue_id.to_owned(),
+        })
+    }
+
+    async fn load_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+    ) -> Result<KanbanIssue, ServerError> {
+        let row = sqlx::query(
+            "SELECT i.project_id, i.issue_id, i.issue_number, i.content_revision,
+                    i.payload, i.created_at, i.updated_at,
+                    u.user_id, u.email, u.display_name, u.avatar_url, u.role
+             FROM kanban_issues i
+             JOIN users u ON u.user_id = i.assignee_user_id
+             WHERE i.project_id = $1 AND i.issue_id = $2",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| ServerError::not_found("kanban_issue", issue_id))?;
+        kanban_issue_from_row(&row)
     }
 
     pub async fn list_issue_claims(
@@ -885,6 +1080,19 @@ impl ServerRepository {
     ) -> Result<DeleteResult, ServerError> {
         let mut tx = self.pool.begin().await?;
         ensure_project_in_org_tx(&mut tx, &principal.org_id, project_id).await?;
+        let assigned_issue_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM kanban_issues
+             WHERE project_id = $1 AND assignee_user_id = $2",
+        )
+        .bind(project_id)
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if assigned_issue_count > 0 {
+            return Err(ServerError::InvalidRequest(
+                "reassign this member's Issues before removing them from the Project".to_owned(),
+            ));
+        }
         let deleted =
             sqlx::query("DELETE FROM project_members WHERE project_id = $1 AND user_id = $2")
                 .bind(project_id)
@@ -6959,6 +7167,56 @@ async fn user_ref_for_id(pool: &PgPool, user_id: &str) -> Result<UserRef, Server
     .await?
     .ok_or_else(|| ServerError::not_found("user", user_id))?;
     user_ref_from_row(&row)
+}
+
+fn kanban_issue_from_row(row: &sqlx::postgres::PgRow) -> Result<KanbanIssue, ServerError> {
+    Ok(KanbanIssue {
+        project_id: row.try_get("project_id")?,
+        issue_id: row.try_get("issue_id")?,
+        issue_number: row.try_get("issue_number")?,
+        assignee: user_ref_from_row(row)?,
+        content_revision: row.try_get("content_revision")?,
+        payload: row.try_get::<Json<serde_json::Value>, _>("payload")?.0,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn validate_kanban_issue_payload(
+    project_id: &str,
+    issue_id: &str,
+    issue_number: i64,
+    content_revision: i64,
+    payload: &serde_json::Value,
+) -> Result<(), ServerError> {
+    let identity = payload.get("issue").unwrap_or(payload);
+    let valid_issue_id = issue_id.len() == 38
+        && issue_id.starts_with("issue_")
+        && issue_id[6..].bytes().all(|byte| byte.is_ascii_hexdigit());
+    let payload_matches = identity
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        == Some(project_id)
+        && identity.get("issue_id").and_then(serde_json::Value::as_str) == Some(issue_id)
+        && identity
+            .get("issue_number")
+            .and_then(serde_json::Value::as_i64)
+            == Some(issue_number)
+        && identity
+            .get("state_revision")
+            .and_then(serde_json::Value::as_i64)
+            == Some(content_revision);
+    if !valid_issue_id
+        || !(1..=999).contains(&issue_number)
+        || content_revision <= 0
+        || !payload_matches
+        || serde_json::to_string(payload).map_or(true, |value| value.len() > 512 * 1024)
+    {
+        return Err(ServerError::InvalidRequest(
+            "invalid Kanban Issue snapshot".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn issue_claim_from_row(row: &sqlx::postgres::PgRow) -> Result<IssueClaim, ServerError> {

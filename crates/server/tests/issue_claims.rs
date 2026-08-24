@@ -4,8 +4,10 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use server::api::{
-    AcquireIssueClaimRequest, IssueClaimListResponse, ReleaseIssueClaimRequest,
-    ReleaseIssueClaimResponse,
+    AcquireIssueClaimRequest, AssignKanbanIssueRequest, ImportKanbanIssue,
+    ImportKanbanIssuesRequest, IssueClaimListResponse, KanbanIssue, KanbanIssueListResponse,
+    ProjectMemberListResponse, ReleaseIssueClaimRequest, ReleaseIssueClaimResponse,
+    UpdateKanbanIssueRequest,
 };
 use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
@@ -41,18 +43,122 @@ async fn only_one_project_member_wins_a_live_issue_claim() {
     .unwrap();
 
     let project_id = installation.project_id;
+    let issue_id = "issue_0123456789abcdef0123456789abcdef";
+    let response = owner_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/projects/{project_id}/issues"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&ImportKanbanIssuesRequest {
+                        items: vec![ImportKanbanIssue {
+                            issue_id: issue_id.to_owned(),
+                            issue_number: 1,
+                            content_revision: 1,
+                            payload: serde_json::json!({
+                                "issue": {
+                                    "project_id": project_id,
+                                    "issue_id": issue_id,
+                                    "issue_number": 1,
+                                    "state_revision": 1
+                                },
+                                "acceptance_criteria": []
+                            }),
+                        }],
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let imported: KanbanIssueListResponse = decode_json(response).await;
+    assert_eq!(imported.items.len(), 1);
+    assert_eq!(imported.items[0].assignee.user_id, owner_token.user.user_id);
+
+    let response = owner_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/api/v1/projects/{project_id}/issues/{issue_id}/assignee"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&AssignKanbanIssueRequest {
+                        assignee_user_id: member_token.user.user_id.clone(),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let assigned: KanbanIssue = decode_json(response).await;
+    assert_eq!(assigned.assignee.user_id, member_token.user.user_id);
+
+    let response = member_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/projects/{project_id}/members"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let members: ProjectMemberListResponse = decode_json(response).await;
+    assert_eq!(members.items.len(), 2);
+
+    let response = owner_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/projects/{project_id}/issues/{issue_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&UpdateKanbanIssueRequest {
+                        expected_content_revision: 1,
+                        content_revision: 2,
+                        payload: serde_json::json!({
+                            "issue": {
+                                "project_id": project_id,
+                                "issue_id": issue_id,
+                                "issue_number": 1,
+                                "state_revision": 2
+                            },
+                            "acceptance_criteria": []
+                        }),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated: KanbanIssue = decode_json(response).await;
+    assert_eq!(updated.content_revision, 2);
+
     let lease_expires_at = OffsetDateTime::now_utc() + Duration::hours(1);
     let owner_request = claim_request(
         owner_app.clone(),
         &project_id,
-        "issue_0123456789abcdef0123456789abcdef",
+        issue_id,
         "run_owner",
         lease_expires_at,
     );
     let member_request = claim_request(
         member_app.clone(),
         &project_id,
-        "issue_0123456789abcdef0123456789abcdef",
+        issue_id,
         "run_member",
         lease_expires_at,
     );

@@ -67,6 +67,50 @@ pub struct ReleaseIssueClaimRequest {
     pub run_id: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct KanbanIssue {
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue_number: i64,
+    pub assignee: UserRef,
+    pub content_revision: i64,
+    pub payload: serde_json::Value,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct KanbanIssueListResponse {
+    pub items: Vec<KanbanIssue>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ImportKanbanIssue {
+    pub issue_id: String,
+    pub issue_number: i64,
+    pub content_revision: i64,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ImportKanbanIssuesRequest {
+    pub items: Vec<ImportKanbanIssue>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct UpdateKanbanIssueRequest {
+    pub expected_content_revision: i64,
+    pub content_revision: i64,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssignKanbanIssueRequest {
+    pub assignee_user_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {

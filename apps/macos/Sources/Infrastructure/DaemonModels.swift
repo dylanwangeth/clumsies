@@ -863,6 +863,7 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let stateRevision: Int
     let stateUpdatedAt: String?
     let closureSummary: String?
+    let assignee: UserReference?
     let isStale: Bool
     let blocked: Bool
     let blockingReasons: [IssueBlockingReason]
@@ -908,6 +909,7 @@ extension IssueBoardCard {
         case stateRevision
         case stateUpdatedAt
         case closureSummary
+        case assignee
         case isStale
         case blocked
         case blockingReasons
@@ -953,6 +955,7 @@ extension IssueBoardCard {
         stateRevision = try container.decode(Int.self, forKey: .stateRevision)
         stateUpdatedAt = try container.decodeIfPresent(String.self, forKey: .stateUpdatedAt)
         closureSummary = try container.decodeIfPresent(String.self, forKey: .closureSummary)
+        assignee = try container.decodeIfPresent(UserReference.self, forKey: .assignee)
         isStale = try container.decode(Bool.self, forKey: .isStale)
         blocked = try container.decodeIfPresent(Bool.self, forKey: .blocked) ?? false
         blockingReasons = try container.decodeIfPresent(

@@ -523,6 +523,7 @@ final class IssueBoardModelTests: XCTestCase {
                     stateRevision: blockedIssue.stateRevision,
                     stateUpdatedAt: blockedIssue.stateUpdatedAt,
                     closureSummary: blockedIssue.closureSummary,
+                    assignee: blockedIssue.assignee,
                     isStale: false,
                     blocked: true,
                     blockingReasons: [
@@ -773,6 +774,7 @@ final class IssueBoardModelTests: XCTestCase {
                     stateRevision: matching.stateRevision,
                     stateUpdatedAt: matching.stateUpdatedAt,
                     closureSummary: matching.closureSummary,
+                    assignee: matching.assignee,
                     isStale: true,
                     blocked: true,
                     blockingReasons: [],
@@ -891,6 +893,7 @@ final class IssueBoardModelTests: XCTestCase {
             stateRevision: 2,
             stateUpdatedAt: "2026-08-06T00:00:00Z",
             closureSummary: nil,
+            assignee: nil,
             isStale: isStale,
             blocked: false,
             blockingReasons: [],
