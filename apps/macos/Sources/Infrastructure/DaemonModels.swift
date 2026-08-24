@@ -1202,10 +1202,12 @@ struct ExportEvaluationSetResponse: Codable, Sendable {
 
 struct ListRecallsRequest: Codable, Sendable {
     let workspaceRoot: String?
+    let projectId: String?
     let limit: Int?
 
-    init(workspaceRoot: String? = nil, limit: Int? = nil) {
+    init(workspaceRoot: String? = nil, projectId: String? = nil, limit: Int? = nil) {
         self.workspaceRoot = workspaceRoot
+        self.projectId = projectId
         self.limit = limit
     }
 }

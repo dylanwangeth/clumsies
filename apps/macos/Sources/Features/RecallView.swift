@@ -9,10 +9,12 @@ struct RecallSessionList: View {
         Group {
             if model.sessions.isEmpty && !model.isLoading {
                 ContentUnavailableView(
-                    "No Activity Yet",
+                    model.selectedProjectId == nil ? "No Activity Yet" : "No Activity for This Project",
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text(
-                        "Agent activity from bound projects appears here with user requests and recalled memory."
+                        model.selectedProjectId == nil
+                            ? "Agent activity from bound projects appears here with user requests and recalled memory."
+                            : "Try another project or choose All Projects."
                     )
                 )
             } else {

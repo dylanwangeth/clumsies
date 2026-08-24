@@ -32,6 +32,10 @@ pub struct ListRecallsRequest {
     /// included.
     #[serde(default)]
     pub workspace_root: Option<String>,
+    /// Optional Project filter. All repositories bound to the Project are
+    /// included.
+    #[serde(default)]
+    pub project_id: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
 }
@@ -756,6 +760,33 @@ fn binding_for_cwd<'a>(
         })
 }
 
+fn filter_bindings(
+    bindings: Vec<(String, String)>,
+    workspace_root: Option<&str>,
+    project_id: Option<&str>,
+) -> Vec<(String, String)> {
+    if let Some(root) = workspace_root {
+        let canonical = crate::util::canonical_binding_root(root);
+        let canonical = canonical.display().to_string();
+        let bound_project = bindings
+            .iter()
+            .find(|(bound, _)| {
+                crate::util::canonical_binding_root(bound)
+                    == crate::util::canonical_binding_root(&canonical)
+            })
+            .map(|(_, project)| project.clone())
+            .unwrap_or_default();
+        return vec![(canonical, bound_project)];
+    }
+    match project_id {
+        Some(project_id) => bindings
+            .into_iter()
+            .filter(|(_, bound_project)| bound_project == project_id)
+            .collect(),
+        None => bindings,
+    }
+}
+
 fn codex_recall_session(session: codex::CodexSession, workspace_root: String) -> RecallSession {
     let codex::CodexSession {
         session_id,
@@ -827,23 +858,11 @@ pub(super) async fn list_recalls(
         .unwrap_or(DEFAULT_SESSION_LIMIT)
         .clamp(1, MAX_SESSION_LIMIT);
 
-    let bindings = load_bindings(state).await?;
-    let roots: Vec<(String, String)> = match request.workspace_root.as_deref() {
-        Some(root) => {
-            let canonical = crate::util::canonical_binding_root(root);
-            let canonical = canonical.display().to_string();
-            let project_id = bindings
-                .iter()
-                .find(|(bound, _)| {
-                    crate::util::canonical_binding_root(bound)
-                        == crate::util::canonical_binding_root(&canonical)
-                })
-                .map(|(_, project)| project.clone())
-                .unwrap_or_default();
-            vec![(canonical, project_id)]
-        }
-        None => bindings,
-    };
+    let roots = filter_bindings(
+        load_bindings(state).await?,
+        request.workspace_root.as_deref(),
+        request.project_id.as_deref(),
+    );
 
     let home = home_dir()?;
     let sessions_root = home.join(".dsh").join("sessions");
@@ -1023,6 +1042,23 @@ mod tests {
             Some("nested")
         );
         assert!(binding_for_cwd("/repo-other", &bindings).is_none());
+    }
+
+    #[test]
+    fn project_filter_includes_every_bound_repository() {
+        let bindings = vec![
+            ("/repo-a".to_owned(), "project-a".to_owned()),
+            ("/repo-b".to_owned(), "project-a".to_owned()),
+            ("/repo-c".to_owned(), "project-b".to_owned()),
+        ];
+
+        assert_eq!(
+            filter_bindings(bindings, None, Some("project-a")),
+            vec![
+                ("/repo-a".to_owned(), "project-a".to_owned()),
+                ("/repo-b".to_owned(), "project-a".to_owned()),
+            ]
+        );
     }
 
     #[test]

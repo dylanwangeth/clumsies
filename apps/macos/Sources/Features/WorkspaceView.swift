@@ -932,12 +932,21 @@ struct WorkspaceView: View {
 
     @ToolbarContentBuilder
     private var recallToolbarContent: some ToolbarContent {
-        ToolbarItem {
+        ToolbarItem(placement: .navigation) {
+            ActivityProjectFilter(store: store, model: recallModel)
+        }
+
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.flexible, placement: .automatic)
+        }
+
+        ToolbarItem(placement: .trailingPinned) {
             Button {
                 Task { await recallModel.load() }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
+            .disabled(recallModel.isLoading)
             .help("Refresh Activity")
             .accessibilityLabel("Refresh Activity")
         }
@@ -1436,6 +1445,53 @@ private struct MemoryProjectFilter: View {
         .help("Filter Memory by Project")
         .accessibilityLabel("Project Filter")
         .accessibilityValue(store.activeProject?.name ?? "Org")
+    }
+}
+
+private struct ActivityProjectFilter: View {
+    @ObservedObject var store: WorkspaceStore
+    @ObservedObject var model: RecallModel
+
+    private var selectionTitle: String {
+        store.projects.first { $0.id == model.selectedProjectId }?.name ?? "All Projects"
+    }
+
+    var body: some View {
+        ToolbarFilterMenu(
+            selectionTitle: selectionTitle,
+            isLoading: model.isLoading
+        ) {
+            Button {
+                Task { await model.selectProject(nil) }
+            } label: {
+                if model.selectedProjectId == nil {
+                    Label("All Projects", systemImage: "checkmark")
+                } else {
+                    Text("All Projects")
+                }
+            }
+            .disabled(model.isLoading)
+
+            if !store.projects.isEmpty {
+                Divider()
+            }
+
+            ForEach(store.projects) { project in
+                Button {
+                    Task { await model.selectProject(project.id) }
+                } label: {
+                    if project.id == model.selectedProjectId {
+                        Label(project.name, systemImage: "checkmark")
+                    } else {
+                        Text(project.name)
+                    }
+                }
+                .disabled(model.isLoading)
+            }
+        }
+        .help("Filter Activity by Project")
+        .accessibilityLabel("Project Filter")
+        .accessibilityValue(selectionTitle)
     }
 }
 
