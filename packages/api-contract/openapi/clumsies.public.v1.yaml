@@ -234,6 +234,61 @@ paths:
                 $ref: "#/components/schemas/DeleteResult"
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/issue-claims:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: listIssueClaims
+      summary: List the active shared Claims for a project Kanban.
+      responses:
+        "200":
+          description: Active Issue Claims.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssueClaimListResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/issues/{issue_id}/claim:
+    parameters:
+      - $ref: "#/components/parameters/ProjectId"
+      - $ref: "#/components/parameters/IssueId"
+    post:
+      operationId: acquireIssueClaim
+      summary: Atomically acquire or renew an Issue Claim.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcquireIssueClaimRequest"
+      responses:
+        "200":
+          description: Acquired or renewed Claim.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssueClaim"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: releaseIssueClaim
+      summary: Release the current user's matching Issue Claim.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseIssueClaimRequest"
+      responses:
+        "200":
+          description: Claim release result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseIssueClaimResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/me/bundles:
     get:
       operationId: listPersonalBundles
@@ -966,6 +1021,12 @@ components:
       required: true
       schema:
         type: string
+    IssueId:
+      name: issue_id
+      in: path
+      required: true
+      schema:
+        type: string
     ProjectIdQuery:
       name: project_id
       in: query
@@ -1009,6 +1070,65 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
   schemas:
+    AcquireIssueClaimRequest:
+      type: object
+      required: [issue_key, run_id, lease_expires_at]
+      properties:
+        issue_key:
+          type: string
+          pattern: '^ISSUE-(?!000$)[0-9]{3}$'
+        run_id:
+          type: string
+        lease_expires_at:
+          type: string
+          format: date-time
+    IssueClaim:
+      type: object
+      required:
+        - project_id
+        - issue_id
+        - issue_key
+        - run_id
+        - claimant
+        - claimed_at
+        - lease_expires_at
+      properties:
+        project_id:
+          type: string
+        issue_id:
+          type: string
+        issue_key:
+          type: string
+        run_id:
+          type: string
+        claimant:
+          $ref: "#/components/schemas/UserRef"
+        claimed_at:
+          type: string
+          format: date-time
+        lease_expires_at:
+          type: string
+          format: date-time
+    IssueClaimListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueClaim"
+    ReleaseIssueClaimRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id:
+          type: string
+    ReleaseIssueClaimResponse:
+      type: object
+      required: [released]
+      properties:
+        released:
+          type: boolean
     TokenRequest:
       type: object
       oneOf:

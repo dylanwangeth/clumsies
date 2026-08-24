@@ -494,13 +494,17 @@ struct IssueBoardView: View {
     }
 
     private func board(_ response: IssueBoardResponse) -> some View {
-        GeometryReader { proxy in
+        let claimsByIssueId = Dictionary(
+            uniqueKeysWithValues: response.claims.map { ($0.issueId, $0) }
+        )
+        return GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 HStack(alignment: .top, spacing: IssueBoardLayout.columnSpacing) {
                     ForEach(BoardColumn.allCases) { column in
                         IssueBoardColumn(
                             column: column,
                             issues: issues(for: column),
+                            claimsByIssueId: claimsByIssueId,
                             selectedIssueId: $selectedIssueId,
                             mutatingIssueId: mutatingIssueId,
                             onOpenDetails: openDetails,
@@ -735,6 +739,7 @@ struct IssueDetailView: View {
 
             IssueDetailInspector(
                 issue: issue,
+                claim: model.claim(for: issue),
                 detail: model.detail(for: issue),
                 onToggleVerificationStep: onToggleVerificationStep
             )
@@ -747,6 +752,7 @@ struct IssueDetailView: View {
 private struct IssueBoardColumn: View {
     let column: BoardColumn
     let issues: [IssueBoardCard]
+    let claimsByIssueId: [String: IssueClaim]
     @Binding var selectedIssueId: String?
     let mutatingIssueId: String?
     let onOpenDetails: (IssueBoardCard) -> Void
@@ -789,6 +795,7 @@ private struct IssueBoardColumn: View {
                         } label: {
                             IssueCard(
                                 issue: issue,
+                                claim: claimsByIssueId[issue.issueId],
                                 isSelected: selectedIssueId == issue.id,
                                 isMutating: mutatingIssueId == issue.id
                             )
@@ -915,6 +922,7 @@ private struct IssueBoardColumn: View {
 
 private struct IssueCard: View {
     let issue: IssueBoardCard
+    let claim: IssueClaim?
     let isSelected: Bool
     let isMutating: Bool
     @State private var isHovering = false
@@ -969,18 +977,12 @@ private struct IssueCard: View {
                     .help(issue.description)
             }
 
-            if let handler = primaryHandler {
+            if let claim {
                 Divider()
-
-                HStack(spacing: 5) {
-                    AgentRunRow(run: handler)
-                    if extraHandlerCount > 0 {
-                        Text("· +\(extraHandlerCount)")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .help(allHandlersHelp)
-                    }
-                }
+                IssueClaimRow(claim: claim)
+            } else if let handler = primaryHandler {
+                Divider()
+                AgentRunRow(run: handler)
             }
         }
         .padding(12)
@@ -1006,22 +1008,6 @@ private struct IssueCard: View {
     /// run timestamps — the issue lifecycle owns the card's time axis.
     private var primaryHandler: AgentRun? {
         issue.activeRuns.first ?? issue.latestRun
-    }
-
-    private var extraHandlerCount: Int {
-        max(0, issue.activeRuns.count - 1)
-    }
-
-    private var allHandlersHelp: String {
-        var runs = issue.activeRuns
-        if let latest = issue.latestRun,
-           !runs.contains(where: { $0.runId == latest.runId })
-        {
-            runs.append(latest)
-        }
-        return runs
-            .map { "\($0.displayName) (\($0.statusTitle))" }
-            .joined(separator: " · ")
     }
 
     private var borderColor: Color {
@@ -1099,6 +1085,26 @@ private struct AgentRunRow: View {
         }
         .font(.caption)
         .help(run.helpText)
+    }
+}
+
+private struct IssueClaimRow: View {
+    let claim: IssueClaim
+
+    var body: some View {
+        HStack(spacing: 6) {
+            UserIdentityLabel(
+                account: claim.claimant,
+                displayName: claim.claimant.displayName ?? claim.claimant.email
+            )
+            Spacer(minLength: 6)
+            Label("Working", systemImage: "bolt.circle.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(1)
+        }
+        .font(.caption)
+        .help("Claimed until \(IssueTiming.absoluteText(claim.leaseExpiresAt) ?? claim.leaseExpiresAt)")
     }
 }
 
@@ -1486,6 +1492,7 @@ private struct VerificationStepsSection: View {
 
 private struct IssueDetailInspector: View {
     let issue: IssueBoardCard
+    let claim: IssueClaim?
     let detail: IssueDetailResponse?
     var onToggleVerificationStep: ((IssueBoardCard, Int, Bool) -> Void)?
 
@@ -1619,9 +1626,12 @@ private struct IssueDetailInspector: View {
 
     @ViewBuilder
     private var activityRow: some View {
-        if !issue.activeRuns.isEmpty || issue.latestRun != nil {
+        if claim != nil || !issue.activeRuns.isEmpty || issue.latestRun != nil {
             VStack(alignment: .leading, spacing: 4) {
-                inspectorLabel("Activity")
+                inspectorLabel("Current Work")
+                if let claim {
+                    IssueClaimRow(claim: claim)
+                }
                 ForEach(Array(issue.activeRuns.prefix(3))) { run in
                     AgentRunRow(run: run)
                 }

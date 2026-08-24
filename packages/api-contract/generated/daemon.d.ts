@@ -302,8 +302,29 @@ export interface components {
             project_id: string;
             effective_hash: string;
             issues: components["schemas"]["IssueBoardCard"][];
+            claims: components["schemas"]["IssueClaim"][];
             unlinked_runs: components["schemas"]["AgentRun"][];
             diagnostics: components["schemas"]["IssueBoardDiagnostic"][];
+        };
+        IssueClaimUser: {
+            user_id: string;
+            /** Format: email */
+            email: string;
+            display_name: string | null;
+            /** Format: uri */
+            avatar_url: string | null;
+            role: string;
+        };
+        IssueClaim: {
+            project_id: string;
+            issue_id: string;
+            issue_key: string;
+            run_id: string;
+            claimant: components["schemas"]["IssueClaimUser"];
+            /** Format: date-time */
+            claimed_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
         };
         IssueExternalReference: {
             kind: components["schemas"]["IssueExternalReferenceKind"];

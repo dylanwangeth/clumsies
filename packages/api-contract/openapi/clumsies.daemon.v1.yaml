@@ -747,7 +747,7 @@ components:
             type: string
     IssueBoardResponse:
       type: object
-      required: [project_id, effective_hash, issues, unlinked_runs, diagnostics]
+      required: [project_id, effective_hash, issues, claims, unlinked_runs, diagnostics]
       properties:
         project_id:
           type: string
@@ -757,6 +757,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssueBoardCard"
+        claims:
+          type: array
+          items:
+            $ref: "#/components/schemas/IssueClaim"
         unlinked_runs:
           type: array
           items:
@@ -765,6 +769,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/IssueBoardDiagnostic"
+    IssueClaimUser:
+      type: object
+      required: [user_id, email, display_name, avatar_url, role]
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+        avatar_url:
+          type: [string, "null"]
+          format: uri
+        role:
+          type: string
+    IssueClaim:
+      type: object
+      required:
+        - project_id
+        - issue_id
+        - issue_key
+        - run_id
+        - claimant
+        - claimed_at
+        - lease_expires_at
+      properties:
+        project_id:
+          type: string
+        issue_id:
+          type: string
+        issue_key:
+          type: string
+        run_id:
+          type: string
+        claimant:
+          $ref: "#/components/schemas/IssueClaimUser"
+        claimed_at:
+          type: string
+          format: date-time
+        lease_expires_at:
+          type: string
+          format: date-time
     IssueExternalReference:
       type: object
       required: [kind, url]

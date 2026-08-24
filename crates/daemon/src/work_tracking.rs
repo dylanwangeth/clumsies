@@ -710,8 +710,47 @@ pub struct IssueBoardResponse {
     pub project_id: String,
     pub effective_hash: String,
     pub issues: Vec<IssueBoardCard>,
+    #[serde(default)]
+    pub claims: Vec<IssueClaim>,
     pub unlinked_runs: Vec<AgentRun>,
     pub diagnostics: Vec<IssueBoardDiagnostic>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueClaimUser {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub role: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueClaim {
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue_key: String,
+    pub run_id: String,
+    pub claimant: IssueClaimUser,
+    pub claimed_at: String,
+    pub lease_expires_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ServerIssueClaimListResponse {
+    pub(crate) items: Vec<IssueClaim>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct AcquireServerIssueClaimRequest {
+    pub(crate) issue_key: String,
+    pub(crate) run_id: String,
+    pub(crate) lease_expires_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ReleaseServerIssueClaimRequest {
+    pub(crate) run_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2423,6 +2462,22 @@ pub(crate) async fn ensure_native_issue_in_project(
     .fetch_optional(pool)
     .await?;
     Ok(found)
+}
+
+pub(crate) async fn native_issue_id(
+    pool: &SqlitePool,
+    project_id: &str,
+    issue_number: i64,
+) -> Result<Option<String>, DaemonError> {
+    sqlx::query_scalar(
+        "SELECT issue_id FROM native_issues
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) fn native_board_hash(cards: &[IssueBoardCard]) -> String {

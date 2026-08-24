@@ -128,6 +128,46 @@ export interface paths {
         patch: operations["updateProject"];
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/issue-claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** List the active shared Claims for a project Kanban. */
+        get: operations["listIssueClaims"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/issues/{issue_id}/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                issue_id: components["parameters"]["IssueId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Atomically acquire or renew an Issue Claim. */
+        post: operations["acquireIssueClaim"];
+        /** Release the current user's matching Issue Claim. */
+        delete: operations["releaseIssueClaim"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/bundles": {
         parameters: {
             query?: never;
@@ -482,7 +522,7 @@ export interface paths {
         put?: never;
         /**
          * Create an organization-authorized review decision.
-         * @description Requires the caller to be an Organization owner or administrator and a member of the carrying Project.
+         * @description Requires the caller to be an Organization owner or administrator and a member of the carrying Project. New clients use this endpoint for rejection; the approved decision value remains wire-compatible for older two-step clients, while current clients approve atomically through the merge endpoint.
          */
         post: operations["createReviewDecision"];
         delete?: never;
@@ -521,7 +561,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Merge an approved review and produce authoritative external-memory resources. */
+        /** Atomically approve and merge an open review, or merge a historical approved review. */
         post: operations["createReviewMerge"];
         delete?: never;
         options?: never;
@@ -624,6 +664,32 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AcquireIssueClaimRequest: {
+            issue_key: string;
+            run_id: string;
+            /** Format: date-time */
+            lease_expires_at: string;
+        };
+        IssueClaim: {
+            project_id: string;
+            issue_id: string;
+            issue_key: string;
+            run_id: string;
+            claimant: components["schemas"]["UserRef"];
+            /** Format: date-time */
+            claimed_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
+        };
+        IssueClaimListResponse: {
+            items: components["schemas"]["IssueClaim"][];
+        };
+        ReleaseIssueClaimRequest: {
+            run_id: string;
+        };
+        ReleaseIssueClaimResponse: {
+            released: boolean;
+        };
         TokenRequest: {
             /** @enum {string} */
             grant_type?: "authorization_code" | "refresh_token";
@@ -1124,6 +1190,7 @@ export interface components {
         IdempotencyKey: string;
         IfNoneMatch: string;
         ProjectId: string;
+        IssueId: string;
         ProjectIdQuery: string;
         MemoryId: string;
         BundleId: string;
@@ -1388,6 +1455,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Project"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listIssueClaims: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active Issue Claims. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueClaimListResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    acquireIssueClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                issue_id: components["parameters"]["IssueId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcquireIssueClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Acquired or renewed Claim. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueClaim"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    releaseIssueClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: components["parameters"]["ProjectId"];
+                issue_id: components["parameters"]["IssueId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReleaseIssueClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description Claim release result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseIssueClaimResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -2208,7 +2354,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Merge result. */
+            /** @description Atomic approval and merge result. */
             200: {
                 headers: {
                     [name: string]: unknown;

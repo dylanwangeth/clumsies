@@ -17,15 +17,15 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::{
-    CreateDraftRebaseRequest, CreateDraftReconciliationCandidateRequest, CreateDraftRequest,
-    CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
+    AcquireIssueClaimRequest, CreateDraftRebaseRequest, CreateDraftReconciliationCandidateRequest,
+    CreateDraftRequest, CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest,
     CreateReviewCommentRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest,
     CreateReviewRequest, CreateReviewSubmissionRequest, CreateSetupSessionRequest,
     DraftOperationBatchRequest, DraftOperationInput, OidcAuthorizationRequest, OidcCallbackRequest,
     OrgRole, PersonalBundleRequest, PersonalBundleUpdateRequest, ProjectRole,
-    ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest, SetupOidcAuthorization,
-    SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest, UpdateDraftRequest,
-    UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
+    ReleaseIssueClaimRequest, ReplaceProjectOrgSelectionRequest, ReplaceSetupConfigurationRequest,
+    SetupOidcAuthorization, SetupOidcAuthorizationRequest, TokenRequest, UpdateAdminOrgRequest,
+    UpdateDraftRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::{AuthError, AuthPrincipal, AuthService, CredentialKind};
 use crate::db::current_schema_migration;
@@ -132,6 +132,11 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         get: get_project,
         patch: update_project,
         delete: delete_project,
+    };
+    "/api/v1/projects/{project_id}/issue-claims" => { get: list_issue_claims };
+    "/api/v1/projects/{project_id}/issues/{issue_id}/claim" => {
+        post: acquire_issue_claim,
+        delete: release_issue_claim,
     };
     "/api/v1/me/bundles" => {
         get: list_personal_bundles,
@@ -1185,6 +1190,54 @@ async fn delete_project(
             .delete_project(&project_id, expected_version)
             .await?,
     ))
+}
+
+async fn list_issue_claims(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(project_id): Path<String>,
+) -> Result<Json<crate::api::IssueClaimListResponse>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(state.repository.list_issue_claims(&project_id).await?))
+}
+
+async fn acquire_issue_claim(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((project_id, issue_id)): Path<(String, String)>,
+    Json(request): Json<AcquireIssueClaimRequest>,
+) -> Result<Json<crate::api::IssueClaim>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(
+        state
+            .repository
+            .acquire_issue_claim(&principal, &project_id, &issue_id, request)
+            .await?,
+    ))
+}
+
+async fn release_issue_claim(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path((project_id, issue_id)): Path<(String, String)>,
+    Json(request): Json<ReleaseIssueClaimRequest>,
+) -> Result<Json<crate::api::ReleaseIssueClaimResponse>, HttpError> {
+    state
+        .repository
+        .ensure_project_member(&principal, &project_id)
+        .await?;
+    Ok(Json(crate::api::ReleaseIssueClaimResponse {
+        released: state
+            .repository
+            .release_issue_claim(&principal, &project_id, &issue_id, &request.run_id)
+            .await?,
+    }))
 }
 
 async fn create_draft(

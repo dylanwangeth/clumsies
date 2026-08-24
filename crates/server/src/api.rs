@@ -31,6 +31,42 @@ pub struct MeResponse {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueClaim {
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue_key: String,
+    pub run_id: String,
+    pub claimant: UserRef,
+    #[serde(with = "time::serde::rfc3339")]
+    pub claimed_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub lease_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueClaimListResponse {
+    pub items: Vec<IssueClaim>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcquireIssueClaimRequest {
+    pub issue_key: String,
+    pub run_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub lease_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseIssueClaimResponse {
+    pub released: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseIssueClaimRequest {
+    pub run_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {

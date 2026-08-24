@@ -784,8 +784,56 @@ struct IssueBoardResponse: Codable, Equatable, Sendable {
     let projectId: String
     let effectiveHash: String
     let issues: [IssueBoardCard]
+    let claims: [IssueClaim]
     let unlinkedRuns: [AgentRun]
     let diagnostics: [IssueBoardDiagnostic]
+
+    init(
+        projectId: String,
+        effectiveHash: String,
+        issues: [IssueBoardCard],
+        claims: [IssueClaim] = [],
+        unlinkedRuns: [AgentRun],
+        diagnostics: [IssueBoardDiagnostic]
+    ) {
+        self.projectId = projectId
+        self.effectiveHash = effectiveHash
+        self.issues = issues
+        self.claims = claims
+        self.unlinkedRuns = unlinkedRuns
+        self.diagnostics = diagnostics
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case projectId
+        case effectiveHash
+        case issues
+        case claims
+        case unlinkedRuns
+        case diagnostics
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        effectiveHash = try container.decode(String.self, forKey: .effectiveHash)
+        issues = try container.decode([IssueBoardCard].self, forKey: .issues)
+        claims = try container.decodeIfPresent([IssueClaim].self, forKey: .claims) ?? []
+        unlinkedRuns = try container.decode([AgentRun].self, forKey: .unlinkedRuns)
+        diagnostics = try container.decode([IssueBoardDiagnostic].self, forKey: .diagnostics)
+    }
+}
+
+struct IssueClaim: Codable, Identifiable, Equatable, Sendable {
+    var id: String { "\(projectId):\(issueId)" }
+
+    let projectId: String
+    let issueId: String
+    let issueKey: String
+    let runId: String
+    let claimant: UserReference
+    let claimedAt: String
+    let leaseExpiresAt: String
 }
 
 struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {

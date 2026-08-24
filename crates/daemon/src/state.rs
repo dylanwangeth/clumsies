@@ -760,6 +760,7 @@ impl DaemonState {
             &stale_before,
         )
         .await?;
+        let claims = self.list_server_issue_claims(project_id).await?;
         let valid_issue_numbers = issues
             .iter()
             .map(|issue| issue.issue_number)
@@ -783,6 +784,7 @@ impl DaemonState {
             project_id: project_id.to_owned(),
             effective_hash: work_tracking::native_board_hash(&issues),
             issues,
+            claims,
             unlinked_runs,
             diagnostics: Vec::new(),
         })
@@ -955,8 +957,21 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::unclaim_issue(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?;
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::unclaim_issue(&self.inner.pool, request).await
+        }?;
+        if let (Some(issue_id), Some(run_id)) = (issue_id, run_id) {
+            self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                .await?;
+        }
+        Ok(result)
     }
 
     pub async fn remove_issue(
@@ -973,19 +988,44 @@ impl DaemonState {
         &self,
         request: StartIssueWorkRequest,
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        if let Some(run_id) = &request.run_id {
-            work_tracking::load_agent_run_for_project(
-                &self.inner.pool,
-                &request.project_id,
-                run_id,
+        let run_id = request.run_id.as_deref().ok_or_else(|| {
+            DaemonError::InvalidRequest(
+                "run_id is required: AgentRuns must be issued by a host lifecycle hook".to_owned(),
             )
-            .await?
-            .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
-        }
+        })?;
+        let run = work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::start_issue_work(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(request.issue_key.clone()))?;
+        let server_claimed = self
+            .acquire_server_issue_claim(
+                &request.project_id,
+                &issue_id,
+                &request.issue_key,
+                run_id,
+                &run.lease_expires_at,
+            )
+            .await?;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::start_issue_work(&self.inner.pool, request).await
+        };
+        if result.is_err() && server_claimed {
+            let _ = self
+                .release_server_issue_claim(&run.project_id, &issue_id, &run.run_id)
+                .await;
+        }
+        result
     }
 
     pub async fn request_issue_closure(
@@ -1003,8 +1043,22 @@ impl DaemonState {
         }
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::request_issue_closure(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::request_issue_closure(&self.inner.pool, request).await
+        }?;
+        if let Some(run_id) = run_id {
+            let issue_number = work_tracking::parse_issue_reference(&result.issue_key)?;
+            if let Some(issue_id) =
+                work_tracking::native_issue_id(&self.inner.pool, &project_id, issue_number).await?
+            {
+                self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                    .await?;
+            }
+        }
+        Ok(result)
     }
 
     pub async fn pause_issue_work(
@@ -1013,8 +1067,21 @@ impl DaemonState {
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::pause_issue_work(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?;
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::pause_issue_work(&self.inner.pool, request).await
+        }?;
+        if let Some(issue_id) = issue_id {
+            self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                .await?;
+        }
+        Ok(result)
     }
 
     pub async fn resume_issue_work(
@@ -1023,8 +1090,122 @@ impl DaemonState {
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::resume_issue_work(&self.inner.pool, request).await
+        let Some(run_id) = request.run_id.as_deref() else {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            return work_tracking::resume_issue_work(&self.inner.pool, request).await;
+        };
+        let run = work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(request.issue_key.clone()))?;
+        let server_claimed = self
+            .acquire_server_issue_claim(
+                &request.project_id,
+                &issue_id,
+                &request.issue_key,
+                run_id,
+                &run.lease_expires_at,
+            )
+            .await?;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::resume_issue_work(&self.inner.pool, request).await
+        };
+        if result.is_err() && server_claimed {
+            let _ = self
+                .release_server_issue_claim(&run.project_id, &issue_id, &run.run_id)
+                .await;
+        }
+        result
+    }
+
+    async fn list_server_issue_claims(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<IssueClaim>, DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(Vec::new());
+        }
+        let path = format!("/api/v1/projects/{project_id}/issue-claims");
+        match get_server_json::<work_tracking::ServerIssueClaimListResponse>(self, &path).await {
+            Ok(response) => Ok(response.items),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn acquire_server_issue_claim(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        issue_key: &str,
+        run_id: &str,
+        lease_expires_at: &str,
+    ) -> Result<bool, DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(false);
+        }
+        if !issue_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(DaemonError::InvalidRequest(
+                "issue_id is not safe for the Server claim path".to_owned(),
+            ));
+        }
+        let path = format!("/api/v1/projects/{project_id}/issues/{issue_id}/claim");
+        let request = work_tracking::AcquireServerIssueClaimRequest {
+            issue_key: issue_key.to_owned(),
+            run_id: run_id.to_owned(),
+            lease_expires_at: lease_expires_at.to_owned(),
+        };
+        match post_server_json::<_, IssueClaim>(self, &path, &request).await {
+            Ok(_) => Ok(true),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Err(DaemonError::State {
+                code: "kanban_claim_service_unavailable",
+                message: "The connected Clumsies Server does not support shared Kanban Claims yet"
+                    .to_owned(),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn release_server_issue_claim(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(());
+        }
+        let path = format!("/api/v1/projects/{project_id}/issues/{issue_id}/claim");
+        let request = work_tracking::ReleaseServerIssueClaimRequest {
+            run_id: run_id.to_owned(),
+        };
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("content-type".to_owned(), "application/json".to_owned());
+        let response = execute_authenticated_server_request(
+            self,
+            reqwest::Method::DELETE,
+            &path,
+            &headers,
+            Some(serde_json::to_vec(&request)?),
+        )
+        .await?;
+        match ensure_server_success(response).await {
+            Ok(_) => Ok(()),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     async fn ensure_native_issues_imported(&self, project_id: &str) -> Result<(), DaemonError> {

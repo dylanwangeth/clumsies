@@ -6,9 +6,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::api::{
-    AccessTokenKind, AccessTokenListResponse, AccessTokenMeta, AdminOrg, AdminProject,
-    AdminProjectListResponse, AuditEvent, AuditEventListResponse, Blob, Commit, CommitListResponse,
-    CommitPayload, CommitScope, CommitStateResponse, CreateDraftRebaseRequest,
+    AccessTokenKind, AccessTokenListResponse, AccessTokenMeta, AcquireIssueClaimRequest, AdminOrg,
+    AdminProject, AdminProjectListResponse, AuditEvent, AuditEventListResponse, Blob, Commit,
+    CommitListResponse, CommitPayload, CommitScope, CommitStateResponse, CreateDraftRebaseRequest,
     CreateDraftReconciliationCandidateRequest, CreateDraftRequest, CreateMemberRequest,
     CreateProjectMemberRequest, CreateProjectRequest, CreateReviewCommentRequest,
     CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
@@ -17,12 +17,12 @@ use crate::api::{
     DraftOperationAction, DraftOperationBatchRequest, DraftOperationBatchResponse,
     DraftOperationInput, DraftRebaseResult, DraftReconciliationCandidate,
     DraftReconciliationStatus, DraftResourceContent, DraftResourceRef, DraftStatus, DraftSyncState,
-    DraftSyncStatus, MeResponse, Member, MemberListResponse, MemberStatus, MemoryDetail,
-    MemoryExport, MemoryExportBundle, MemoryExportDraft, MemoryExportItem, MemoryExportSelection,
-    MemoryListResponse, MemoryMeta, OrgRef, OrgRole, PageInfo, PersonalBundleDetail,
-    PersonalBundleListResponse, PersonalBundleMeta, PersonalBundleRequest,
-    PersonalBundleUpdateRequest, Project, ProjectListResponse, ProjectMember,
-    ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole,
+    DraftSyncStatus, IssueClaim, IssueClaimListResponse, MeResponse, Member, MemberListResponse,
+    MemberStatus, MemoryDetail, MemoryExport, MemoryExportBundle, MemoryExportDraft,
+    MemoryExportItem, MemoryExportSelection, MemoryListResponse, MemoryMeta, OrgRef, OrgRole,
+    PageInfo, PersonalBundleDetail, PersonalBundleListResponse, PersonalBundleMeta,
+    PersonalBundleRequest, PersonalBundleUpdateRequest, Project, ProjectListResponse,
+    ProjectMember, ProjectMemberListResponse, ProjectOrgSelection, ProjectRef, ProjectRole,
     ReconciliationCandidateStatus, ReconciliationConflict, ReconciliationConflictKind,
     ReconciliationResourceState, Ref, ReplaceProjectOrgSelectionRequest, ResourceScope, Review,
     ReviewComment, ReviewCommentListResponse, ReviewDecision, ReviewDetail, ReviewDraftDetail,
@@ -115,6 +115,109 @@ impl ServerRepository {
         } else {
             Err(ServerError::not_found("project", project_id))
         }
+    }
+
+    pub async fn list_issue_claims(
+        &self,
+        project_id: &str,
+    ) -> Result<IssueClaimListResponse, ServerError> {
+        let rows = sqlx::query(
+            "SELECT c.project_id, c.issue_id, c.issue_key, c.run_id,
+                    c.claimed_at, c.lease_expires_at,
+                    u.user_id, u.email, u.display_name, u.avatar_url, u.role
+             FROM issue_claims c
+             JOIN users u ON u.user_id = c.claimant_user_id
+             WHERE c.project_id = $1 AND c.lease_expires_at > now()
+             ORDER BY c.updated_at DESC, c.issue_id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(IssueClaimListResponse {
+            items: rows
+                .iter()
+                .map(issue_claim_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn acquire_issue_claim(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        issue_id: &str,
+        request: AcquireIssueClaimRequest,
+    ) -> Result<IssueClaim, ServerError> {
+        validate_issue_claim_input(issue_id, &request)?;
+        let row = sqlx::query(
+            "INSERT INTO issue_claims (
+                project_id, issue_id, issue_key, claimant_user_id, run_id,
+                lease_expires_at
+             ) VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (project_id, issue_id) DO UPDATE
+             SET issue_key = EXCLUDED.issue_key,
+                 claimant_user_id = EXCLUDED.claimant_user_id,
+                 run_id = EXCLUDED.run_id,
+                 claimed_at = CASE
+                     WHEN issue_claims.claimant_user_id = EXCLUDED.claimant_user_id
+                      AND issue_claims.run_id = EXCLUDED.run_id
+                     THEN issue_claims.claimed_at
+                     ELSE now()
+                 END,
+                 lease_expires_at = EXCLUDED.lease_expires_at,
+                 updated_at = now()
+             WHERE issue_claims.lease_expires_at <= now()
+                OR (issue_claims.claimant_user_id = EXCLUDED.claimant_user_id
+                    AND issue_claims.run_id = EXCLUDED.run_id)
+             RETURNING project_id, issue_id, issue_key, run_id,
+                       claimed_at, lease_expires_at",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .bind(&request.issue_key)
+        .bind(&principal.user_id)
+        .bind(&request.run_id)
+        .bind(request.lease_expires_at)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Err(ServerError::already_exists("issue_claim", issue_id));
+        };
+        Ok(IssueClaim {
+            project_id: row.try_get("project_id")?,
+            issue_id: row.try_get("issue_id")?,
+            issue_key: row.try_get("issue_key")?,
+            run_id: row.try_get("run_id")?,
+            claimant: user_ref_for_id(&self.pool, &principal.user_id).await?,
+            claimed_at: row.try_get("claimed_at")?,
+            lease_expires_at: row.try_get("lease_expires_at")?,
+        })
+    }
+
+    pub async fn release_issue_claim(
+        &self,
+        principal: &AuthPrincipal,
+        project_id: &str,
+        issue_id: &str,
+        run_id: &str,
+    ) -> Result<bool, ServerError> {
+        if issue_id.trim().is_empty() || run_id.trim().is_empty() {
+            return Err(ServerError::InvalidRequest(
+                "issue_id and run_id must not be empty".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            "DELETE FROM issue_claims
+             WHERE project_id = $1 AND issue_id = $2
+               AND claimant_user_id = $3 AND run_id = $4",
+        )
+        .bind(project_id)
+        .bind(issue_id)
+        .bind(&principal.user_id)
+        .bind(run_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn ensure_draft_owner(
@@ -6844,6 +6947,62 @@ fn user_ref_from_row(row: &sqlx::postgres::PgRow) -> Result<UserRef, ServerError
         avatar_url: row.try_get("avatar_url")?,
         role: row.try_get("role")?,
     })
+}
+
+async fn user_ref_for_id(pool: &PgPool, user_id: &str) -> Result<UserRef, ServerError> {
+    let row = sqlx::query(
+        "SELECT user_id, email, display_name, avatar_url, role
+         FROM users WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ServerError::not_found("user", user_id))?;
+    user_ref_from_row(&row)
+}
+
+fn issue_claim_from_row(row: &sqlx::postgres::PgRow) -> Result<IssueClaim, ServerError> {
+    Ok(IssueClaim {
+        project_id: row.try_get("project_id")?,
+        issue_id: row.try_get("issue_id")?,
+        issue_key: row.try_get("issue_key")?,
+        run_id: row.try_get("run_id")?,
+        claimant: user_ref_from_row(row)?,
+        claimed_at: row.try_get("claimed_at")?,
+        lease_expires_at: row.try_get("lease_expires_at")?,
+    })
+}
+
+fn validate_issue_claim_input(
+    issue_id: &str,
+    request: &AcquireIssueClaimRequest,
+) -> Result<(), ServerError> {
+    let valid_issue_key = request.issue_key.len() == 9
+        && request.issue_key.starts_with("ISSUE-")
+        && request.issue_key[6..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        && request.issue_key != "ISSUE-000";
+    let valid_issue_id = issue_id.len() == 38
+        && issue_id.starts_with("issue_")
+        && issue_id[6..].bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !valid_issue_id
+        || request.run_id.trim().is_empty()
+        || request.run_id.len() > 256
+        || !valid_issue_key
+    {
+        return Err(ServerError::InvalidRequest(
+            "invalid native Issue claim identity".to_owned(),
+        ));
+    }
+    let now = OffsetDateTime::now_utc();
+    if request.lease_expires_at <= now || request.lease_expires_at > now + time::Duration::hours(24)
+    {
+        return Err(ServerError::InvalidRequest(
+            "issue claim lease must expire within the next 24 hours".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 async fn ensure_project_in_org(
