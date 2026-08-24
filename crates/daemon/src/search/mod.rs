@@ -2925,6 +2925,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn remote_create_draft_uses_the_provisional_resource_id_from_later_operations() {
+        let create = DaemonDraftOperation {
+            create: Some(DaemonCreateDraftOperation {
+                path: "context/new.md".to_owned(),
+                content: DaemonDraftContent {
+                    description: None,
+                    content: "# Initial".to_owned(),
+                },
+                description: None,
+            }),
+            update: None,
+            rename: None,
+            delete: None,
+            discard: None,
+        };
+        let update = DaemonDraftOperation {
+            create: None,
+            update: Some(DaemonUpdateDraftOperation::Content(
+                DaemonContentDraftUpdate {
+                    id: "draft_provisional".to_owned(),
+                    content: DaemonDraftContent {
+                        description: None,
+                        content: "# Updated".to_owned(),
+                    },
+                    description: None,
+                },
+            )),
+            rename: None,
+            delete: None,
+            discard: None,
+        };
+        let overlay = super::overlay::DraftOverlay {
+            draft_id: "drf_server".to_owned(),
+            base_commit_id: Some("commit_base".to_owned()),
+            scope: SourceScope::Project,
+            kind: Some(MemoryKind::Memory),
+            target_id: None,
+            path: Some("context/new.md".to_owned()),
+            base_resource: None,
+            operations: vec![
+                (1, serde_json::to_string(&create).unwrap(), create),
+                (2, serde_json::to_string(&update).unwrap(), update),
+            ],
+        };
+
+        let mut resources = BTreeMap::new();
+        super::overlay::apply_draft_overlay("prj_test", &mut resources, overlay).unwrap();
+
+        assert_eq!(resources["draft_provisional"].source.content, "# Updated");
+        assert_eq!(
+            resources["draft_provisional"].source.draft_id.as_deref(),
+            Some("drf_server")
+        );
+        assert!(!resources.contains_key("drf_server"));
+    }
+
     #[tokio::test]
     async fn failed_index_build_is_recorded_without_moving_the_search_head() {
         let (_temp, state) = test_state_with_models(Arc::new(FailingIndexModels)).await;

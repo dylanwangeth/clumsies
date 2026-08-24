@@ -249,13 +249,22 @@ pub(super) fn apply_draft_overlay(
         .target_id
         .clone()
         .unwrap_or_else(|| draft.draft_id.clone());
+    // A Draft created on another daemon keeps the server `drf_*` identity
+    // locally, while later operations still target the originating daemon's
+    // provisional `draft_*` resource identity. Recover that identity from the
+    // first operation that targets the created resource.
+    let created_resource_id = draft
+        .operations
+        .iter()
+        .find_map(|(_, _, operation)| operation.target_id().map(ToOwned::to_owned))
+        .unwrap_or_else(|| draft.draft_id.clone());
     let mut draft_resources = BTreeMap::new();
     if let Some(base_resource) = draft.base_resource {
         draft_resources.insert(target_key.clone(), base_resource);
     }
     for (_, _, operation) in &draft.operations {
         if let Some(create) = &operation.create {
-            let resource_id = draft.draft_id.clone();
+            let resource_id = created_resource_id.clone();
             let resource = draft_content_resource(
                 project_id,
                 resource_id.clone(),
