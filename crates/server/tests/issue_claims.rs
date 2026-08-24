@@ -25,6 +25,24 @@ async fn only_one_project_member_wins_a_live_issue_claim() {
     )
     .await;
     let (owner_app, owner_token) = common::authenticated_router(postgres.pool.clone()).await;
+    let member_id = "usr_issue_member";
+    sqlx::query(
+        "INSERT INTO users (user_id, email, display_name, role, status)
+         VALUES ($1, 'member@example.com', 'Member', 'member', 'active')",
+    )
+    .bind(member_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_members (project_id, user_id, role)
+         VALUES ($1, $2, 'member')",
+    )
+    .bind(&installation.project_id)
+    .bind(member_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
     let (member_app, member_token) = common::authenticated_router_as(
         postgres.pool.clone(),
         "member@example.com",
@@ -32,15 +50,7 @@ async fn only_one_project_member_wins_a_live_issue_claim() {
         "Member",
     )
     .await;
-    sqlx::query(
-        "INSERT INTO project_members (project_id, user_id, role)
-         VALUES ($1, $2, 'member')",
-    )
-    .bind(&installation.project_id)
-    .bind(&member_token.user.user_id)
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
+    assert_eq!(member_token.user.user_id, member_id);
 
     let project_id = installation.project_id;
     let issue_id = "issue_0123456789abcdef0123456789abcdef";
