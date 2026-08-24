@@ -1371,32 +1371,18 @@ private struct IssueProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        ToolbarFilterMenu(
-            selectionTitle: store.activeProject?.name ?? "Select Project",
-            isLoading: store.loadingProjectId != nil
-        ) {
-            if store.projects.isEmpty {
-                Button("No Projects") {}
-                    .disabled(true)
-            } else {
-                ForEach(store.projects) { project in
-                    Button {
-                        guard project.id != store.activeProjectId else { return }
-                        Task { await store.selectProject(project.id) }
-                    } label: {
-                        if project.id == store.activeProjectId {
-                            Label(project.name, systemImage: "checkmark")
-                        } else {
-                            Text(project.name)
-                        }
-                    }
-                    .disabled(store.loadingProjectId != nil)
-                }
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: store.activeProjectId,
+            unscopedTitle: nil,
+            unscopedSystemImage: nil,
+            isLoading: store.loadingProjectId != nil,
+            help: "Filter Kanban by Project"
+        ) { projectId in
+            if let projectId {
+                Task { await store.selectProject(projectId) }
             }
         }
-        .help("Filter Kanban by Project")
-        .accessibilityLabel("Project Filter")
-        .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
     }
 }
 
@@ -1404,47 +1390,20 @@ private struct MemoryProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        ToolbarFilterMenu(
-            selectionTitle: store.activeProject?.name ?? "Org",
-            isLoading: store.isSwitchingMemoryContext
-        ) {
-            Button {
-                Task { await store.showOrgMemory() }
-            } label: {
-                if store.activeProjectId == nil {
-                    Label("Org", systemImage: "checkmark")
-                } else {
-                    Label("Org", systemImage: "building.2")
-                }
-            }
-            .disabled(store.isSwitchingMemoryContext)
-
-            if !store.projects.isEmpty {
-                Divider()
-            }
-
-            if store.projects.isEmpty {
-                Button("No Projects") {}
-                    .disabled(true)
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: store.activeProjectId,
+            unscopedTitle: "Org",
+            unscopedSystemImage: "building.2",
+            isLoading: store.isSwitchingMemoryContext,
+            help: "Filter Memory by Project"
+        ) { projectId in
+            if let projectId {
+                Task { await store.selectProject(projectId) }
             } else {
-                ForEach(store.projects) { project in
-                    Button {
-                        guard project.id != store.activeProjectId else { return }
-                        Task { await store.selectProject(project.id) }
-                    } label: {
-                        if project.id == store.activeProjectId {
-                            Label(project.name, systemImage: "checkmark")
-                        } else {
-                            Text(project.name)
-                        }
-                    }
-                    .disabled(store.isSwitchingMemoryContext)
-                }
+                Task { await store.showOrgMemory() }
             }
         }
-        .help("Filter Memory by Project")
-        .accessibilityLabel("Project Filter")
-        .accessibilityValue(store.activeProject?.name ?? "Org")
     }
 }
 
@@ -1452,46 +1411,17 @@ private struct ActivityProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var model: RecallModel
 
-    private var selectionTitle: String {
-        store.projects.first { $0.id == model.selectedProjectId }?.name ?? "All Projects"
-    }
-
     var body: some View {
-        ToolbarFilterMenu(
-            selectionTitle: selectionTitle,
-            isLoading: model.isLoading
-        ) {
-            Button {
-                Task { await model.selectProject(nil) }
-            } label: {
-                if model.selectedProjectId == nil {
-                    Label("All Projects", systemImage: "checkmark")
-                } else {
-                    Text("All Projects")
-                }
-            }
-            .disabled(model.isLoading)
-
-            if !store.projects.isEmpty {
-                Divider()
-            }
-
-            ForEach(store.projects) { project in
-                Button {
-                    Task { await model.selectProject(project.id) }
-                } label: {
-                    if project.id == model.selectedProjectId {
-                        Label(project.name, systemImage: "checkmark")
-                    } else {
-                        Text(project.name)
-                    }
-                }
-                .disabled(model.isLoading)
-            }
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: model.selectedProjectId,
+            unscopedTitle: "All Projects",
+            unscopedSystemImage: nil,
+            isLoading: model.isLoading,
+            help: "Filter Activity by Project"
+        ) { projectId in
+            Task { await model.selectProject(projectId) }
         }
-        .help("Filter Activity by Project")
-        .accessibilityLabel("Project Filter")
-        .accessibilityValue(selectionTitle)
     }
 }
 
