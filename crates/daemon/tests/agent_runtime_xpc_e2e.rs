@@ -261,16 +261,19 @@ fn wait_for_health(
     launchd_target: &str,
 ) -> DaemonHealth {
     let deadline = Instant::now() + Duration::from_secs(15);
+    let probe_client = client.clone().with_timeout(Duration::from_millis(500));
     let mut last_error = None;
     while Instant::now() < deadline {
-        match client.health() {
+        match probe_client.health() {
             Ok(health) => return health,
             Err(error) => last_error = Some(error.to_string()),
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let stderr =
-        std::fs::read_to_string(daemon_root.join("logs/launchd.stderr.log")).unwrap_or_default();
+    let log_dir = daemon_root.join("logs");
+    let daemon_log = std::fs::read_to_string(log_dir.join("daemon.log")).unwrap_or_default();
+    let stdout = std::fs::read_to_string(log_dir.join("launchd.stdout.log")).unwrap_or_default();
+    let stderr = std::fs::read_to_string(log_dir.join("launchd.stderr.log")).unwrap_or_default();
     let launchd = Command::new("/bin/launchctl")
         .args(["print", launchd_target])
         .output()
@@ -283,7 +286,7 @@ fn wait_for_health(
         })
         .unwrap_or_else(|error| format!("launchctl print failed: {error}"));
     panic!(
-        "test resident never became healthy: {}; launchd stderr: {stderr}; launchd state: {launchd}",
+        "test resident never became healthy: {}\ndaemon.log:\n{daemon_log}\nlaunchd stdout:\n{stdout}\nlaunchd stderr:\n{stderr}\nlaunchd state:\n{launchd}",
         last_error.unwrap_or_else(|| "no XPC response".to_owned())
     );
 }

@@ -24,6 +24,8 @@ use crate::types::{
 };
 use crate::{commit_sync, delete_server_json, get_server_json, load_meta_value, post_server_json};
 
+const MAX_CONCURRENT_DRAFT_PROJECTION_REQUESTS: usize = 8;
+
 pub(crate) struct LocalDraftResolutionInput<'a> {
     pub(crate) requested_draft_id: Option<&'a str>,
     pub(crate) project_id: &'a str,
@@ -1001,26 +1003,66 @@ pub(crate) async fn pull_draft_events(state: &DaemonState) -> Result<(), DaemonE
             .iter()
             .map(|event| event.project_id.clone())
             .collect::<BTreeSet<_>>();
-        let mut drafts = BTreeMap::new();
+        let mut projection_requests = BTreeMap::new();
         for event in &remote_events {
-            if drafts.contains_key(&event.draft_id) {
-                continue;
-            }
-            let detail: ServerDraftProjectionDetail =
-                get_server_json(state, &format!("/api/v1/drafts/{}", event.draft_id)).await?;
-            if detail.draft.draft_id != event.draft_id
-                || detail.draft.project_id != event.project_id
-                || detail.draft.version < event.version
-            {
+            let request = projection_requests
+                .entry(event.draft_id.clone())
+                .or_insert_with(|| (event.project_id.clone(), event.version));
+            if request.0 != event.project_id {
                 return Err(DaemonError::Server(format!(
-                    "Server returned an inconsistent projection for draft {}",
+                    "Server returned draft {} events for multiple projects",
                     event.draft_id
                 )));
             }
-            if let Some(base_commit_id) = detail.draft.base_commit_id.as_deref() {
-                commit_sync::ensure_commit_cached(state, base_commit_id).await?;
+            request.1 = request.1.max(event.version);
+        }
+
+        let projection_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            MAX_CONCURRENT_DRAFT_PROJECTION_REQUESTS,
+        ));
+        let mut projection_tasks = tokio::task::JoinSet::new();
+        for (draft_id, (project_id, minimum_version)) in projection_requests {
+            let state = state.clone();
+            let projection_gate = projection_gate.clone();
+            projection_tasks.spawn(async move {
+                let _permit = projection_gate.acquire_owned().await.map_err(|_| {
+                    DaemonError::Server("Draft projection request gate closed".to_owned())
+                })?;
+                let detail: ServerDraftProjectionDetail =
+                    get_server_json(&state, &format!("/api/v1/drafts/{draft_id}")).await?;
+                Ok::<_, DaemonError>((draft_id, project_id, minimum_version, detail))
+            });
+        }
+
+        let mut drafts = BTreeMap::new();
+        while let Some(result) = projection_tasks.join_next().await {
+            let (draft_id, project_id, minimum_version, detail) = result.map_err(|error| {
+                DaemonError::Server(format!("Draft projection request task failed: {error}"))
+            })??;
+            if detail.draft.draft_id != draft_id
+                || detail.draft.project_id != project_id
+                || detail.draft.version < minimum_version
+            {
+                return Err(DaemonError::Server(format!(
+                    "Server returned an inconsistent projection for draft {}",
+                    draft_id
+                )));
             }
-            drafts.insert(event.draft_id.clone(), detail);
+            drafts.insert(draft_id, detail);
+        }
+
+        let active_base_commit_ids = drafts
+            .values()
+            .filter(|detail| {
+                matches!(
+                    detail.draft.status,
+                    DaemonLocalDraftStatus::Open | DaemonLocalDraftStatus::Submitted
+                )
+            })
+            .filter_map(|detail| detail.draft.base_commit_id.clone())
+            .collect::<BTreeSet<_>>();
+        for base_commit_id in active_base_commit_ids {
+            commit_sync::ensure_commit_cached(state, &base_commit_id).await?;
         }
 
         let mut tx = state.inner.pool.begin_with("BEGIN IMMEDIATE").await?;

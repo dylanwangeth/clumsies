@@ -3186,6 +3186,35 @@ async fn empty_org_commit_state() -> impl axum::response::IntoResponse {
     )
 }
 
+#[derive(Clone)]
+struct CommitSyncProbeState {
+    org_requests: Arc<AtomicUsize>,
+    project_requests: Arc<AtomicUsize>,
+    project_in_flight: Arc<AtomicUsize>,
+    max_project_in_flight: Arc<AtomicUsize>,
+}
+
+async fn probed_empty_project_commit_state(
+    axum::extract::State(state): axum::extract::State<CommitSyncProbeState>,
+    project_id: axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    state.project_requests.fetch_add(1, Ordering::AcqRel);
+    let in_flight = state.project_in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+    state
+        .max_project_in_flight
+        .fetch_max(in_flight, Ordering::AcqRel);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    state.project_in_flight.fetch_sub(1, Ordering::AcqRel);
+    empty_project_commit_state(project_id).await
+}
+
+async fn probed_empty_org_commit_state(
+    axum::extract::State(state): axum::extract::State<CommitSyncProbeState>,
+) -> impl axum::response::IntoResponse {
+    state.org_requests.fetch_add(1, Ordering::AcqRel);
+    empty_org_commit_state().await
+}
+
 #[tokio::test]
 async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts() {
     let app = Router::new().route("/api/v1/projects/{project_id}", get(accessible_project));
@@ -3831,13 +3860,23 @@ async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
 
 #[tokio::test]
 async fn commit_sync_installs_every_bound_project_independently_of_desktop_selection() {
+    let probe = CommitSyncProbeState {
+        org_requests: Arc::new(AtomicUsize::new(0)),
+        project_requests: Arc::new(AtomicUsize::new(0)),
+        project_in_flight: Arc::new(AtomicUsize::new(0)),
+        max_project_in_flight: Arc::new(AtomicUsize::new(0)),
+    };
     let app = Router::new()
         .route("/api/v1/projects/{project_id}", get(accessible_project))
         .route(
             "/api/v1/projects/{project_id}/commit-state",
-            get(empty_project_commit_state),
+            get(probed_empty_project_commit_state),
         )
-        .route("/api/v1/org/commit-state", get(empty_org_commit_state));
+        .route(
+            "/api/v1/org/commit-state",
+            get(probed_empty_org_commit_state),
+        )
+        .with_state(probe.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -3887,6 +3926,11 @@ async fn commit_sync_installs_every_bound_project_independently_of_desktop_selec
             .unwrap();
         assert_eq!(cache.state, DaemonMemoryCacheState::Ready);
     }
+    assert_eq!(probe.org_requests.load(Ordering::Acquire), 1);
+    assert_eq!(probe.project_requests.load(Ordering::Acquire), 3);
+    let max_project_in_flight = probe.max_project_in_flight.load(Ordering::Acquire);
+    assert!(max_project_in_flight > 1);
+    assert!(max_project_in_flight <= 4);
 }
 
 #[tokio::test]
@@ -4168,6 +4212,52 @@ async fn concurrent_explicit_sync_retries_wait_for_the_inflight_sync() {
     first.await.unwrap();
     second.await.unwrap();
     assert_eq!(blocking_state.request_count.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn terminal_draft_projection_fetches_are_bounded_and_skip_base_commits() {
+    let projection_state = TerminalDraftProjectionState {
+        request_count: Arc::new(AtomicUsize::new(0)),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        max_in_flight: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/api/v1/draft-events", get(terminal_draft_events))
+        .route("/api/v1/drafts/{draft_id}", get(terminal_draft_projection))
+        .with_state(projection_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_terminal".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let service = DaemonIpcService::new(state);
+
+    service
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(projection_state.request_count.load(Ordering::Acquire), 12);
+    let max_in_flight = projection_state.max_in_flight.load(Ordering::Acquire);
+    assert!(max_in_flight > 1);
+    assert!(max_in_flight <= 8);
+    assert_eq!(
+        service
+            .sync_status()
+            .await
+            .unwrap()
+            .draft_sync
+            .server_cursor,
+        Some("terminal:12".to_owned())
+    );
 }
 
 #[tokio::test]
@@ -5364,6 +5454,70 @@ async fn blocking_draft_events(
         "events": [],
         "next_cursor": null,
         "has_more": false
+    }))
+}
+
+#[derive(Clone)]
+struct TerminalDraftProjectionState {
+    request_count: Arc<AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
+    max_in_flight: Arc<AtomicUsize>,
+}
+
+async fn terminal_draft_events() -> Json<serde_json::Value> {
+    let events = (0..12)
+        .map(|index| {
+            json!({
+                "event_id": format!("evt_terminal_{index}"),
+                "draft_id": format!("drf_terminal_{index}"),
+                "project_id": "prj_terminal",
+                "event_type": "merged",
+                "version": 1,
+                "daemon_installation_id": null,
+                "created_at": "2026-08-25T00:00:00Z"
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "events": events,
+        "next_cursor": "terminal:12",
+        "has_more": false
+    }))
+}
+
+async fn terminal_draft_projection(
+    axum::extract::State(state): axum::extract::State<TerminalDraftProjectionState>,
+    axum::extract::Path(draft_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    state.request_count.fetch_add(1, Ordering::AcqRel);
+    let in_flight = state.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+    state.max_in_flight.fetch_max(in_flight, Ordering::AcqRel);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    state.in_flight.fetch_sub(1, Ordering::AcqRel);
+
+    Json(json!({
+        "draft": {
+            "draft_id": draft_id,
+            "project_id": "prj_terminal",
+            "base_commit_id": COMMIT_A,
+            "resource": {
+                "scope": "project",
+                "id": "ctx_terminal",
+                "path": "docs/terminal.md"
+            },
+            "coordination": {
+                "current_commit_id": COMMIT_A,
+                "freshness": "current",
+                "has_upstream_resource_changes": false,
+                "reconciliation": "unknown",
+                "candidate_id": null
+            },
+            "status": "merged",
+            "version": 1,
+            "created_at": "2026-08-25T00:00:00Z",
+            "updated_at": "2026-08-25T00:00:00Z"
+        },
+        "operations": []
     }))
 }
 

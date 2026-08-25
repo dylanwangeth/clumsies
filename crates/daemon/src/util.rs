@@ -126,85 +126,6 @@ pub(crate) fn validate_draft_resource_path(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::canonical_binding_root;
-    use super::git_worktree_main_root;
-
-    #[test]
-    fn git_worktree_main_root_resolves_worktree_gitdir_reference() {
-        let root =
-            std::env::temp_dir().join(format!("clumsies-worktree-root-{}", std::process::id()));
-        let main = root.join("repo");
-        let worktrees = root.join("worktrees");
-        let wt = worktrees.join("feature");
-        std::fs::create_dir_all(&main).unwrap();
-        std::fs::create_dir_all(&wt).unwrap();
-        // Simulate a git worktree: .git is a file pointing at the main gitdir.
-        std::fs::write(
-            wt.join(".git"),
-            format!("gitdir: {}/.git/worktrees/feature\n", main.display()),
-        )
-        .unwrap();
-
-        let resolved = git_worktree_main_root(&wt).unwrap();
-        assert_eq!(
-            std::fs::canonicalize(&resolved).unwrap(),
-            std::fs::canonicalize(&main).unwrap()
-        );
-
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn git_worktree_main_root_returns_none_without_git_file() {
-        let dir =
-            std::env::temp_dir().join(format!("clumsies-worktree-none-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(git_worktree_main_root(&dir).is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn git_worktree_main_root_ignores_directory_git_entry() {
-        let dir =
-            std::env::temp_dir().join(format!("clumsies-worktree-dirgit-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join(".git")).unwrap();
-        assert!(git_worktree_main_root(&dir).is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn canonical_binding_root_follows_a_replaced_workspace_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let root =
-            std::env::temp_dir().join(format!("clumsies-canonical-root-{}", std::process::id()));
-        let real = root.join("real");
-        let link = root.join("link");
-        std::fs::create_dir_all(&real).unwrap();
-        symlink(&real, &link).unwrap();
-
-        let canonical = canonical_binding_root(link.to_str().unwrap());
-        assert_eq!(
-            std::fs::canonicalize(&canonical).unwrap(),
-            std::fs::canonicalize(&real).unwrap()
-        );
-
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn canonical_binding_root_falls_back_to_the_raw_path_when_missing() {
-        let missing = std::env::temp_dir().join("clumsies-canonical-root-missing");
-        let _ = std::fs::remove_dir_all(&missing);
-
-        let canonical = canonical_binding_root(missing.to_str().unwrap());
-        assert_eq!(canonical, missing);
-    }
-}
-
 /// If `path` is a git worktree (its `.git` is a file pointing at the main
 /// repository gitdir), return the main repository root. `None` when `path`
 /// has no `.git` entry, the entry is not a file, or the gitdir reference
@@ -316,4 +237,83 @@ pub(crate) fn apply_exact_text_replacements(
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_binding_root;
+    use super::git_worktree_main_root;
+
+    #[test]
+    fn git_worktree_main_root_resolves_worktree_gitdir_reference() {
+        let root =
+            std::env::temp_dir().join(format!("clumsies-worktree-root-{}", std::process::id()));
+        let main = root.join("repo");
+        let worktrees = root.join("worktrees");
+        let wt = worktrees.join("feature");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        // Simulate a git worktree: .git is a file pointing at the main gitdir.
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}/.git/worktrees/feature\n", main.display()),
+        )
+        .unwrap();
+
+        let resolved = git_worktree_main_root(&wt).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&main).unwrap()
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn git_worktree_main_root_returns_none_without_git_file() {
+        let dir =
+            std::env::temp_dir().join(format!("clumsies-worktree-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(git_worktree_main_root(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn git_worktree_main_root_ignores_directory_git_entry() {
+        let dir =
+            std::env::temp_dir().join(format!("clumsies-worktree-dirgit-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        assert!(git_worktree_main_root(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_binding_root_follows_a_replaced_workspace_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root =
+            std::env::temp_dir().join(format!("clumsies-canonical-root-{}", std::process::id()));
+        let real = root.join("real");
+        let link = root.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        symlink(&real, &link).unwrap();
+
+        let canonical = canonical_binding_root(link.to_str().unwrap());
+        assert_eq!(
+            std::fs::canonicalize(&canonical).unwrap(),
+            std::fs::canonicalize(&real).unwrap()
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn canonical_binding_root_falls_back_to_the_raw_path_when_missing() {
+        let missing = std::env::temp_dir().join("clumsies-canonical-root-missing");
+        let _ = std::fs::remove_dir_all(&missing);
+
+        let canonical = canonical_binding_root(missing.to_str().unwrap());
+        assert_eq!(canonical, missing);
+    }
 }

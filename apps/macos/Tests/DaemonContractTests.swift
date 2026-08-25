@@ -186,6 +186,56 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(localResult.conflicts, [conflict])
     }
 
+    func testWarmDaemonRetrySyncDoesNotBlockAuthenticatedIdentityLoad() async throws {
+        let retryGate = WarmDaemonRetryGate()
+        let retryStarted = expectation(description: "retry sync started")
+        let currentUserLoaded = expectation(description: "current user loaded")
+        let loadCompleted = expectation(description: "workspace identity load completed")
+        let currentUser = CurrentUserResponse(
+            user: user,
+            org: .init(orgId: "org-1", name: "Example"),
+            projects: [],
+            defaultProjectId: nil,
+            capabilities: []
+        )
+
+        let load = Task {
+            defer { loadCompleted.fulfill() }
+            return try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
+                reconcileLocalAgentAdapters: {
+                    .init(conflicts: [], inspectionWarning: nil)
+                },
+                projectConfig: {
+                    .init(
+                        serverUrl: "https://app.clumsies.ai",
+                        projectId: "project-1",
+                        hasAccessToken: true,
+                        hasRefreshToken: true,
+                        ready: true,
+                        missingFields: []
+                    )
+                },
+                retrySync: {
+                    retryStarted.fulfill()
+                    await retryGate.wait()
+                },
+                currentUser: {
+                    currentUserLoaded.fulfill()
+                    return currentUser
+                }
+            )
+        }
+
+        await fulfillment(
+            of: [retryStarted, currentUserLoaded, loadCompleted],
+            timeout: 1
+        )
+        await retryGate.open()
+        let (_, loadedUser, _) = try await load.value
+
+        XCTAssertEqual(loadedUser.user.userId, "user-1")
+    }
+
     @MainActor
     func testLegacyAdapterWarningIsActionableForUserScopeAndInspectionFailure() {
         let conflict = DaemonLegacyAgentAdapterConflict(
@@ -1897,5 +1947,24 @@ private actor RetryingDaemonHealthProbe {
 
     func attemptCount() -> Int {
         attempts
+    }
+}
+
+private actor WarmDaemonRetryGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.resume() }
     }
 }

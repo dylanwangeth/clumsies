@@ -16,6 +16,20 @@ const STARTUP_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const LAZY_CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const CREDENTIAL_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
 
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn build_http_client(
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::Client, DaemonError> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()
+        .map_err(DaemonError::Reqwest)
+}
+
 fn legacy_project_memory_read_only_error(resource_id: &str) -> DaemonError {
     DaemonError::InvalidRequest(format!(
         "legacy Project Memory {resource_id} is read-only; MCP mutations may target only selected Organization Memory"
@@ -99,6 +113,7 @@ impl DaemonState {
             load_startup_credentials(credential_store.clone(), STARTUP_CREDENTIAL_LOAD_TIMEOUT)
                 .await;
         let project_config = load_project_config(&pool, &config.project, credentials).await?;
+        let http = build_http_client(HTTP_CONNECT_TIMEOUT, HTTP_REQUEST_TIMEOUT)?;
 
         let state = Self {
             inner: Arc::new(DaemonInner {
@@ -106,7 +121,7 @@ impl DaemonState {
                 project_config: RwLock::new(project_config),
                 credential_store,
                 pool,
-                http: reqwest::Client::new(),
+                http,
                 daemon_installation_id,
                 sync_notify: Notify::new(),
                 sync_lock: Mutex::new(()),
@@ -2581,6 +2596,30 @@ mod tests {
     use super::*;
     use crate::search::SearchFailure;
     use crate::search::models::{SearchModelRuntimeStatus, SearchModels};
+
+    #[tokio::test]
+    async fn http_client_times_out_hanging_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(stream);
+        });
+
+        let client = build_http_client(Duration::from_secs(1), Duration::from_millis(50))
+            .expect("build test HTTP client");
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.get(format!("http://{address}")).send(),
+        )
+        .await
+        .expect("HTTP request timeout must remain bounded")
+        .expect_err("a hanging response must time out");
+
+        assert!(error.is_timeout(), "expected timeout error, got {error}");
+        server.abort();
+    }
 
     struct BlockingCredentialStore {
         gate: Arc<(StdMutex<bool>, Condvar)>,

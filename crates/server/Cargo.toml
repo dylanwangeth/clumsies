@@ -2,6 +2,7 @@
 name = "server"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [[bin]]
 name = "clumsies-server"
@@ -22,9 +23,11 @@ sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uui
 subtle = "2.6.1"
 thiserror = "2.0.18"
 time = { version = "0.3.53", features = ["formatting", "macros", "parsing", "serde", "serde-human-readable"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "sync"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.0", features = ["cors", "fs"] }
+tower-http = { version = "0.7.0", features = ["cors", "fs", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 
@@ -35,4 +38,5 @@ rsa = { version = "0.9.10", features = ["pem"] }
 serde_yaml_ng = "0.10.0"
 testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tokio = { version = "1.52.3", features = ["test-util"] }
 wiremock = "0.6.5"

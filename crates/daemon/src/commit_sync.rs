@@ -16,6 +16,7 @@ const META_COMMIT_SYNC_LAST_SUCCESS_AT: &str = "commit_sync_last_success_at";
 const META_COMMIT_SYNC_LAST_ERROR: &str = "commit_sync_last_error";
 const MAIN_REF: &str = "refs/heads/main";
 const EMPTY_GENERATION: &str = "ref-none";
+const MAX_CONCURRENT_PROJECT_STATE_REQUESTS: usize = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonMemoryCacheRequest {
@@ -411,15 +412,112 @@ pub(super) async fn project_checkout(
 
 async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
     let project_ids = sync_project_ids(state).await?;
-    let mut first_error = None;
+    let mut errors = BTreeMap::new();
+    let mut ready_project_ids = Vec::new();
     for project_id in project_ids {
-        if let Err(error) = sync_project_ref(state, &project_id).await
-            && first_error.is_none()
-        {
-            first_error = Some(error);
+        if let Err(error) = validate_cache_component("project_id", &project_id) {
+            errors.insert(project_id, error);
+            continue;
+        }
+        match ensure_active_draft_base_commits(state, &project_id).await {
+            Ok(()) => ready_project_ids.push(project_id),
+            Err(error) => {
+                errors.insert(project_id, error);
+            }
         }
     }
-    match first_error {
+
+    let project_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        MAX_CONCURRENT_PROJECT_STATE_REQUESTS,
+    ));
+    let mut project_tasks = tokio::task::JoinSet::new();
+    for project_id in ready_project_ids {
+        let state = state.clone();
+        let project_gate = project_gate.clone();
+        project_tasks.spawn(async move {
+            let result = async {
+                let _permit = project_gate.acquire_owned().await.map_err(|_| {
+                    DaemonError::Server("Project Commit-state request gate closed".to_owned())
+                })?;
+                fetch_project_ref(&state, &project_id).await
+            }
+            .await;
+            (project_id, result)
+        });
+    }
+
+    let mut projects = BTreeMap::new();
+    while let Some(result) = project_tasks.join_next().await {
+        let (project_id, result) = result.map_err(|error| {
+            DaemonError::Server(format!("Project Commit-state request task failed: {error}"))
+        })?;
+        match result {
+            Ok(project) => {
+                projects.insert(project_id, project);
+            }
+            Err(error) => {
+                errors.insert(project_id, error);
+            }
+        }
+    }
+    let Some((_, (first_project_state, _))) = projects.first_key_value() else {
+        return match errors.into_values().next() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        };
+    };
+
+    let expected_org_id = first_project_state.reference.org_id.clone();
+    let local_org_commit =
+        load_ref_commit(&state.inner.pool, &org_ref_key(&expected_org_id)).await?;
+    let org_result = async {
+        let (org_state, org_etag) = fetch_commit_state(
+            state,
+            "/api/v1/org/commit-state",
+            local_org_commit.as_deref(),
+        )
+        .await?;
+        validate_commit_state(
+            &org_state,
+            &org_etag,
+            ServerCommitScope::Org,
+            None,
+            local_org_commit.as_deref(),
+        )?;
+        Ok::<_, DaemonError>((org_state, org_etag))
+    }
+    .await;
+    let (org_state, org_etag) = match org_result {
+        Ok(org) => org,
+        Err(error) => return Err(errors.into_values().next().unwrap_or(error)),
+    };
+
+    if org_state.reference.org_id != expected_org_id {
+        return Err(errors.into_values().next().unwrap_or_else(|| {
+            DaemonError::Server(
+                "Project and organization commit states belong to different organizations"
+                    .to_owned(),
+            )
+        }));
+    }
+    if let Err(error) = install_ref(state, &org_state, &org_etag, None).await {
+        return Err(errors.into_values().next().unwrap_or(error));
+    }
+
+    for (project_id, (project_state, project_etag)) in projects {
+        let result = if project_state.reference.org_id != org_state.reference.org_id {
+            Err(DaemonError::Server(
+                "Project and organization commit states belong to different organizations"
+                    .to_owned(),
+            ))
+        } else {
+            install_ref(state, &project_state, &project_etag, Some(&project_id)).await
+        };
+        if let Err(error) = result {
+            errors.insert(project_id, error);
+        }
+    }
+    match errors.into_values().next() {
         Some(error) => Err(error),
         None => Ok(()),
     }
@@ -454,11 +552,10 @@ async fn sync_project_ids(state: &DaemonState) -> Result<BTreeSet<String>, Daemo
     Ok(project_ids)
 }
 
-async fn sync_project_ref(state: &DaemonState, project_id: &str) -> Result<(), DaemonError> {
-    validate_cache_component("project_id", project_id)?;
-
-    ensure_active_draft_base_commits(state, project_id).await?;
-
+async fn fetch_project_ref(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<(ServerCommitState, String), DaemonError> {
     let local_project_commit =
         load_ref_commit(&state.inner.pool, &project_ref_key(project_id)).await?;
     let (project_state, project_etag) = fetch_commit_state(
@@ -475,30 +572,7 @@ async fn sync_project_ref(state: &DaemonState, project_id: &str) -> Result<(), D
         local_project_commit.as_deref(),
     )?;
 
-    let org_id = project_state.reference.org_id.clone();
-    let local_org_commit = load_ref_commit(&state.inner.pool, &org_ref_key(&org_id)).await?;
-    let (org_state, org_etag) = fetch_commit_state(
-        state,
-        "/api/v1/org/commit-state",
-        local_org_commit.as_deref(),
-    )
-    .await?;
-    validate_commit_state(
-        &org_state,
-        &org_etag,
-        ServerCommitScope::Org,
-        None,
-        local_org_commit.as_deref(),
-    )?;
-    if org_state.reference.org_id != org_id {
-        return Err(DaemonError::Server(
-            "Project and organization commit states belong to different organizations".to_owned(),
-        ));
-    }
-
-    install_ref(state, &org_state, &org_etag, None).await?;
-    install_ref(state, &project_state, &project_etag, Some(project_id)).await?;
-    Ok(())
+    Ok((project_state, project_etag))
 }
 
 async fn ensure_active_draft_base_commits(

@@ -6151,7 +6151,7 @@ mod tests {
                 acceptance_criteria: Vec::new(),
             },
         };
-        sync_server_kanban_issues(&pool, "project-1", &[server_record.clone()])
+        sync_server_kanban_issues(&pool, "project-1", std::slice::from_ref(&server_record))
             .await
             .unwrap();
         let synced = project_native_issue_board(
