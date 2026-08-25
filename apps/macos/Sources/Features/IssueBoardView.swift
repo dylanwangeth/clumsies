@@ -1099,6 +1099,8 @@ private struct IssueAssigneeRow: View {
             displayName: assignee.displayName ?? assignee.email
         )
         .font(.caption)
+        .scaleEffect(2.0 / 3.0, anchor: .leading)
+        .frame(height: 16, alignment: .leading)
         .help("Issue assignee")
     }
 }
