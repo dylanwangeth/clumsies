@@ -3,7 +3,9 @@ mod common;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use server::api::{
-    CreateDraftRequest, CreateProjectRequest, DraftDetail, DraftResourceRef, ResourceScope,
+    CreateDraftRequest, CreateProjectRequest, DraftDetail, DraftOperationAction,
+    DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationInput, DraftResourceContent,
+    DraftResourceRef, ResourceScope,
 };
 use server::repository::ServerRepository;
 use tower::ServiceExt;
@@ -132,6 +134,56 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
         .await
         .unwrap();
     assert_eq!(private_draft.status(), StatusCode::NOT_FOUND);
+
+    let operation_batch_body = |draft_id: &str| {
+        serde_json::to_vec(&DraftOperationBatchRequest {
+            daemon_installation_id: "daemon_member_batch".to_owned(),
+            operations: vec![DraftOperationBatchItem {
+                local_operation_id: format!("local-{draft_id}"),
+                draft_id: draft_id.to_owned(),
+                expected_draft_version: owner_draft.draft.version,
+                operation: DraftOperationInput {
+                    action: DraftOperationAction::Create,
+                    resource: owner_draft.draft.resource.clone(),
+                    content: Some(DraftResourceContent {
+                        description: None,
+                        content: "# Private".to_owned(),
+                    }),
+                    new_path: None,
+                },
+            }],
+        })
+        .unwrap()
+    };
+    let private_draft_batch = member_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/draft-operation-batches")
+                .header("content-type", "application/json")
+                .body(Body::from(operation_batch_body(
+                    &owner_draft.draft.draft_id,
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(private_draft_batch.status(), StatusCode::NOT_FOUND);
+
+    let missing_draft_batch = member_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/draft-operation-batches")
+                .header("content-type", "application/json")
+                .body(Body::from(operation_batch_body("drf_missing")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_draft_batch.status(), StatusCode::NOT_FOUND);
 
     let org_draft = member_app
         .clone()

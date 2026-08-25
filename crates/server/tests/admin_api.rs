@@ -555,16 +555,28 @@ where
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn seed_memory(
-    pool: &sqlx::PgPool,
-    org_id: &str,
-    memory_id: &str,
-    project_id: Option<&str>,
-    scope: &str,
-    path: &str,
-    name: &str,
-    description: &str,
-) {
+struct SeedMemory<'a> {
+    pool: &'a sqlx::PgPool,
+    org_id: &'a str,
+    memory_id: &'a str,
+    project_id: Option<&'a str>,
+    scope: &'a str,
+    path: &'a str,
+    name: &'a str,
+    description: &'a str,
+}
+
+async fn seed_memory(seed: SeedMemory<'_>) {
+    let SeedMemory {
+        pool,
+        org_id,
+        memory_id,
+        project_id,
+        scope,
+        path,
+        name,
+        description,
+    } = seed;
     sqlx::query(
         "INSERT INTO resources (
             resource_id, org_id, project_id, scope, resource_kind, path, name,
@@ -607,38 +619,38 @@ async fn memory_export_contains_verifiable_full_state() {
     let org_memory_id = "ctx_legacy_org_policy";
     let project_memory_id = "rul_legacy_project_rule";
     let issue_memory_id = "mem_native_issue";
-    seed_memory(
-        &postgres.pool,
-        &bootstrap.org_id,
-        org_memory_id,
-        None,
-        "org",
-        "context/org-policy.md",
-        "Org Policy",
-        "Org-wide policy memory",
-    )
+    seed_memory(SeedMemory {
+        pool: &postgres.pool,
+        org_id: &bootstrap.org_id,
+        memory_id: org_memory_id,
+        project_id: None,
+        scope: "org",
+        path: "context/org-policy.md",
+        name: "Org Policy",
+        description: "Org-wide policy memory",
+    })
     .await;
-    seed_memory(
-        &postgres.pool,
-        &bootstrap.org_id,
-        project_memory_id,
-        Some(&bootstrap.project_id),
-        "project",
-        "rules/project-rule.md",
-        "Project Rule",
-        "Project rule memory",
-    )
+    seed_memory(SeedMemory {
+        pool: &postgres.pool,
+        org_id: &bootstrap.org_id,
+        memory_id: project_memory_id,
+        project_id: Some(&bootstrap.project_id),
+        scope: "project",
+        path: "rules/project-rule.md",
+        name: "Project Rule",
+        description: "Project rule memory",
+    })
     .await;
-    seed_memory(
-        &postgres.pool,
-        &bootstrap.org_id,
-        issue_memory_id,
-        Some(&bootstrap.project_id),
-        "project",
-        "issues/ISSUE-012.md",
-        "Issue 12",
-        "Issue 12 memory",
-    )
+    seed_memory(SeedMemory {
+        pool: &postgres.pool,
+        org_id: &bootstrap.org_id,
+        memory_id: issue_memory_id,
+        project_id: Some(&bootstrap.project_id),
+        scope: "project",
+        path: "issues/ISSUE-012.md",
+        name: "Issue 12",
+        description: "Issue 12 memory",
+    })
     .await;
 
     sqlx::query(

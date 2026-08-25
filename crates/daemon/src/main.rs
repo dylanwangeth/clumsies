@@ -344,46 +344,49 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
         .with_writer(std::io::stderr.and(log_file))
         .with_target(false)
         .init();
-    let mut launch_agent =
-        LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?)?;
-    launch_agent.mach_service_name = mach_service_name;
-    let launch_agent_controller = LaunchAgentController::for_current_user(launch_agent.clone())?;
+    if !args.is_empty() {
+        let mut launch_agent =
+            LaunchAgentConfig::from_daemon_config(&config, std::env::current_exe()?)?;
+        launch_agent.mach_service_name = mach_service_name.clone();
+        let launch_agent_controller =
+            LaunchAgentController::for_current_user(launch_agent.clone())?;
 
-    match args.as_slice() {
-        [command] if command == "--print-launch-agent-plist" => {
-            print!("{}", launch_agent.plist_contents());
-            return Ok(());
-        }
-        [command] if command == "--install-launch-agent" => {
-            print_status(&launch_agent_controller.install()?)?;
-            return Ok(());
-        }
-        [command] if command == "--status-launch-agent" => {
-            print_status(&launch_agent_controller.status()?)?;
-            return Ok(());
-        }
-        [command] if command == "--bootstrap-launch-agent" => {
-            print_status(&launch_agent_controller.bootstrap()?)?;
-            return Ok(());
-        }
-        [command] if command == "--bootout-launch-agent" => {
-            print_status(&launch_agent_controller.bootout()?)?;
-            return Ok(());
-        }
-        [command] if command == "--restart-launch-agent" => {
-            print_status(&launch_agent_controller.kickstart()?)?;
-            return Ok(());
-        }
-        [command] if command == "--reconcile-launch-agent" => {
-            print_status(&launch_agent_controller.reconcile()?)?;
-            return Ok(());
-        }
-        [] => {}
-        _ => {
-            tracing::error!(
-                "usage: clumsiesd [mcp serve|_agent issue-run-event --host <host>|--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
-            );
-            std::process::exit(64);
+        match args.as_slice() {
+            [command] if command == "--print-launch-agent-plist" => {
+                print!("{}", launch_agent.plist_contents());
+                return Ok(());
+            }
+            [command] if command == "--install-launch-agent" => {
+                print_status(&launch_agent_controller.install()?)?;
+                return Ok(());
+            }
+            [command] if command == "--status-launch-agent" => {
+                print_status(&launch_agent_controller.status()?)?;
+                return Ok(());
+            }
+            [command] if command == "--bootstrap-launch-agent" => {
+                print_status(&launch_agent_controller.bootstrap()?)?;
+                return Ok(());
+            }
+            [command] if command == "--bootout-launch-agent" => {
+                print_status(&launch_agent_controller.bootout()?)?;
+                return Ok(());
+            }
+            [command] if command == "--restart-launch-agent" => {
+                print_status(&launch_agent_controller.kickstart()?)?;
+                return Ok(());
+            }
+            [command] if command == "--reconcile-launch-agent" => {
+                print_status(&launch_agent_controller.reconcile()?)?;
+                return Ok(());
+            }
+            [] => unreachable!(),
+            _ => {
+                tracing::error!(
+                    "usage: clumsiesd [mcp serve|_agent issue-run-event --host <host>|--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
+                );
+                std::process::exit(64);
+            }
         }
     }
 
@@ -455,8 +458,7 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
         DaemonState::initialize(config).await?
     };
     let service = DaemonIpcService::new(state.clone());
-    let _ipc_server =
-        DaemonIpcServer::start(launch_agent.mach_service_name.clone(), service.clone())?;
+    let _ipc_server = DaemonIpcServer::start(mach_service_name.clone(), service.clone())?;
     // The unique test service exercises the real process/XPC boundary while
     // deliberately avoiding network sync and model downloads in user space.
     let _sync_worker = (!test_mach_service).then(|| state.start_sync_worker());
@@ -467,7 +469,7 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
 
     tracing::info!(
         "clumsiesd initialized for Mach service {} with installation {}",
-        launch_agent.mach_service_name,
+        mach_service_name,
         health.daemon_installation_id
     );
 

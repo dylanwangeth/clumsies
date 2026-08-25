@@ -17,7 +17,7 @@ cleanup_test() {
 }
 trap cleanup_test EXIT
 
-mkdir -p "$CLUMSIES_ROOT"
+mkdir -p "$CLUMSIES_ROOT/releases"
 touch "$EVENT_LOG"
 printf '%s\n' "$PREVIOUS_IMAGE" >"$IMAGE_STATE"
 
@@ -33,6 +33,7 @@ reset_case() {
   printf '%s\n' "$PREVIOUS_IMAGE" >"$IMAGE_STATE"
   FAIL_PREFLIGHT=0
   FAIL_TARGET_START=0
+  STOP_EXIT_CODE=0
 }
 
 current_image() {
@@ -45,6 +46,11 @@ validate_target() {
 
 docker() {
   event "docker:$*"
+  if [[ "$1" == ps ]]; then
+    printf 'server-container\n'
+  elif [[ "$1" == inspect && "$*" == *'{{.State.ExitCode}}'* ]]; then
+    printf '%s\n' "$STOP_EXIT_CODE"
+  fi
 }
 
 compose() {
@@ -130,7 +136,7 @@ assert_before() {
 }
 
 test_successful_cutover() {
-  local stop_event="compose[$PREVIOUS_IMAGE]:stop --timeout 60 server"
+  local stop_event="compose[$PREVIOUS_IMAGE]:stop --timeout 10 server"
 
   reset_case
   deploy_release "$TARGET_IMAGE" "$TARGET_COMMIT"
@@ -158,9 +164,25 @@ test_failed_preflight_leaves_production_untouched() {
   assert_absent "restore:"
 }
 
+test_exit_137_after_stop_aborts_cutover() {
+  reset_case
+  STOP_EXIT_CODE=137
+
+  if (deploy_release "$TARGET_IMAGE" "$TARGET_COMMIT"); then
+    printf 'expected exit-137 stop to fail\n' >&2
+    exit 1
+  fi
+
+  assert_present "record:cutover-stop-failed "
+  assert_absent "backup:pre-deploy-"
+  assert_absent "write-image:$TARGET_IMAGE"
+  assert_absent "compose[$TARGET_IMAGE]:up "
+  assert_absent "restore:"
+}
+
 test_failed_target_restores_database_before_old_image() {
   local target_start="compose[$TARGET_IMAGE]:up "
-  local target_stop="compose[$TARGET_IMAGE]:stop --timeout 60 server"
+  local target_stop="compose[$TARGET_IMAGE]:stop --timeout 10 server"
   local previous_start="compose[$PREVIOUS_IMAGE]:up "
 
   reset_case
@@ -180,6 +202,7 @@ test_failed_target_restores_database_before_old_image() {
 
 test_successful_cutover
 test_failed_preflight_leaves_production_untouched
+test_exit_137_after_stop_aborts_cutover
 test_failed_target_restores_database_before_old_image
 
 printf 'server release transaction tests passed\n'

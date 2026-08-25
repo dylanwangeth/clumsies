@@ -41,24 +41,7 @@ fn postgres_slots() -> &'static Arc<Semaphore> {
 pub async fn postgres_without_migrations() -> TestPostgres {
     let permit = postgres_slots().clone().acquire_owned().await.unwrap();
     let container = Postgres::default().start().await.unwrap();
-    let mut port = None;
-    let mut last_error = None;
-    for _ in 0..120 {
-        match container.get_host_port_ipv4(5432).await {
-            Ok(value) => {
-                port = Some(value);
-                break;
-            }
-            Err(error) => last_error = Some(error),
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let port = port.unwrap_or_else(|| {
-        panic!(
-            "PostgreSQL test container never exposed port 5432: {}",
-            last_error.unwrap()
-        )
-    });
+    let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let pool = PgPool::connect(&url).await.unwrap();
 

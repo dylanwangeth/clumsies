@@ -10,6 +10,7 @@ readonly BACKUP_DIR="$CLUMSIES_ROOT/backups"
 readonly RELEASE_DIR="$CLUMSIES_ROOT/releases"
 readonly IMAGE_PREFIX="ghcr.io/lilhammerfun/clumsies-server"
 readonly LOCK_FILE="/run/lock/clumsies-server-release.lock"
+readonly SERVER_STOP_TIMEOUT_SECONDS=10
 
 log() {
   printf '[clumsies-release] %s\n' "$*" >&2
@@ -36,6 +37,42 @@ compose() {
   )
 }
 
+server_container_id() {
+  docker ps --all \
+    --filter label=com.docker.compose.project=clumsies \
+    --filter label=com.docker.compose.service=server \
+    --format '{{.ID}}' | sed -n '1p'
+}
+
+stop_server() {
+  local container
+  local exit_code
+
+  container="$(server_container_id)" || {
+    log "could not identify the Server container before stopping it"
+    return 1
+  }
+  if [[ -z "$container" ]]; then
+    log "no Server container exists to stop"
+    return 1
+  fi
+
+  compose stop --timeout "$SERVER_STOP_TIMEOUT_SECONDS" server || return 1
+
+  exit_code="$(docker inspect "$container" --format '{{.State.ExitCode}}' 2>/dev/null)" || {
+    log "could not inspect the stopped Server container"
+    return 1
+  }
+  if [[ ! "$exit_code" =~ ^[0-9]+$ ]]; then
+    log "stopped Server container returned an invalid exit code: $exit_code"
+    return 1
+  fi
+  if [[ "$exit_code" == 137 ]]; then
+    log "Server container was killed while stopping"
+    return 1
+  fi
+}
+
 read_env_value() {
   local key="$1"
   awk -v key="$key" '
@@ -50,10 +87,7 @@ read_env_value() {
 current_container_image() {
   local container
 
-  container="$(docker ps --all \
-    --filter label=com.docker.compose.project=clumsies \
-    --filter label=com.docker.compose.service=server \
-    --format '{{.ID}}' | sed -n '1p')"
+  container="$(server_container_id)"
   [[ -n "$container" ]] || return 0
   docker inspect "$container" --format '{{.Config.Image}}' 2>/dev/null || true
 }
@@ -344,10 +378,7 @@ capture_server_logs() {
   local logfile
 
   logfile="$RELEASE_DIR/failed-container-$(date -u +%Y%m%dT%H%M%SZ).log"
-  container="$(docker ps --all \
-    --filter label=com.docker.compose.project=clumsies \
-    --filter label=com.docker.compose.service=server \
-    --format '{{.ID}}' | sed -n '1p' || true)"
+  container="$(server_container_id || true)"
   if [[ -z "$container" ]]; then
     log "no Server container found to capture logs from"
     return 0
@@ -362,7 +393,7 @@ rollback_release() {
   local backup="$2"
 
   log "rolling back database and Server to $previous_image"
-  if ! compose stop --timeout 60 server; then
+  if ! stop_server; then
     log "could not stop the failed Server before rollback"
     return 1
   fi
@@ -412,7 +443,7 @@ deploy_release() {
   fi
 
   log "stopping the current Server for a write-free database cutover"
-  if ! compose stop --timeout 60 server; then
+  if ! stop_server; then
     resume_release "$previous_image" || true
     record_release cutover-stop-failed "$timestamp" "$commit" "$image" \
       "$previous_image" "$preflight_backup" "$preflight_backup"
@@ -594,6 +625,8 @@ verify_backup_with_image() (
   # Invoked by the EXIT trap for this isolated subshell.
   # shellcheck disable=SC2317,SC2329
   cleanup() {
+    docker stop --time "$SERVER_STOP_TIMEOUT_SECONDS" \
+      "$server_container" >/dev/null 2>&1 || true
     docker rm --force "$server_container" "$postgres_container" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
   }

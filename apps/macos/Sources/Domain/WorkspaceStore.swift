@@ -4945,7 +4945,7 @@ struct WorkspaceLoader: Sendable {
         reconcileLocalAgentAdapters: () async throws
             -> LocalAgentAdapterReconciliationResult,
         projectConfig: () async throws -> DaemonProjectConfig,
-        retrySync: () async -> Void,
+        retrySync: @escaping @Sendable () async -> Void,
         currentUser: () async throws -> CurrentUserResponse,
         onLocalAgentAdapters: @MainActor @Sendable (LocalAgentAdapterReconciliationResult) async
             -> Void = { _ in }
@@ -4960,7 +4960,7 @@ struct WorkspaceLoader: Sendable {
         guard config.hasAccessToken && config.hasRefreshToken else {
             throw WorkspaceLoadError.authenticationRequired
         }
-        await retrySync()
+        Task { await retrySync() }
         return (config, try await currentUser(), localAgentAdapters)
     }
 

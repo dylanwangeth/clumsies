@@ -31,6 +31,7 @@ services:
   server:
     image: ${CLUMSIES_SERVER_IMAGE:?CLUMSIES_SERVER_IMAGE must be set}
     restart: unless-stopped
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy

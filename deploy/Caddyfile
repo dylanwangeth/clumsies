@@ -1,5 +1,21 @@
 app.clumsies.ai {
 	encode zstd gzip
+	log {
+		output stdout
+		format filter {
+			wrap json {
+				duration_format ms
+			}
+			request>headers delete
+			request>uri delete
+			resp_headers delete
+		}
+	}
+	log_append request_id {http.request.uuid}
+	log_append path {http.request.uri.path}
+	log_append upstream_host {rp.upstream.host}
+	log_append upstream_duration_ms {rp.upstream.duration_ms}
+	log_append upstream_latency_ms {rp.upstream.latency_ms}
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
@@ -8,7 +24,9 @@ app.clumsies.ai {
 		-Server
 	}
 
-	reverse_proxy server:8080
+	reverse_proxy server:8080 {
+		header_up X-Request-ID {http.request.uuid}
+	}
 }
 
 docs.clumsies.ai {

@@ -1,10 +1,13 @@
 mod common;
 
+use std::time::Duration;
+
 use server::api::{
     CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
     DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationInput,
     DraftResourceContent, DraftResourceRef, ResourceScope, ReviewDecision, ReviewDraftRequest,
 };
+use server::auth::{AuthPrincipal, CredentialKind};
 use server::repository::ServerRepository;
 
 fn memory_content(content: &str) -> Option<DraftResourceContent> {
@@ -134,6 +137,40 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
             .iter()
             .all(|item| item.draft.status == server::api::DraftStatus::Submitted)
     );
+
+    let principal = AuthPrincipal {
+        user_id: bootstrap.user_id.clone(),
+        org_id: bootstrap.org_id.clone(),
+        session_id: "session_review_list".to_owned(),
+        token_id: "token_review_list".to_owned(),
+        role: "owner".to_owned(),
+        credential_kind: CredentialKind::Bearer,
+        csrf_token: None,
+    };
+    let mut blob_lock = postgres.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE blobs IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blob_lock)
+        .await
+        .unwrap();
+    let draft_list = tokio::time::timeout(
+        Duration::from_secs(3),
+        repo.list_drafts(&bootstrap.user_id, Some(&bootstrap.project_id)),
+    )
+    .await;
+    let reviews = tokio::time::timeout(
+        Duration::from_secs(3),
+        repo.list_reviews(&principal, Some(&bootstrap.project_id)),
+    )
+    .await;
+    blob_lock.rollback().await.unwrap();
+    let draft_list = draft_list
+        .expect("a draft list must not wait for a blob payload table lock")
+        .unwrap();
+    assert_eq!(draft_list.items.len(), 2);
+    let reviews = reviews
+        .expect("a review list must not wait for a blob payload table lock")
+        .unwrap();
+    assert_eq!(reviews.items, vec![detail.review.clone()]);
 
     let approved = repo
         .create_review_decision(
@@ -417,33 +454,44 @@ async fn batch_preserves_multiple_operations_and_their_event_versions() {
         .unwrap();
 
     let batch = repo
-        .create_draft_operation_batch(DraftOperationBatchRequest {
-            daemon_installation_id: "daemon_batch_ordering".to_owned(),
-            operations: vec![
-                DraftOperationBatchItem {
-                    local_operation_id: "local_first".to_owned(),
-                    draft_id: draft.draft.draft_id.clone(),
-                    expected_draft_version: 1,
-                    operation: DraftOperationInput {
-                        action: DraftOperationAction::Update,
-                        resource: target.clone(),
-                        content: memory_content("# First"),
-                        new_path: None,
+        .create_draft_operation_batch(
+            &AuthPrincipal {
+                user_id: bootstrap.user_id.clone(),
+                org_id: bootstrap.org_id.clone(),
+                session_id: "session_batch_ordering".to_owned(),
+                token_id: "token_batch_ordering".to_owned(),
+                role: "owner".to_owned(),
+                credential_kind: CredentialKind::Bearer,
+                csrf_token: None,
+            },
+            DraftOperationBatchRequest {
+                daemon_installation_id: "daemon_batch_ordering".to_owned(),
+                operations: vec![
+                    DraftOperationBatchItem {
+                        local_operation_id: "local_first".to_owned(),
+                        draft_id: draft.draft.draft_id.clone(),
+                        expected_draft_version: 1,
+                        operation: DraftOperationInput {
+                            action: DraftOperationAction::Update,
+                            resource: target.clone(),
+                            content: memory_content("# First"),
+                            new_path: None,
+                        },
                     },
-                },
-                DraftOperationBatchItem {
-                    local_operation_id: "local_final".to_owned(),
-                    draft_id: draft.draft.draft_id.clone(),
-                    expected_draft_version: 2,
-                    operation: DraftOperationInput {
-                        action: DraftOperationAction::Update,
-                        resource: target,
-                        content: memory_content("# Final"),
-                        new_path: None,
+                    DraftOperationBatchItem {
+                        local_operation_id: "local_final".to_owned(),
+                        draft_id: draft.draft.draft_id.clone(),
+                        expected_draft_version: 2,
+                        operation: DraftOperationInput {
+                            action: DraftOperationAction::Update,
+                            resource: target,
+                            content: memory_content("# Final"),
+                            new_path: None,
+                        },
                     },
-                },
-            ],
-        })
+                ],
+            },
+        )
         .await
         .unwrap();
     assert_eq!(batch.accepted_operations, ["local_first", "local_final"]);

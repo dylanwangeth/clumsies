@@ -1,9 +1,46 @@
 use std::env;
+use std::net::{AddrParseError, SocketAddr};
 
 use thiserror::Error;
 use url::{Host, Url};
 
 pub const PUBLIC_ORIGIN_ENV: &str = "CLUMSIES_PUBLIC_ORIGIN";
+const DATABASE_URL_ENV: &str = "DATABASE_URL";
+const SERVER_ADDR_ENV: &str = "CLUMSIES_SERVER_ADDR";
+const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8080";
+
+pub(crate) struct ServerConfig {
+    pub(crate) database_url: String,
+    pub(crate) listen_addr: SocketAddr,
+    pub(crate) public_origin: PublicOrigin,
+}
+
+impl ServerConfig {
+    pub(crate) fn from_env() -> Result<Self, ServerConfigError> {
+        let database_url =
+            env::var(DATABASE_URL_ENV).map_err(|_| ServerConfigError::Missing(DATABASE_URL_ENV))?;
+        let listen_addr = env::var(SERVER_ADDR_ENV)
+            .unwrap_or_else(|_| DEFAULT_SERVER_ADDR.to_owned())
+            .parse()
+            .map_err(ServerConfigError::InvalidListenAddress)?;
+
+        Ok(Self {
+            database_url,
+            listen_addr,
+            public_origin: PublicOrigin::from_env()?,
+        })
+    }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ServerConfigError {
+    #[error("{0} is required to start clumsies Server")]
+    Missing(&'static str),
+    #[error("{SERVER_ADDR_ENV} is invalid: {0}")]
+    InvalidListenAddress(#[source] AddrParseError),
+    #[error(transparent)]
+    PublicOrigin(#[from] PublicOriginError),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicOrigin {
