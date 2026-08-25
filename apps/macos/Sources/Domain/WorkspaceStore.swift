@@ -73,6 +73,14 @@ enum WorkspaceLoadError: LocalizedError, Sendable {
     }
 }
 
+enum ProjectMemberError: LocalizedError, Sendable {
+    case noActiveProject
+
+    var errorDescription: String? {
+        "Select a Project before managing its members."
+    }
+}
+
 enum MemoryValidationError: LocalizedError, Sendable {
     case invalidPath(String)
     case emptyRule
@@ -307,6 +315,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var projects: [ProjectState] = []
     @Published private(set) var projectMetadata: [String: ProjectRecord] = [:]
+    @Published private(set) var projectMembers: [ProjectMemberRecord] = []
     @Published private(set) var orgRefCommitId: String?
     @Published private(set) var orgRefEtag = ""
     @Published private(set) var resources: [MemoryResource] = []
@@ -870,7 +879,7 @@ final class WorkspaceStore: ObservableObject {
         switch selectedSection {
         case .memory:
             break
-        case .issues, .bundles, .reviews:
+        case .issues, .bundles, .reviews, .sessions:
             return []
         }
 
@@ -1203,6 +1212,75 @@ final class WorkspaceStore: ObservableObject {
             )
         }
         return updated
+    }
+
+    func refreshProjectMembers() async {
+        guard let projectId = activeProjectId else {
+            projectMembers = []
+            return
+        }
+        do {
+            projectMembers = try await projectMemberDirectory(projectId: projectId)
+        } catch is CancellationError {
+            return
+        } catch {
+            projectMembers = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func projectMemberDirectory(projectId: String) async throws -> [ProjectMemberRecord] {
+        let response: ListResponse<ProjectMemberRecord> = try await server.get(
+            "/api/v1/projects/\(projectId)/members"
+        )
+        return response.items
+    }
+
+    func organizationMemberDirectory() async throws -> [OrganizationMemberRecord] {
+        let response: ListResponse<OrganizationMemberRecord> = try await server.get(
+            "/api/v1/admin/members",
+            query: [URLQueryItem(name: "limit", value: "200")]
+        )
+        return response.items
+    }
+
+    @discardableResult
+    func addProjectMember(
+        userId: String,
+        role: ProjectMemberRole = .member
+    ) async throws -> ProjectMemberRecord {
+        guard let projectId = activeProjectId else { throw ProjectMemberError.noActiveProject }
+        let member: ProjectMemberRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/admin/projects/\(projectId)/members",
+            body: CreateProjectMemberRequest(userId: userId, role: role)
+        )
+        projectMembers.append(member)
+        projectMembers.sort { ($0.user.displayName ?? $0.user.email).localizedStandardCompare(
+            $1.user.displayName ?? $1.user.email
+        ) == .orderedAscending }
+        return member
+    }
+
+    @discardableResult
+    func inviteAndAddProjectMember(
+        email: String,
+        role: ProjectMemberRole = .member
+    ) async throws -> ProjectMemberRecord {
+        let invited: OrganizationMemberRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/admin/members",
+            body: CreateOrganizationMemberRequest(email: email, role: "member")
+        )
+        return try await addProjectMember(userId: invited.userId, role: role)
+    }
+
+    func assignIssue(_ issue: IssueBoardCard, to member: ProjectMemberRecord) async throws {
+        let _: KanbanIssueAssignmentResponse = try await server.send(
+            method: "PUT",
+            path: "/api/v1/projects/\(issue.projectId)/issues/\(issue.issueId)/assignee",
+            body: AssignKanbanIssueRequest(assigneeUserId: member.id)
+        )
     }
 
     func projectBindings(_ projectId: String) async throws -> [DaemonProjectBinding] {

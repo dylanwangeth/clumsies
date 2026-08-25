@@ -54,6 +54,57 @@ struct PageInfo: Codable, Sendable {
     let hasMore: Bool
 }
 
+enum ProjectMemberRole: String, Codable, CaseIterable, Sendable {
+    case member
+    case admin
+
+    var title: String {
+        switch self {
+        case .member: "Member"
+        case .admin: "Admin"
+        }
+    }
+}
+
+struct OrganizationMemberRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { userId }
+
+    let userId: String
+    let email: String
+    let displayName: String?
+    let role: String
+    let status: String
+    let externalIdentityBound: Bool
+    let revision: Int
+}
+
+struct ProjectMemberRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { user.userId }
+
+    let projectId: String
+    let user: UserReference
+    let role: ProjectMemberRole
+    let joinedAt: String
+}
+
+struct CreateOrganizationMemberRequest: Codable, Sendable {
+    let email: String
+    let role: String
+}
+
+struct CreateProjectMemberRequest: Codable, Sendable {
+    let userId: String
+    let role: ProjectMemberRole
+}
+
+struct AssignKanbanIssueRequest: Codable, Sendable {
+    let assigneeUserId: String
+}
+
+struct KanbanIssueAssignmentResponse: Codable, Sendable {
+    let assignee: UserReference
+}
+
 struct ListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
     let items: [Item]
     let pageInfo: PageInfo

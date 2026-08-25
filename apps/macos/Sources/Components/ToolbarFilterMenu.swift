@@ -37,3 +37,65 @@ struct ToolbarFilterMenu<MenuContent: View>: View {
         .frame(maxWidth: 220, alignment: .leading)
     }
 }
+
+struct ProjectFilterMenu: View {
+    let projects: [ProjectState]
+    let selectedProjectId: String?
+    let unscopedTitle: String?
+    let unscopedSystemImage: String?
+    let isLoading: Bool
+    let help: String
+    let onSelect: (String?) -> Void
+
+    private var selectionTitle: String {
+        projects.first { $0.id == selectedProjectId }?.name
+            ?? unscopedTitle
+            ?? "Select Project"
+    }
+
+    var body: some View {
+        ToolbarFilterMenu(selectionTitle: selectionTitle, isLoading: isLoading) {
+            if let unscopedTitle {
+                Button {
+                    guard selectedProjectId != nil else { return }
+                    onSelect(nil)
+                } label: {
+                    if selectedProjectId == nil {
+                        Label(unscopedTitle, systemImage: "checkmark")
+                    } else if let unscopedSystemImage {
+                        Label(unscopedTitle, systemImage: unscopedSystemImage)
+                    } else {
+                        Text(unscopedTitle)
+                    }
+                }
+                .disabled(isLoading)
+
+                if !projects.isEmpty {
+                    Divider()
+                }
+            }
+
+            if projects.isEmpty {
+                Button("No Projects") {}
+                    .disabled(true)
+            } else {
+                ForEach(projects) { project in
+                    Button {
+                        guard project.id != selectedProjectId else { return }
+                        onSelect(project.id)
+                    } label: {
+                        if project.id == selectedProjectId {
+                            Label(project.name, systemImage: "checkmark")
+                        } else {
+                            Text(project.name)
+                        }
+                    }
+                    .disabled(isLoading)
+                }
+            }
+        }
+        .help(help)
+        .accessibilityLabel("Project Filter")
+        .accessibilityValue(selectionTitle)
+    }
+}

@@ -124,9 +124,11 @@ struct WorkspaceView: View {
     let onShowLogs: () -> Void
     let loadsReviewDetail: Bool
     @StateObject private var issueBoardModel: IssueBoardModel
+    @StateObject private var recallModel: RecallModel
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var reviewSplitVisibility: NavigationSplitViewVisibility = .all
+    @State private var recallSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
     @State private var confirmsBundleDeletion = false
     @State private var showsSyncIssuePopover = false
@@ -153,6 +155,7 @@ struct WorkspaceView: View {
         self.onShowLogs = onShowLogs
         self.loadsReviewDetail = loadsReviewDetail
         _issueBoardModel = StateObject(wrappedValue: IssueBoardModel(daemon: store.daemon))
+        _recallModel = StateObject(wrappedValue: RecallModel(daemon: store.daemon))
     }
 
     private var showsDocumentTabs: Bool {
@@ -174,6 +177,8 @@ struct WorkspaceView: View {
             issuesWorkspace
         case .reviews:
             reviewsWorkspace
+        case .sessions:
+            recallWorkspace
         default:
             regularWorkspace
         }
@@ -497,6 +502,7 @@ struct WorkspaceView: View {
         IssueDetailView(
             issueId: route.issueId,
             model: issueBoardModel,
+            members: store.projectMembers,
             onGate: { action, issue in
                 Task {
                     do {
@@ -505,6 +511,10 @@ struct WorkspaceView: View {
                         store.errorMessage = error.localizedDescription
                     }
                 }
+            },
+            onAssign: { issue, member in
+                try await store.assignIssue(issue, to: member)
+                await issueBoardModel.refresh()
             },
             onUnclaim: { issue in
                 Task {
@@ -676,6 +686,7 @@ struct WorkspaceView: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
+        case .sessions: "Search Activity"
         }
     }
 
@@ -881,6 +892,71 @@ struct WorkspaceView: View {
         .frame(width: 16, height: 16)
     }
 
+    private var recallWorkspace: some View {
+        NavigationSplitView(columnVisibility: $recallSplitVisibility) {
+            GlobalSidebar(
+                store: store,
+                onOpenSettings: onOpenSettings,
+                onOpenDiagnostics: onOpenDiagnostics,
+                onShowLogs: onShowLogs
+            )
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+        } content: {
+            RecallSessionList(model: recallModel)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+        } detail: {
+            RecallSessionDetail(model: recallModel)
+                .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                .toolbar {
+                    recallToolbarContent
+                }
+        }
+        .onAppear {
+            store.showsProjectSettings = false
+            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .doubleColumn
+            if recallSplitVisibility != target {
+                recallSplitVisibility = target
+            }
+            if recallModel.sessions.isEmpty {
+                Task { await recallModel.load() }
+            }
+        }
+        .onChange(of: recallSplitVisibility) { _, visibility in
+            let expanded = visibility != .detailOnly
+            if store.sidebarExpanded != expanded {
+                store.sidebarExpanded = expanded
+            }
+        }
+        .onChange(of: store.sidebarExpanded) { _, expanded in
+            let target: NavigationSplitViewVisibility = expanded ? .all : .doubleColumn
+            if recallSplitVisibility != target {
+                recallSplitVisibility = target
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var recallToolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            ActivityProjectFilter(store: store, model: recallModel)
+        }
+
+        if #available(macOS 26.0, *) {
+            ToolbarSpacer(.flexible, placement: .automatic)
+        }
+
+        ToolbarItem(placement: .trailingPinned) {
+            Button {
+                Task { await recallModel.load() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .disabled(recallModel.isLoading)
+            .help("Refresh Activity")
+            .accessibilityLabel("Refresh Activity")
+        }
+    }
+
     private var issuesWorkspace: some View {
         NavigationSplitView(columnVisibility: $issueSplitVisibility) {
             GlobalSidebar(
@@ -896,8 +972,13 @@ struct WorkspaceView: View {
                     model: issueBoardModel,
                     projectId: store.activeProjectId,
                     projectName: store.activeProject?.name,
+                    members: store.projectMembers,
                     onOpenDetails: { issue in
                         issueNavigationPath = [IssueBoardRoute(issueId: issue.id)]
+                    },
+                    onAssign: { issue, member in
+                        try await store.assignIssue(issue, to: member)
+                        await issueBoardModel.refresh()
                     }
                 )
                 .navigationDestination(for: IssueBoardRoute.self) { route in
@@ -1053,6 +1134,9 @@ struct WorkspaceView: View {
                 }
             }
         }
+        .task(id: store.activeProjectId) {
+            await store.refreshProjectMembers()
+        }
         .alert(
             "Clumsies",
             isPresented: Binding(
@@ -1114,6 +1198,10 @@ struct WorkspaceView: View {
             ToolbarItem {
                 EmptyView()
             }
+        case .sessions:
+            ToolbarItem {
+                EmptyView()
+            }
         }
     }
 
@@ -1127,6 +1215,8 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
+            EmptyView()
+        case .sessions:
             EmptyView()
         }
     }
@@ -1151,6 +1241,8 @@ struct WorkspaceView: View {
         case .issues:
             EmptyView()
         case .reviews:
+            EmptyView()
+        case .sessions:
             EmptyView()
         }
     }
@@ -1244,6 +1336,8 @@ struct WorkspaceView: View {
             }
         case .issues:
             break
+        case .sessions:
+            break
         }
         return Array(entries.prefix(30))
     }
@@ -1290,32 +1384,18 @@ private struct IssueProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        ToolbarFilterMenu(
-            selectionTitle: store.activeProject?.name ?? "Select Project",
-            isLoading: store.loadingProjectId != nil
-        ) {
-            if store.projects.isEmpty {
-                Button("No Projects") {}
-                    .disabled(true)
-            } else {
-                ForEach(store.projects) { project in
-                    Button {
-                        guard project.id != store.activeProjectId else { return }
-                        Task { await store.selectProject(project.id) }
-                    } label: {
-                        if project.id == store.activeProjectId {
-                            Label(project.name, systemImage: "checkmark")
-                        } else {
-                            Text(project.name)
-                        }
-                    }
-                    .disabled(store.loadingProjectId != nil)
-                }
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: store.activeProjectId,
+            unscopedTitle: nil,
+            unscopedSystemImage: nil,
+            isLoading: store.loadingProjectId != nil,
+            help: "Filter Kanban by Project"
+        ) { projectId in
+            if let projectId {
+                Task { await store.selectProject(projectId) }
             }
         }
-        .help("Filter Kanban by Project")
-        .accessibilityLabel("Project Filter")
-        .accessibilityValue(store.activeProject?.name ?? "No Project Selected")
     }
 }
 
@@ -1323,47 +1403,38 @@ private struct MemoryProjectFilter: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        ToolbarFilterMenu(
-            selectionTitle: store.activeProject?.name ?? "Org",
-            isLoading: store.isSwitchingMemoryContext
-        ) {
-            Button {
-                Task { await store.showOrgMemory() }
-            } label: {
-                if store.activeProjectId == nil {
-                    Label("Org", systemImage: "checkmark")
-                } else {
-                    Label("Org", systemImage: "building.2")
-                }
-            }
-            .disabled(store.isSwitchingMemoryContext)
-
-            if !store.projects.isEmpty {
-                Divider()
-            }
-
-            if store.projects.isEmpty {
-                Button("No Projects") {}
-                    .disabled(true)
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: store.activeProjectId,
+            unscopedTitle: "Org",
+            unscopedSystemImage: "building.2",
+            isLoading: store.isSwitchingMemoryContext,
+            help: "Filter Memory by Project"
+        ) { projectId in
+            if let projectId {
+                Task { await store.selectProject(projectId) }
             } else {
-                ForEach(store.projects) { project in
-                    Button {
-                        guard project.id != store.activeProjectId else { return }
-                        Task { await store.selectProject(project.id) }
-                    } label: {
-                        if project.id == store.activeProjectId {
-                            Label(project.name, systemImage: "checkmark")
-                        } else {
-                            Text(project.name)
-                        }
-                    }
-                    .disabled(store.isSwitchingMemoryContext)
-                }
+                Task { await store.showOrgMemory() }
             }
         }
-        .help("Filter Memory by Project")
-        .accessibilityLabel("Project Filter")
-        .accessibilityValue(store.activeProject?.name ?? "Org")
+    }
+}
+
+private struct ActivityProjectFilter: View {
+    @ObservedObject var store: WorkspaceStore
+    @ObservedObject var model: RecallModel
+
+    var body: some View {
+        ProjectFilterMenu(
+            projects: store.projects,
+            selectedProjectId: model.selectedProjectId,
+            unscopedTitle: "All Projects",
+            unscopedSystemImage: nil,
+            isLoading: model.isLoading,
+            help: "Filter Activity by Project"
+        ) { projectId in
+            Task { await model.selectProject(projectId) }
+        }
     }
 }
 
@@ -1460,6 +1531,7 @@ private struct WorkspaceSearchPopover: View {
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
+        case .sessions: "Search Activity"
         }
     }
 
@@ -1551,6 +1623,9 @@ private struct GlobalSidebar: View {
                     .tag(GlobalSidebarDestination.section(.bundles))
                 SidebarDestinationLabel(section: .reviews)
                     .tag(GlobalSidebarDestination.section(.reviews))
+
+                SidebarDestinationLabel(section: .sessions)
+                    .tag(GlobalSidebarDestination.section(.sessions))
             } header: {
                 HStack(spacing: 7) {
                     Image("BrandMark", bundle: .main)

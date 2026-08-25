@@ -120,6 +120,8 @@ pub struct ActivateMemoryRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ActivateMemoryResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub index_revision: String,
     pub profile: String,
     pub next_state: String,
@@ -525,7 +527,7 @@ pub(crate) async fn activate_memory(
     let mut failure_stage = "activation_state";
 
     const ACTIVATION_DEADLINE: Duration = Duration::from_secs(60);
-    let (result, deadline_expired) = match tokio::time::timeout(ACTIVATION_DEADLINE, async {
+    let (mut result, deadline_expired) = match tokio::time::timeout(ACTIVATION_DEADLINE, async {
         let previous_state = activation::decode_activation_state(request.state.as_deref())?;
 
         failure_stage = "index_head";
@@ -620,6 +622,9 @@ pub(crate) async fn activate_memory(
         ),
     };
 
+    if let Ok(response) = &mut result {
+        response.run_id = run_id.clone();
+    }
     completion.latencies.total_us = elapsed_us(total_started);
     match &result {
         Ok(response) => {
@@ -1416,6 +1421,31 @@ mod tests {
         panic!("search index job did not reach {expected_state}: {status:?}");
     }
 
+    #[test]
+    fn activation_response_run_id_preserves_wire_compatibility() {
+        let legacy = json!({
+            "index_revision": "idx_1",
+            "profile": "ranking.v1",
+            "next_state": "state_1",
+            "fragments": [],
+            "removed": []
+        });
+        let mut response: ActivateMemoryResponse = serde_json::from_value(legacy).unwrap();
+        assert_eq!(response.run_id, None);
+        assert!(
+            serde_json::to_value(&response)
+                .unwrap()
+                .get("run_id")
+                .is_none()
+        );
+
+        response.run_id = Some("run_exact".to_owned());
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["run_id"],
+            "run_exact"
+        );
+    }
+
     #[tokio::test]
     async fn index_pruning_uses_search_then_storage_lock_order() {
         let (_temp, state) = test_state().await;
@@ -1910,6 +1940,7 @@ mod tests {
             .unwrap();
         assert_eq!(runs.items.len(), 1);
         let run = &runs.items[0];
+        assert_eq!(response.run_id.as_deref(), Some(run.run_id.as_str()));
         assert_eq!(run.query, "hybrid retrieval testing");
         assert!(run.completed_at.is_some());
         assert_eq!(run.returned_fragment_count, response.fragments.len() as u64);
@@ -2892,6 +2923,63 @@ mod tests {
             before["draft_timestamp"].source.draft_revision,
             after["draft_timestamp"].source.draft_revision
         );
+    }
+
+    #[test]
+    fn remote_create_draft_uses_the_provisional_resource_id_from_later_operations() {
+        let create = DaemonDraftOperation {
+            create: Some(DaemonCreateDraftOperation {
+                path: "context/new.md".to_owned(),
+                content: DaemonDraftContent {
+                    description: None,
+                    content: "# Initial".to_owned(),
+                },
+                description: None,
+            }),
+            update: None,
+            rename: None,
+            delete: None,
+            discard: None,
+        };
+        let update = DaemonDraftOperation {
+            create: None,
+            update: Some(DaemonUpdateDraftOperation::Content(
+                DaemonContentDraftUpdate {
+                    id: "draft_provisional".to_owned(),
+                    content: DaemonDraftContent {
+                        description: None,
+                        content: "# Updated".to_owned(),
+                    },
+                    description: None,
+                },
+            )),
+            rename: None,
+            delete: None,
+            discard: None,
+        };
+        let overlay = super::overlay::DraftOverlay {
+            draft_id: "drf_server".to_owned(),
+            base_commit_id: Some("commit_base".to_owned()),
+            scope: SourceScope::Project,
+            kind: Some(MemoryKind::Memory),
+            target_id: None,
+            path: Some("context/new.md".to_owned()),
+            base_resource: None,
+            operations: vec![
+                (1, serde_json::to_string(&create).unwrap(), create),
+                (2, serde_json::to_string(&update).unwrap(), update),
+            ],
+        };
+
+        let mut resources = BTreeMap::new();
+        super::overlay::apply_draft_overlay("prj_test", &mut resources, overlay).unwrap();
+
+        assert_eq!(resources["draft_provisional"].source.content, "# Updated");
+        assert_eq!(
+            resources["draft_provisional"].source.draft_id.as_deref(),
+            Some("drf_server")
+        );
+        assert!(!resources.contains_key("drf_server"));
     }
 
     #[tokio::test]

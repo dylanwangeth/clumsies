@@ -302,8 +302,29 @@ export interface components {
             project_id: string;
             effective_hash: string;
             issues: components["schemas"]["IssueBoardCard"][];
+            claims: components["schemas"]["IssueClaim"][];
             unlinked_runs: components["schemas"]["AgentRun"][];
             diagnostics: components["schemas"]["IssueBoardDiagnostic"][];
+        };
+        IssueMember: {
+            user_id: string;
+            /** Format: email */
+            email: string;
+            display_name: string | null;
+            /** Format: uri */
+            avatar_url: string | null;
+            role: string;
+        };
+        IssueClaim: {
+            project_id: string;
+            issue_id: string;
+            issue_key: string;
+            run_id: string;
+            claimant: components["schemas"]["IssueMember"];
+            /** Format: date-time */
+            claimed_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
         };
         IssueExternalReference: {
             kind: components["schemas"]["IssueExternalReferenceKind"];
@@ -368,6 +389,7 @@ export interface components {
             /** Format: date-time */
             state_updated_at: string | null;
             closure_summary: string | null;
+            assignee: components["schemas"]["IssueMember"] | null;
             is_stale: boolean;
             blocked: boolean;
             blocking_reasons: components["schemas"]["IssueBlockingReason"][];

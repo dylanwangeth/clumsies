@@ -710,8 +710,88 @@ pub struct IssueBoardResponse {
     pub project_id: String,
     pub effective_hash: String,
     pub issues: Vec<IssueBoardCard>,
+    #[serde(default)]
+    pub claims: Vec<IssueClaim>,
     pub unlinked_runs: Vec<AgentRun>,
     pub diagnostics: Vec<IssueBoardDiagnostic>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueMember {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub role: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct IssueClaim {
+    pub project_id: String,
+    pub issue_id: String,
+    pub issue_key: String,
+    pub run_id: String,
+    pub claimant: IssueMember,
+    pub claimed_at: String,
+    pub lease_expires_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ServerIssueClaimListResponse {
+    pub(crate) items: Vec<IssueClaim>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct AcquireServerIssueClaimRequest {
+    pub(crate) issue_key: String,
+    pub(crate) run_id: String,
+    pub(crate) lease_expires_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ReleaseServerIssueClaimRequest {
+    pub(crate) run_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct ServerKanbanIssueSnapshot {
+    pub(crate) issue: IssueBoardCard,
+    pub(crate) acceptance_criteria: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ServerKanbanIssue {
+    pub(crate) project_id: String,
+    pub(crate) issue_id: String,
+    pub(crate) issue_number: i64,
+    pub(crate) assignee: IssueMember,
+    pub(crate) content_revision: i64,
+    pub(crate) payload: ServerKanbanIssueSnapshot,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct ServerKanbanIssueListResponse {
+    pub(crate) items: Vec<ServerKanbanIssue>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ImportServerKanbanIssue {
+    pub(crate) issue_id: String,
+    pub(crate) issue_number: i64,
+    pub(crate) content_revision: i64,
+    pub(crate) payload: ServerKanbanIssueSnapshot,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ImportServerKanbanIssuesRequest {
+    pub(crate) items: Vec<ImportServerKanbanIssue>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct UpdateServerKanbanIssueRequest {
+    pub(crate) expected_content_revision: i64,
+    pub(crate) content_revision: i64,
+    pub(crate) payload: ServerKanbanIssueSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -765,6 +845,8 @@ pub struct IssueBoardCard {
     pub state_revision: i64,
     pub state_updated_at: Option<String>,
     pub closure_summary: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<IssueMember>,
     pub is_stale: bool,
     pub blocked: bool,
     pub blocking_reasons: Vec<IssueBlockingReason>,
@@ -2425,6 +2507,208 @@ pub(crate) async fn ensure_native_issue_in_project(
     Ok(found)
 }
 
+pub(crate) async fn native_issue_id(
+    pool: &SqlitePool,
+    project_id: &str,
+    issue_number: i64,
+) -> Result<Option<String>, DaemonError> {
+    sqlx::query_scalar(
+        "SELECT issue_id FROM native_issues
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn native_issue_acceptance_criteria(
+    pool: &SqlitePool,
+    project_id: &str,
+    issue_number: i64,
+) -> Result<Vec<String>, DaemonError> {
+    let value: String = sqlx::query_scalar(
+        "SELECT acceptance_criteria_json FROM native_issues
+         WHERE project_id = $1 AND issue_number = $2",
+    )
+    .bind(project_id)
+    .bind(issue_number)
+    .fetch_one(pool)
+    .await?;
+    serde_json::from_str(&value)
+        .map_err(|error| corrupt_run(format!("invalid Issue acceptance criteria: {error}")))
+}
+
+pub(crate) async fn sync_server_kanban_issues(
+    pool: &SqlitePool,
+    project_id: &str,
+    records: &[ServerKanbanIssue],
+) -> Result<(), DaemonError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let (now, _) = db_clock(&mut tx).await?;
+    let local_run_ids =
+        sqlx::query_scalar::<_, String>("SELECT run_id FROM agent_runs WHERE project_id = $1")
+            .bind(project_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+    for record in records {
+        let issue = &record.payload.issue;
+        if record.project_id != project_id
+            || issue.project_id != project_id
+            || record.issue_id != issue.issue_id
+            || record.issue_number != issue.issue_number
+            || record.content_revision != issue.state_revision
+        {
+            return Err(corrupt_run(
+                "Server Kanban Issue identity mismatch".to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO native_issues (
+                issue_id, project_id, issue_number, title, description,
+                acceptance_criteria_json, external_references_json,
+                status, revision, changed_by_run_id, closure_summary,
+                verification_level, verification_steps_json,
+                created_at, started_at, updated_at, closed_at, archived_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                       $12, $13, $14, $15, $16, $17, $18)
+             ON CONFLICT(project_id, issue_number) DO UPDATE SET
+                issue_id = excluded.issue_id,
+                title = excluded.title,
+                description = excluded.description,
+                acceptance_criteria_json = excluded.acceptance_criteria_json,
+                external_references_json = excluded.external_references_json,
+                status = excluded.status,
+                revision = excluded.revision,
+                changed_by_run_id = excluded.changed_by_run_id,
+                closure_summary = excluded.closure_summary,
+                verification_level = excluded.verification_level,
+                verification_steps_json = excluded.verification_steps_json,
+                created_at = excluded.created_at,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                closed_at = excluded.closed_at,
+                archived_at = excluded.archived_at",
+        )
+        .bind(&issue.issue_id)
+        .bind(project_id)
+        .bind(issue.issue_number)
+        .bind(&issue.title)
+        .bind(&issue.description)
+        .bind(serde_json::to_string(&record.payload.acceptance_criteria)?)
+        .bind(serde_json::to_string(&issue.external_references)?)
+        .bind(issue.board_state.as_str())
+        .bind(issue.state_revision)
+        .bind(
+            issue
+                .changed_by_run_id
+                .as_ref()
+                .filter(|run_id| local_run_ids.contains(*run_id)),
+        )
+        .bind(&issue.closure_summary)
+        .bind(issue.verification_level.as_str())
+        .bind(serde_json::to_string(&issue.verification_steps)?)
+        .bind(
+            issue
+                .created_at
+                .as_deref()
+                .or(issue.found_at.as_deref())
+                .unwrap_or(&now),
+        )
+        .bind(&issue.started_at)
+        .bind(issue.state_updated_at.as_deref().unwrap_or(&now))
+        .bind(&issue.closed_at)
+        .bind(&issue.archived_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    for statement in [
+        "DELETE FROM issue_dependencies WHERE project_id = $1",
+        "DELETE FROM issue_blocking_facts WHERE project_id = $1",
+        "DELETE FROM issue_state_events WHERE project_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    for record in records {
+        let issue = &record.payload.issue;
+        for dependency in &issue.dependencies {
+            let depends_on_number = parse_issue_reference(&dependency.issue_key)?;
+            sqlx::query(
+                "INSERT INTO issue_dependencies (
+                    project_id, issue_number, depends_on_number, created_at
+                 ) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(project_id)
+            .bind(issue.issue_number)
+            .bind(depends_on_number)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for fact in &issue.blocking_facts {
+            sqlx::query(
+                "INSERT INTO issue_blocking_facts (
+                    project_id, issue_number, fact_id, kind, value,
+                    description, satisfied, created_at, updated_at
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+            )
+            .bind(project_id)
+            .bind(issue.issue_number)
+            .bind(&fact.fact_id)
+            .bind(fact.kind.as_str())
+            .bind(&fact.value)
+            .bind(&fact.description)
+            .bind(if fact.satisfied { 1_i64 } else { 0_i64 })
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for event in &issue.state_events {
+            sqlx::query(
+                "INSERT INTO issue_state_events (
+                    event_id, project_id, issue_number, from_state, to_state,
+                    changed_by_run_id, occurred_at
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(format!("evt_{}", Uuid::new_v4().simple()))
+            .bind(project_id)
+            .bind(issue.issue_number)
+            .bind(event.from_state.as_str())
+            .bind(event.to_state.as_str())
+            .bind(
+                event
+                    .changed_by_run_id
+                    .as_ref()
+                    .filter(|run_id| local_run_ids.contains(*run_id)),
+            )
+            .bind(&event.occurred_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    sqlx::query(
+        "INSERT INTO native_issue_imports (project_id, imported_at)
+         VALUES ($1, $2)
+         ON CONFLICT(project_id) DO UPDATE SET imported_at = excluded.imported_at",
+    )
+    .bind(project_id)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 pub(crate) fn native_board_hash(cards: &[IssueBoardCard]) -> String {
     let mut hasher = Sha256::new();
     for card in cards {
@@ -2564,6 +2848,7 @@ fn native_issue_card(
         state_revision: issue.revision,
         state_updated_at: Some(issue.updated_at),
         closure_summary: issue.closure_summary,
+        assignee: None,
         is_stale,
         blocked,
         blocking_reasons,
@@ -4427,6 +4712,7 @@ impl ParsedIssue {
             state_revision: 0,
             state_updated_at: None,
             closure_summary: None,
+            assignee: None,
             is_stale: false,
             blocked: false,
             blocking_reasons: Vec::new(),
@@ -5847,6 +6133,56 @@ mod tests {
             cards[0].changed_by_run_id.as_deref(),
             Some(started.run.as_ref().unwrap().run_id.as_str())
         );
+
+        let server_record = ServerKanbanIssue {
+            project_id: "project-1".to_owned(),
+            issue_id: cards[0].issue_id.clone(),
+            issue_number: cards[0].issue_number,
+            assignee: IssueMember {
+                user_id: "usr_test".to_owned(),
+                email: "member@example.com".to_owned(),
+                display_name: Some("Member".to_owned()),
+                avatar_url: None,
+                role: "member".to_owned(),
+            },
+            content_revision: cards[0].state_revision,
+            payload: ServerKanbanIssueSnapshot {
+                issue: cards[0].clone(),
+                acceptance_criteria: Vec::new(),
+            },
+        };
+        sync_server_kanban_issues(&pool, "project-1", &[server_record.clone()])
+            .await
+            .unwrap();
+        let synced = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            synced[0].changed_by_run_id.as_deref(),
+            Some(started.run.as_ref().unwrap().run_id.as_str())
+        );
+
+        let mut foreign_record = server_record;
+        foreign_record.payload.issue.changed_by_run_id = Some("run_remote".to_owned());
+        sync_server_kanban_issues(&pool, "project-1", &[foreign_record])
+            .await
+            .unwrap();
+        let synced = project_native_issue_board(
+            &pool,
+            "project-1",
+            &[],
+            "2026-08-06T02:00:00.000Z",
+            "2026-08-05T01:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert!(synced[0].changed_by_run_id.is_none());
     }
 
     #[test]
@@ -5876,6 +6212,7 @@ mod tests {
             state_revision: 1,
             state_updated_at: Some("2026-08-08T03:00:00Z".to_owned()),
             closure_summary: None,
+            assignee: None,
             is_stale: false,
             blocked: false,
             blocking_reasons: Vec::new(),

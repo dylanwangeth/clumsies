@@ -103,6 +103,10 @@ final class IssueBoardModel: ObservableObject {
         response?.diagnostics ?? []
     }
 
+    func claim(for issue: IssueBoardCard) -> IssueClaim? {
+        response?.claims.first { $0.issueId == issue.issueId }
+    }
+
     var matchingIssues: [IssueBoardCard] {
         let needle = searchNeedle
         guard !needle.isEmpty else { return issues }

@@ -784,8 +784,56 @@ struct IssueBoardResponse: Codable, Equatable, Sendable {
     let projectId: String
     let effectiveHash: String
     let issues: [IssueBoardCard]
+    let claims: [IssueClaim]
     let unlinkedRuns: [AgentRun]
     let diagnostics: [IssueBoardDiagnostic]
+
+    init(
+        projectId: String,
+        effectiveHash: String,
+        issues: [IssueBoardCard],
+        claims: [IssueClaim] = [],
+        unlinkedRuns: [AgentRun],
+        diagnostics: [IssueBoardDiagnostic]
+    ) {
+        self.projectId = projectId
+        self.effectiveHash = effectiveHash
+        self.issues = issues
+        self.claims = claims
+        self.unlinkedRuns = unlinkedRuns
+        self.diagnostics = diagnostics
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case projectId
+        case effectiveHash
+        case issues
+        case claims
+        case unlinkedRuns
+        case diagnostics
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        effectiveHash = try container.decode(String.self, forKey: .effectiveHash)
+        issues = try container.decode([IssueBoardCard].self, forKey: .issues)
+        claims = try container.decodeIfPresent([IssueClaim].self, forKey: .claims) ?? []
+        unlinkedRuns = try container.decode([AgentRun].self, forKey: .unlinkedRuns)
+        diagnostics = try container.decode([IssueBoardDiagnostic].self, forKey: .diagnostics)
+    }
+}
+
+struct IssueClaim: Codable, Identifiable, Equatable, Sendable {
+    var id: String { "\(projectId):\(issueId)" }
+
+    let projectId: String
+    let issueId: String
+    let issueKey: String
+    let runId: String
+    let claimant: UserReference
+    let claimedAt: String
+    let leaseExpiresAt: String
 }
 
 struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
@@ -815,6 +863,7 @@ struct IssueBoardCard: Codable, Identifiable, Equatable, Sendable {
     let stateRevision: Int
     let stateUpdatedAt: String?
     let closureSummary: String?
+    let assignee: UserReference?
     let isStale: Bool
     let blocked: Bool
     let blockingReasons: [IssueBlockingReason]
@@ -860,6 +909,7 @@ extension IssueBoardCard {
         case stateRevision
         case stateUpdatedAt
         case closureSummary
+        case assignee
         case isStale
         case blocked
         case blockingReasons
@@ -905,6 +955,7 @@ extension IssueBoardCard {
         stateRevision = try container.decode(Int.self, forKey: .stateRevision)
         stateUpdatedAt = try container.decodeIfPresent(String.self, forKey: .stateUpdatedAt)
         closureSummary = try container.decodeIfPresent(String.self, forKey: .closureSummary)
+        assignee = try container.decodeIfPresent(UserReference.self, forKey: .assignee)
         isStale = try container.decode(Bool.self, forKey: .isStale)
         blocked = try container.decodeIfPresent(Bool.self, forKey: .blocked) ?? false
         blockingReasons = try container.decodeIfPresent(
@@ -1198,4 +1249,79 @@ struct ExportEvaluationSetRequest: Codable, Sendable {
 struct ExportEvaluationSetResponse: Codable, Sendable {
     let fixtureJson: String
     let report: RetrievalBenchmarkReport
+}
+
+struct ListRecallsRequest: Codable, Sendable {
+    let workspaceRoot: String?
+    let projectId: String?
+    let limit: Int?
+
+    init(workspaceRoot: String? = nil, projectId: String? = nil, limit: Int? = nil) {
+        self.workspaceRoot = workspaceRoot
+        self.projectId = projectId
+        self.limit = limit
+    }
+}
+
+struct ListRecallsResponse: Codable, Sendable {
+    let sessions: [RecallSession]
+    let workspaceRoots: [String]
+}
+
+struct GetRecallFragmentRequest: Codable, Sendable {
+    let workspaceRoot: String
+    let runId: String
+    let unitKey: String
+}
+
+struct GetRecallFragmentResponse: Codable, Sendable {
+    let fragment: RecallFragment
+}
+
+struct RecallSession: Codable, Identifiable, Sendable {
+    var id: String { "\(host.rawValue):\(sessionId)" }
+
+    let host: AgentRunHost
+    let sessionId: String
+    let title: String?
+    let workspaceRoot: String
+    let createdAt: Int64?
+    let tasks: [RecallTask]
+}
+
+struct RecallTask: Codable, Identifiable, Sendable {
+    var id: String { messageId }
+
+    let messageId: String
+    let text: String
+    let time: Int64?
+    let activations: [RecallActivation]
+}
+
+struct RecallActivation: Codable, Identifiable, Sendable {
+    var id: String { callId }
+
+    let toolName: String
+    let callId: String
+    let query: String
+    let state: String?
+    let time: Int64?
+    let runId: String?
+    let runStatus: String?
+    let fragments: [RecallFragment]
+    let resultError: String?
+}
+
+struct RecallFragment: Codable, Identifiable, Sendable {
+    var id: String { unitKey }
+
+    let action: String?
+    let unitKey: String
+    let resourceId: String
+    let scope: DaemonDraftScope?
+    let path: String
+    let headingPath: [String]
+    let content: String
+    let finalRank: UInt64?
+    let truncated: Bool
 }

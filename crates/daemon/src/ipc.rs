@@ -18,8 +18,9 @@ use crate::{
     DaemonProjectStorageResetRequest, DaemonRetryResponse, DaemonServerRequest,
     DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, EvaluationCaseDetail,
     ExportEvaluationSetRequest, ExportEvaluationSetResponse, GetIssueRequest,
-    IssueBoardListRequest, IssueBoardResponse, IssueDetailRequest, IssueDetailResponse,
-    IssueMutationResponse, IssueRemovalResponse, IssueWorkflowMutationResponse, LoadMemoryRequest,
+    GetRecallFragmentRequest, GetRecallFragmentResponse, IssueBoardListRequest, IssueBoardResponse,
+    IssueDetailRequest, IssueDetailResponse, IssueMutationResponse, IssueRemovalResponse,
+    IssueWorkflowMutationResponse, ListRecallsRequest, ListRecallsResponse, LoadMemoryRequest,
     LoadMemoryResponse, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
     RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
     RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
@@ -471,6 +472,28 @@ impl DaemonIpcClient {
     ) -> Result<RetrievalRunDetail, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "get_retrieval_run",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "list_recalls",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn get_recall_fragment(
+        &self,
+        request: GetRecallFragmentRequest,
+    ) -> Result<GetRecallFragmentResponse, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "get_recall_fragment",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

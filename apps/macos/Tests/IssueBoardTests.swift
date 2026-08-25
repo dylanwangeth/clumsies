@@ -452,6 +452,39 @@ final class IssueBoardModelTests: XCTestCase {
         XCTAssertTrue(model.issues(in: .todo).isEmpty)
     }
 
+    func testServerClaimResolvesToItsIssueAndCarriesMemberIdentity() async {
+        let base = makeBoardResponse(projectId: "project-1", isStale: false)
+        let issue = try! XCTUnwrap(base.issues.first)
+        let claim = IssueClaim(
+            projectId: "project-1",
+            issueId: issue.issueId,
+            issueKey: issue.issueKey,
+            runId: "run-1",
+            claimant: UserReference(
+                userId: "user-1",
+                email: "member@example.com",
+                displayName: "Member",
+                avatarUrl: "https://example.com/avatar.png",
+                role: "member"
+            ),
+            claimedAt: "2026-08-24T12:00:00Z",
+            leaseExpiresAt: "2026-08-25T12:00:00Z"
+        )
+        let response = IssueBoardResponse(
+            projectId: base.projectId,
+            effectiveHash: base.effectiveHash,
+            issues: base.issues,
+            claims: [claim],
+            unlinkedRuns: base.unlinkedRuns,
+            diagnostics: base.diagnostics
+        )
+        let model = IssueBoardModel { _ in response }
+
+        await model.loadOnce(projectId: "project-1")
+
+        XCTAssertEqual(model.claim(for: issue)?.claimant.displayName, "Member")
+    }
+
     func testBlockedFilterShowsOnlyIssuesWithUnresolvedDependenciesOrFacts() async {
         let blockedIssue = makeIssue(
             projectId: "project-1",
@@ -490,6 +523,7 @@ final class IssueBoardModelTests: XCTestCase {
                     stateRevision: blockedIssue.stateRevision,
                     stateUpdatedAt: blockedIssue.stateUpdatedAt,
                     closureSummary: blockedIssue.closureSummary,
+                    assignee: blockedIssue.assignee,
                     isStale: false,
                     blocked: true,
                     blockingReasons: [
@@ -740,6 +774,7 @@ final class IssueBoardModelTests: XCTestCase {
                     stateRevision: matching.stateRevision,
                     stateUpdatedAt: matching.stateUpdatedAt,
                     closureSummary: matching.closureSummary,
+                    assignee: matching.assignee,
                     isStale: true,
                     blocked: true,
                     blockingReasons: [],
@@ -858,6 +893,7 @@ final class IssueBoardModelTests: XCTestCase {
             stateRevision: 2,
             stateUpdatedAt: "2026-08-06T00:00:00Z",
             closureSummary: nil,
+            assignee: nil,
             isStale: isStale,
             blocked: false,
             blockingReasons: [],

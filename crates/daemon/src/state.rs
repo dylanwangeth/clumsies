@@ -752,7 +752,7 @@ impl DaemonState {
         )
         .fetch_one(&self.inner.pool)
         .await?;
-        let issues = work_tracking::project_native_issue_board(
+        let local_issues = work_tracking::project_native_issue_board(
             &self.inner.pool,
             project_id,
             &runs,
@@ -760,6 +760,35 @@ impl DaemonState {
             &stale_before,
         )
         .await?;
+        let server_records = self
+            .list_or_import_server_kanban_issues(project_id, &local_issues)
+            .await?;
+        if let Some(records) = &server_records {
+            work_tracking::sync_server_kanban_issues(&self.inner.pool, project_id, records).await?;
+        }
+        let issues = match server_records {
+            Some(records) => records
+                .into_iter()
+                .map(|record| {
+                    let mut issue = record.payload.issue;
+                    issue.assignee = Some(record.assignee);
+                    issue.active_runs.clear();
+                    issue.latest_run = None;
+                    issue.is_stale = false;
+                    if let Some(local) = local_issues
+                        .iter()
+                        .find(|local| local.issue_id == issue.issue_id)
+                    {
+                        issue.active_runs = local.active_runs.clone();
+                        issue.latest_run = local.latest_run.clone();
+                        issue.is_stale = local.is_stale;
+                    }
+                    issue
+                })
+                .collect(),
+            None => local_issues,
+        };
+        let claims = self.list_server_issue_claims(project_id).await?;
         let valid_issue_numbers = issues
             .iter()
             .map(|issue| issue.issue_number)
@@ -783,6 +812,7 @@ impl DaemonState {
             project_id: project_id.to_owned(),
             effective_hash: work_tracking::native_board_hash(&issues),
             issues,
+            claims,
             unlinked_runs,
             diagnostics: Vec::new(),
         })
@@ -915,8 +945,15 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::create_issue(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::create_issue(&self.inner.pool, request).await
+        }?;
+        let issue_number = work_tracking::parse_issue_reference(&result.issue_key)?;
+        self.import_server_kanban_issue(&project_id, issue_number)
+            .await?;
+        Ok(result)
     }
 
     pub async fn update_issue(
@@ -925,8 +962,16 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::update_issue(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let expected_revision = request.expected_revision;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::update_issue(&self.inner.pool, request).await
+        }?;
+        self.publish_server_kanban_issue(&project_id, issue_number, expected_revision)
+            .await?;
+        Ok(result)
     }
 
     pub async fn apply_issue_gate(
@@ -935,8 +980,16 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::apply_issue_gate(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let issue_number = request.issue_number;
+        let expected_revision = request.expected_revision;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::apply_issue_gate(&self.inner.pool, request).await
+        }?;
+        self.publish_server_kanban_issue(&project_id, issue_number, expected_revision)
+            .await?;
+        Ok(result)
     }
 
     pub async fn set_verification_step_completed(
@@ -945,8 +998,16 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::set_verification_step_completed(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let expected_revision = request.expected_revision;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::set_verification_step_completed(&self.inner.pool, request).await
+        }?;
+        self.publish_server_kanban_issue(&project_id, issue_number, expected_revision)
+            .await?;
+        Ok(result)
     }
 
     pub async fn unclaim_issue(
@@ -955,8 +1016,24 @@ impl DaemonState {
     ) -> Result<IssueMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::unclaim_issue(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?;
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let expected_revision = request.expected_revision;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::unclaim_issue(&self.inner.pool, request).await
+        }?;
+        self.publish_server_kanban_issue(&project_id, issue_number, expected_revision)
+            .await?;
+        if let (Some(issue_id), Some(run_id)) = (issue_id, run_id) {
+            self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                .await?;
+        }
+        Ok(result)
     }
 
     pub async fn remove_issue(
@@ -965,27 +1042,70 @@ impl DaemonState {
     ) -> Result<IssueRemovalResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::remove_issue(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let issue_number = request.issue_number;
+        let expected_revision = request.expected_revision;
+        let issue_id = work_tracking::native_issue_id(&self.inner.pool, &project_id, issue_number)
+            .await?
+            .ok_or_else(|| DaemonError::NotFound(format!("ISSUE-{issue_number:03}")))?;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::remove_issue(&self.inner.pool, request).await
+        }?;
+        if self.project_config().server_readiness().ready {
+            let path = format!("/api/v1/projects/{project_id}/issues/{issue_id}");
+            delete_server_json(self, &path, expected_revision).await?;
+        }
+        Ok(result)
     }
 
     pub async fn start_issue_work(
         &self,
         request: StartIssueWorkRequest,
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        if let Some(run_id) = &request.run_id {
-            work_tracking::load_agent_run_for_project(
-                &self.inner.pool,
-                &request.project_id,
-                run_id,
+        let run_id = request.run_id.as_deref().ok_or_else(|| {
+            DaemonError::InvalidRequest(
+                "run_id is required: AgentRuns must be issued by a host lifecycle hook".to_owned(),
             )
-            .await?
-            .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
-        }
+        })?;
+        let run = work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::start_issue_work(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(request.issue_key.clone()))?;
+        self.import_server_kanban_issue(&request.project_id, issue_number)
+            .await?;
+        let server_claimed = self
+            .acquire_server_issue_claim(
+                &request.project_id,
+                &issue_id,
+                &request.issue_key,
+                run_id,
+                &run.lease_expires_at,
+            )
+            .await?;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::start_issue_work(&self.inner.pool, request).await
+        };
+        if result.is_err() && server_claimed {
+            let _ = self
+                .release_server_issue_claim(&run.project_id, &issue_id, &run.run_id)
+                .await;
+        }
+        let result = result?;
+        self.publish_server_kanban_issue(&run.project_id, issue_number, result.state_revision - 1)
+            .await?;
+        Ok(result)
     }
 
     pub async fn request_issue_closure(
@@ -1003,8 +1123,23 @@ impl DaemonState {
         }
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::request_issue_closure(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::request_issue_closure(&self.inner.pool, request).await
+        }?;
+        let issue_number = work_tracking::parse_issue_reference(&result.issue_key)?;
+        self.publish_server_kanban_issue(&project_id, issue_number, result.state_revision - 1)
+            .await?;
+        if let Some(run_id) = run_id
+            && let Some(issue_id) =
+                work_tracking::native_issue_id(&self.inner.pool, &project_id, issue_number).await?
+        {
+            self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                .await?;
+        }
+        Ok(result)
     }
 
     pub async fn pause_issue_work(
@@ -1013,8 +1148,23 @@ impl DaemonState {
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::pause_issue_work(&self.inner.pool, request).await
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?;
+        let project_id = request.project_id.clone();
+        let run_id = request.run_id.clone();
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::pause_issue_work(&self.inner.pool, request).await
+        }?;
+        self.publish_server_kanban_issue(&project_id, issue_number, result.state_revision - 1)
+            .await?;
+        if let Some(issue_id) = issue_id {
+            self.release_server_issue_claim(&project_id, &issue_id, &run_id)
+                .await?;
+        }
+        Ok(result)
     }
 
     pub async fn resume_issue_work(
@@ -1023,8 +1173,257 @@ impl DaemonState {
     ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
         self.ensure_native_issues_imported(&request.project_id)
             .await?;
-        let _guard = self.inner.agent_run_lock.lock().await;
-        work_tracking::resume_issue_work(&self.inner.pool, request).await
+        let project_id = request.project_id.clone();
+        let issue_number = work_tracking::parse_issue_reference(&request.issue_key)?;
+        let Some(run_id) = request.run_id.as_deref() else {
+            let result = {
+                let _guard = self.inner.agent_run_lock.lock().await;
+                work_tracking::resume_issue_work(&self.inner.pool, request).await
+            }?;
+            self.publish_server_kanban_issue(&project_id, issue_number, result.state_revision - 1)
+                .await?;
+            return Ok(result);
+        };
+        let run = work_tracking::load_agent_run_for_project(
+            &self.inner.pool,
+            &request.project_id,
+            run_id,
+        )
+        .await?
+        .ok_or_else(|| DaemonError::NotFound(format!("AgentRun {run_id}")))?;
+        let issue_id =
+            work_tracking::native_issue_id(&self.inner.pool, &request.project_id, issue_number)
+                .await?
+                .ok_or_else(|| DaemonError::NotFound(request.issue_key.clone()))?;
+        self.import_server_kanban_issue(&request.project_id, issue_number)
+            .await?;
+        let server_claimed = self
+            .acquire_server_issue_claim(
+                &request.project_id,
+                &issue_id,
+                &request.issue_key,
+                run_id,
+                &run.lease_expires_at,
+            )
+            .await?;
+        let result = {
+            let _guard = self.inner.agent_run_lock.lock().await;
+            work_tracking::resume_issue_work(&self.inner.pool, request).await
+        };
+        if result.is_err() && server_claimed {
+            let _ = self
+                .release_server_issue_claim(&run.project_id, &issue_id, &run.run_id)
+                .await;
+        }
+        let result = result?;
+        self.publish_server_kanban_issue(&run.project_id, issue_number, result.state_revision - 1)
+            .await?;
+        Ok(result)
+    }
+
+    async fn list_server_issue_claims(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<IssueClaim>, DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(Vec::new());
+        }
+        let path = format!("/api/v1/projects/{project_id}/issue-claims");
+        match get_server_json::<work_tracking::ServerIssueClaimListResponse>(self, &path).await {
+            Ok(response) => Ok(response.items),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn list_or_import_server_kanban_issues(
+        &self,
+        project_id: &str,
+        local_issues: &[IssueBoardCard],
+    ) -> Result<Option<Vec<work_tracking::ServerKanbanIssue>>, DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(None);
+        }
+        let path = format!("/api/v1/projects/{project_id}/issues");
+        let response = match get_server_json::<work_tracking::ServerKanbanIssueListResponse>(
+            self, &path,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(DaemonError::ServerResponse { status: 404, .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !response.items.is_empty() || local_issues.is_empty() {
+            return Ok(Some(response.items));
+        }
+        let mut items = Vec::with_capacity(local_issues.len());
+        for issue in local_issues {
+            items.push(work_tracking::ImportServerKanbanIssue {
+                issue_id: issue.issue_id.clone(),
+                issue_number: issue.issue_number,
+                content_revision: issue.state_revision,
+                payload: work_tracking::ServerKanbanIssueSnapshot {
+                    issue: issue.clone(),
+                    acceptance_criteria: work_tracking::native_issue_acceptance_criteria(
+                        &self.inner.pool,
+                        project_id,
+                        issue.issue_number,
+                    )
+                    .await?,
+                },
+            });
+        }
+        let imported = post_server_json::<_, work_tracking::ServerKanbanIssueListResponse>(
+            self,
+            &path,
+            &work_tracking::ImportServerKanbanIssuesRequest { items },
+        )
+        .await?;
+        Ok(Some(imported.items))
+    }
+
+    async fn native_issue_server_snapshot(
+        &self,
+        project_id: &str,
+        issue_number: i64,
+    ) -> Result<work_tracking::ServerKanbanIssueSnapshot, DaemonError> {
+        let runs = work_tracking::load_project_runs(&self.inner.pool, project_id).await?;
+        let (now, stale_before): (String, String) = sqlx::query_as(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')",
+        )
+        .fetch_one(&self.inner.pool)
+        .await?;
+        let detail = work_tracking::load_native_issue_detail(
+            &self.inner.pool,
+            project_id,
+            issue_number,
+            &runs,
+            &now,
+            &stale_before,
+        )
+        .await?;
+        Ok(work_tracking::ServerKanbanIssueSnapshot {
+            issue: detail.issue,
+            acceptance_criteria: detail.acceptance_criteria,
+        })
+    }
+
+    async fn import_server_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_number: i64,
+    ) -> Result<(), DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(());
+        }
+        let snapshot = self
+            .native_issue_server_snapshot(project_id, issue_number)
+            .await?;
+        let path = format!("/api/v1/projects/{project_id}/issues");
+        let request = work_tracking::ImportServerKanbanIssuesRequest {
+            items: vec![work_tracking::ImportServerKanbanIssue {
+                issue_id: snapshot.issue.issue_id.clone(),
+                issue_number,
+                content_revision: snapshot.issue.state_revision,
+                payload: snapshot,
+            }],
+        };
+        post_server_json::<_, work_tracking::ServerKanbanIssueListResponse>(self, &path, &request)
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_server_kanban_issue(
+        &self,
+        project_id: &str,
+        issue_number: i64,
+        expected_content_revision: i64,
+    ) -> Result<(), DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(());
+        }
+        let snapshot = self
+            .native_issue_server_snapshot(project_id, issue_number)
+            .await?;
+        let path = format!(
+            "/api/v1/projects/{project_id}/issues/{}",
+            snapshot.issue.issue_id
+        );
+        let request = work_tracking::UpdateServerKanbanIssueRequest {
+            expected_content_revision,
+            content_revision: snapshot.issue.state_revision,
+            payload: snapshot,
+        };
+        put_server_json::<_, work_tracking::ServerKanbanIssue>(self, &path, &request).await?;
+        Ok(())
+    }
+
+    async fn acquire_server_issue_claim(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        issue_key: &str,
+        run_id: &str,
+        lease_expires_at: &str,
+    ) -> Result<bool, DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(false);
+        }
+        if !issue_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            return Err(DaemonError::InvalidRequest(
+                "issue_id is not safe for the Server claim path".to_owned(),
+            ));
+        }
+        let path = format!("/api/v1/projects/{project_id}/issues/{issue_id}/claim");
+        let request = work_tracking::AcquireServerIssueClaimRequest {
+            issue_key: issue_key.to_owned(),
+            run_id: run_id.to_owned(),
+            lease_expires_at: lease_expires_at.to_owned(),
+        };
+        match post_server_json::<_, IssueClaim>(self, &path, &request).await {
+            Ok(_) => Ok(true),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Err(DaemonError::State {
+                code: "kanban_claim_service_unavailable",
+                message: "The connected Clumsies Server does not support shared Kanban Claims yet"
+                    .to_owned(),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn release_server_issue_claim(
+        &self,
+        project_id: &str,
+        issue_id: &str,
+        run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if !self.project_config().server_readiness().ready {
+            return Ok(());
+        }
+        let path = format!("/api/v1/projects/{project_id}/issues/{issue_id}/claim");
+        let request = work_tracking::ReleaseServerIssueClaimRequest {
+            run_id: run_id.to_owned(),
+        };
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("content-type".to_owned(), "application/json".to_owned());
+        let response = execute_authenticated_server_request(
+            self,
+            reqwest::Method::DELETE,
+            &path,
+            &headers,
+            Some(serde_json::to_vec(&request)?),
+        )
+        .await?;
+        match ensure_server_success(response).await {
+            Ok(_) => Ok(()),
+            Err(DaemonError::ServerResponse { status: 404, .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     async fn ensure_native_issues_imported(&self, project_id: &str) -> Result<(), DaemonError> {
@@ -1091,6 +1490,20 @@ impl DaemonState {
         request: RetrievalRunRequest,
     ) -> Result<RetrievalRunDetail, DaemonError> {
         retrieval_history::get_retrieval_run(self, request).await
+    }
+
+    pub async fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        recall::list_recalls(self, request).await
+    }
+
+    pub async fn get_recall_fragment(
+        &self,
+        request: GetRecallFragmentRequest,
+    ) -> Result<GetRecallFragmentResponse, DaemonError> {
+        recall::get_recall_fragment(self, request).await
     }
 
     pub async fn create_evaluation_case(
@@ -1937,6 +2350,20 @@ impl DaemonIpcService {
         self.state.get_retrieval_run(request).await
     }
 
+    pub async fn list_recalls(
+        &self,
+        request: ListRecallsRequest,
+    ) -> Result<ListRecallsResponse, DaemonError> {
+        self.state.list_recalls(request).await
+    }
+
+    pub async fn get_recall_fragment(
+        &self,
+        request: GetRecallFragmentRequest,
+    ) -> Result<GetRecallFragmentResponse, DaemonError> {
+        self.state.get_recall_fragment(request).await
+    }
+
     pub async fn create_evaluation_case(
         &self,
         request: CreateEvaluationCaseRequest,
@@ -2097,6 +2524,10 @@ impl DaemonIpcService {
                 dispatch_async!(self, request.payload, list_retrieval_runs)
             }
             "get_retrieval_run" => dispatch_async!(self, request.payload, get_retrieval_run),
+            "list_recalls" => dispatch_async!(self, request.payload, list_recalls),
+            "get_recall_fragment" => {
+                dispatch_async!(self, request.payload, get_recall_fragment)
+            }
             "create_evaluation_case" => {
                 dispatch_async!(self, request.payload, create_evaluation_case)
             }

@@ -275,16 +275,9 @@ struct ProjectSettingsView: View {
                 }
             }
 
+            ProjectMembersSettings(store: store)
             ProjectLocalSetupSettings(store: store)
             ProjectMemoryCacheSettings(store: store)
-
-            if store.canManageProjects {
-                Section("Access") {
-                    Button("Manage Access…") {
-                        openAccessManagement()
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .frame(maxWidth: 760)
@@ -345,17 +338,200 @@ struct ProjectSettingsView: View {
         description = project.description
     }
 
-    private func openAccessManagement() {
-        guard let projectId = store.activeProjectId,
-              let serverURL = URL(string: store.runtime?.health.serverUrl ?? "") else {
-            return
+}
+
+private struct ProjectMembersSettings: View {
+    @ObservedObject var store: WorkspaceStore
+    @State private var organizationMembers: [OrganizationMemberRecord] = []
+    @State private var isLoading = false
+    @State private var mutatingUserId: String?
+    @State private var showsInvite = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Section("Members") {
+            if isLoading, store.projectMembers.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                ForEach(store.projectMembers) { member in
+                    HStack(spacing: 10) {
+                        UserIdentityLabel(
+                            account: member.user,
+                            displayName: member.user.displayName ?? member.user.email
+                        )
+                        Spacer()
+                        Text(member.role.title)
+                            .foregroundStyle(.secondary)
+                        if mutatingUserId == member.id {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+                }
+            }
+
+            if store.canManageProjects {
+                Menu {
+                    ForEach(availableOrganizationMembers) { member in
+                        Button(member.displayName ?? member.email) {
+                            add(member)
+                        }
+                    }
+                    if !availableOrganizationMembers.isEmpty {
+                        Divider()
+                    }
+                    Button("Invite New Member…") {
+                        showsInvite = true
+                    }
+                } label: {
+                    Label("Add Member…", systemImage: "plus")
+                }
+                .disabled(isLoading || mutatingUserId != nil)
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .textSelection(.enabled)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        NSWorkspace.shared.open(
-            serverURL
-                .appending(path: "admin")
-                .appending(path: "projects")
-                .appending(path: projectId)
-        )
+        .task(id: store.activeProjectId) {
+            await load()
+        }
+        .sheet(isPresented: $showsInvite) {
+            InviteProjectMemberSheet(store: store) {
+                Task { await loadOrganizationMembers() }
+            }
+        }
+    }
+
+    private var availableOrganizationMembers: [OrganizationMemberRecord] {
+        let projectIds = Set(store.projectMembers.map(\.id))
+        return organizationMembers.filter {
+            $0.status != "disabled" && !projectIds.contains($0.id)
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        await store.refreshProjectMembers()
+        if store.canManageProjects {
+            await loadOrganizationMembers()
+        }
+        isLoading = false
+    }
+
+    private func loadOrganizationMembers() async {
+        do {
+            organizationMembers = try await store.organizationMemberDirectory()
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func add(_ member: OrganizationMemberRecord) {
+        mutate(member.id) {
+            _ = try await store.addProjectMember(userId: member.id)
+        }
+    }
+
+    private func mutate(
+        _ userId: String,
+        operation: @escaping () async throws -> Void
+    ) {
+        guard mutatingUserId == nil else { return }
+        mutatingUserId = userId
+        errorMessage = nil
+        Task {
+            defer { mutatingUserId = nil }
+            do {
+                try await operation()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct InviteProjectMemberSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: WorkspaceStore
+    let onComplete: () -> Void
+    @State private var email = ""
+    @State private var role: ProjectMemberRole = .member
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    TextField("Email", text: $email)
+                        .textContentType(.emailAddress)
+                    Picker("Project Role", selection: $role) {
+                        ForEach(ProjectMemberRole.allCases, id: \.self) { role in
+                            Text(role.title).tag(role)
+                        }
+                    }
+                } header: {
+                    Text("Invite Member")
+                } footer: {
+                    Text("The member is invited to the organization and added to this Project.")
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .textSelection(.enabled)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+                Button("Invite") {
+                    invite()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(normalizedEmail.isEmpty || isSaving)
+            }
+            .padding()
+        }
+        .frame(width: 440, height: 300)
+    }
+
+    private var normalizedEmail: String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func invite() {
+        guard !normalizedEmail.isEmpty, !isSaving else { return }
+        isSaving = true
+        errorMessage = nil
+        Task {
+            do {
+                _ = try await store.inviteAndAddProjectMember(
+                    email: normalizedEmail,
+                    role: role
+                )
+                onComplete()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isSaving = false
+        }
     }
 }
 

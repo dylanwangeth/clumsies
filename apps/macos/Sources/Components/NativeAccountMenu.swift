@@ -195,9 +195,7 @@ private struct NativeAccountMenuLabel: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            AvatarView(account: account)
-            Text(displayName)
-                .lineLimit(1)
+            UserIdentityLabel(account: account, displayName: displayName)
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.system(size: 8, weight: .semibold))
@@ -207,5 +205,21 @@ private struct NativeAccountMenuLabel: View {
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+/// Shared compact identity treatment for account menus, Claims, comments,
+/// and other places that name a real Clumsies member.
+struct UserIdentityLabel: View {
+    let account: UserReference?
+    let displayName: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            AvatarView(account: account)
+            Text(displayName)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
