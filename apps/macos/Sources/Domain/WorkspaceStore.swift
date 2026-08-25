@@ -5565,10 +5565,10 @@ struct WorkspaceLoader: Sendable {
         if let daemonError = error as? DaemonXPCError,
            case .daemon(let payload) = daemonError,
            payload.code == "project_agent_adapter_invalid_runtime" {
-            return "The current Clumsies App and bundled Agent runtime do not have "
-                + "the required release signing identity. Archived integration inspection "
-                + "was skipped. This build cannot install or update managed Coding Agent integrations. "
-                + "Install an officially signed release build, then try again."
+            return "The resident daemon rejected the bundled Agent runtime. Archived integration "
+                + "inspection was skipped. Reinstall and restart Clumsies so the App and daemon use "
+                + "the same build. For local development, use bun run dev:macos; distributed Release "
+                + "builds must use an accepted release signature."
         }
         return "Clumsies updated its managed integrations, but could not inspect the "
             + "archived Zig CLI integration store. Review any old global or repository "

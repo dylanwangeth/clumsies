@@ -67,11 +67,17 @@ pub(super) async fn inspect(
     _state: &DaemonState,
     request: DaemonLegacyAgentAdapterInspectionRequest,
 ) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
-    let runtime = canonical_agent_runtime_binary(&request.runtime_binary_path)?;
-    #[cfg(target_os = "macos")]
-    verify_code_signature(&runtime)?;
-
     let home = home_dir()?;
+    inspect_at(home, request).await
+}
+
+async fn inspect_at(
+    home: PathBuf,
+    _request: DaemonLegacyAgentAdapterInspectionRequest,
+) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
+    // Keep the runtime path in the request for wire compatibility with older
+    // Apps. This read-only discovery never launches or installs that runtime;
+    // the native installer validates it at the write boundary instead.
     let installs_root = home.join(".clumsies/adapters/installs");
     // This is advisory filesystem discovery, not part of native Adapter
     // ownership. Keep synchronous directory I/O off Tokio's worker threads
@@ -400,6 +406,23 @@ mod tests {
     fn missing_store_is_empty() {
         let root = TempDir::new().unwrap();
         let result = discover_at(root.path(), &root.path().join("missing")).unwrap();
+        assert_eq!(result.scanned, 0);
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn inspection_does_not_require_an_agent_runtime() {
+        let root = TempDir::new().unwrap();
+        let result = inspect_at(
+            root.path().to_path_buf(),
+            DaemonLegacyAgentAdapterInspectionRequest {
+                runtime_binary_path: "/missing/Clumsies.app/Contents/Resources/clumsiesd"
+                    .to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
         assert_eq!(result.scanned, 0);
         assert!(result.conflicts.is_empty());
     }
