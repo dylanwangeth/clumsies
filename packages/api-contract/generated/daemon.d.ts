@@ -112,7 +112,7 @@ export interface components {
             project_id: string;
         };
         DaemonLegacyAgentAdapterInspectionRequest: {
-            /** @description Signed App-bundled clumsiesd Agent runtime executable. */
+            /** @description Compatibility field retained for existing Apps and daemons; ignored by this read-only operation. */
             runtime_binary_path: string;
         };
         DaemonLegacyAgentAdapterConflict: {

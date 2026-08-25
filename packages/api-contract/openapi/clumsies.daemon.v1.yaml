@@ -295,7 +295,7 @@ components:
       properties:
         runtime_binary_path:
           type: string
-          description: Signed App-bundled clumsiesd Agent runtime executable.
+          description: Compatibility field retained for existing Apps and daemons; ignored by this read-only operation.
     DaemonLegacyAgentAdapterConflict:
       type: object
       required: [install_id, adapter, scope, target_root, code, message]

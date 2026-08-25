@@ -42,9 +42,11 @@ app-specific password, team ID, temporary keychain password, and Sparkle private
 in the protected `macos-signing` GitHub environment, using the secret names referenced
 by `release.yml`. Restrict that environment to the default branch and release tags and
 require a reviewer before its secrets are exposed. The Sparkle private key is required
-only for a tagged release; only its public key is committed in `project.yml`. A local or
-ad-hoc build is suitable for tests, but the release signature gate deliberately rejects
-it for managed Coding Agent integration installation.
+only for a tagged release; only its public key is committed in `project.yml`. The Debug
+App installed by `bun run dev:macos` uses the supported ad-hoc development path and can
+exercise managed Coding Agent integrations. A Debug ad-hoc runtime is accepted at the
+installation boundary; Release packages must carry an accepted team identity and the
+hardened-runtime flag.
 
 ## Generate the Xcode project
 

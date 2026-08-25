@@ -606,7 +606,7 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
-    func testLegacyInspectionExplainsUnsignedReleaseRuntime() {
+    func testLegacyInspectionExplainsOlderDaemonRuntimeRejection() {
         let warning = WorkspaceLoader.legacyAgentAdapterInspectionWarning(
             for: DaemonXPCError.daemon(.init(
                 code: "project_agent_adapter_invalid_runtime",
@@ -616,8 +616,8 @@ final class DaemonContractTests: XCTestCase {
         )
 
         XCTAssertTrue(warning.contains("Archived integration inspection was skipped"))
-        XCTAssertTrue(warning.contains("cannot install or update managed Coding Agent integrations"))
-        XCTAssertTrue(warning.contains("officially signed release build"))
+        XCTAssertTrue(warning.contains("bun run dev:macos"))
+        XCTAssertTrue(warning.contains("distributed Release"))
         XCTAssertFalse(warning.contains("archived Zig CLI integration store"))
     }
 
