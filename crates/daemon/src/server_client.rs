@@ -8,7 +8,17 @@ use sqlx::{Row, SqlitePool};
 use crate::DaemonError;
 use crate::DaemonServerResponse;
 use crate::DaemonState;
+use crate::RuntimeProjectConfig;
 use crate::ServerTokenRefreshResponse;
+
+const SERVER_PROXY_MAX_PATH_BYTES: usize = 8 * 1024;
+
+const SERVER_RESPONSE_CACHE_MAX_ENTRIES: i64 = 512;
+const SERVER_RESPONSE_CACHE_MAX_LOGICAL_BYTES: i64 = 64 * 1024 * 1024;
+enum TokenRefreshOutcome {
+    Refreshed(RuntimeProjectConfig),
+    Superseded,
+}
 
 pub(crate) async fn post_server_json<T, R>(
     state: &DaemonState,
@@ -91,7 +101,9 @@ pub(crate) async fn execute_authenticated_server_request(
     body: Option<Vec<u8>>,
 ) -> Result<reqwest::Response, DaemonError> {
     validate_server_proxy_path(path)?;
-    let config = state.project_config_with_credentials().await;
+    let snapshot = state.project_config_with_credentials_snapshot().await;
+    let request_session_revision = snapshot.session_revision;
+    let config = snapshot.config;
     let access_token = config.access_token.clone().ok_or_else(|| {
         DaemonError::InvalidConfig("access_token is required for Server requests".to_owned())
     })?;
@@ -109,15 +121,18 @@ pub(crate) async fn execute_authenticated_server_request(
         return Ok(response);
     }
 
-    refresh_server_tokens(state, &access_token).await?;
-    let refreshed = state.project_config();
-    let refreshed_access_token = refreshed.access_token.ok_or_else(|| {
-        DaemonError::InvalidConfig("Server session is no longer authenticated".to_owned())
-    })?;
+    let TokenRefreshOutcome::Refreshed(refreshed) =
+        refresh_server_tokens(state, &config, request_session_revision).await?
+    else {
+        return Ok(response);
+    };
     send_server_request(
         state,
         &refreshed.server_url,
-        &refreshed_access_token,
+        refreshed
+            .access_token
+            .as_deref()
+            .expect("a refreshed session must contain an access token"),
         method,
         path,
         headers,
@@ -156,13 +171,28 @@ async fn send_server_request(
 
 async fn refresh_server_tokens(
     state: &DaemonState,
-    stale_access_token: &str,
-) -> Result<(), DaemonError> {
+    expected: &RuntimeProjectConfig,
+    expected_session_revision: u64,
+) -> Result<TokenRefreshOutcome, DaemonError> {
     let _refresh_guard = state.inner.token_refresh.lock().await;
-    let config = state.project_config();
-    if config.access_token.as_deref() != Some(stale_access_token) {
-        return Ok(());
+    let snapshot = state.project_config_snapshot();
+    if snapshot.session_revision != expected_session_revision
+        || snapshot.config.server_url != expected.server_url
+    {
+        return Ok(TokenRefreshOutcome::Superseded);
     }
+    let stale_access_token = expected
+        .access_token
+        .as_deref()
+        .expect("the rejected authenticated request must retain its access token");
+    if snapshot.config.access_token.as_deref() != Some(stale_access_token) {
+        if snapshot.config.access_token.is_some() {
+            return Ok(TokenRefreshOutcome::Refreshed(snapshot.config));
+        }
+        return Ok(TokenRefreshOutcome::Superseded);
+    }
+    let config = snapshot.config;
+    let session_revision = snapshot.session_revision;
     let refresh_token = config.refresh_token.clone().ok_or_else(|| {
         DaemonError::InvalidConfig("refresh_token is required to refresh the session".to_owned())
     })?;
@@ -187,7 +217,13 @@ async fn refresh_server_tokens(
             || status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN
         {
-            clear_server_tokens(state).await?;
+            state
+                .clear_server_tokens_if_current(
+                    session_revision,
+                    &config.server_url,
+                    stale_access_token,
+                )
+                .await?;
         }
         return Err(DaemonError::ServerResponse {
             status: status.as_u16(),
@@ -195,7 +231,16 @@ async fn refresh_server_tokens(
         });
     }
     let tokens: ServerTokenRefreshResponse = response.json().await?;
-    let mut refreshed = config;
+
+    let _mutation = state.inner.project_config_mutation.lock().await;
+    let current = state.project_config_snapshot();
+    if current.session_revision != session_revision
+        || current.config.server_url != config.server_url
+        || current.config.access_token.as_deref() != Some(stale_access_token)
+    {
+        return Ok(TokenRefreshOutcome::Superseded);
+    }
+    let mut refreshed = current.config;
     refreshed.access_token = Some(tokens.access_token);
     refreshed.refresh_token = Some(tokens.refresh_token);
     crate::replace_server_credentials(
@@ -203,26 +248,8 @@ async fn refresh_server_tokens(
         refreshed.credentials(),
     )
     .await?;
-    *state
-        .inner
-        .project_config
-        .write()
-        .expect("project config rwlock poisoned") = refreshed;
-    Ok(())
-}
-
-async fn clear_server_tokens(state: &DaemonState) -> Result<(), DaemonError> {
-    let mut config = state.project_config();
-    crate::replace_server_credentials(state.inner.credential_store.clone(), None).await?;
-    clear_server_response_cache(&state.inner.pool).await?;
-    config.access_token = None;
-    config.refresh_token = None;
-    *state
-        .inner
-        .project_config
-        .write()
-        .expect("project config rwlock poisoned") = config;
-    Ok(())
+    state.publish_project_config(refreshed.clone());
+    Ok(TokenRefreshOutcome::Refreshed(refreshed))
 }
 
 pub(crate) async fn decode_server_json<R>(response: reqwest::Response) -> Result<R, DaemonError>
@@ -248,7 +275,8 @@ pub(crate) async fn ensure_server_success(
 }
 
 pub(crate) fn validate_server_proxy_path(path: &str) -> Result<(), DaemonError> {
-    if !path.starts_with("/api/v1/")
+    if path.len() > SERVER_PROXY_MAX_PATH_BYTES
+        || !path.starts_with("/api/v1/")
         || path.contains("\r")
         || path.contains("\n")
         || path.contains("#")
@@ -313,6 +341,8 @@ pub(crate) async fn save_cached_server_response(
     path: &str,
     response: &DaemonServerResponse,
 ) -> Result<(), DaemonError> {
+    let headers_json = serde_json::to_string(&response.headers)?;
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO server_response_cache (
             server_url, path, status, headers_json, body, updated_at
@@ -327,9 +357,53 @@ pub(crate) async fn save_cached_server_response(
     .bind(server_url)
     .bind(path)
     .bind(i64::from(response.status))
-    .bind(serde_json::to_string(&response.headers)?)
+    .bind(headers_json)
     .bind(&response.body)
-    .execute(pool)
+    .execute(&mut *transaction)
+    .await?;
+    prune_cached_server_responses(
+        &mut transaction,
+        SERVER_RESPONSE_CACHE_MAX_ENTRIES,
+        SERVER_RESPONSE_CACHE_MAX_LOGICAL_BYTES,
+    )
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn prune_cached_server_responses(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    max_entries: i64,
+    max_logical_bytes: i64,
+) -> Result<(), DaemonError> {
+    sqlx::query(
+        "WITH ranked AS (
+            SELECT
+                rowid,
+                ROW_NUMBER() OVER (
+                    ORDER BY updated_at DESC, rowid DESC
+                ) AS cache_rank,
+                SUM(
+                    length(CAST(server_url AS BLOB))
+                    + length(CAST(path AS BLOB))
+                    + length(CAST(headers_json AS BLOB))
+                    + length(CAST(body AS BLOB))
+                ) OVER (
+                    ORDER BY updated_at DESC, rowid DESC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cumulative_bytes
+            FROM server_response_cache
+         )
+         DELETE FROM server_response_cache
+         WHERE rowid IN (
+            SELECT rowid
+            FROM ranked
+            WHERE cache_rank > $1 OR cumulative_bytes > $2
+         )",
+    )
+    .bind(max_entries)
+    .bind(max_logical_bytes)
+    .execute(&mut **transaction)
     .await?;
     Ok(())
 }
@@ -399,5 +473,96 @@ mod tests {
                 ("x-clumsies-request-id".to_owned(), "request-1".to_owned(),),
             ])
         );
+    }
+
+    #[test]
+    fn proxy_path_has_a_bounded_cache_key() {
+        let oversized = format!("/api/v1/{}", "a".repeat(SERVER_PROXY_MAX_PATH_BYTES));
+
+        assert!(validate_server_proxy_path(&oversized).is_err());
+        assert!(validate_server_proxy_path("/api/v1/reviews?limit=100").is_ok());
+    }
+    #[tokio::test]
+    async fn response_cache_pruning_enforces_entry_and_utf8_byte_limits() {
+        assert_eq!(SERVER_RESPONSE_CACHE_MAX_ENTRIES, 512);
+        assert_eq!(SERVER_RESPONSE_CACHE_MAX_LOGICAL_BYTES, 64 * 1024 * 1024);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE server_response_cache (
+                server_url TEXT NOT NULL,
+                path TEXT NOT NULL,
+                status BIGINT NOT NULL,
+                headers_json TEXT NOT NULL,
+                body TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (server_url, path)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for index in 0..4 {
+            sqlx::query(
+                "INSERT INTO server_response_cache (
+                    server_url, path, status, headers_json, body, updated_at
+                 ) VALUES ($1, $2, 200, '{}', 'body', $3)",
+            )
+            .bind("s")
+            .bind(format!("p{index}"))
+            .bind(format!("2026-01-01T00:00:0{index}Z"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let mut transaction = pool.begin().await.unwrap();
+        prune_cached_server_responses(&mut transaction, 2, i64::MAX)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let paths: Vec<String> = sqlx::query_scalar(
+            "SELECT path FROM server_response_cache ORDER BY updated_at DESC, rowid DESC",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(paths, ["p3", "p2"]);
+
+        sqlx::query("DELETE FROM server_response_cache")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for index in 0..3 {
+            sqlx::query(
+                "INSERT INTO server_response_cache (
+                    server_url, path, status, headers_json, body, updated_at
+                 ) VALUES ($1, $2, 200, '{}', $3, $4)",
+            )
+            .bind("s")
+            .bind(format!("p{index}"))
+            .bind("你好")
+            .bind(format!("2026-01-01T00:00:0{index}Z"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let mut transaction = pool.begin().await.unwrap();
+        // Each row is 11 logical bytes: server 1 + path 2 + headers 2 + UTF-8 body 6.
+        // A character-count implementation would incorrectly retain two rows under 15.
+        prune_cached_server_responses(&mut transaction, 10, 15)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let paths: Vec<String> = sqlx::query_scalar(
+            "SELECT path FROM server_response_cache ORDER BY updated_at DESC, rowid DESC",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(paths, ["p2"]);
     }
 }

@@ -142,13 +142,21 @@ struct ReviewListPage: View {
     var body: some View {
         Group {
             switch ReviewListContentState.resolve(
-                phase: store.phase,
+                loadState: store.reviewLoadState,
                 totalCount: store.reviews.count,
                 visibleCount: reviews.count
             ) {
             case .loading:
                 ProgressView("Loading Reviews…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .failed:
+                ContentUnavailableView {
+                    Label("Reviews Unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(store.reviewLoadState.failureMessage ?? "Reviews could not be loaded.")
+                } actions: {
+                    Button("Try Again") { Task { await store.reload() } }
+                }
             case .empty:
                 ContentUnavailableView(
                     "No Reviews",
@@ -186,6 +194,9 @@ struct ReviewListPage: View {
                     }
                 }
                 .listStyle(.inset)
+                .safeAreaInset(edge: .bottom) {
+                    ReviewCollectionStatusBanner(store: store)
+                }
             }
         }
         .navigationTitle("Reviews")
@@ -204,24 +215,58 @@ struct ReviewListPage: View {
     private func projectName(for review: ReviewRecord) -> String? {
         store.projects.first { $0.id == review.projectId }?.name
     }
-
 }
 
 enum ReviewListContentState: Equatable {
     case loading
+    case failed
     case empty
     case filteredEmpty
     case content
 
     static func resolve(
-        phase: ApplicationPhase,
+        loadState: WorkspaceCollectionLoadState,
         totalCount: Int,
         visibleCount: Int
     ) -> ReviewListContentState {
-        if totalCount == 0 {
-            return phase == .loading || phase == .launching ? .loading : .empty
+        if visibleCount > 0 { return .content }
+        switch loadState {
+        case .loading: return .loading
+        case .failed: return .failed
+        case .loaded:
+            return totalCount == 0 ? .empty : .filteredEmpty
         }
-        return visibleCount == 0 ? .filteredEmpty : .content
+    }
+}
+
+private struct ReviewCollectionStatusBanner: View {
+    @ObservedObject var store: WorkspaceStore
+
+    @ViewBuilder
+    var body: some View {
+        switch store.reviewLoadState {
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Refreshing Reviews…")
+                    .font(.caption)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .failed:
+            Button("Review refresh failed — Try Again") {
+                Task { await store.reload() }
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .loaded:
+            EmptyView()
+        }
     }
 }
 

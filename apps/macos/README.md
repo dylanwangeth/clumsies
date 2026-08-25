@@ -30,7 +30,21 @@ bun run build:macos
 
 The local build is unsigned, targets the current Mac's architecture, and is written to `/private/tmp/clumsies-macos-build`. Distribution signing and notarization are separate release operations.
 
-Tagged releases build a universal Developer ID-signed app, notarize it, and publish a Sparkle-signed update archive and `appcast.xml` through GitHub Actions. The Sparkle private key is stored as the `SPARKLE_PRIVATE_KEY` repository secret; only its public key is committed in `project.yml`.
+Tagged releases build a universal Developer ID-signed app, notarize and staple it,
+verify the App and bundled Agent runtime share the expected signing team and
+hardened-runtime identity, then publish a Sparkle-signed update archive and
+`appcast.xml` through GitHub Actions. The same workflow can be dispatched manually
+from the current default-branch tip to produce a signed candidate. Manual candidates
+do not publish a GitHub Release or appcast.
+
+Keep the Apple certificate, certificate passphrase, notarization account,
+app-specific password, team ID, temporary keychain password, and Sparkle private key
+in the protected `macos-signing` GitHub environment, using the secret names referenced
+by `release.yml`. Restrict that environment to the default branch and release tags and
+require a reviewer before its secrets are exposed. The Sparkle private key is required
+only for a tagged release; only its public key is committed in `project.yml`. A local or
+ad-hoc build is suitable for tests, but the release signature gate deliberately rejects
+it for managed Coding Agent integration installation.
 
 ## Generate the Xcode project
 

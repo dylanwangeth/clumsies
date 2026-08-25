@@ -4,24 +4,33 @@ struct BundleNavigator: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        List(selection: $store.selectedBundleId) {
-            ForEach(store.bundles) { bundle in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(bundle.name)
-                        .lineLimit(1)
-                    Text("\(bundle.resourceIds.count) resources")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .tag(bundle.id)
-                .contextMenu {
-                    Button("Delete", role: .destructive) {
-                        Task { await store.deleteBundle(bundle) }
+        Group {
+            if store.bundles.isEmpty {
+                BundleCollectionStatusView(store: store)
+            } else {
+                List(selection: $store.selectedBundleId) {
+                    ForEach(store.bundles) { bundle in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(bundle.name)
+                                .lineLimit(1)
+                            Text("\(bundle.resourceIds.count) resources")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(bundle.id)
+                        .contextMenu {
+                            Button("Delete", role: .destructive) {
+                                Task { await store.deleteBundle(bundle) }
+                            }
+                        }
                     }
+                }
+                .listStyle(.inset)
+                .safeAreaInset(edge: .bottom) {
+                    BundleCollectionStatusBanner(store: store)
                 }
             }
         }
-        .listStyle(.inset)
         .task { await store.prepareWorkspaceIndex(includeContent: false) }
     }
 }
@@ -41,11 +50,64 @@ struct BundleDetail: View {
             )
                 .id(bundle.id)
         } else {
+            BundleCollectionStatusView(store: store)
+        }
+    }
+}
+
+private struct BundleCollectionStatusView: View {
+    @ObservedObject var store: WorkspaceStore
+
+    var body: some View {
+        switch store.bundleLoadState {
+        case .loading:
+            ProgressView("Loading Bundles...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Bundles Unavailable", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("Try Again") { Task { await store.reload() } }
+            }
+        case .loaded:
             ContentUnavailableView(
                 "No Bundles",
                 systemImage: "shippingbox",
                 description: Text("Create a personal Bundle to collect memory for recurring work.")
             )
+        }
+    }
+}
+
+private struct BundleCollectionStatusBanner: View {
+    @ObservedObject var store: WorkspaceStore
+
+    @ViewBuilder
+    var body: some View {
+        switch store.bundleLoadState {
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Refreshing Bundles...")
+                    .font(.caption)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .failed:
+            Button("Bundle refresh failed - Try Again") {
+                Task { await store.reload() }
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .loaded:
+            EmptyView()
         }
     }
 }
@@ -128,6 +190,7 @@ private struct BundleEditor: View {
             }
         }
         .formStyle(.grouped)
+        .disabled(store.phase != .ready)
         .sheet(isPresented: $showsResourcePicker) {
             BundleResourcePicker(resources: selectableResources, selection: $resourceIds)
         }

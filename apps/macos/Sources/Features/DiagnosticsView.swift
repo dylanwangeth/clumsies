@@ -114,27 +114,27 @@ private struct RuntimeDiagnosticsView: View {
                     LabeledContent("Project", value: runtime.health.projectId ?? "Not selected")
                     LabeledContent("Database", value: runtime.health.localDb.path)
                     LabeledContent("Schema", value: String(runtime.health.localDb.schemaVersion))
-                    LabeledContent("MCP", value: runtime.mcp.running ? "Running" : "Stopped")
+                    LabeledContent("MCP", value: runtime.mcp.map { $0.running ? "Running" : "Stopped" } ?? "Loading")
                     LabeledContent("Log directory", value: runtime.health.logDir)
                 }
                 Section("Synchronization") {
-                    LabeledContent("Drafts", value: runtime.sync.draftSync.state.capitalized)
-                    LabeledContent("Commits", value: runtime.sync.commitSync.state.capitalized)
+                    LabeledContent("Drafts", value: runtime.sync?.draftSync.state.capitalized ?? "Loading")
+                    LabeledContent("Commits", value: runtime.sync?.commitSync.state.capitalized ?? "Loading")
                     LabeledContent(
                         "Pending operations",
-                        value: String(runtime.sync.pendingOperationCount)
+                        value: runtime.sync.map { String($0.pendingOperationCount) } ?? "Loading"
                     )
                     LabeledContent(
                         "Failed operations",
-                        value: String(runtime.sync.failedOperationCount)
+                        value: runtime.sync.map { String($0.failedOperationCount) } ?? "Loading"
                     )
                     LabeledContent(
                         "Drafts behind",
-                        value: String(runtime.sync.behindDraftCount)
+                        value: runtime.sync.map { String($0.behindDraftCount) } ?? "Loading"
                     )
                     LabeledContent(
                         "Reconciliation conflicts",
-                        value: String(runtime.sync.reconciliationConflictCount)
+                        value: runtime.sync.map { String($0.reconciliationConflictCount) } ?? "Loading"
                     )
                     Button("Retry") { Task { await store.retrySync() } }
                 }

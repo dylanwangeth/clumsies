@@ -83,7 +83,7 @@ final class DaemonContractTests: XCTestCase {
         })
     }
 
-    func testWorkspaceStartupMigratesAdaptersBeforeAuthenticationAndDoesNotReachServer() async {
+    func testWorkspaceCoreReconcilesManagedAdaptersWithoutLegacyInspection() async {
         actor EventRecorder {
             var events: [String] = []
 
@@ -96,10 +96,9 @@ final class DaemonContractTests: XCTestCase {
 
         do {
             _ = try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
-                reconcileLocalAgentAdapters: {
+                reconcileManagedAgentAdapters: {
                     await recorder.append("list-all-native")
                     await recorder.append("install-native")
-                    await recorder.append("inspect-legacy")
                     return .init(conflicts: [], inspectionWarning: nil)
                 },
                 projectConfig: {
@@ -113,20 +112,17 @@ final class DaemonContractTests: XCTestCase {
                         missingFields: ["access_token", "refresh_token"]
                     )
                 },
-                retrySync: {
-                    await recorder.append("retry-sync")
-                },
                 currentUser: {
                     await recorder.append("api-v1-me")
                     throw DaemonContractTestError.unexpectedServerRequest
                 },
-                onLocalAgentAdapters: { _ in
-                    await recorder.append("publish-local-warning")
+                onManagedAgentAdapters: { _ in
+                    await recorder.append("publish-managed-result")
                 }
             )
             XCTFail("Expected authenticationRequired")
         } catch WorkspaceLoadError.authenticationRequired {
-            // Local discovery and native reconciliation complete before the auth gate.
+            // Managed cutover completes before auth; legacy inspection is post-ready.
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
@@ -135,21 +131,13 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(
             events,
             [
-                "list-all-native", "install-native", "inspect-legacy",
-                "publish-local-warning", "project-config",
+                "list-all-native", "install-native",
+                "publish-managed-result", "project-config",
             ]
         )
     }
 
-    func testLegacyAdapterConflictDoesNotBlockAuthenticatedWorkspaceLoading() async throws {
-        let conflict = DaemonLegacyAgentAdapterConflict(
-            installId: "codex-old",
-            adapter: .codex,
-            scope: "workspace",
-            targetRoot: "/repos/old/.codex",
-            code: "legacy_adapter_generation_unsupported",
-            message: "This legacy Adapter generation was left unchanged."
-        )
+    func testWorkspaceCoreCarriesCurrentUserRequestFreshness() async throws {
         let user = CurrentUserResponse(
             user: .init(
                 userId: "user-1",
@@ -164,76 +152,401 @@ final class DaemonContractTests: XCTestCase {
             capabilities: []
         )
 
-        let (_, loadedUser, localResult) = try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
-            reconcileLocalAgentAdapters: {
-                return .init(conflicts: [conflict], inspectionWarning: nil)
-            },
-            projectConfig: {
-                .init(
-                    serverUrl: "https://app.clumsies.ai",
-                    projectId: nil,
-                    hasAccessToken: true,
-                    hasRefreshToken: true,
-                    ready: true,
-                    missingFields: []
-                )
-            },
-            retrySync: {},
-            currentUser: { user }
-        )
-
-        XCTAssertEqual(loadedUser.user.userId, "user-1")
-        XCTAssertEqual(localResult.conflicts, [conflict])
-    }
-
-    func testWarmDaemonRetrySyncDoesNotBlockAuthenticatedIdentityLoad() async throws {
-        let retryGate = WarmDaemonRetryGate()
-        let retryStarted = expectation(description: "retry sync started")
-        let currentUserLoaded = expectation(description: "current user loaded")
-        let loadCompleted = expectation(description: "workspace identity load completed")
-        let currentUser = CurrentUserResponse(
-            user: user,
-            org: .init(orgId: "org-1", name: "Example"),
-            projects: [],
-            defaultProjectId: nil,
-            capabilities: []
-        )
-
-        let load = Task {
-            defer { loadCompleted.fulfill() }
-            return try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
-                reconcileLocalAgentAdapters: {
+        let (_, loadedUser, managedResult, currentUserWasStale) =
+            try await WorkspaceLoader.loadAuthenticatedWorkspaceIdentity(
+                reconcileManagedAgentAdapters: {
                     .init(conflicts: [], inspectionWarning: nil)
                 },
                 projectConfig: {
                     .init(
                         serverUrl: "https://app.clumsies.ai",
-                        projectId: "project-1",
+                        projectId: nil,
                         hasAccessToken: true,
                         hasRefreshToken: true,
                         ready: true,
                         missingFields: []
                     )
                 },
-                retrySync: {
-                    retryStarted.fulfill()
-                    await retryGate.wait()
-                },
-                currentUser: {
-                    currentUserLoaded.fulfill()
-                    return currentUser
-                }
+                currentUser: { (user, true) }
             )
-        }
-
-        await fulfillment(
-            of: [retryStarted, currentUserLoaded, loadCompleted],
-            timeout: 1
-        )
-        await retryGate.open()
-        let (_, loadedUser, _) = try await load.value
 
         XCTAssertEqual(loadedUser.user.userId, "user-1")
+        XCTAssertTrue(managedResult.conflicts.isEmpty)
+        XCTAssertTrue(currentUserWasStale)
+    }
+
+    func testDeferredAuthorityRequiresSameUserAndOrganization() {
+        let currentOrganization = OrganizationReference(orgId: "org-1", name: "Old name")
+        let renamedAccount = UserReference(
+            userId: user.userId,
+            email: "renamed@example.com",
+            displayName: "Renamed",
+            avatarUrl: nil,
+            role: "admin"
+        )
+        let renamedOrganization = OrganizationReference(orgId: "org-1", name: "New name")
+        let otherAccount = UserReference(
+            userId: "user-2",
+            email: "other@example.com",
+            displayName: "Other",
+            avatarUrl: nil,
+            role: "member"
+        )
+
+        XCTAssertTrue(WorkspaceStore.preservesDeferredAuthority(
+            currentAccount: user,
+            currentOrganization: currentOrganization,
+            nextAccount: renamedAccount,
+            nextOrganization: renamedOrganization
+        ))
+        XCTAssertFalse(WorkspaceStore.preservesDeferredAuthority(
+            currentAccount: user,
+            currentOrganization: currentOrganization,
+            nextAccount: otherAccount,
+            nextOrganization: renamedOrganization
+        ))
+        XCTAssertFalse(WorkspaceStore.preservesDeferredAuthority(
+            currentAccount: user,
+            currentOrganization: currentOrganization,
+            nextAccount: renamedAccount,
+            nextOrganization: .init(orgId: "org-2", name: "Other")
+        ))
+    }
+
+    func testStaleAuthorityChangeFailsClosedOnlyForWarmDifferentAuthority() {
+        XCTAssertTrue(WorkspaceStore.rejectsStaleAuthorityChange(
+            hadLoadedWorkspace: true,
+            sameAuthority: false,
+            snapshotWasStale: true
+        ))
+        XCTAssertFalse(WorkspaceStore.rejectsStaleAuthorityChange(
+            hadLoadedWorkspace: false,
+            sameAuthority: false,
+            snapshotWasStale: true
+        ))
+        XCTAssertFalse(WorkspaceStore.rejectsStaleAuthorityChange(
+            hadLoadedWorkspace: true,
+            sameAuthority: true,
+            snapshotWasStale: true
+        ))
+        XCTAssertFalse(WorkspaceStore.rejectsStaleAuthorityChange(
+            hadLoadedWorkspace: true,
+            sameAuthority: false,
+            snapshotWasStale: false
+        ))
+    }
+
+    func testFreshApplyInvalidatesOldWorkspaceTransitionState() {
+        var generation = UUID()
+        let oldGeneration = generation
+        var loadingProjectId: String? = "project-old"
+        var isSwitchingMemoryContext = true
+        var isPreparingWorkspaceIndex = true
+        var orgResourceRefreshGeneration: UUID? = UUID()
+
+        WorkspaceStore.invalidateWorkspaceTransitionState(
+            generation: &generation,
+            loadingProjectId: &loadingProjectId,
+            isSwitchingMemoryContext: &isSwitchingMemoryContext,
+            isPreparingWorkspaceIndex: &isPreparingWorkspaceIndex,
+            orgResourceRefreshGeneration: &orgResourceRefreshGeneration
+        )
+
+        XCTAssertNotEqual(generation, oldGeneration)
+        XCTAssertNil(loadingProjectId)
+        XCTAssertFalse(isSwitchingMemoryContext)
+        XCTAssertFalse(isPreparingWorkspaceIndex)
+        XCTAssertNil(orgResourceRefreshGeneration)
+    }
+
+    func testWarmDeferredCollectionsRejectStaleBaseOrResponse() {
+        let warmReloadRequiresFreshData = WorkspaceStore.deferredLoadRequiresFreshData(
+            hadLoadedWorkspace: true
+        )
+        let coldStartRequiresFreshData = WorkspaceStore.deferredLoadRequiresFreshData(
+            hadLoadedWorkspace: false
+        )
+
+        XCTAssertTrue(warmReloadRequiresFreshData)
+        XCTAssertFalse(coldStartRequiresFreshData)
+        XCTAssertFalse(WorkspaceStore.canPublishDeferredLoad(
+            requiresFreshData: warmReloadRequiresFreshData,
+            baseSnapshotWasStale: false,
+            responseWasStale: true
+        ))
+        XCTAssertFalse(WorkspaceStore.canPublishDeferredLoad(
+            requiresFreshData: true,
+            baseSnapshotWasStale: true,
+            responseWasStale: false
+        ))
+        XCTAssertFalse(WorkspaceStore.canPublishDeferredLoad(
+            requiresFreshData: true,
+            baseSnapshotWasStale: false,
+            responseWasStale: true
+        ))
+        XCTAssertTrue(WorkspaceStore.canPublishDeferredLoad(
+            requiresFreshData: true,
+            baseSnapshotWasStale: false,
+            responseWasStale: false
+        ))
+        XCTAssertTrue(WorkspaceStore.canPublishDeferredLoad(
+            requiresFreshData: coldStartRequiresFreshData,
+            baseSnapshotWasStale: true,
+            responseWasStale: true
+        ))
+    }
+
+    @MainActor
+    func testSaveStagingIsIgnoredOutsideReadyAndAuthorityClearResetsState() {
+        let store = WorkspaceStore()
+        store.activeProjectId = "project-old"
+        let resource = MemoryResource(
+            id: "memory-old",
+            scope: .org,
+            projectId: nil,
+            projectName: nil,
+            kind: .rules,
+            contentHash: "hash",
+            updatedAt: timestamp,
+            refCommitId: "commit-old",
+            contentLoaded: true,
+            document: .init(title: "Old", path: "rules/old.md", body: "Old")
+        )
+        let item = MemoryListItem(
+            id: resource.id,
+            resource: resource,
+            draft: nil,
+            inherited: true,
+            projectContextId: "project-old"
+        )
+        var edited = item.document
+        edited.body = "Unsaved old-authority edit"
+        let bundle = PersonalBundle(
+            id: "bundle-old",
+            name: "Old",
+            description: "",
+            resourceIds: [resource.id],
+            revision: 1,
+            updatedAt: timestamp
+        )
+        let tab = WorkbenchTab(
+            section: .memory,
+            projectId: "project-old",
+            itemId: resource.id,
+            mode: .source,
+            title: "Old"
+        )
+        store.selectedSection = .reviews
+        store.selectedItemId = resource.id
+        store.selectedBundleId = bundle.id
+        store.selectedReviewId = "review-old"
+        store.pendingReviewReconciliationId = "review-old"
+        store.tabs = [tab]
+        store.activeTabId = tab.id
+
+        XCTAssertFalse(store.canEditMemory(item))
+        store.stageDocumentSave(item, document: edited)
+        store.stageBundleSave(
+            bundle,
+            name: "Unsaved old-authority bundle",
+            description: "",
+            resourceIds: [resource.id]
+        )
+        XCTAssertNil(store.pendingDocument(for: item))
+        XCTAssertFalse(store.hasPendingChanges)
+
+        store.clearAuthorityScopedWorkspace()
+
+        XCTAssertNil(store.pendingDocument(for: item))
+        XCTAssertFalse(store.hasPendingChanges)
+        XCTAssertNil(store.activeProjectId)
+        XCTAssertEqual(store.selectedSection, .memory)
+        XCTAssertNil(store.selectedItemId)
+        XCTAssertNil(store.selectedBundleId)
+        XCTAssertNil(store.selectedReviewId)
+        XCTAssertNil(store.pendingReviewReconciliationId)
+        XCTAssertNil(store.reviewDecisionReadiness)
+        XCTAssertTrue(store.tabs.isEmpty)
+        XCTAssertNil(store.activeTabId)
+        XCTAssertFalse(store.syncStatusAvailable)
+        XCTAssertEqual(store.draftInventoryLoadState, .loading)
+        XCTAssertEqual(store.bundleLoadState, .loading)
+        XCTAssertEqual(store.reviewLoadState, .loading)
+    }
+
+    func testOldDataSourceGenerationCannotMarkNewLoadStale() async {
+        let tracker = ServerDataSourceTracker()
+        let started = DaemonContractTestLatch()
+        let finish = DaemonContractTestLatch()
+        let oldRequest = Task {
+            let generation = tracker.generation
+            await started.open()
+            await finish.wait()
+            tracker.markStale(generation: generation)
+        }
+
+        await started.wait()
+        tracker.reset()
+        await finish.open()
+        await oldRequest.value
+        XCTAssertEqual(tracker.value, "live")
+
+        tracker.markStale(generation: tracker.generation)
+        XCTAssertEqual(tracker.value, "stale")
+    }
+
+    func testDraftFanoutLivesInDeferredDraftLoad() async throws {
+        let summaries = (0..<48).map {
+            inventorySummary(id: "draft-\($0)", updatedAt: timestamp)
+        }
+
+        let loaded = try await WorkspaceLoader.loadDeferredDrafts(
+            resources: [],
+            accessibleProjectIds: ["project-1"],
+            listDrafts: {
+                .init(items: summaries)
+            },
+            loadDraft: { draftId in
+                guard let summary = summaries.first(where: { $0.draftId == draftId }) else {
+                    throw DaemonContractTestError.unexpectedServerRequest
+                }
+                return .init(draft: summary, operations: [])
+            },
+            loadContent: { resource in
+                XCTFail("A create Draft must not load a shared baseline.")
+                return (resource, false)
+            }
+        )
+
+        XCTAssertEqual(Set(loaded.drafts.map(\.id)), Set(summaries.map(\.draftId)))
+        XCTAssertTrue(loaded.loadedBaselines.isEmpty)
+        XCTAssertFalse(loaded.hasStaleServerResponse)
+    }
+
+    func testDeferredDraftLoadCarriesBaselineFreshness() async throws {
+        var baseline = resource(id: "memory-1", kind: .rules, path: "rules/shared.md")
+        baseline.contentLoaded = false
+        let summary = inventorySummary(
+            id: "draft-1",
+            targetId: baseline.id,
+            updatedAt: timestamp
+        )
+
+        let loaded = try await WorkspaceLoader.loadDeferredDrafts(
+            resources: [baseline],
+            accessibleProjectIds: ["project-1"],
+            listDrafts: {
+                .init(items: [summary])
+            },
+            loadDraft: { draftId in
+                XCTAssertEqual(draftId, summary.draftId)
+                return .init(draft: summary, operations: [])
+            },
+            loadContent: { resource in
+                var loaded = resource
+                loaded.contentLoaded = true
+                return (loaded, true)
+            }
+        )
+
+        XCTAssertTrue(loaded.hasStaleServerResponse)
+        XCTAssertEqual(loaded.loadedBaselines.map(\.id), [baseline.id])
+        XCTAssertEqual(loaded.drafts.first?.document.body, "Base body")
+    }
+
+    func testFreshCorePrunesRevokedProjectRecordsBeforeDeferredFailure() {
+        let draft = inventoryDraft(
+            from: inventorySummary(id: "draft-revoked", updatedAt: timestamp)
+        )
+        let review = ReviewRecord(
+            id: "review-revoked",
+            projectId: "project-1",
+            draftId: draft.id,
+            title: "Revoked",
+            description: "",
+            author: user,
+            status: "open",
+            version: 1,
+            decisionBody: nil,
+            approvedResultHash: nil,
+            decidedBy: nil,
+            decidedAt: nil,
+            freshness: .current,
+            reconciliation: .unknown,
+            reconciliationCandidateId: nil,
+            currentCommitId: "commit-1",
+            updatedAt: timestamp
+        )
+        let revokedAccess = Set<String>()
+        let retainedAccess = Set(["project-1"])
+
+        let draftsAfterRevocation = WorkspaceStore.retainingAccessibleProjectRecords(
+            [draft],
+            accessibleProjectIds: revokedAccess,
+            projectId: \.projectId
+        )
+        let reviewsAfterRevocation = WorkspaceStore.retainingAccessibleProjectRecords(
+            [review],
+            accessibleProjectIds: revokedAccess,
+            projectId: \.projectId
+        )
+
+        XCTAssertTrue(draftsAfterRevocation.isEmpty)
+        XCTAssertTrue(reviewsAfterRevocation.isEmpty)
+        XCTAssertEqual(WorkspaceStore.retainingAccessibleProjectRecords(
+            [draft],
+            accessibleProjectIds: retainedAccess,
+            projectId: \.projectId
+        ), [draft])
+        XCTAssertEqual(WorkspaceStore.retainingAccessibleProjectRecords(
+            [review],
+            accessibleProjectIds: retainedAccess,
+            projectId: \.projectId
+        ), [review])
+    }
+
+    func testDeferredRecordMergePreservesConcurrentMutationsPerRecord() {
+        let unchanged = inventoryDraft(
+            from: inventorySummary(id: "unchanged", updatedAt: timestamp)
+        )
+        let edited = inventoryDraft(
+            from: inventorySummary(id: "edited", updatedAt: timestamp)
+        )
+        let deleted = inventoryDraft(
+            from: inventorySummary(id: "deleted", updatedAt: timestamp)
+        )
+        let localNew = inventoryDraft(
+            from: inventorySummary(id: "local-new", updatedAt: timestamp)
+        )
+        let serverNew = inventoryDraft(
+            from: inventorySummary(id: "server-new", updatedAt: timestamp)
+        )
+
+        var serverUpdated = unchanged
+        serverUpdated.document.body = "Server update"
+        var localEdited = edited
+        localEdited.document.body = "Local edit"
+        var serverEdited = edited
+        serverEdited.document.body = "Server edit"
+        var serverDeleted = deleted
+        serverDeleted.document.body = "Server kept record"
+
+        let merged = WorkspaceStore.mergeDeferredRecords(
+            baseline: [unchanged, edited, deleted],
+            current: [unchanged, localEdited, localNew],
+            loaded: [serverUpdated, serverEdited, serverDeleted, serverNew]
+        )
+        let mergedById = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
+
+        XCTAssertEqual(
+            Set(mergedById.keys),
+            Set(["unchanged", "edited", "local-new", "server-new"])
+        )
+        XCTAssertEqual(mergedById["unchanged"]?.document.body, "Server update")
+        XCTAssertEqual(mergedById["edited"]?.document.body, "Local edit")
+        XCTAssertNil(mergedById["deleted"])
+        XCTAssertEqual(mergedById["local-new"], localNew)
+        XCTAssertEqual(mergedById["server-new"], serverNew)
     }
 
     @MainActor
@@ -254,6 +567,332 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertTrue(warning?.contains("could not be inspected") == true)
         XCTAssertTrue(warning?.contains("Claude Code user integration at /Users/example") == true)
         XCTAssertTrue(warning?.contains("enable each repository") == true)
+    }
+
+    func testAdapterWarningOnlyUpdatesItsOwnedErrorMessage() {
+        let previous = LocalAgentAdapterReconciliationResult(
+            conflicts: [],
+            inspectionWarning: "Previous adapter warning"
+        )
+        let next = LocalAgentAdapterReconciliationResult(
+            conflicts: [],
+            inspectionWarning: "Next adapter warning"
+        )
+        let empty = LocalAgentAdapterReconciliationResult(
+            conflicts: [],
+            inspectionWarning: nil
+        )
+
+        XCTAssertEqual(
+            WorkspaceStore.errorMessageAfterUpdatingLocalAgentAdapters(
+                currentErrorMessage: "Document save failed",
+                previous: previous,
+                next: next
+            ),
+            "Document save failed"
+        )
+        XCTAssertNil(WorkspaceStore.errorMessageAfterUpdatingLocalAgentAdapters(
+            currentErrorMessage: "Previous adapter warning",
+            previous: previous,
+            next: empty
+        ))
+        XCTAssertEqual(
+            WorkspaceStore.errorMessageAfterUpdatingLocalAgentAdapters(
+                currentErrorMessage: nil,
+                previous: empty,
+                next: next
+            ),
+            "Next adapter warning"
+        )
+    }
+
+    func testLegacyInspectionExplainsUnsignedReleaseRuntime() {
+        let warning = WorkspaceLoader.legacyAgentAdapterInspectionWarning(
+            for: DaemonXPCError.daemon(.init(
+                code: "project_agent_adapter_invalid_runtime",
+                message: "Missing release signing identity.",
+                requestId: nil
+            ))
+        )
+
+        XCTAssertTrue(warning.contains("Archived integration inspection was skipped"))
+        XCTAssertTrue(warning.contains("cannot install or update managed Coding Agent integrations"))
+        XCTAssertTrue(warning.contains("officially signed release build"))
+        XCTAssertFalse(warning.contains("archived Zig CLI integration store"))
+    }
+
+    func testLegacyInspectionOtherFailureStillRequestsManualReview() {
+        let warning = WorkspaceLoader.legacyAgentAdapterInspectionWarning(
+            for: DaemonXPCError.requestTimedOut()
+        )
+
+        XCTAssertTrue(warning.contains("archived Zig CLI integration store"))
+        XCTAssertTrue(warning.contains("Review any old global or repository"))
+        XCTAssertFalse(warning.contains("release signing identity"))
+    }
+
+    func testRetrySyncHasAnIndependentPostReadyTask() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let retryTask = try XCTUnwrap(
+            source.range(of: "postReadyRetrySyncTask = Task")
+        )
+        let statusTask = try XCTUnwrap(
+            source.range(of: "postReadySyncTask = Task")
+        )
+        let statusEnd = try XCTUnwrap(
+            source[statusTask.lowerBound...].range(
+                of: "\n    private func applyLocalAgentAdapterResult"
+            )
+        )
+
+        XCTAssertLessThan(retryTask.lowerBound, statusTask.lowerBound)
+        XCTAssertTrue(
+            source[retryTask.lowerBound..<statusTask.lowerBound]
+                .contains("daemon.retrySync()")
+        )
+        XCTAssertFalse(
+            source[statusTask.lowerBound..<statusEnd.lowerBound]
+                .contains("daemon.retrySync()")
+        )
+    }
+
+    func testOrgResourceRefreshIsScopedToWorkspaceGeneration() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(of: "private func refreshOrgResourcesIfNeeded()")
+        )
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(
+                of: "\n    nonisolated static func staleResourcePlan"
+            )
+        )
+        let refresh = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(refresh.contains(
+            "let workspaceGeneration = workspaceReloadGeneration"
+        ))
+        XCTAssertGreaterThanOrEqual(
+            refresh.components(separatedBy: "workspaceReloadGeneration == workspaceGeneration")
+                .count - 1,
+            2
+        )
+    }
+
+    func testReloadAndProjectSelectionAreMutuallyExclusive() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let reloadStart = try XCTUnwrap(
+            source.range(of: "func reload(allowsDuringDocumentReconciliation:")
+        )
+        let reloadEnd = try XCTUnwrap(
+            source[reloadStart.lowerBound...].range(of: "\n    func signIn()")
+        )
+        let reload = source[reloadStart.lowerBound..<reloadEnd.lowerBound]
+        let selectionGuard =
+            "guard loadingProjectId == nil, !isSwitchingMemoryContext else { return }"
+        let firstGuard = try XCTUnwrap(reload.range(of: selectionGuard))
+        let secondGuard = try XCTUnwrap(
+            reload[firstGuard.upperBound...].range(of: selectionGuard)
+        )
+        let loading = try XCTUnwrap(reload.range(of: "phase = .loading"))
+        let loader = try XCTUnwrap(reload.range(of: "WorkspaceLoader("))
+
+        XCTAssertTrue(reload.contains("guard !isSigningOut else { return }"))
+        XCTAssertEqual(reload.components(separatedBy: selectionGuard).count - 1, 2)
+        XCTAssertLessThan(secondGuard.lowerBound, loading.lowerBound)
+        XCTAssertLessThan(loading.lowerBound, loader.lowerBound)
+        XCTAssertTrue(reload.contains(
+            "guard !preservesLoadedWorkspace || !snapshotWasStale"
+        ))
+
+        let selectStart = try XCTUnwrap(
+            source.range(of: "func selectProject(_ projectId: String) async")
+        )
+        let selectEnd = try XCTUnwrap(
+            source[selectStart.lowerBound...].range(of: "\n    func focusIssueSearch")
+        )
+        XCTAssertTrue(
+            source[selectStart.lowerBound..<selectEnd.lowerBound]
+                .contains("guard phase == .ready else { return }")
+        )
+
+        let orgStart = try XCTUnwrap(
+            source.range(of: "func showOrgMemory() async")
+        )
+        let orgEnd = try XCTUnwrap(
+            source[orgStart.lowerBound...].range(of: "\n    func selectProject")
+        )
+        XCTAssertTrue(
+            source[orgStart.lowerBound..<orgEnd.lowerBound]
+                .contains("guard phase == .ready else { return }")
+        )
+    }
+
+    func testSaveStagingAndBundleEditingRequireReadyWorkspace() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let storeSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let canEditStart = try XCTUnwrap(
+            storeSource.range(of: "func canEditMemory(_ item: MemoryListItem) -> Bool")
+        )
+        let canEditEnd = try XCTUnwrap(
+            storeSource[canEditStart.lowerBound...].range(of: "\n    var selectedItem")
+        )
+        XCTAssertTrue(
+            storeSource[canEditStart.lowerBound..<canEditEnd.lowerBound]
+                .contains("guard phase == .ready else { return false }")
+        )
+
+        let documentStart = try XCTUnwrap(
+            storeSource.range(of: "func stageDocumentSave")
+        )
+        let documentEnd = try XCTUnwrap(
+            storeSource[documentStart.lowerBound...].range(of: "\n    func flushDocumentSave")
+        )
+        XCTAssertTrue(
+            storeSource[documentStart.lowerBound..<documentEnd.lowerBound]
+                .contains("guard phase == .ready, !isSigningOut else { return }")
+        )
+
+        let bundleStart = try XCTUnwrap(storeSource.range(of: "func stageBundleSave"))
+        let bundleEnd = try XCTUnwrap(
+            storeSource[bundleStart.lowerBound...].range(of: "\n    func flushBundleSave")
+        )
+        XCTAssertTrue(
+            storeSource[bundleStart.lowerBound..<bundleEnd.lowerBound]
+                .contains("guard phase == .ready, !isSigningOut else { return }")
+        )
+
+        let bundleViewSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/BundlesView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(bundleViewSource.contains(".disabled(store.phase != .ready)"))
+    }
+
+    func testSignOutSerializesFinalConfigClearAndUsesFullAuthorityClear() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let signOutStart = try XCTUnwrap(source.range(of: "func signOut() async"))
+        let signOutEnd = try XCTUnwrap(
+            source[signOutStart.lowerBound...].range(of: "\n    func createMemory")
+        )
+        let signOut = source[signOutStart.lowerBound..<signOutEnd.lowerBound]
+        let signOutGuard = try XCTUnwrap(
+            signOut.range(of: "guard !isSigningOut else { return }")
+        )
+        let signOutSet = try XCTUnwrap(
+            signOut.range(of: "isSigningOut = true")
+        )
+        let priorPhase = try XCTUnwrap(
+            signOut.range(of: "let priorPhase = phase")
+        )
+        let signOutDefer = try XCTUnwrap(
+            signOut.range(of: "defer { isSigningOut = false }")
+        )
+        let flush = try XCTUnwrap(signOut.range(of: "await flushPendingChanges()"))
+        let loading = try XCTUnwrap(
+            signOut.range(of: "phase = .loading")
+        )
+        let invalidate = try XCTUnwrap(
+            signOut.range(of: "invalidateWorkspaceTransitionState")
+        )
+        let restorePhase = try XCTUnwrap(
+            signOut.range(of: "phase = priorPhase")
+        )
+        let sessionDelete = try XCTUnwrap(
+            signOut.range(of: #"server.raw(method: "DELETE""#)
+        )
+        let gate = try XCTUnwrap(
+            signOut.range(of: "projectSelectionSideEffectGate.run")
+        )
+        let configClear = try XCTUnwrap(
+            signOut.range(of: "daemon.replaceProjectConfig")
+        )
+        let authorityClear = try XCTUnwrap(
+            signOut.range(of: "clearAuthorityScopedWorkspace()")
+        )
+        let authenticationRequired = try XCTUnwrap(
+            signOut.range(of: "phase = .authenticationRequired")
+        )
+
+        XCTAssertLessThan(signOutGuard.lowerBound, signOutSet.lowerBound)
+        XCTAssertLessThan(signOutSet.lowerBound, priorPhase.lowerBound)
+        XCTAssertLessThan(priorPhase.lowerBound, loading.lowerBound)
+        XCTAssertLessThan(loading.lowerBound, signOutDefer.lowerBound)
+        XCTAssertLessThan(signOutDefer.lowerBound, flush.lowerBound)
+        XCTAssertLessThan(flush.lowerBound, restorePhase.lowerBound)
+        XCTAssertLessThan(restorePhase.lowerBound, invalidate.lowerBound)
+        XCTAssertLessThan(invalidate.lowerBound, sessionDelete.lowerBound)
+        XCTAssertLessThan(sessionDelete.lowerBound, gate.lowerBound)
+        XCTAssertLessThan(gate.lowerBound, configClear.lowerBound)
+        XCTAssertLessThan(configClear.lowerBound, authorityClear.lowerBound)
+        XCTAssertLessThan(authorityClear.lowerBound, authenticationRequired.lowerBound)
+        XCTAssertTrue(signOut.contains("phase = .failed(error.localizedDescription)"))
+
+        let clearStart = try XCTUnwrap(
+            source.range(of: "func clearAuthorityScopedWorkspace()")
+        )
+        let clearEnd = try XCTUnwrap(
+            source[clearStart.lowerBound...].range(of: "\n    private func apply(")
+        )
+        let clear = source[clearStart.lowerBound..<clearEnd.lowerBound]
+        let requiredFullClearOperations = [
+            "invalidateWorkspaceTransitionState",
+            "documentSaveTasks.values.forEach { $0.cancel() }",
+            "pendingDocumentSaves.removeAll()",
+            "bundleSaveTasks.values.forEach { $0.cancel() }",
+            "pendingBundleSaves.removeAll()",
+            "account = nil",
+            "organization = nil",
+            "projectMetadata.removeAll()",
+            "projectMembers.removeAll()",
+            "orgRefCommitId = nil",
+            #"orgRefEtag = """#,
+            "activeProjectId = nil",
+            "resources.removeAll()",
+            "drafts.removeAll()",
+            "bundles.removeAll()",
+            "reviews.removeAll()",
+            "runtime = nil",
+            "syncStatusAvailable = false",
+            "selectedItemId = nil",
+            "selectedBundleId = nil",
+            "selectedReviewId = nil",
+            "navigationBackStack.removeAll()",
+            "navigationForwardStack.removeAll()",
+            "resourceLoadRequests.removeAll()",
+            "documentSynchronizationTasks.values.forEach { $0.cancel() }",
+        ]
+        for operation in requiredFullClearOperations {
+            XCTAssertTrue(clear.contains(operation), "Missing full clear: \(operation)")
+        }
     }
 
     func testAppTranslocationIsRejectedBeforeRuntimePathsCanBePersisted() throws {
@@ -1634,6 +2273,17 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
+    func testSyncToolbarSurfacesDeferredStatusReader() {
+        XCTAssertEqual(
+            SyncToolbarPresentation.resolve(
+                status: nil,
+                isAvailable: false,
+                serverDataSource: "live"
+            ),
+            .unavailable(message: nil)
+        )
+    }
+
     func testSyncToolbarSurfacesCachedServerDataWhenSyncIsIdle() {
         XCTAssertEqual(
             SyncToolbarPresentation.resolve(
@@ -1692,6 +2342,7 @@ final class DaemonContractTests: XCTestCase {
         id: String,
         status: DaemonLocalDraftStatus = .open,
         hasUpstreamResourceChanges: Bool = false,
+        targetId: String? = nil,
         updatedAt: String
     ) -> DaemonDraftSummary {
         .init(
@@ -1707,7 +2358,7 @@ final class DaemonContractTests: XCTestCase {
             reconciliationCandidateId: nil,
             scope: .project,
             resourceKind: .memory,
-            targetId: nil,
+            targetId: targetId,
             path: "rules/\(id).md",
             status: status,
             createdAt: "2026-07-23T00:00:00Z",
@@ -1950,7 +2601,7 @@ private actor RetryingDaemonHealthProbe {
     }
 }
 
-private actor WarmDaemonRetryGate {
+private actor DaemonContractTestLatch {
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
