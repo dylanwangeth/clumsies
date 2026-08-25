@@ -6,9 +6,12 @@ struct MemoryNavigator: View {
 
     var body: some View {
         FileTreeView(store: store, items: store.visibleMemoryItems)
-        .onChange(of: store.selectedKind) { _, _ in
-            store.selectedItemId = nil
-        }
+            .safeAreaInset(edge: .bottom) {
+                DraftInventoryStatusBanner(store: store)
+            }
+            .onChange(of: store.selectedKind) { _, _ in
+                store.selectedItemId = nil
+            }
     }
 }
 
@@ -69,9 +72,54 @@ struct MemoryMainPane: View {
     @ViewBuilder
     private var emptyState: some View {
         if store.visibleMemoryItems.isEmpty {
-            EmptyMemoryCollectionView(store: store)
+            switch store.draftInventoryLoadState {
+            case .loading:
+                ProgressView("Loading Drafts...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .failed(let message):
+                ContentUnavailableView {
+                    Label("Drafts Unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                } actions: {
+                    Button("Try Again") { Task { await store.reload() } }
+                }
+            case .loaded:
+                EmptyMemoryCollectionView(store: store)
+            }
         } else {
             EmptyWorkspaceView()
+        }
+    }
+}
+
+private struct DraftInventoryStatusBanner: View {
+    @ObservedObject var store: WorkspaceStore
+
+    @ViewBuilder
+    var body: some View {
+        switch store.draftInventoryLoadState {
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Loading Drafts...")
+                    .font(.caption)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .failed:
+            Button("Draft refresh failed - Try Again") {
+                Task { await store.reload() }
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        case .loaded:
+            EmptyView()
         }
     }
 }

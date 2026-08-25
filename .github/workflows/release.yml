@@ -3,17 +3,41 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ref resolving to the current default branch tip to sign
+        required: true
+        default: main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   macos-release:
+    environment: macos-signing
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Verify release source is the default branch tip
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch --depth=1 --no-tags origin "$DEFAULT_BRANCH"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" || {
+            echo "Release source must be the current default branch tip." >&2
+            exit 1
+          }
+          test -x apps/macos/Scripts/verify-release-signature.sh || {
+            echo "Release source is missing the signed release gate." >&2
+            exit 1
+          }
 
       - name: Verify tag matches native macOS version
+        if: github.event_name == 'push'
         run: |
           NATIVE_VERSION=$(awk -F'"' '/MARKETING_VERSION:/ { print $2; exit }' apps/macos/project.yml)
           test "$GITHUB_REF_NAME" = "v$NATIVE_VERSION"
@@ -36,7 +60,6 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           for name in \
             APPLE_CERTIFICATE \
@@ -44,8 +67,7 @@ jobs:
             APPLE_ID \
             APPLE_PASSWORD \
             APPLE_TEAM_ID \
-            KEYCHAIN_PASSWORD \
-            SPARKLE_PRIVATE_KEY
+            KEYCHAIN_PASSWORD
           do
             test -n "${!name}" || { echo "Missing release secret: $name"; exit 1; }
           done
@@ -83,17 +105,23 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CLUMSIES_BUILD_NUMBER: ${{ github.run_number }}
-          CLUMSIES_VERSION: ${{ github.ref_name }}
         run: |
-          export CLUMSIES_VERSION="${CLUMSIES_VERSION#v}"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            CLUMSIES_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            CLUMSIES_VERSION=$(awk -F'"' '/MARKETING_VERSION:/ { print $2; exit }' apps/macos/project.yml)
+          fi
+          export CLUMSIES_VERSION
           apps/macos/Scripts/archive-release.sh
 
       - name: Generate Sparkle appcast
+        if: github.event_name == 'push'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: apps/macos/Scripts/generate-appcast.sh
 
-      - name: Stage native macOS artifacts
+      - name: Stage tagged macOS artifacts
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: clumsies-macos
@@ -102,9 +130,21 @@ jobs:
             dist/macos/appcast.xml
           if-no-files-found: error
 
+      - name: Stage signed macOS candidate
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clumsies-macos
+          path: |
+            dist/macos/Clumsies-*-macos-universal.zip
+          if-no-files-found: error
+
   publish-release:
+    if: github.event_name == 'push'
     needs: [macos-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download native macOS artifacts
         uses: actions/download-artifact@v4

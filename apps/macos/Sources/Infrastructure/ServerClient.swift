@@ -84,13 +84,15 @@ struct ServerClient: Sendable {
         body: String? = nil
     ) async throws -> DaemonServerResponse {
         let requestPath = try buildPath(path, query: query)
+        let dataSourceGeneration = dataSourceTracker.generation
         let response = try await requestLimiter.run {
-            try await daemon.serverRequest(
+            try Task.checkCancellation()
+            return try await daemon.serverRequest(
                 .init(method: method, path: requestPath, headers: headers, body: body)
             )
         }
-        if response.isStaleCache {
-            dataSourceTracker.markStale()
+        if response.isStaleCache, !Task.isCancelled {
+            dataSourceTracker.markStale(generation: dataSourceGeneration)
         }
         return response
     }
@@ -235,19 +237,30 @@ private actor ServerRequestLimiter {
     }
 }
 
-private final class ServerDataSourceTracker: @unchecked Sendable {
+final class ServerDataSourceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var stale = false
+    private var currentGeneration = UUID()
 
     var value: String {
         lock.withLock { stale ? "stale" : "live" }
     }
 
-    func markStale() {
-        lock.withLock { stale = true }
+    var generation: UUID {
+        lock.withLock { currentGeneration }
+    }
+
+    func markStale(generation: UUID) {
+        lock.withLock {
+            guard generation == currentGeneration else { return }
+            stale = true
+        }
     }
 
     func reset() {
-        lock.withLock { stale = false }
+        lock.withLock {
+            currentGeneration = UUID()
+            stale = false
+        }
     }
 }

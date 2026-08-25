@@ -67,8 +67,27 @@ stop_server() {
     log "stopped Server container returned an invalid exit code: $exit_code"
     return 1
   fi
-  if [[ "$exit_code" == 137 ]]; then
-    log "Server container was killed while stopping"
+  if [[ "$exit_code" != 0 ]]; then
+    log "Server container exited with code $exit_code while stopping"
+    return 1
+  fi
+}
+
+stop_isolated_server() {
+  local container="$1"
+  local exit_code
+
+  if ! docker stop --time "$SERVER_STOP_TIMEOUT_SECONDS" "$container" >/dev/null; then
+    log "isolated Server did not stop within ${SERVER_STOP_TIMEOUT_SECONDS} seconds"
+    return 1
+  fi
+
+  exit_code="$(docker inspect "$container" --format '{{.State.ExitCode}}' 2>/dev/null)" || {
+    log "could not inspect the stopped isolated Server"
+    return 1
+  }
+  if [[ "$exit_code" != 0 ]]; then
+    log "isolated Server exited with code $exit_code"
     return 1
   fi
 }
@@ -679,6 +698,8 @@ verify_backup_with_image() (
     "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public';")"
   migration_count="$(docker exec "$postgres_container" psql -At -U postgres \
     -d clumsies_restore -c 'SELECT count(*) FROM _sqlx_migrations;')"
+  stop_isolated_server "$server_container" ||
+    die "$purpose Server did not stop cleanly"
   log "$purpose healthy: backup=$backup tables=$table_count migrations=$migration_count image=$image"
 )
 

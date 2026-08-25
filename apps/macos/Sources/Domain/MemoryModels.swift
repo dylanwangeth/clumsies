@@ -223,8 +223,8 @@ struct ProjectState: Identifiable, Hashable, Sendable {
 
 struct RuntimeState: Sendable {
     let health: DaemonHealth
-    let sync: DaemonSyncStatus
-    let mcp: DaemonMCPStatus
+    let sync: DaemonSyncStatus?
+    let mcp: DaemonMCPStatus?
     let serverDataSource: String
 }
 

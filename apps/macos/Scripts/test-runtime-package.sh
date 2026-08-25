@@ -23,3 +23,10 @@ codesign --verify --deep --strict "$app"
 
 runtime_identifier="$(codesign -dvv "$runtime" 2>&1 | sed -n 's/^Identifier=//p')"
 test "$runtime_identifier" = "ai.clumsies.daemon"
+codesign --display --verbose=4 "$app" 2>&1 | grep -q '^Signature=adhoc$'
+codesign --display --verbose=4 "$runtime" 2>&1 | grep -q '^Signature=adhoc$'
+
+if apps/macos/Scripts/verify-release-signature.sh "$app" NOT_A_RELEASE_TEAM; then
+  echo "Ad-hoc package unexpectedly passed release signature verification." >&2
+  exit 1
+fi

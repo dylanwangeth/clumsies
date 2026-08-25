@@ -36,6 +36,21 @@ enum ApplicationPhase: Equatable, Sendable {
     case failed(String)
 }
 
+enum WorkspaceCollectionLoadState: Equatable, Sendable {
+    case loading
+    case loaded
+    case failed(String)
+
+    var isLoading: Bool {
+        self == .loading
+    }
+
+    var failureMessage: String? {
+        guard case .failed(let message) = self else { return nil }
+        return message
+    }
+}
+
 struct WorkspaceSnapshot: Sendable {
     let account: UserReference
     let organization: OrganizationReference
@@ -45,9 +60,6 @@ struct WorkspaceSnapshot: Sendable {
     let orgRefCommitId: String?
     let orgRefEtag: String
     let resources: [MemoryResource]
-    let drafts: [LocalDraft]
-    let bundles: [PersonalBundle]
-    let reviews: [ReviewRecord]
     let runtime: RuntimeState
     let legacyAgentAdapterConflicts: [DaemonLegacyAgentAdapterConflict]
     let legacyAgentAdapterInspectionWarning: String?
@@ -322,6 +334,9 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var drafts: [LocalDraft] = []
     @Published private(set) var bundles: [PersonalBundle] = []
     @Published private(set) var reviews: [ReviewRecord] = []
+    @Published private(set) var draftInventoryLoadState: WorkspaceCollectionLoadState = .loading
+    @Published private(set) var bundleLoadState: WorkspaceCollectionLoadState = .loading
+    @Published private(set) var reviewLoadState: WorkspaceCollectionLoadState = .loading
     @Published private(set) var runtime: RuntimeState?
     @Published private(set) var syncStatusAvailable = true
     @Published private(set) var legacyAgentAdapterConflicts: [DaemonLegacyAgentAdapterConflict] = []
@@ -372,6 +387,13 @@ final class WorkspaceStore: ObservableObject {
     private lazy var authentication = AuthenticationClient(daemon: daemon)
     private lazy var server = ServerClient(daemon: daemon)
     private var workspaceReloadGeneration = UUID()
+    private var draftInventoryLoadTask: Task<Void, Never>?
+    private var bundleLoadTask: Task<Void, Never>?
+    private var reviewLoadTask: Task<Void, Never>?
+    private var legacyAgentAdapterInspectionTask: Task<Void, Never>?
+    private var postReadySyncTask: Task<Void, Never>?
+    private var postReadyRetrySyncTask: Task<Void, Never>?
+    private var isSigningOut = false
     private var projectSelectionGeneration = UUID()
     private let projectSelectionSideEffectGate = ProjectSelectionSideEffectGate()
     private let draftMutationGate = AsyncMutex()
@@ -430,6 +452,7 @@ final class WorkspaceStore: ObservableObject {
     /// Organization Memory through a Project-bound LocalDraft. Legacy
     /// Project-scoped authority remains visible but read-only.
     func canEditMemory(_ item: MemoryListItem) -> Bool {
+        guard phase == .ready else { return false }
         let projectContextId = item.projectContextId
             ?? (item.scope == .project ? item.projectId : nil)
         guard let projectContextId,
@@ -1029,6 +1052,85 @@ final class WorkspaceStore: ObservableObject {
             && lhs.document.path == rhs.document.path
     }
 
+    nonisolated static func preservesDeferredAuthority(
+        currentAccount: UserReference?,
+        currentOrganization: OrganizationReference?,
+        nextAccount: UserReference,
+        nextOrganization: OrganizationReference
+    ) -> Bool {
+        currentAccount?.userId == nextAccount.userId
+            && currentOrganization?.orgId == nextOrganization.orgId
+    }
+
+    nonisolated static func invalidateWorkspaceTransitionState(
+        generation: inout UUID,
+        loadingProjectId: inout String?,
+        isSwitchingMemoryContext: inout Bool,
+        isPreparingWorkspaceIndex: inout Bool,
+        orgResourceRefreshGeneration: inout UUID?
+    ) {
+        generation = UUID()
+        loadingProjectId = nil
+        isSwitchingMemoryContext = false
+        isPreparingWorkspaceIndex = false
+        orgResourceRefreshGeneration = nil
+    }
+
+    nonisolated static func rejectsStaleAuthorityChange(
+        hadLoadedWorkspace: Bool,
+        sameAuthority: Bool,
+        snapshotWasStale: Bool
+    ) -> Bool {
+        hadLoadedWorkspace && !sameAuthority && snapshotWasStale
+    }
+
+    nonisolated static func deferredLoadRequiresFreshData(
+        hadLoadedWorkspace: Bool
+    ) -> Bool {
+        hadLoadedWorkspace
+    }
+
+    nonisolated static func retainingAccessibleProjectRecords<Record>(
+        _ records: [Record],
+        accessibleProjectIds: Set<String>,
+        projectId: KeyPath<Record, String>
+    ) -> [Record] {
+        records.filter { accessibleProjectIds.contains($0[keyPath: projectId]) }
+    }
+
+    nonisolated static func canPublishDeferredLoad(
+        requiresFreshData: Bool,
+        baseSnapshotWasStale: Bool,
+        responseWasStale: Bool
+    ) -> Bool {
+        !requiresFreshData || (!baseSnapshotWasStale && !responseWasStale)
+    }
+
+    nonisolated static func mergeDeferredRecords<Record>(
+        baseline: [Record],
+        current: [Record],
+        loaded: [Record]
+    ) -> [Record] where Record: Identifiable & Equatable, Record.ID: Hashable {
+        let baselineById = Dictionary(
+            baseline.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let currentById = Dictionary(
+            current.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let loadedIds = Set(loaded.map(\.id))
+        var merged = current.filter {
+            !loadedIds.contains($0.id) && currentById[$0.id] != baselineById[$0.id]
+        }
+        merged.append(contentsOf: loaded.compactMap { loadedRecord -> Record? in
+            let id = loadedRecord.id
+            guard currentById[id] != baselineById[id] else { return loadedRecord }
+            return currentById[id]
+        })
+        return merged
+    }
+
     @discardableResult
     private func installLoadedResourceIfCurrent(_ loaded: MemoryResource) -> Bool {
         guard let index = resources.firstIndex(where: { $0.id == loaded.id }),
@@ -1046,18 +1148,23 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func reload(allowsDuringDocumentReconciliation: Bool = false) async {
+        guard !isSigningOut else { return }
         guard allowsDuringDocumentReconciliation
                 || (applyingDocumentReconciliationSessions.isEmpty
                     && standaloneReconciliationActivityIds.isEmpty) else {
             return
         }
-        let generation = UUID()
-        workspaceReloadGeneration = generation
+        guard loadingProjectId == nil, !isSwitchingMemoryContext else { return }
         if phase == .ready, hasPendingChanges, !(await flushPendingChanges()) {
             return
         }
-        guard workspaceReloadGeneration == generation else { return }
-        let preservesLoadedWorkspace = account != nil
+        // A project selection may have started while pending edits were
+        // flushing. Let that serialized intent finish before a later reload.
+        guard loadingProjectId == nil, !isSwitchingMemoryContext else { return }
+        cancelPostReadyWork()
+        let generation = UUID()
+        workspaceReloadGeneration = generation
+        let hadLoadedWorkspace = account != nil
         phase = .loading
         errorMessage = nil
         do {
@@ -1070,14 +1177,46 @@ final class WorkspaceStore: ObservableObject {
                 self?.applyLocalAgentAdapterResult(result)
             }
             guard workspaceReloadGeneration == generation else { return }
+            let sameAuthority = Self.preservesDeferredAuthority(
+                currentAccount: account,
+                currentOrganization: organization,
+                nextAccount: snapshot.account,
+                nextOrganization: snapshot.organization
+            )
+            let snapshotWasStale = snapshot.runtime.serverDataSource == "stale"
+            if Self.rejectsStaleAuthorityChange(
+                hadLoadedWorkspace: hadLoadedWorkspace,
+                sameAuthority: sameAuthority,
+                snapshotWasStale: snapshotWasStale
+            ) {
+                clearAuthorityScopedWorkspace()
+                phase = .failed(
+                    "Fresh account data is required before switching workspaces. "
+                        + "The previous account workspace was cleared."
+                )
+                return
+            }
+            let preservesLoadedWorkspace = hadLoadedWorkspace && sameAuthority
             // Stale-cache data keeps a cold start usable while offline, but it
             // must never replace a newer generation already held in memory.
-            guard !preservesLoadedWorkspace || snapshot.runtime.serverDataSource != "stale" else {
+            guard !preservesLoadedWorkspace || !snapshotWasStale else {
                 phase = .ready
+                startPostReadyWork(
+                    generation: generation,
+                    requiresFreshData: true,
+                    baseSnapshotWasStale: true
+                )
                 return
             }
             apply(snapshot)
             phase = .ready
+            startPostReadyWork(
+                generation: generation,
+                requiresFreshData: Self.deferredLoadRequiresFreshData(
+                    hadLoadedWorkspace: hadLoadedWorkspace
+                ),
+                baseSnapshotWasStale: false
+            )
         } catch WorkspaceLoadError.authenticationRequired {
             guard workspaceReloadGeneration == generation else { return }
             phase = .authenticationRequired
@@ -1215,15 +1354,25 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func refreshProjectMembers() async {
+        let generation = workspaceReloadGeneration
         guard let projectId = activeProjectId else {
             projectMembers = []
             return
         }
         do {
-            projectMembers = try await projectMemberDirectory(projectId: projectId)
+            let members = try await projectMemberDirectory(projectId: projectId)
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId else {
+                return
+            }
+            projectMembers = members
         } catch is CancellationError {
             return
         } catch {
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId else {
+                return
+            }
             projectMembers = []
             errorMessage = error.localizedDescription
         }
@@ -1358,6 +1507,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func showOrgMemory() async {
+        guard phase == .ready else { return }
         guard activeProjectId != nil || loadingProjectId != nil else { return }
         guard canCommitMemoryContextSwitch else {
             errorMessage = "Finish or cancel the active document Sync before switching Memory context."
@@ -1391,6 +1541,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func selectProject(_ projectId: String) async {
+        guard phase == .ready else { return }
         guard let project = projects.first(where: { $0.id == projectId }) else { return }
         if projectId == activeProjectId,
            project.isLoaded,
@@ -1403,6 +1554,7 @@ final class WorkspaceStore: ObservableObject {
             return
         }
         let generation = UUID()
+        let workspaceGeneration = workspaceReloadGeneration
         // Publish the newest intent before the first suspension point. This
         // closes the window where two clicks could both start a daemon-side
         // selection while a pending document save was flushing.
@@ -1458,7 +1610,10 @@ final class WorkspaceStore: ObservableObject {
                     projects[index] = loadedProject.state
                 }
                 replaceProjectResources(projectId: projectId, with: loadedProject.resources)
-                try await remapDrafts(projectId: projectId)
+                try await remapDrafts(
+                    projectId: projectId,
+                    workspaceGeneration: workspaceGeneration
+                )
             }
             guard projectSelectionGeneration == generation else { return }
             if needsBackgroundRefresh {
@@ -1485,21 +1640,29 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func prepareWorkspaceIndex(includeContent: Bool) async {
+        let generation = workspaceReloadGeneration
         while isPreparingWorkspaceIndex {
             try? await Task.sleep(for: .milliseconds(100))
+            guard workspaceReloadGeneration == generation else { return }
         }
+        guard workspaceReloadGeneration == generation else { return }
         let needsProjects = projects.contains { !$0.isLoaded }
         let needsContent = includeContent && resources.contains { !$0.contentLoaded }
         guard needsProjects || needsContent else { return }
 
         isPreparingWorkspaceIndex = true
-        defer { isPreparingWorkspaceIndex = false }
+        defer {
+            if workspaceReloadGeneration == generation {
+                isPreparingWorkspaceIndex = false
+            }
+        }
         do {
             let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
             let unloadedProjects = projects.filter { !$0.isLoaded }
             let loadedProjects = try await concurrentMap(unloadedProjects, maxConcurrent: 4) { project in
                 try await loader.loadProject(id: project.id, name: project.name)
             }
+            guard workspaceReloadGeneration == generation else { return }
             for loaded in loadedProjects {
                 clearStaleResourceState(for: loaded.state.id)
                 if let index = projects.firstIndex(where: { $0.id == loaded.state.id }) {
@@ -1513,15 +1676,21 @@ final class WorkspaceStore: ObservableObject {
                 let loadedResources = try await concurrentMap(unloadedResources) {
                     try await loader.loadContent(for: $0)
                 }
+                guard workspaceReloadGeneration == generation else { return }
                 for loaded in loadedResources {
                     installLoadedResourceIfCurrent(loaded)
                 }
             }
 
             for projectId in Set(drafts.map(\.projectId)) {
-                try await remapDrafts(projectId: projectId)
+                try await remapDrafts(
+                    projectId: projectId,
+                    workspaceGeneration: generation
+                )
+                guard workspaceReloadGeneration == generation else { return }
             }
         } catch {
+            guard workspaceReloadGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -1861,29 +2030,41 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func signOut() async {
-        guard await flushPendingChanges() else { return }
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        let priorPhase = phase
+        phase = .loading
+        defer { isSigningOut = false }
+        guard await flushPendingChanges() else {
+            phase = priorPhase
+            return
+        }
+        workspaceReloadGeneration = UUID()
+        cancelPostReadyWork()
+        Self.invalidateWorkspaceTransitionState(
+            generation: &projectSelectionGeneration,
+            loadingProjectId: &loadingProjectId,
+            isSwitchingMemoryContext: &isSwitchingMemoryContext,
+            isPreparingWorkspaceIndex: &isPreparingWorkspaceIndex,
+            orgResourceRefreshGeneration: &orgResourceRefreshGeneration
+        )
         _ = try? await server.raw(method: "DELETE", path: "/api/v1/auth/session")
         do {
-            _ = try await daemon.replaceProjectConfig(
-                .init(
-                    serverUrl: AuthenticationClient.serverURL.absoluteString,
-                    projectId: nil,
-                    accessToken: nil,
-                    refreshToken: nil
+            _ = try await projectSelectionSideEffectGate.run {
+                try await daemon.replaceProjectConfig(
+                    .init(
+                        serverUrl: AuthenticationClient.serverURL.absoluteString,
+                        projectId: nil,
+                        accessToken: nil,
+                        refreshToken: nil
+                    )
                 )
-            )
-            account = nil
-            organization = nil
-            capabilities = []
-            projects = []
-            resources = []
-            drafts = []
-            bundles = []
-            reviews = []
-            tabs = []
+            }
+            clearAuthorityScopedWorkspace()
             phase = .authenticationRequired
         } catch {
             errorMessage = error.localizedDescription
+            phase = .failed(error.localizedDescription)
         }
     }
 
@@ -1950,6 +2131,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func stageDocumentSave(_ item: MemoryListItem, document: EditableMemoryDocument) {
+        guard phase == .ready, !isSigningOut else { return }
         guard canEditMemory(item) else {
             errorMessage = "You do not have permission to edit this memory."
             return
@@ -2021,6 +2203,7 @@ final class WorkspaceStore: ObservableObject {
         description: String,
         resourceIds: Set<String>
     ) {
+        guard phase == .ready, !isSigningOut else { return }
         let generation = UUID()
         pendingBundleSaves[bundle.id] = .init(
             bundle: bundle,
@@ -2390,10 +2573,12 @@ final class WorkspaceStore: ObservableObject {
 
     func refreshSyncStatus() async {
         guard phase == .ready else { return }
+        let generation = workspaceReloadGeneration
         await refreshOrgResourcesIfNeeded()
-        guard phase == .ready, let runtime else { return }
+        guard workspaceReloadGeneration == generation, phase == .ready, let runtime else { return }
         do {
             let sync = try await daemon.syncStatus()
+            guard workspaceReloadGeneration == generation, phase == .ready else { return }
             self.runtime = .init(
                 health: runtime.health,
                 sync: sync,
@@ -2401,9 +2586,16 @@ final class WorkspaceStore: ObservableObject {
                 serverDataSource: server.dataSource
             )
             syncStatusAvailable = true
-            await refreshDraftInventory(includeFailed: sync.pendingOperationCount > 0)
+            if draftInventoryLoadTask == nil {
+                await refreshDraftInventory(
+                    includeFailed: sync.pendingOperationCount > 0,
+                    generation: generation
+                )
+            }
+            guard workspaceReloadGeneration == generation, phase == .ready else { return }
             await refreshStaleResourcesIfNeeded(sync: sync)
         } catch {
+            guard workspaceReloadGeneration == generation else { return }
             syncStatusAvailable = false
         }
     }
@@ -2502,6 +2694,7 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func refreshOrgResourcesIfNeeded() async {
+        let workspaceGeneration = workspaceReloadGeneration
         guard selectedSection == .memory,
               activeProjectId == nil,
               !isSwitchingMemoryContext,
@@ -2519,13 +2712,15 @@ final class WorkspaceStore: ObservableObject {
         do {
             let head: (value: CommitStateResponse, response: DaemonServerResponse) =
                 try await server.getWithMetadata("/api/v1/org/commit-state")
-            guard !head.response.isStaleCache,
+            guard workspaceReloadGeneration == workspaceGeneration,
+                  !head.response.isStaleCache,
                   head.value.ref.commitId != observedOrgRefCommitId else {
                 return
             }
             guard let snapshot = try await loadStableOrgAuthoritySnapshot(),
                   let snapshotCommitId = snapshot.commitId,
                   snapshotCommitId == head.value.ref.commitId,
+                  workspaceReloadGeneration == workspaceGeneration,
                   phase == .ready,
                   selectedSection == .memory,
                   activeProjectId == nil,
@@ -4210,11 +4405,87 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    func clearAuthorityScopedWorkspace() {
+        Self.invalidateWorkspaceTransitionState(
+            generation: &projectSelectionGeneration,
+            loadingProjectId: &loadingProjectId,
+            isSwitchingMemoryContext: &isSwitchingMemoryContext,
+            isPreparingWorkspaceIndex: &isPreparingWorkspaceIndex,
+            orgResourceRefreshGeneration: &orgResourceRefreshGeneration
+        )
+        documentSaveTasks.values.forEach { $0.cancel() }
+        documentSaveTasks.removeAll()
+        pendingDocumentSaves.removeAll()
+        bundleSaveTasks.values.forEach { $0.cancel() }
+        bundleSaveTasks.removeAll()
+        pendingBundleSaves.removeAll()
+        account = nil
+        organization = nil
+        capabilities.removeAll()
+        projects.removeAll()
+        projectMetadata.removeAll()
+        projectMembers.removeAll()
+        orgRefCommitId = nil
+        orgRefEtag = ""
+        activeProjectId = nil
+        resources.removeAll()
+        drafts.removeAll()
+        bundles.removeAll()
+        reviews.removeAll()
+        draftInventoryLoadState = .loading
+        bundleLoadState = .loading
+        reviewLoadState = .loading
+        runtime = nil
+        syncStatusAvailable = false
+        selectedSection = .memory
+        selectedItemId = nil
+        selectedBundleId = nil
+        selectedReviewId = nil
+        pendingReviewReconciliationId = nil
+        reviewDecisionReadiness = nil
+        projectOrgSelectionMutatingIds.removeAll()
+        applyingDocumentReconciliationSessions.removeAll()
+        standaloneReconciliationActivityIds.removeAll()
+        tabs.removeAll()
+        activeTabId = nil
+        navigationBackStack.removeAll()
+        navigationForwardStack.removeAll()
+        showsProjectSettings = false
+        clearAllStaleResourceState()
+        resourceLoadRequests.removeAll()
+        loadingResourceIds.removeAll()
+        documentSynchronizationTasks.values.forEach { $0.cancel() }
+        documentSynchronizationTasks.removeAll()
+        pendingDocumentReconciliationCandidatesBySession.removeAll()
+        documentReconciliationResolutions.removeAll()
+        pendingDocumentCommand = nil
+        documentReconciliationToolbarState = nil
+        synchronizingDocumentSessions.removeAll()
+        documentSynchronizationGenerations.removeAll()
+    }
+
     private func apply(_ snapshot: WorkspaceSnapshot) {
+        let preservesDeferredAuthority = Self.preservesDeferredAuthority(
+            currentAccount: account,
+            currentOrganization: organization,
+            nextAccount: snapshot.account,
+            nextOrganization: snapshot.organization
+        )
         let previousResources = Dictionary(
             resources.map { ($0.id, $0) },
             uniquingKeysWith: { _, latest in latest }
         )
+        if !preservesDeferredAuthority {
+            clearAuthorityScopedWorkspace()
+        } else {
+            Self.invalidateWorkspaceTransitionState(
+                generation: &projectSelectionGeneration,
+                loadingProjectId: &loadingProjectId,
+                isSwitchingMemoryContext: &isSwitchingMemoryContext,
+                isPreparingWorkspaceIndex: &isPreparingWorkspaceIndex,
+                orgResourceRefreshGeneration: &orgResourceRefreshGeneration
+            )
+        }
         clearAllStaleResourceState()
         resourceLoadRequests.removeAll()
         loadingResourceIds.removeAll()
@@ -4233,6 +4504,24 @@ final class WorkspaceStore: ObservableObject {
         projectMetadata = projectMetadata.filter { projectId, _ in
             projects.contains { $0.id == projectId }
         }
+        projectMembers.removeAll()
+        let accessibleProjectIds = Set(projects.map(\.id))
+        drafts = Self.retainingAccessibleProjectRecords(
+            drafts,
+            accessibleProjectIds: accessibleProjectIds,
+            projectId: \.projectId
+        )
+        reviews = Self.retainingAccessibleProjectRecords(
+            reviews,
+            accessibleProjectIds: accessibleProjectIds,
+            projectId: \.projectId
+        )
+        if let selectedReviewId,
+           !reviews.contains(where: { $0.id == selectedReviewId }) {
+            self.selectedReviewId = nil
+            reviewDecisionReadiness = nil
+            pendingReviewReconciliationId = nil
+        }
         orgRefCommitId = snapshot.orgRefCommitId
         orgRefEtag = snapshot.orgRefEtag
         activeProjectId = snapshot.activeProjectId
@@ -4245,22 +4534,14 @@ final class WorkspaceStore: ObservableObject {
         where previousResources[resourceId] != nextResources[resourceId] {
             bumpDocumentContentGeneration(for: resourceId)
         }
-        drafts = snapshot.drafts
         pruneOrphanedMemoryTabs()
         refreshAllDocumentTabs()
-        bundles = snapshot.bundles
-        reviews = snapshot.reviews
         runtime = snapshot.runtime
         applyLocalAgentAdapterResult(.init(
             conflicts: snapshot.legacyAgentAdapterConflicts,
             inspectionWarning: snapshot.legacyAgentAdapterInspectionWarning
         ))
-        syncStatusAvailable = true
-        selectedBundleId = selectedBundleId ?? bundles.first?.id
-        if let selectedReviewId,
-           !reviews.contains(where: { $0.id == selectedReviewId }) {
-            self.selectedReviewId = nil
-        }
+        syncStatusAvailable = false
         if projects.isEmpty {
             selectedSection = .memory
             showsProjectSettings = false
@@ -4270,13 +4551,261 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    private func applyLocalAgentAdapterResult(_ result: LocalAgentAdapterReconciliationResult) {
-        legacyAgentAdapterConflicts = result.conflicts
-        legacyAgentAdapterInspectionWarning = result.inspectionWarning
-        errorMessage = Self.localAgentAdapterWarning(result)
+    private func cancelPostReadyWork() {
+        draftInventoryLoadTask?.cancel()
+        draftInventoryLoadTask = nil
+        bundleLoadTask?.cancel()
+        bundleLoadTask = nil
+        reviewLoadTask?.cancel()
+        reviewLoadTask = nil
+        legacyAgentAdapterInspectionTask?.cancel()
+        legacyAgentAdapterInspectionTask = nil
+        postReadySyncTask?.cancel()
+        postReadySyncTask = nil
+        postReadyRetrySyncTask?.cancel()
+        postReadyRetrySyncTask = nil
     }
 
-    static func localAgentAdapterWarning(
+    private func startPostReadyWork(
+        generation: UUID,
+        requiresFreshData: Bool,
+        baseSnapshotWasStale: Bool
+    ) {
+        guard workspaceReloadGeneration == generation, phase == .ready else { return }
+        let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
+        let resourcesAtReady = resources
+        let accessibleProjectIds = Set(projects.map(\.id))
+        let baselineDrafts = drafts
+        let baselineBundles = bundles
+        let baselineReviews = reviews
+        draftInventoryLoadState = .loading
+        bundleLoadState = .loading
+        reviewLoadState = .loading
+
+        legacyAgentAdapterInspectionTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.legacyAgentAdapterInspectionTask = nil
+                }
+            }
+            let result = await loader.inspectLegacyAgentAdapters()
+            guard let self,
+                  self.workspaceReloadGeneration == generation,
+                  self.phase == .ready,
+                  !Task.isCancelled else {
+                return
+            }
+            self.applyLocalAgentAdapterResult(result)
+        }
+
+        draftInventoryLoadTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.draftInventoryLoadTask = nil
+                }
+            }
+            do {
+                let loaded = try await loader.loadDeferredDrafts(
+                    resources: resourcesAtReady,
+                    accessibleProjectIds: accessibleProjectIds
+                )
+                try Task.checkCancellation()
+                guard let self,
+                      self.workspaceReloadGeneration == generation,
+                      self.phase == .ready else {
+                    return
+                }
+                guard Self.canPublishDeferredLoad(
+                    requiresFreshData: requiresFreshData,
+                    baseSnapshotWasStale: baseSnapshotWasStale,
+                    responseWasStale: loaded.hasStaleServerResponse
+                ) else {
+                    self.draftInventoryLoadState = .failed(
+                        "Fresh Draft data was unavailable. Existing Drafts were kept."
+                    )
+                    return
+                }
+                for resource in loaded.loadedBaselines {
+                    self.installLoadedResourceIfCurrent(resource)
+                }
+                self.drafts = Self.mergeDeferredRecords(
+                    baseline: baselineDrafts,
+                    current: self.drafts,
+                    loaded: loaded.drafts
+                )
+                self.draftInventoryLoadState = .loaded
+                self.pruneOrphanedMemoryTabs()
+                self.refreshAllDocumentTabs()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.workspaceReloadGeneration == generation else { return }
+                self.draftInventoryLoadState = .failed(error.localizedDescription)
+            }
+        }
+
+        bundleLoadTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.bundleLoadTask = nil
+                }
+            }
+            do {
+                let loaded = try await loader.loadBundles()
+                try Task.checkCancellation()
+                guard let self,
+                      self.workspaceReloadGeneration == generation,
+                      self.phase == .ready else {
+                    return
+                }
+                guard Self.canPublishDeferredLoad(
+                    requiresFreshData: requiresFreshData,
+                    baseSnapshotWasStale: baseSnapshotWasStale,
+                    responseWasStale: loaded.hasStaleServerResponse
+                ) else {
+                    self.bundleLoadState = .failed(
+                        "Fresh Bundle data was unavailable. Existing Bundles were kept."
+                    )
+                    return
+                }
+                self.bundles = Self.mergeDeferredRecords(
+                    baseline: baselineBundles,
+                    current: self.bundles,
+                    loaded: loaded.records
+                )
+                self.bundleLoadState = .loaded
+                if let selectedBundleId = self.selectedBundleId,
+                   !self.bundles.contains(where: { $0.id == selectedBundleId }) {
+                    self.selectedBundleId = self.bundles.first?.id
+                } else {
+                    self.selectedBundleId = self.selectedBundleId ?? self.bundles.first?.id
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.workspaceReloadGeneration == generation else { return }
+                self.bundleLoadState = .failed(error.localizedDescription)
+            }
+        }
+
+        reviewLoadTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.reviewLoadTask = nil
+                }
+            }
+            do {
+                let loaded = try await loader.loadReviews()
+                try Task.checkCancellation()
+                guard let self,
+                      self.workspaceReloadGeneration == generation,
+                      self.phase == .ready else {
+                    return
+                }
+                guard Self.canPublishDeferredLoad(
+                    requiresFreshData: requiresFreshData,
+                    baseSnapshotWasStale: baseSnapshotWasStale,
+                    responseWasStale: loaded.hasStaleServerResponse
+                ) else {
+                    self.reviewLoadState = .failed(
+                        "Fresh Review data was unavailable. Existing Reviews were kept."
+                    )
+                    return
+                }
+                self.reviews = Self.mergeDeferredRecords(
+                    baseline: baselineReviews,
+                    current: self.reviews,
+                    loaded: loaded.records
+                )
+                self.reviewLoadState = .loaded
+                if let selectedReviewId = self.selectedReviewId,
+                   !self.reviews.contains(where: { $0.id == selectedReviewId }) {
+                    self.selectedReviewId = nil
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.workspaceReloadGeneration == generation else { return }
+                self.reviewLoadState = .failed(error.localizedDescription)
+            }
+        }
+
+        let daemon = daemon
+        postReadyRetrySyncTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.postReadyRetrySyncTask = nil
+                }
+            }
+            guard let self,
+                  self.workspaceReloadGeneration == generation,
+                  self.phase == .ready,
+                  !Task.isCancelled else {
+                return
+            }
+            _ = try? await daemon.retrySync()
+        }
+
+        postReadySyncTask = Task { @MainActor [weak self] in
+            defer {
+                if let self, self.workspaceReloadGeneration == generation {
+                    self.postReadySyncTask = nil
+                }
+            }
+            guard let self,
+                  self.workspaceReloadGeneration == generation,
+                  self.phase == .ready,
+                  !Task.isCancelled else {
+                return
+            }
+            async let syncRequest = try? daemon.syncStatus()
+            async let mcpRequest = try? daemon.mcpStatus()
+            let (sync, mcp) = await (syncRequest, mcpRequest)
+            guard self.workspaceReloadGeneration == generation,
+                  self.phase == .ready,
+                  !Task.isCancelled,
+                  let runtime = self.runtime else {
+                return
+            }
+            self.runtime = .init(
+                health: runtime.health,
+                sync: sync != nil ? sync : runtime.sync,
+                mcp: mcp != nil ? mcp : runtime.mcp,
+                serverDataSource: runtime.serverDataSource
+            )
+            if sync != nil {
+                self.syncStatusAvailable = true
+            }
+        }
+    }
+
+    private func applyLocalAgentAdapterResult(_ result: LocalAgentAdapterReconciliationResult) {
+        let nextErrorMessage = Self.errorMessageAfterUpdatingLocalAgentAdapters(
+            currentErrorMessage: errorMessage,
+            previous: .init(
+                conflicts: legacyAgentAdapterConflicts,
+                inspectionWarning: legacyAgentAdapterInspectionWarning
+            ),
+            next: result
+        )
+        legacyAgentAdapterConflicts = result.conflicts
+        legacyAgentAdapterInspectionWarning = result.inspectionWarning
+        errorMessage = nextErrorMessage
+    }
+
+    nonisolated static func errorMessageAfterUpdatingLocalAgentAdapters(
+        currentErrorMessage: String?,
+        previous: LocalAgentAdapterReconciliationResult,
+        next: LocalAgentAdapterReconciliationResult
+    ) -> String? {
+        let previousWarning = localAgentAdapterWarning(previous)
+        guard currentErrorMessage == nil || currentErrorMessage == previousWarning else {
+            return currentErrorMessage
+        }
+        return localAgentAdapterWarning(next)
+    }
+
+    nonisolated static func localAgentAdapterWarning(
         _ result: LocalAgentAdapterReconciliationResult
     ) -> String? {
         var messages: [String] = []
@@ -4305,7 +4834,10 @@ final class WorkspaceStore: ObservableObject {
         refreshDocumentTabs(for: mapped.targetId ?? mapped.id)
     }
 
-    private func remapDrafts(projectId: String) async throws {
+    private func remapDrafts(
+        projectId: String,
+        workspaceGeneration: UUID
+    ) async throws {
         let projectDrafts = drafts.filter { $0.projectId == projectId }
         let originalById = Dictionary(
             projectDrafts.map { ($0.id, $0) },
@@ -4315,6 +4847,7 @@ final class WorkspaceStore: ObservableObject {
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
         let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
         let loadedBaselines = try await concurrentMap(baselines) { try await loader.loadContent(for: $0) }
+        guard workspaceReloadGeneration == workspaceGeneration else { return }
         for loaded in loadedBaselines {
             installLoadedResourceIfCurrent(loaded)
         }
@@ -4325,6 +4858,7 @@ final class WorkspaceStore: ObservableObject {
                 resources: resourceSnapshot
             )
         }
+        guard workspaceReloadGeneration == workspaceGeneration else { return }
         for candidate in mapped {
             guard let original = originalById[candidate.id],
                   let index = drafts.firstIndex(where: { $0.id == candidate.id }),
@@ -4380,8 +4914,19 @@ final class WorkspaceStore: ObservableObject {
         return .init(refreshIds: refreshIds, terminalIds: terminalIds)
     }
 
-    private func refreshDraftInventory(includeFailed: Bool) async {
-        guard let page = try? await daemon.listDrafts(.init(limit: 500)) else { return }
+    private func refreshDraftInventory(
+        includeFailed: Bool,
+        generation: UUID
+    ) async {
+        guard workspaceReloadGeneration == generation,
+              phase == .ready,
+              !Task.isCancelled,
+              let page = try? await daemon.listDrafts(.init(limit: 500)) else {
+            return
+        }
+        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
+            return
+        }
         let plan = Self.draftInventoryPlan(
             summaries: page.items,
             currentDrafts: drafts,
@@ -4402,7 +4947,10 @@ final class WorkspaceStore: ObservableObject {
         pruneOrphanedMemoryTabs()
 
         let refreshIds = plan.refreshIds.subtracting(pendingDraftIds)
-        guard !refreshIds.isEmpty else { return }
+        guard !refreshIds.isEmpty else {
+            draftInventoryLoadState = .loaded
+            return
+        }
         let summaries = page.items.filter { refreshIds.contains($0.draftId) }
         let originalById = Dictionary(
             drafts.filter { refreshIds.contains($0.id) }.map { ($0.id, $0) },
@@ -4413,6 +4961,9 @@ final class WorkspaceStore: ObservableObject {
         let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
         let loadedBaselines = try? await concurrentMap(baselines) {
             try await loader.loadContent(for: $0)
+        }
+        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
+            return
         }
         if let loadedBaselines {
             for loaded in loadedBaselines {
@@ -4427,7 +4978,10 @@ final class WorkspaceStore: ObservableObject {
                 resources: resourceSnapshot
             )
         }
-        guard let mappedDrafts else { return }
+        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled,
+              let mappedDrafts else {
+            return
+        }
         for mapped in mappedDrafts {
             if let index = drafts.firstIndex(where: { $0.id == mapped.id }) {
                 guard originalById[mapped.id] == drafts[index] else { continue }
@@ -4437,6 +4991,7 @@ final class WorkspaceStore: ObservableObject {
             }
             refreshDocumentTabs(for: mapped.targetId ?? mapped.id)
         }
+        draftInventoryLoadState = .loaded
     }
 
     private func refreshProjectFromServer(
@@ -4445,6 +5000,7 @@ final class WorkspaceStore: ObservableObject {
         generation: UUID
     ) async {
         do {
+            let workspaceGeneration = workspaceReloadGeneration
             guard let observedProject = projects.first(where: { $0.id == projectId }),
                   observedProject.name == projectName else { return }
             let loaded = try await WorkspaceLoader(
@@ -4461,7 +5017,10 @@ final class WorkspaceStore: ObservableObject {
                 projects[index] = loaded.state
             }
             replaceProjectResources(projectId: projectId, with: loaded.resources)
-            try await remapDrafts(projectId: projectId)
+            try await remapDrafts(
+                projectId: projectId,
+                workspaceGeneration: workspaceGeneration
+            )
         } catch {
             // The installed Commit remains usable; commit sync reports refresh failures separately.
         }
@@ -4619,20 +5178,20 @@ struct WorkspaceLoader: Sendable {
     ) async throws -> WorkspaceSnapshot {
         server.resetDataSource()
         let health = try await ensureDaemon()
-        let (config, me, localAgentAdapters) = try await Self.loadAuthenticatedWorkspaceIdentity(
-            reconcileLocalAgentAdapters: {
-                try await reconcileInstalledAgentAdapters()
+        let (config, me, localAgentAdapters, currentUserWasStale) =
+            try await Self.loadAuthenticatedWorkspaceIdentity(
+            reconcileManagedAgentAdapters: {
+                try await reconcileManagedAgentAdapters()
             },
             projectConfig: {
                 try await daemon.projectConfig()
             },
-            retrySync: {
-                _ = try? await daemon.retrySync()
-            },
             currentUser: {
-                try await server.get("/api/v1/me")
+                let result: (value: CurrentUserResponse, response: DaemonServerResponse) =
+                    try await server.getWithMetadata("/api/v1/me")
+                return (result.value, result.response.isStaleCache)
             },
-            onLocalAgentAdapters: { result in
+            onManagedAgentAdapters: { result in
                 await onLocalAgentAdapters(result)
             }
         )
@@ -4644,22 +5203,20 @@ struct WorkspaceLoader: Sendable {
         async let orgCommitRequest: (value: CommitStateResponse, response: DaemonServerResponse) = server.getWithMetadata(
             "/api/v1/org/commit-state"
         )
-        let projectStates: [ProjectState]
+        let projectStateLoad: (
+            states: [ProjectState],
+            hasStaleServerResponse: Bool
+        )
         if let activeProjectId {
-            projectStates = try await loadProjectStates(
+            projectStateLoad = try await loadProjectStates(
                 me.projects,
                 activeProjectId: activeProjectId
             )
         } else {
-            projectStates = []
+            projectStateLoad = ([], false)
         }
+        let projectStates = projectStateLoad.states
         let orgCommit = try await orgCommitRequest
-
-        async let draftPageRequest = daemon.listDrafts(.init(limit: 500))
-        async let bundlesRequest = loadBundles()
-        async let reviewsRequest = loadReviews()
-        async let syncRequest = daemon.syncStatus()
-        async let mcpRequest = daemon.mcpStatus()
 
         var scopes = [
             ResourceLoadScope(projectId: nil, projectName: nil, refCommitId: orgCommit.value.ref.commitId),
@@ -4673,57 +5230,37 @@ struct WorkspaceLoader: Sendable {
             ))
         }
         let resourceGroups = try await concurrentMap(scopes, maxConcurrent: 2) { scope in
-            try await loadResources(
+            try await loadResourcesWithMetadata(
                 projectId: scope.projectId,
                 projectName: scope.projectName,
                 refCommitId: scope.refCommitId
             )
         }
-        var resources = resourceGroups.flatMap { $0 }
+        let resources = resourceGroups.flatMap { $0.resources }
 
-        let draftPage = try await draftPageRequest
-        let accessibleProjectIds = Set(me.projects.map(\.projectId))
-        let activeDrafts = draftPage.items.filter {
-            $0.status != .discarded
-                && $0.status != .merged
-                && accessibleProjectIds.contains($0.projectId)
-        }
-        let targetIds = Set(activeDrafts.compactMap(\.targetId))
-        let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
-        let loadedBaselines = try await concurrentMap(baselines) {
-            try await loadContent(for: $0, allowingStaleCache: true)
-        }
-        for loaded in loadedBaselines {
-            if let index = resources.firstIndex(where: { $0.id == loaded.id }) {
-                resources[index] = loaded
-            }
-        }
-        let resourceSnapshot = resources
-        let drafts = try await concurrentMap(activeDrafts) { summary in
-            Self.mapDraft(try await daemon.draft(summary.draftId), resources: resourceSnapshot)
-        }
-
-        let (bundles, reviews, syncStatus, mcpStatus) = try await (
-            bundlesRequest,
-            reviewsRequest,
-            syncRequest,
-            mcpRequest
-        )
         let verifiedOrgCommit: (value: CommitStateResponse, response: DaemonServerResponse) =
             try await server.getWithMetadata("/api/v1/org/commit-state")
         guard verifiedOrgCommit.value.ref.commitId == orgCommit.value.ref.commitId else {
             throw WorkspaceLoadError.sharedStateChangedDuringLoad
         }
+        var verifiedProjectWasStale = false
         if let activeProjectId,
            let initialProject = projectStates.first(where: { $0.id == activeProjectId }),
            let reference = me.projects.first(where: { $0.projectId == activeProjectId }) {
-            let verifiedProject = try await loadProjectStateWithMetadata(reference).state
-            guard verifiedProject.refCommitId == initialProject.refCommitId,
-                  verifiedProject.selectedOrgResourceIds == initialProject.selectedOrgResourceIds,
-                  verifiedProject.orgSelectionRevision == initialProject.orgSelectionRevision else {
+            let verifiedProject = try await loadProjectStateWithMetadata(reference)
+            verifiedProjectWasStale = verifiedProject.hasStaleServerResponse
+            guard verifiedProject.state.refCommitId == initialProject.refCommitId,
+                  verifiedProject.state.selectedOrgResourceIds == initialProject.selectedOrgResourceIds,
+                  verifiedProject.state.orgSelectionRevision == initialProject.orgSelectionRevision else {
                 throw WorkspaceLoadError.sharedStateChangedDuringLoad
             }
         }
+        let hasStaleServerResponse = currentUserWasStale
+            || orgCommit.response.isStaleCache
+            || projectStateLoad.hasStaleServerResponse
+            || resourceGroups.contains { $0.hasStaleServerResponse }
+            || verifiedOrgCommit.response.isStaleCache
+            || verifiedProjectWasStale
         return .init(
             account: me.user,
             organization: me.org,
@@ -4733,17 +5270,86 @@ struct WorkspaceLoader: Sendable {
             orgRefCommitId: orgCommit.value.ref.commitId,
             orgRefEtag: etag(from: orgCommit.response),
             resources: resources,
-            drafts: drafts,
-            bundles: bundles,
-            reviews: reviews,
             runtime: .init(
                 health: health,
-                sync: syncStatus,
-                mcp: mcpStatus,
-                serverDataSource: server.dataSource
+                sync: nil,
+                mcp: nil,
+                serverDataSource: hasStaleServerResponse ? "stale" : "live"
             ),
             legacyAgentAdapterConflicts: localAgentAdapters.conflicts,
             legacyAgentAdapterInspectionWarning: localAgentAdapters.inspectionWarning
+        )
+    }
+
+    func loadDeferredDrafts(
+        resources: [MemoryResource],
+        accessibleProjectIds: Set<String>
+    ) async throws -> (
+        loadedBaselines: [MemoryResource],
+        drafts: [LocalDraft],
+        hasStaleServerResponse: Bool
+    ) {
+        try await Self.loadDeferredDrafts(
+            resources: resources,
+            accessibleProjectIds: accessibleProjectIds,
+            listDrafts: {
+                try await daemon.listDrafts(.init(limit: 500))
+            },
+            loadDraft: { draftId in
+                try await daemon.draft(draftId)
+            },
+            loadContent: { resource in
+                try await loadContentWithMetadata(
+                    for: resource,
+                    allowingStaleCache: true
+                )
+            }
+        )
+    }
+
+    static func loadDeferredDrafts(
+        resources: [MemoryResource],
+        accessibleProjectIds: Set<String>,
+        listDrafts: @escaping @Sendable () async throws -> DaemonDraftListResponse,
+        loadDraft: @escaping @Sendable (String) async throws -> DaemonDraftDetail,
+        loadContent: @escaping @Sendable (MemoryResource) async throws
+            -> (resource: MemoryResource, hasStaleServerResponse: Bool)
+    ) async throws -> (
+        loadedBaselines: [MemoryResource],
+        drafts: [LocalDraft],
+        hasStaleServerResponse: Bool
+    ) {
+        let draftPage = try await listDrafts()
+        try Task.checkCancellation()
+        let activeDrafts = draftPage.items.filter {
+            $0.status != .discarded
+                && $0.status != .merged
+                && accessibleProjectIds.contains($0.projectId)
+        }
+        let targetIds = Set(activeDrafts.compactMap(\.targetId))
+        let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
+        let loadedBaselineResults = try await concurrentMap(
+            baselines,
+            transform: loadContent
+        )
+        try Task.checkCancellation()
+
+        let loadedBaselines = loadedBaselineResults.map(\.resource)
+        var hydratedResources = resources
+        for loaded in loadedBaselines {
+            if let index = hydratedResources.firstIndex(where: { $0.id == loaded.id }) {
+                hydratedResources[index] = loaded
+            }
+        }
+        let resourceSnapshot = hydratedResources
+        let drafts = try await concurrentMap(activeDrafts) { summary in
+            Self.mapDraft(try await loadDraft(summary.draftId), resources: resourceSnapshot)
+        }
+        try Task.checkCancellation()
+        return (
+            loadedBaselines,
+            drafts,
+            loadedBaselineResults.contains { $0.hasStaleServerResponse }
         )
     }
 
@@ -4836,7 +5442,18 @@ struct WorkspaceLoader: Sendable {
         for resource: MemoryResource,
         allowingStaleCache: Bool = false
     ) async throws -> MemoryResource {
-        guard !resource.contentLoaded else { return resource }
+        let loaded = try await loadContentWithMetadata(
+            for: resource,
+            allowingStaleCache: allowingStaleCache
+        )
+        return loaded.resource
+    }
+
+    func loadContentWithMetadata(
+        for resource: MemoryResource,
+        allowingStaleCache: Bool = false
+    ) async throws -> (resource: MemoryResource, hasStaleServerResponse: Bool) {
+        guard !resource.contentLoaded else { return (resource, false) }
         let prefix = resource.projectId.map { "/api/v1/projects/\($0)" } ?? "/api/v1/org"
         var loaded = resource
         let result: (value: MemoryDetail, response: DaemonServerResponse) =
@@ -4848,7 +5465,7 @@ struct WorkspaceLoader: Sendable {
             allowingStaleCache: allowingStaleCache
         )
         loaded.contentLoaded = true
-        return loaded
+        return (loaded, result.response.isStaleCache)
     }
 
     nonisolated static func validatedMemoryContent(
@@ -4914,11 +5531,9 @@ struct WorkspaceLoader: Sendable {
     /// files deliberately point at the App bundle, so an App update must
     /// reconcile existing installations even while the user is signed out or
     /// the Hub is unreachable.
-    private func reconcileInstalledAgentAdapters() async throws
+    private func reconcileManagedAgentAdapters() async throws
         -> LocalAgentAdapterReconciliationResult {
         let runtimePath = try Self.bundledAgentRuntimePath()
-        // Daemon-owned integrations are the safety-critical cutover and must
-        // never wait on advisory inspection of the archived external store.
         let installed = try await daemon.allProjectAgentAdapters()
         let requests = Self.agentAdapterReconciliationPlan(
             installed: installed,
@@ -4928,40 +5543,67 @@ struct WorkspaceLoader: Sendable {
         for request in requests {
             _ = try await daemon.installProjectAgentAdapter(request)
         }
+        return .init(conflicts: [], inspectionWarning: nil)
+    }
+
+    func inspectLegacyAgentAdapters() async -> LocalAgentAdapterReconciliationResult {
         do {
-            let legacyInspection = try await daemon.inspectLegacyAgentAdapters(
+            let runtimePath = try Self.bundledAgentRuntimePath()
+            let inspection = try await daemon.inspectLegacyAgentAdapters(
                 runtimeBinaryPath: runtimePath
             )
-            return .init(conflicts: legacyInspection.conflicts, inspectionWarning: nil)
+            return .init(conflicts: inspection.conflicts, inspectionWarning: nil)
         } catch {
             return .init(
                 conflicts: [],
-                inspectionWarning: "Clumsies updated its managed integrations, but could not inspect the archived Zig CLI integration store. Review any old global or repository MCP and hook entries manually. \(error.localizedDescription)"
+                inspectionWarning: Self.legacyAgentAdapterInspectionWarning(for: error)
             )
         }
     }
 
+    static func legacyAgentAdapterInspectionWarning(for error: Error) -> String {
+        if let daemonError = error as? DaemonXPCError,
+           case .daemon(let payload) = daemonError,
+           payload.code == "project_agent_adapter_invalid_runtime" {
+            return "The current Clumsies App and bundled Agent runtime do not have "
+                + "the required release signing identity. Archived integration inspection "
+                + "was skipped. This build cannot install or update managed Coding Agent integrations. "
+                + "Install an officially signed release build, then try again."
+        }
+        return "Clumsies updated its managed integrations, but could not inspect the "
+            + "archived Zig CLI integration store. Review any old global or repository "
+            + "MCP and hook entries manually. \(error.localizedDescription)"
+    }
+
     static func loadAuthenticatedWorkspaceIdentity(
-        reconcileLocalAgentAdapters: () async throws
+        reconcileManagedAgentAdapters: () async throws
             -> LocalAgentAdapterReconciliationResult,
         projectConfig: () async throws -> DaemonProjectConfig,
-        retrySync: @escaping @Sendable () async -> Void,
-        currentUser: () async throws -> CurrentUserResponse,
-        onLocalAgentAdapters: @MainActor @Sendable (LocalAgentAdapterReconciliationResult) async
+        currentUser: () async throws -> (
+            value: CurrentUserResponse,
+            hasStaleServerResponse: Bool
+        ),
+        onManagedAgentAdapters: @MainActor @Sendable (LocalAgentAdapterReconciliationResult) async
             -> Void = { _ in }
     ) async throws -> (
         DaemonProjectConfig,
         CurrentUserResponse,
-        LocalAgentAdapterReconciliationResult
+        LocalAgentAdapterReconciliationResult,
+        Bool
     ) {
-        let localAgentAdapters = try await reconcileLocalAgentAdapters()
-        await onLocalAgentAdapters(localAgentAdapters)
+        let localAgentAdapters = try await reconcileManagedAgentAdapters()
+        await onManagedAgentAdapters(localAgentAdapters)
         let config = try await projectConfig()
         guard config.hasAccessToken && config.hasRefreshToken else {
             throw WorkspaceLoadError.authenticationRequired
         }
-        Task { await retrySync() }
-        return (config, try await currentUser(), localAgentAdapters)
+        let currentUser = try await currentUser()
+        return (
+            config,
+            currentUser.value,
+            localAgentAdapters,
+            currentUser.hasStaleServerResponse
+        )
     }
 
     static func agentAdapterReconciliationPlan(
@@ -5014,27 +5656,26 @@ struct WorkspaceLoader: Sendable {
     private func loadProjectStates(
         _ projects: [ProjectReference],
         activeProjectId: String
-    ) async throws -> [ProjectState] {
+    ) async throws -> (states: [ProjectState], hasStaleServerResponse: Bool) {
         guard let active = projects.first(where: { $0.projectId == activeProjectId }) else {
             throw WorkspaceLoadError.noProjects
         }
-        let loaded = try await loadProjectState(active)
-        return projects.map { project in
-            if project.projectId == loaded.id { return loaded }
-            return .init(
-                id: project.projectId,
-                name: project.name,
-                refCommitId: nil,
-                refEtag: "",
-                selectedOrgResourceIds: [],
-                orgSelectionRevision: 0,
-                isLoaded: false
-            )
-        }
-    }
-
-    private func loadProjectState(_ project: ProjectReference) async throws -> ProjectState {
-        try await loadProjectStateWithMetadata(project).state
+        let loaded = try await loadProjectStateWithMetadata(active)
+        return (
+            projects.map { project in
+                if project.projectId == loaded.state.id { return loaded.state }
+                return .init(
+                    id: project.projectId,
+                    name: project.name,
+                    refCommitId: nil,
+                    refEtag: "",
+                    selectedOrgResourceIds: [],
+                    orgSelectionRevision: 0,
+                    isLoaded: false
+                )
+            },
+            loaded.hasStaleServerResponse
+        )
     }
 
     private func loadProjectStateWithMetadata(
@@ -5101,28 +5742,49 @@ struct WorkspaceLoader: Sendable {
         }, metadata.hasStaleServerResponse)
     }
 
-    private func loadBundles() async throws -> [PersonalBundle] {
-        let items: [PersonalBundleMetadata] = try await loadAll("/api/v1/me/bundles")
-        return try await concurrentMap(items) { metadata in
-            let detail: PersonalBundleDetail = try await server.get("/api/v1/me/bundles/\(metadata.bundleId)")
-            return .init(
-                id: metadata.bundleId,
-                name: metadata.name,
-                description: metadata.description,
-                resourceIds: detail.memories.map(\.memoryId),
-                revision: metadata.revision,
-                updatedAt: metadata.updatedAt
+    func loadBundles() async throws -> (
+        records: [PersonalBundle],
+        hasStaleServerResponse: Bool
+    ) {
+        let metadata: (
+            items: [PersonalBundleMetadata],
+            hasStaleServerResponse: Bool
+        ) = try await loadAllWithMetadata("/api/v1/me/bundles")
+        let bundles = try await concurrentMap(metadata.items) { item in
+            let detail: (value: PersonalBundleDetail, response: DaemonServerResponse) =
+                try await server.getWithMetadata("/api/v1/me/bundles/\(item.bundleId)")
+            let bundle = PersonalBundle(
+                id: item.bundleId,
+                name: item.name,
+                description: item.description,
+                resourceIds: detail.value.memories.map(\.memoryId),
+                revision: item.revision,
+                updatedAt: item.updatedAt
+            )
+            return (
+                record: bundle,
+                hasStaleServerResponse: detail.response.isStaleCache
             )
         }
+        return (
+            bundles.map { $0.record },
+            metadata.hasStaleServerResponse
+                || bundles.contains { $0.hasStaleServerResponse }
+        )
     }
 
-    private func loadReviews() async throws -> [ReviewRecord] {
-        let items: [ReviewMetadata] = try await loadAll("/api/v1/reviews")
-        return items.map(Self.mapReview)
-    }
-
-    private func loadAll<Item: Decodable & Sendable>(_ path: String) async throws -> [Item] {
-        try await loadAllWithMetadata(path).items
+    func loadReviews() async throws -> (
+        records: [ReviewRecord],
+        hasStaleServerResponse: Bool
+    ) {
+        let metadata: (
+            items: [ReviewMetadata],
+            hasStaleServerResponse: Bool
+        ) = try await loadAllWithMetadata("/api/v1/reviews")
+        return (
+            metadata.items.map(Self.mapReview),
+            metadata.hasStaleServerResponse
+        )
     }
 
     private func loadAllWithMetadata<Item: Decodable & Sendable>(
@@ -5136,10 +5798,12 @@ struct WorkspaceLoader: Sendable {
             if let cursor { query.append(.init(name: "cursor", value: cursor)) }
             let page: (value: ListResponse<Item>, response: DaemonServerResponse) =
                 try await server.getWithMetadata(path, query: query)
+            try Task.checkCancellation()
             output += page.value.items
             hasStaleServerResponse = hasStaleServerResponse || page.response.isStaleCache
             cursor = page.value.pageInfo.hasMore ? page.value.pageInfo.nextCursor : nil
         } while cursor != nil
+        try Task.checkCancellation()
         return (output, hasStaleServerResponse)
     }
 

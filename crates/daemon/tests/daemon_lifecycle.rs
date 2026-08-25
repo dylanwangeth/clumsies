@@ -4840,6 +4840,199 @@ async fn server_proxy_preserves_contract_headers_and_rejects_caller_credentials(
 
     server.abort();
 }
+#[tokio::test]
+async fn concurrent_unauthorized_requests_share_a_same_session_refresh() {
+    let probe = RefreshProbeState::default();
+    let app = Router::new()
+        .route("/api/v1/refresh-probe", post(refresh_probe_request))
+        .route("/api/v1/auth/token", post(refresh_probe_token))
+        .with_state(probe.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_refresh".to_owned());
+    let (state, credential_store) = common::initialize_authenticated_daemon(
+        config,
+        "stale-token",
+        Some("initial-refresh-token".to_owned()),
+    )
+    .await;
+
+    let first_state = state.clone();
+    let first = tokio::spawn(async move {
+        first_state
+            .server_request(refresh_probe_server_request())
+            .await
+    });
+    let second_state = state.clone();
+    let second = tokio::spawn(async move {
+        second_state
+            .server_request(refresh_probe_server_request())
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), probe.refresh_started.notified())
+        .await
+        .expect("the first unauthorized request should start token refresh");
+    tokio::time::timeout(Duration::from_secs(2), probe.both_stale.notified())
+        .await
+        .expect("both requests should receive 401 before refresh completes");
+    probe.release_refresh.notify_one();
+
+    let (first, second) = tokio::time::timeout(Duration::from_secs(2), async {
+        (
+            first.await.unwrap().unwrap(),
+            second.await.unwrap().unwrap(),
+        )
+    })
+    .await
+    .expect("both requests should reuse the completed same-session refresh");
+    assert_eq!(first.status, 200);
+    assert_eq!(second.status, 200);
+    assert_eq!(probe.stale_requests.load(Ordering::Acquire), 2);
+    assert_eq!(probe.fresh_requests.load(Ordering::Acquire), 2);
+    assert_eq!(probe.refresh_requests.load(Ordering::Acquire), 1);
+    let credentials = credential_store.credentials().unwrap();
+    assert_eq!(credentials.access_token, "fresh-token");
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("rotated-refresh-token")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn request_is_not_replayed_after_same_server_session_replacement_during_refresh() {
+    let old_probe = RefreshProbeState::default();
+    let old_app = Router::new()
+        .route("/api/v1/refresh-probe", post(refresh_probe_request))
+        .route("/api/v1/auth/token", post(refresh_probe_token))
+        .with_state(old_probe.clone());
+    let old_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_address = old_listener.local_addr().unwrap();
+    let old_server = tokio::spawn(async move {
+        axum::serve(old_listener, old_app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{old_address}");
+    config.project.project_id = Some("prj_old".to_owned());
+    let (state, credential_store) = common::initialize_authenticated_daemon(
+        config,
+        "stale-token",
+        Some("initial-refresh-token".to_owned()),
+    )
+    .await;
+
+    let request_state = state.clone();
+    let request = tokio::spawn(async move {
+        request_state
+            .server_request(refresh_probe_server_request())
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), old_probe.refresh_started.notified())
+        .await
+        .expect("the old session should enter token refresh");
+
+    state
+        .replace_project_config(DaemonProjectConfigUpdateRequest {
+            server_url: format!("http://{old_address}"),
+            project_id: Some("prj_replacement".to_owned()),
+            memory_guidelines_path: None,
+            access_token: Some("replacement-token".to_owned()),
+            refresh_token: Some("replacement-refresh-token".to_owned()),
+        })
+        .await
+        .unwrap();
+    old_probe.release_refresh.notify_one();
+
+    let response = tokio::time::timeout(Duration::from_secs(2), request)
+        .await
+        .expect("the superseded request should return its original 401")
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status, 401);
+    assert_eq!(old_probe.replacement_requests.load(Ordering::Acquire), 0);
+    assert_eq!(old_probe.refresh_requests.load(Ordering::Acquire), 1);
+    let credentials = credential_store.credentials().unwrap();
+    assert_eq!(credentials.server_url, format!("http://{old_address}"));
+    assert_eq!(credentials.access_token, "replacement-token");
+    assert_eq!(
+        credentials.refresh_token.as_deref(),
+        Some("replacement-refresh-token")
+    );
+
+    old_server.abort();
+}
+
+#[tokio::test]
+async fn server_proxy_returns_live_get_while_cache_write_is_locked() {
+    let proxy_state = CachedProxyState {
+        unavailable: Arc::new(AtomicBool::new(false)),
+    };
+    let app = Router::new()
+        .route("/api/v1/cache-probe", get(cached_proxy_get))
+        .with_state(proxy_state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_cache_lock".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let request = DaemonServerRequest {
+        method: "GET".to_owned(),
+        path: "/api/v1/cache-probe".to_owned(),
+        headers: BTreeMap::new(),
+        body: None,
+    };
+    let cache_pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    let mut cache_lock = cache_pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *cache_lock)
+        .await
+        .unwrap();
+
+    let live = tokio::time::timeout(
+        Duration::from_secs(1),
+        state.server_request(request.clone()),
+    )
+    .await
+    .expect("live GET must not wait for the SQLite cache writer")
+    .unwrap();
+    assert_eq!(live.status, 200);
+    assert_eq!(live.body, r#"{"source":"live"}"#);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *cache_lock)
+        .await
+        .unwrap();
+    drop(cache_lock);
+    cache_pool.close().await;
+    wait_for_server_response_cache(&state, &request.path, &live.body).await;
+
+    proxy_state.unavailable.store(true, Ordering::Release);
+    let stale = state.server_request(request).await.unwrap();
+    assert_eq!(stale.body, live.body);
+    assert_eq!(
+        stale.headers.get("x-clumsies-cache").map(String::as_str),
+        Some("stale")
+    );
+
+    server.abort();
+}
 
 #[tokio::test]
 async fn server_proxy_uses_stale_cache_only_for_read_failures() {
@@ -4874,6 +5067,7 @@ async fn server_proxy_uses_stale_cache_only_for_read_failures() {
     assert_eq!(live.status, 200);
     assert_eq!(live.body, r#"{"source":"live"}"#);
     assert_eq!(live.headers.get("x-clumsies-cache"), None);
+    wait_for_server_response_cache(&state, &get_request.path, &live.body).await;
 
     let missing_request = DaemonServerRequest {
         method: "GET".to_owned(),
@@ -4884,6 +5078,7 @@ async fn server_proxy_uses_stale_cache_only_for_read_failures() {
     let missing = state.server_request(missing_request.clone()).await.unwrap();
     assert_eq!(missing.status, 404);
     assert_eq!(missing.headers.get("x-clumsies-cache"), None);
+    wait_for_server_response_cache(&state, &missing_request.path, &missing.body).await;
 
     proxy_state.unavailable.store(true, Ordering::Release);
     let cached_after_503 = state.server_request(get_request.clone()).await.unwrap();
@@ -5346,9 +5541,100 @@ async fn empty_draft_events() -> Json<serde_json::Value> {
     }))
 }
 
+#[derive(Clone, Default)]
+struct RefreshProbeState {
+    stale_requests: Arc<AtomicUsize>,
+    fresh_requests: Arc<AtomicUsize>,
+    refresh_requests: Arc<AtomicUsize>,
+    replacement_requests: Arc<AtomicUsize>,
+    both_stale: Arc<Notify>,
+    refresh_started: Arc<Notify>,
+    release_refresh: Arc<Notify>,
+}
+
+fn refresh_probe_server_request() -> DaemonServerRequest {
+    DaemonServerRequest {
+        method: "POST".to_owned(),
+        path: "/api/v1/refresh-probe".to_owned(),
+        headers: BTreeMap::new(),
+        body: Some("{}".to_owned()),
+    }
+}
+
+async fn refresh_probe_request(
+    axum::extract::State(state): axum::extract::State<RefreshProbeState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    match proxy_header_value(&headers, "authorization").as_deref() {
+        Some("Bearer stale-token") => {
+            if state.stale_requests.fetch_add(1, Ordering::AcqRel) == 1 {
+                state.both_stale.notify_one();
+            }
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "expired" })),
+            )
+                .into_response()
+        }
+        Some("Bearer fresh-token") => {
+            state.fresh_requests.fetch_add(1, Ordering::AcqRel);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Some("Bearer replacement-token") => {
+            state.replacement_requests.fetch_add(1, Ordering::AcqRel);
+            Json(json!({ "ok": true })).into_response()
+        }
+        _ => (
+            axum::http::StatusCode::FORBIDDEN,
+            Json(json!({ "error": "unexpected credential" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn refresh_probe_token(
+    axum::extract::State(state): axum::extract::State<RefreshProbeState>,
+) -> Json<serde_json::Value> {
+    state.refresh_requests.fetch_add(1, Ordering::AcqRel);
+    state.refresh_started.notify_one();
+    state.release_refresh.notified().await;
+    Json(json!({
+        "access_token": "fresh-token",
+        "refresh_token": "rotated-refresh-token"
+    }))
+}
+
 #[derive(Clone)]
 struct CachedProxyState {
     unavailable: Arc<AtomicBool>,
+}
+
+async fn wait_for_server_response_cache(state: &DaemonState, path: &str, expected_body: &str) {
+    let server_url = state.project_config_status().server_url;
+    let pool = sqlx::SqlitePool::connect(&state.local_db_path().display().to_string())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let body: Option<String> = sqlx::query_scalar(
+                "SELECT body FROM server_response_cache WHERE server_url = $1 AND path = $2",
+            )
+            .bind(&server_url)
+            .bind(path)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            if body.as_deref() == Some(expected_body) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("live Server response should eventually reach the stale cache");
+    pool.close().await;
 }
 
 #[derive(Deserialize)]

@@ -164,20 +164,44 @@ test_failed_preflight_leaves_production_untouched() {
   assert_absent "restore:"
 }
 
-test_exit_137_after_stop_aborts_cutover() {
+test_nonzero_exit_after_stop_aborts_cutover() {
+  local exit_code
+
+  for exit_code in 1 137; do
+    reset_case
+    STOP_EXIT_CODE="$exit_code"
+
+    if (deploy_release "$TARGET_IMAGE" "$TARGET_COMMIT"); then
+      printf 'expected exit-%s stop to fail\n' "$exit_code" >&2
+      exit 1
+    fi
+
+    assert_present "record:cutover-stop-failed "
+    assert_absent "backup:pre-deploy-"
+    assert_absent "write-image:$TARGET_IMAGE"
+    assert_absent "compose[$TARGET_IMAGE]:up "
+    assert_absent "restore:"
+  done
+}
+
+test_isolated_server_requires_clean_exit() {
+  local exit_code
+
   reset_case
-  STOP_EXIT_CODE=137
+  stop_isolated_server isolated-server
+  assert_before "docker:stop --time 10 isolated-server" \
+    "docker:inspect isolated-server --format {{.State.ExitCode}}"
 
-  if (deploy_release "$TARGET_IMAGE" "$TARGET_COMMIT"); then
-    printf 'expected exit-137 stop to fail\n' >&2
-    exit 1
-  fi
-
-  assert_present "record:cutover-stop-failed "
-  assert_absent "backup:pre-deploy-"
-  assert_absent "write-image:$TARGET_IMAGE"
-  assert_absent "compose[$TARGET_IMAGE]:up "
-  assert_absent "restore:"
+  for exit_code in 1 137; do
+    reset_case
+    STOP_EXIT_CODE="$exit_code"
+    if (stop_isolated_server isolated-server); then
+      printf 'expected isolated Server exit %s to fail\n' "$exit_code" >&2
+      exit 1
+    fi
+    assert_present "docker:stop --time 10 isolated-server"
+    assert_present "docker:inspect isolated-server --format {{.State.ExitCode}}"
+  done
 }
 
 test_failed_target_restores_database_before_old_image() {
@@ -202,7 +226,8 @@ test_failed_target_restores_database_before_old_image() {
 
 test_successful_cutover
 test_failed_preflight_leaves_production_untouched
-test_exit_137_after_stop_aborts_cutover
+test_nonzero_exit_after_stop_aborts_cutover
+test_isolated_server_requires_clean_exit
 test_failed_target_restores_database_before_old_image
 
 printf 'server release transaction tests passed\n'

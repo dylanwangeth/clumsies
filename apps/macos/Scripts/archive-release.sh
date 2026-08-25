@@ -45,7 +45,7 @@ xcrun notarytool submit "$update_archive" \
   --team-id "$APPLE_TEAM_ID" \
   --wait
 xcrun stapler staple "$app_path"
-xcrun stapler validate "$app_path"
+apps/macos/Scripts/verify-release-signature.sh "$app_path" "$APPLE_TEAM_ID"
 
 rm "$update_archive"
 ditto -c -k --sequesterRsrc --keepParent "$app_path" "$update_archive"

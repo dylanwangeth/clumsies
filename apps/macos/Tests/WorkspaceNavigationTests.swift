@@ -289,23 +289,27 @@ final class WorkspaceNavigationTests: XCTestCase {
 
     func testReviewListContentStateDistinguishesLoadingAndEmptyQueues() {
         XCTAssertEqual(
-            ReviewListContentState.resolve(phase: .launching, totalCount: 0, visibleCount: 0),
+            ReviewListContentState.resolve(loadState: .loading, totalCount: 0, visibleCount: 0),
             .loading
         )
         XCTAssertEqual(
-            ReviewListContentState.resolve(phase: .loading, totalCount: 0, visibleCount: 0),
+            ReviewListContentState.resolve(loadState: .failed("offline"), totalCount: 0, visibleCount: 0),
+            .failed
+        )
+        XCTAssertEqual(
+            ReviewListContentState.resolve(loadState: .loading, totalCount: 2, visibleCount: 0),
             .loading
         )
         XCTAssertEqual(
-            ReviewListContentState.resolve(phase: .ready, totalCount: 0, visibleCount: 0),
+            ReviewListContentState.resolve(loadState: .loaded, totalCount: 0, visibleCount: 0),
             .empty
         )
         XCTAssertEqual(
-            ReviewListContentState.resolve(phase: .ready, totalCount: 2, visibleCount: 0),
+            ReviewListContentState.resolve(loadState: .loaded, totalCount: 2, visibleCount: 0),
             .filteredEmpty
         )
         XCTAssertEqual(
-            ReviewListContentState.resolve(phase: .loading, totalCount: 2, visibleCount: 1),
+            ReviewListContentState.resolve(loadState: .loading, totalCount: 2, visibleCount: 1),
             .content
         )
     }
