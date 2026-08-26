@@ -285,20 +285,7 @@ private struct FileTreeView: View {
     var body: some View {
         List(selection: selection) {
             ForEach(visibleNodes) { entry in
-                FileTreeRow(
-                    entry: entry,
-                    isExpanded: expandedDirectoryIds.contains(entry.id),
-                    isStale: entry.node.item.map {
-                        $0.draft == nil
-                            && $0.resource.map { store.staleResourceIds.contains($0.id) } == true
-                    } == true,
-                    onDirectoryClick: { modifierFlags in
-                        handleDirectoryClick(entry.id, modifierFlags: modifierFlags)
-                    }
-                )
-                .tag(entry.id)
-                .listRowInsets(.init(top: 0, leading: 5, bottom: 0, trailing: 5))
-                .listRowSeparator(.hidden)
+                fileTreeRow(for: entry)
             }
         }
         .listStyle(.plain)
@@ -430,6 +417,25 @@ private struct FileTreeView: View {
                 )
             }
         }
+    }
+
+    private func fileTreeRow(for entry: VisibleFileTreeNode) -> some View {
+        FileTreeRow(
+            entry: entry,
+            isExpanded: expandedDirectoryIds.contains(entry.id),
+            isStale: resourceIsStale(for: entry.node.item),
+            onDirectoryClick: { modifierFlags in
+                handleDirectoryClick(entry.id, modifierFlags: modifierFlags)
+            }
+        )
+        .tag(entry.id)
+        .listRowInsets(.init(top: 0, leading: 5, bottom: 0, trailing: 5))
+        .listRowSeparator(.hidden)
+    }
+
+    private func resourceIsStale(for item: MemoryListItem?) -> Bool {
+        guard let item, item.draft == nil, let resource = item.resource else { return false }
+        return store.staleResourceIds.contains(resource.id)
     }
 
     private var isValidProposedName: Bool {
