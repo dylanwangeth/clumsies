@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::header::ETAG;
+use axum::http::header::{CACHE_CONTROL, ETAG};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -237,6 +237,9 @@ pub(crate) async fn get_project_commit_state(
         HeaderValue::from_str(&etag)
             .map_err(|_| HttpError::bad_request("ref produced an invalid ETag"))?,
     );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-transform"));
     Ok(response)
 }
 
@@ -265,6 +268,9 @@ pub(crate) async fn get_org_commit_state(
         HeaderValue::from_str(&etag)
             .map_err(|_| HttpError::bad_request("ref produced an invalid ETag"))?,
     );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-transform"));
     Ok(response)
 }
 
