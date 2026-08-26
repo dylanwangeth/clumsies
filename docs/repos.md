@@ -18,8 +18,9 @@ tests, packaging, and release artifacts.
 
 ## Authority boundaries
 
-`crates/server` owns authoritative organization and project memory, identity,
-authorization, Bundles, review lifecycle, and Commit history.
+`crates/server` owns Organization Memory authority, Project selections and
+projection Refs, identity, authorization, Bundles, review lifecycle, and Commit
+history.
 
 `crates/daemon` owns local drafts, queued operations, automatic synchronization,
 token refresh, retrieval, native Server transport, and both short-lived Agent
@@ -28,9 +29,9 @@ process over XPC; it does not initialize daemon state. The crate is not an
 authority source.
 
 `apps/macos` is the primary human product. It uses typed XPC requests and never
-persists Server credentials. The unified Memory section shows both
-organization-scoped and project-scoped memory with an Org/project filter; the
-historical Hub/Local labels survive only as scope labels.
+persists Server credentials. The unified Memory section switches between the
+Organization authority view and a Project's selected/effective Memory view.
+Historical Project-scoped rows are displayed only for migration compatibility.
 
 The App bundle contains one signed `clumsiesd`. launchd runs it as the resident
 daemon, while supported Agent hosts run the same binary as `mcp serve` or

@@ -37,6 +37,12 @@ async fn metadata_and_draft_reads_skip_payloads_and_ref_locks() {
         .commit_id
         .expect("project selection should create a project commit");
     repo.get_commit_payload(&project_head).await.unwrap();
+    let org_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
 
     let draft = repo
         .create_draft(
@@ -44,18 +50,18 @@ async fn metadata_and_draft_reads_skip_payloads_and_ref_locks() {
             CreateDraftRequest {
                 daemon_installation_id: "daemon_read_paths".to_owned(),
                 project_id: bootstrap.project_id.clone(),
-                base_commit_id: Some(project_head.clone()),
-                title: "Create project memory".to_owned(),
+                base_commit_id: org_head,
+                title: "Create Organization memory".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
-                    scope: ResourceScope::Project,
+                    scope: ResourceScope::Org,
                     id: None,
                     path: Some("context/read-paths.md".to_owned()),
                 },
                 operations: vec![DraftOperationInput {
                     action: DraftOperationAction::Create,
                     resource: DraftResourceRef {
-                        scope: ResourceScope::Project,
+                        scope: ResourceScope::Org,
                         id: None,
                         path: Some("context/read-paths.md".to_owned()),
                     },
@@ -74,10 +80,10 @@ async fn metadata_and_draft_reads_skip_payloads_and_ref_locks() {
     sqlx::query_scalar::<_, String>(
         "SELECT ref_id
          FROM refs
-         WHERE scope = 'project' AND project_id = $1 AND ref_name = 'refs/heads/main'
+         WHERE scope = 'org' AND org_id = $1 AND ref_name = 'refs/heads/main'
          FOR UPDATE",
     )
-    .bind(&bootstrap.project_id)
+    .bind(&bootstrap.org_id)
     .fetch_one(&mut *ref_lock)
     .await
     .unwrap();

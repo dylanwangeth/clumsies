@@ -5,6 +5,7 @@ mod health;
 mod memory;
 mod middleware;
 mod organization;
+pub mod project_authority_migration;
 mod shared;
 mod telemetry;
 
@@ -17,4 +18,4 @@ pub mod installation;
 pub mod repository;
 
 pub use app::build_app;
-pub use bootstrap::run;
+pub use bootstrap::{run, run_project_authority_migration};

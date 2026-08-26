@@ -38,6 +38,13 @@ fn legacy_project_memory_read_only_error(resource_id: &str) -> DaemonError {
     ))
 }
 
+fn project_memory_authority_removed_error() -> DaemonError {
+    DaemonError::InvalidRequest(
+        "Project is a Draft carrier, not a Memory authority scope; store an Organization proposal"
+            .to_owned(),
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct CredentialRecovery {
     last_attempt: Option<Instant>,
@@ -2206,6 +2213,11 @@ impl DaemonState {
         &self,
         mut request: DaemonDraftOperationRequest,
     ) -> Result<DaemonDraftOperationResponse, DaemonError> {
+        if request.scope == DaemonDraftScope::Project
+            && (request.op.discard.is_none() || request.draft_id.is_none())
+        {
+            return Err(project_memory_authority_removed_error());
+        }
         let source = request
             .source
             .unwrap_or(DaemonDraftOperationSource::Desktop);

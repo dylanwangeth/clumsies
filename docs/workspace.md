@@ -1,8 +1,9 @@
 # Project
 
-`Project` is the current product term for a repository-scoped memory and
-authorization boundary. This page keeps its historical `/workspace` URL so old
-links continue to resolve, but active APIs and runtime state use `project_id`.
+`Project` is the repository binding, authorization boundary, Organization
+Memory selection, and Draft carrier. It is not a Memory authority namespace.
+This page keeps its historical `/workspace` URL so old links continue to
+resolve, but active APIs and runtime state use `project_id`.
 
 ## Identity and local binding
 
@@ -27,13 +28,23 @@ closed or showing a third Project.
 Legacy `ws_id` configuration is only a one-time migration input. It is never
 sent to daemon as a Project identity and is not a runtime fallback.
 
-## Memory scope
+## Memory authority and Project projection
 
-Projects own repository-specific Memory. Organization memory remains under the
-independent organization scope (historically the Hub view). Each scope has its
-own Ref and immutable Commit history; merging one scope never advances the
-other. A Memory's role — rule, workflow, or context — is carried by its content
-and path, not by a closed type.
+Organization is the only active Memory authority. A Project selects the
+Organization Memory used by its repository and stores that selection in a
+Project Commit and movable Project Ref. The Project Ref is a materialization
+projection, not another publication target: Review merge advances the
+Organization Ref, while selection changes advance the Project Ref.
+
+Repository-specific knowledge starts as an Organization-scoped Draft carrying
+the Project's `project_id`. Before merge, its overlay is visible only in that
+Project's Effective Memory. After approval, it becomes Organization authority
+and is automatically selected for the carrying Project. A Memory's role — rule,
+workflow, or context — is carried by its content and path, not by a closed type.
+
+Historical Project-scoped resources and Drafts are read-only compatibility
+inputs. The authority cutover archives/discards them after flattening their
+effective result into Organization-scoped Drafts.
 
 Bundles are personal selections of shared organization memory. They help a
 member reuse a curated set but do not become Project identity or replace the
@@ -45,15 +56,16 @@ changes resource identity.
 The resident daemon owns the Project's installation-local state:
 
 - directory binding and selected Server authority;
-- installed organization and Project Refs;
+- installed Organization authority and Project projection Refs;
 - immutable Commit generations;
 - current local Drafts and their queued operations;
 - the derived search index for the current Effective Memory;
 - optional Project Local Storage location and move status;
 - adapter installation records for the repository.
 
-Server remains authoritative for Project membership, memory history, Reviews,
-and merges. A local binding or cache never creates authority.
+Server remains authoritative for Project membership and selection,
+Organization Memory history, Reviews, and merges. A local binding or cache
+never creates authority.
 
 ## Effective Memory
 
@@ -61,17 +73,17 @@ For Agent reads, daemon composes the latest installed authority generations
 with the Project's current open/submitted Draft operations:
 
 ```text
-organization Commit + Project Commit + local Draft overlay
+Project Commit (selected Organization Memory) + Project-carried Org Draft overlay
   -> Effective Memory hash
   -> matching derived Index Revision
   -> activate / load
 ```
 
-`store` writes a durable proposal Draft carried by the bound Project through
-daemon. Its pre-merge overlay is visible only in that Project. The Draft may
-target Organization authority, but it does not update the Org Ref. Desktop
-shows the same Draft for coordination and submission; an Org administrator
-must decide and merge its Review.
+`store` writes a durable Organization-scoped proposal Draft carried by the
+bound Project through daemon. Its pre-merge overlay is visible only in that
+Project, and it does not update the Organization Ref. Desktop shows the same
+Draft for coordination and submission; an Org administrator must decide and
+merge its Review.
 
 ## Project Local Storage
 

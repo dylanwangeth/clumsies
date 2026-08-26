@@ -19,13 +19,13 @@ hero:
 features:
   - icon: 🧠
     title: 统一的 Memory 模型
-    details: Rule、Workflow 与 Context 统一为单一 Markdown Memory 对象，携带语义 description 与稳定 ID，处于组织或项目作用域。
+    details: Rule、Workflow 与 Context 统一为携带语义 description 与稳定 ID 的 Markdown 组织记忆；Project 负责选择资源并承载私有 Draft overlay。
   - icon: 📝
     title: 自动 Draft
     details: Desktop 与 MCP 写入同一个常驻 daemon；本地变更无需手动 push 即可同步。
   - icon: ✅
     title: Review 后发布
-    details: Draft 只有通过 Review 和推进组织/项目 Ref 的 Commit 才会成为权威。
+    details: Project 承载的 Draft 只有通过 Review 并以 Commit 推进组织 Ref 后才会成为权威。
   - icon: 🗂️
     title: Agent 原生看板
     details: Agent 通过 typed kanban 操作认领、暂停、释放并提议关闭 Issue；只有用户的 Approve 闸门能让 Issue 进入 Done。

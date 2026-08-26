@@ -95,7 +95,17 @@ pub(super) fn validate_draft_operation_resource(
 pub(super) fn ensure_publishable_draft_scope(scope: ResourceScope) -> Result<(), ServerError> {
     if scope == ResourceScope::Project {
         return Err(ServerError::InvalidRequest(
-            "project-scoped Memory authority is read-only; publish an Organization-scoped Draft"
+            "Project is not a Memory authority scope; publish an Organization-scoped Draft"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_writable_draft_scope(scope: ResourceScope) -> Result<(), ServerError> {
+    if scope == ResourceScope::Project {
+        return Err(ServerError::InvalidRequest(
+            "Project is a Draft carrier, not a Memory authority scope; create an Organization-scoped Draft"
                 .to_owned(),
         ));
     }
@@ -461,6 +471,7 @@ pub(super) async fn append_draft_operation_in_tx(
     .await?
     .ok_or_else(|| ServerError::not_found("draft", draft_id))?;
     let identity_scope = resource_scope(identity.try_get::<String, _>("resource_scope")?.as_str())?;
+    ensure_writable_draft_scope(identity_scope)?;
     if identity_scope == ResourceScope::Org && !org_coordination_already_locked {
         lock_org_draft_selection_coordination_for_project(
             tx,
@@ -603,7 +614,7 @@ pub(super) async fn refresh_review_after_draft_content_change(
     Ok(())
 }
 
-pub(super) async fn insert_draft_event(
+pub(crate) async fn insert_draft_event(
     tx: &mut Transaction<'_, Postgres>,
     draft_id: &str,
     project_id: &str,
@@ -2284,11 +2295,12 @@ pub(super) async fn ensure_review_exists(
     Ok(())
 }
 
-pub(super) async fn create_draft(
+pub(crate) async fn create_draft(
     tx: &mut Transaction<'_, Postgres>,
     author_user_id: &str,
     mut request: CreateDraftRequest,
 ) -> Result<String, ServerError> {
+    ensure_writable_draft_scope(request.resource.scope)?;
     if request.resource.scope == ResourceScope::Org {
         lock_org_draft_selection_coordination_for_project(tx, &request.project_id).await?;
     }

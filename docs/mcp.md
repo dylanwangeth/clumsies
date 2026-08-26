@@ -80,7 +80,7 @@ The response contains:
       "unit_key": "mem_123/memory-delta/0/0",
       "content_hash": "sha256:...",
       "resource_id": "mem_123",
-      "scope": "project",
+      "scope": "org",
       "kind": "memory",
       "path": "architecture/retrieval.md",
       "heading_path": ["MCP", "Memory Delta"],

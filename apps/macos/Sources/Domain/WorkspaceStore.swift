@@ -4257,10 +4257,9 @@ final class WorkspaceStore: ObservableObject {
         guard canMergeReviews else {
             throw ServerClientError.forbidden("Your account cannot merge Reviews.")
         }
-        // A Review belongs to its carrying Project, but its Draft may target
-        // either the Org or Project authority. The coordination commit is the
-        // exact target Ref generation for both scopes; the carrying Project's
-        // ETag is wrong for Org-targeted Drafts.
+        // A Review belongs to its carrying Project, while its Draft targets
+        // Organization authority. The coordination commit is the exact Org Ref
+        // generation; the carrying Project's projection ETag is not that base.
         let detail = try await reviewDetail(review.id)
         let currentReview = WorkspaceLoader.mapReview(detail)
         replaceReview(with: currentReview)

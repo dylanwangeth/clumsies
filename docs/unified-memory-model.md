@@ -10,6 +10,12 @@ page is the design and migration record for that change. It is a destructive
 refactor: existing data is protected and migrated, while the old
 three-type write contracts are not preserved for the long term.
 
+> Authority update (2026-08-26): Organization is now the only active Memory
+> authority. Projects select Organization Memory, own a projection Ref, and
+> carry Organization-scoped Draft overlays. References to Project-scoped
+> authority below describe the ISSUE-012 historical schema; they are retained
+> only as migration context. See [Project authority cutover](/project-authority-migration).
+
 ## Core object
 
 A Memory is the only first-class content object. No Category/Tag is
@@ -19,8 +25,7 @@ primary semantic surface an Agent can understand.
 ```text
 Memory {
   id: string            // stable opaque ID, e.g. mem_... (see ID policy)
-  scope: org | project
-  project_id: string?   // required when scope == project
+  scope: org            // project is historical read/cleanup compatibility
   title: string
   path: string          // stable path within org or project namespace
   description: string   // required on create, optional on update
@@ -66,10 +71,10 @@ Memory {
 
 ## What is retained
 
-- Org/Project scope and per-project isolation.
+- Organization authority and per-Project Draft-overlay isolation.
 - Draft / Review / Commit lifecycle (drafts still belong to a project).
-- Commit and Ref mechanics; old Commit history is archived offline and a new
-  baseline Commit is generated from the migrated effective state.
+- Commit and Ref mechanics; the Organization Ref is authoritative and each
+  Project Ref is a selected-memory projection.
 - Authority and provenance: `provenance`, `status` and `scope` remain system
   fields and are never inferred from `description` text or user naming.
 - Content format detection for Markdown preview (via `content_format`, not

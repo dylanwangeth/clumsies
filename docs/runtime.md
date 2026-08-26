@@ -17,7 +17,7 @@ The database currently stores:
 - local drafts and ordered operations
 - synchronization status, failures, and Server draft identity
 - immutable Blob, Tree, and Commit metadata
-- installed organization and project Refs
+- installed Organization authority and Project projection Refs
 - the active search head and storage-location revision for each Project
 
 Each Project search database stores its derived search revisions, complete
@@ -56,7 +56,8 @@ in the Ref.
 Each draft carries:
 
 - `project_id`
-- `scope` (`org` or `project`)
+- authority `scope` (`org` for every new Draft; `project` is accepted only
+  while discarding historical local rows)
 - the unified Memory identity (id or path; no three-type kind)
 - `base_commit_id`
 - the currently installed target Ref Commit
@@ -104,8 +105,8 @@ migrated path from the old file. Missing or duplicate matches fail explicitly;
 the legacy `ws_id` value is never sent to daemon.
 
 When the caller omits `base_commit_id`, daemon reads it from the installed
-project Ref before creating the local draft. A missing Ref produces a draft
-with no base; daemon never invents a Commit ID.
+Organization Ref before creating the local Draft. A missing Ref produces a
+Draft with no base; daemon never invents a Commit ID.
 
 MCP does not expose a caller-selectable scope, Review decision, merge, or
 publish operation. `store` can only create a Project-carried proposal. Before
@@ -138,11 +139,11 @@ edit or Ref advance invalidates the old candidate.
 
 ## Commit synchronization
 
-The daemon synchronizes both organization and project Refs on its background
-interval and through explicit retry. Its target set is the union of durable
-directory bindings, active Draft Projects, and the Project currently selected
-by Desktop. Desktop selection is UI state and cannot redirect an MCP process in
-another directory.
+The daemon synchronizes both the Organization authority Ref and each Project
+projection Ref on its background interval and through explicit retry. Its
+target set is the union of durable directory bindings, active Draft Projects,
+and the Project currently selected by Desktop. Desktop selection is UI state
+and cannot redirect an MCP process in another directory.
 
 ```text
 Server commit-state + ETag

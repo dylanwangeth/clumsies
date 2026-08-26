@@ -35,7 +35,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 
 ## Key Features
 
-- **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Memory objects in Org and Project scopes. Changes are proposed as Drafts, verified through Peer Reviews, and merged atomically into immutable Commit history.
+- **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Organization Memory. A Project selects the Organization resources it uses and carries private Draft overlays; reviewed changes merge atomically into immutable Organization Commit history.
 - **Hybrid Retrieval & Precise Activation**: Combines SQLite FTS5 BM25 text search, local dense vector embeddings, Reciprocal Rank Fusion (RRF), and Cross-Encoder reranking. Agents retrieve task-relevant fragments on demand without exhausting token budgets.
 - **Agent-Native Asynchronous Kanban**: Agents autonomously claim tasks (`begin_work`), build dependency DAGs, evaluate blocking predicates, and record structured verification steps. Human approval gates (`approve_closure`) ensure only verified work transitions to Done.
 - **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.

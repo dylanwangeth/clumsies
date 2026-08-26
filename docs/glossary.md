@@ -2,18 +2,19 @@
 
 ## Server
 
-Server is the authority layer. It owns organization and project Memory,
-personal Bundles, Draft and Review lifecycles, identity and authorization, and
-the Blob / Tree / Commit / Ref version graph.
+Server is the authority layer. It owns Organization Memory, Project selections
+and projections, personal Bundles, Draft and Review lifecycles, identity and
+authorization, and the Blob / Tree / Commit / Ref version graph.
 
 This is the architectural center of gravity for the whole project. If a page explains clumsies as a set of local files plus some helper commands, it is missing the point.
 
 ## Memory
 
-Memory is the single first-class content object in clumsies. It carries a
-stable opaque ID, a scope (`org` or `project`), a title, a stable path, a
-required semantic `description`, a Markdown `content` body, a `revision`, and a
-`status` (`active`, `deprecated`, or `archived`).
+Memory is the single first-class content object in clumsies. Active authority
+is Organization-scoped and carries a stable opaque ID, title, stable path,
+required semantic `description`, Markdown `content` body, `revision`, and
+`status` (`active`, `deprecated`, or `archived`). The wire/storage scope value
+`project` remains only for reading and discarding historical rows.
 
 New objects get `mem_`-prefixed IDs. Existing `ctx_` / `rul_` / `wfl_` IDs stay
 stable and opaque; the migration emits an `old_id -> memory_id` map as their
@@ -40,17 +41,18 @@ docs mean a single behavioral instruction, they should usually say `rule`, not
 `prompt`. A rule tells the agent what to do; it does not tell the agent what
 the project is.
 
-## Scope: organization and project
+## Organization authority and Project view
 
-Memory lives in one of two scopes. Organization memory is shared across the
-organization and has an independent Ref and Commit history. Project memory is
-repository-scoped; a Project may also consume selected organization resources.
+Organization Memory is shared across the Organization and has the sole
+authority Ref and Commit history. A Project selects the Organization resources
+its repository consumes and carries Organization Draft overlays that remain
+visible only in that Project before merge. Its Project Ref versions this
+selection projection; it is not a second authority head.
 
-The historical UI labels were **Hub** (organization-scoped view) and **Local**
-(the selected project's resources and local drafts). The macOS app has since
-merged both into one Memory section with an Org/project filter; the old labels
-may still appear in scope labels, but they are not separate product sections
-or second backends.
+The historical UI labels were **Hub** (Organization authority) and **Local**
+(Project-scoped authority). The macOS app has since merged navigation into one
+Memory section. Any surviving Project-scoped resource is legacy read-only data
+scheduled for the authority cutover, not an active product namespace.
 
 ## Artifact
 
@@ -60,10 +62,10 @@ The current product surface is the Memory section's organization scope
 
 ## Project
 
-Project is the collaboration and authority boundary for project-scoped Memory.
-It may also consume selected organization resources. A Project is not a local
-folder or Git repository; local paths resolve to a stable Server-issued
-project ID.
+Project is the repository binding, membership boundary, Organization Memory
+selection, projection Ref, and carrier for private Draft overlays. It is not a
+Memory authority scope or a local folder; local paths resolve to a stable
+Server-issued Project ID.
 
 `Workspace` is a retired name that may still appear in old code and legacy
 documents.
@@ -170,9 +172,9 @@ target are separate concepts; Organization is not modeled as a Project.
 
 Draft is local-first state. Review is shared workflow.
 
-For organization-scope content, Review targets organization authority. For
-project-scope content, Review targets project authority. Those are related
-lifecycles, but they move different Refs.
+Every new Draft targets Organization authority. `project_id` identifies the
+Project carrying its private pre-merge overlay; it does not select a Project
+authority Ref. Project-scoped Drafts exist only as historical cleanup inputs.
 
 Draft lifecycle is only `open`, `submitted`, `merged`, or `discarded`.
 `behind` is freshness, not a lifecycle state; `clean` and `conflicts` describe a
@@ -194,7 +196,8 @@ moves an authority Ref; only Review merge does that.
 
 ## Effective Memory
 
-Effective Memory is the daemon's local read model. A resource with a personal
-Draft uses that Draft's complete `Base + operations` result. Resources without a
-Draft use the latest installed authority Commit. It is not a personal Ref or a
-whole-project branch pinned to an old Commit.
+Effective Memory is the daemon's local read model. It starts with the latest
+installed Project projection of selected Organization Memory. A resource with
+a personal Draft uses that Draft's complete `Base + operations` result; all
+other resources use the projection generation. It is not a personal Ref or a
+whole-Project branch pinned to an old Organization Commit.

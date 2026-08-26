@@ -14,9 +14,9 @@ a type discriminator.
 
 | Concept | Meaning |
 | --- | --- |
-| Memory | Markdown-backed content with stable `id`, `scope`, `title`, `path`, `description`, `content`, `revision`, and `status` |
-| Organization scope | shared memory with its own Ref and immutable Commit history |
-| Project scope | repository-scoped memory; projects may consume selected organization resources |
+| Memory | Markdown-backed Organization authority with stable `id`, `title`, `path`, `description`, `content`, `revision`, and `status` |
+| Organization authority | the sole publication namespace, with its own Ref and immutable Commit history |
+| Project | repository binding that selects Organization Memory, owns a projection Ref, and carries private pre-merge Draft overlays |
 | Bundle | a personal selection of shared memory resources (`resource_ids`) |
 | Issue | a native agent-managed Kanban object, distinct from Memory |
 
@@ -29,16 +29,17 @@ field, chunked and indexed separately from `content`.
 
 | Surface | Role |
 | --- | --- |
-| Desktop | primary human product for browsing, editing, reviewing, and merging memory; the unified Memory section shows organization and project memory with a scope filter |
+| Desktop | primary human product for browsing Organization authority, each Project's selected/effective Memory, Drafts, Reviews, and merges |
 | resident `clumsiesd` | always-on Rust runtime for drafts, sync, retrieval, native transport, and client coordination |
 | Agent runtime | short-lived `clumsiesd mcp serve` and `_agent` proxies used by supported hosts |
 | Server | self-hosted authority service backed by PostgreSQL |
 | MCP | agent-facing `activate`, `load`, `store`, and `kanban` interface |
 | Web Admin | organization, member, project, token, audit, and health administration |
 
-Organization memory (historically the Hub view) and project memory
-(historically Local) are the two scopes of one Memory model. Server is the
-process name; neither scope is a second backend.
+Organization is the sole Memory authority. A Project view is a projection of
+selected Organization Memory plus Project-carried Organization Draft overlays;
+it is not a second authority scope. Historical Project-scoped rows remain
+parseable only so the authority cutover can archive or discard them safely.
 
 ## Memory lifecycle
 
@@ -64,16 +65,17 @@ Clumsies uses Git terminology for Git-equivalent concepts:
 - Blob: immutable resource content
 - Tree: the indexed resource set for a version
 - Commit: an immutable authority version with a parent
-- Ref: the movable organization or project head
+- Ref: a movable head; the Organization Ref is authoritative and a Project Ref
+  identifies that Project's current selected-memory projection
 
 HTTP `ETag` and `If-Match` protect Ref updates. They do not replace Commit
-history. A draft records `base_commit_id`; a merge is rejected if the target Ref
-has moved.
+history. An Organization Draft records its Organization `base_commit_id`; a
+merge is rejected if the Organization Ref has moved.
 
 ## Current implementation boundary
 
-The unified Memory model (Server, daemon, OpenAPI, MCP, macOS), the
-organization/project memory endpoints (`/api/v1/org/memories` and
+The unified Memory model (Server, daemon, OpenAPI, MCP, macOS), the Organization
+authority and Project-view endpoints (`/api/v1/org/memories` and
 `/api/v1/projects/{project_id}/memories`), description-aware retrieval, the
 org-admin `memory-export` migration endpoint, generic organization OIDC,
 complete Public/Admin contracts, Desktop transport, local draft queue,
