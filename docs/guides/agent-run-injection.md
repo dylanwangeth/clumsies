@@ -41,7 +41,7 @@ unbound, and one active Issue cannot be claimed by a second active run.
 
 | Host | Observed events | Integration surface |
 | --- | --- | --- |
-| Codex | `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` | `.codex/hooks.json` → managed shell Hook; no root `Stop` registration |
+| Codex | `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` | Adapter-installed Clumsies plugin Hook with exact `host_plugin` gate after the user trusts its current hash in `/hooks`; no project Hook files and no root `Stop` registration |
 | Claude Code | the Codex set plus `StopFailure` | `.claude/settings.json` → managed shell Hook; no root `Stop` registration |
 | Antigravity | `PreInvocation` | `.agents/hooks.json` → managed shell Hook; no root `Stop` registration |
 | opencode | user message, failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `StopFailure`, and `SessionEnd`; successful completion emits no `Stop` |
@@ -111,6 +111,11 @@ Hook lifecycle event        -> record_agent_run_event -> AgentRun observation
 Skill/manual Agent judgment -> MCP kanban operation   -> Issue transition
 ```
 
+Codex skips a new or changed plugin Hook until the user reviews and trusts it
+through `/hooks`. Clumsies never bypasses that decision. Memory and non-run-bound
+Kanban reads remain available, while `begin_work` and closure must wait for a
+real Hook-injected run ID.
+
 The private bridge is not an MCP tool. Conversely, `kanban.begin_work`, pause,
 resume, unclaim, and `request_closure` do not pretend to be host lifecycle
 events. This keeps transport telemetry from becoming product intent.
@@ -123,5 +128,6 @@ events. This keeps transport telemetry from becoming product intent.
 | Host payload normalization | `crates/daemon/src/agent_runtime/hook.rs` |
 | AgentRun persistence and Issue transitions | `crates/daemon/src/work_tracking.rs` |
 | Adapter rendering and migration | `crates/daemon/src/agent_adapter.rs` |
-| Codex / Claude Code Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| Codex plugin reconciliation and Hook template | `crates/daemon/src/agent_adapter/codex_plugin.rs`, `packages/clumsies/scripts/issue-run-event.sh.tpl` |
+| Direct-file Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
 | opencode plugin | `assets/adapters/opencode/runtime/plugin.ts` |

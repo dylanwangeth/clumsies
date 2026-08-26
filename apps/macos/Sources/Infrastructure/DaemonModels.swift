@@ -109,6 +109,11 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
     }
 }
 
+enum ProjectAgentAdapterDelivery: String, Codable, Sendable {
+    case legacyFiles = "legacy_files"
+    case hostPlugin = "host_plugin"
+}
+
 struct DaemonProjectAgentAdapterListRequest: Codable, Sendable {
     let projectId: String
 }
@@ -118,6 +123,7 @@ struct DaemonProjectAgentAdapterInstallRequest: Codable, Sendable {
     let workspaceRoot: String
     let adapter: ProjectAgentAdapterKind
     let runtimeBinaryPath: String
+    let hostBinaryPath: String?
     let expectedRevision: Int?
 }
 
@@ -140,6 +146,7 @@ struct DaemonProjectAgentAdapter: Codable, Identifiable, Equatable, Sendable {
     let projectId: String
     let workspaceRoot: String
     let adapter: ProjectAgentAdapterKind
+    let delivery: ProjectAgentAdapterDelivery
     let revision: Int
     let managedFiles: [String]
     let createdAt: String

@@ -20,6 +20,7 @@ use crate::{
 #[cfg(target_os = "macos")]
 use crate::config::DAEMON_AGENT_LABEL;
 
+mod codex_plugin;
 mod legacy;
 
 const ISSUE_RUN_EVENT_CODEX: &str =
@@ -46,6 +47,13 @@ pub enum ProjectAgentAdapterKind {
     Opencode,
     Dsh,
     Antigravity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectAgentAdapterDelivery {
+    LegacyFiles,
+    HostPlugin,
 }
 
 impl ProjectAgentAdapterKind {
@@ -84,6 +92,7 @@ pub struct DaemonProjectAgentAdapterInstallRequest {
     pub workspace_root: String,
     pub adapter: ProjectAgentAdapterKind,
     pub runtime_binary_path: String,
+    pub host_binary_path: Option<String>,
     pub expected_revision: Option<i64>,
 }
 
@@ -100,6 +109,7 @@ pub struct DaemonProjectAgentAdapter {
     pub project_id: String,
     pub workspace_root: String,
     pub adapter: ProjectAgentAdapterKind,
+    pub delivery: ProjectAgentAdapterDelivery,
     pub revision: i64,
     pub managed_files: Vec<String>,
     pub created_at: String,
@@ -144,6 +154,7 @@ pub struct DaemonProjectAgentAdapterRemoveResponse {
 struct AdapterManifest {
     runtime_binary_hash: String,
     runtime_binary_path: String,
+    delivery: ProjectAgentAdapterDelivery,
     managed_files: Vec<ManagedFile>,
 }
 
@@ -518,6 +529,13 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
     .execute(pool)
     .await?;
     sqlx::query(
+        "UPDATE project_agent_adapters
+         SET manifest_json = json_set(manifest_json, '$.delivery', 'legacy_files')
+         WHERE json_type(manifest_json, '$.delivery') IS NULL",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_project_agent_adapters_project
          ON project_agent_adapters (server_url, project_id)",
     )
@@ -538,6 +556,14 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             UNIQUE (server_url, workspace_root, adapter)
         )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE adapter_fs_ops
+         SET manifest_json = json_set(manifest_json, '$.delivery', 'legacy_files')
+         WHERE manifest_json IS NOT NULL
+           AND json_type(manifest_json, '$.delivery') IS NULL",
     )
     .execute(pool)
     .await?;
@@ -576,7 +602,7 @@ fn validate_prepared_adapter_fs_op(operation: &PreparedAdapterFsOp) -> Result<()
             "adapter journal workspace is not canonical".to_owned(),
         ));
     }
-    if operation.changes.is_empty() || operation.changes.len() > MAX_ADAPTER_FS_CHANGES {
+    if operation.changes.len() > MAX_ADAPTER_FS_CHANGES {
         return Err(DaemonError::InvalidConfig(
             "adapter journal has an invalid file count".to_owned(),
         ));
@@ -671,43 +697,77 @@ fn validate_prepared_adapter_fs_op(operation: &PreparedAdapterFsOp) -> Result<()
                 "adapter journal runtime identity is invalid".to_owned(),
             ));
         }
-        let desired = operation
-            .changes
-            .iter()
-            .filter_map(|change| {
-                change
-                    .after_content
-                    .as_deref()
-                    .map(|content| (&change.relative_path, change.kind, sha256(content)))
-            })
-            .collect::<Vec<_>>();
-        if manifest.managed_files.len() != desired.len() {
-            return Err(DaemonError::InvalidConfig(
-                "adapter journal manifest does not match its file plan".to_owned(),
-            ));
-        }
-        for managed in &manifest.managed_files {
-            let path = Path::new(&managed.path);
-            validate_manifest_managed_path(&workspace, path, managed.kind)?;
-            let relative = path.strip_prefix(&workspace).map_err(|_| {
-                DaemonError::InvalidConfig(
-                    "adapter journal manifest path escaped its workspace".to_owned(),
-                )
-            })?;
-            let relative = relative.to_str().ok_or_else(|| {
-                DaemonError::InvalidConfig("adapter journal manifest path is not UTF-8".to_owned())
-            })?;
-            let matches = desired.iter().filter(|(candidate, kind, hash)| {
-                candidate.as_str() == relative
-                    && *kind == managed.kind
-                    && hash == &managed.installed_hash
-            });
-            if matches.count() != 1 {
-                return Err(DaemonError::InvalidConfig(
-                    "adapter journal manifest content does not match its file plan".to_owned(),
-                ));
+        match manifest.delivery {
+            ProjectAgentAdapterDelivery::LegacyFiles => {
+                if operation.changes.is_empty() {
+                    return Err(DaemonError::InvalidConfig(
+                        "a legacy adapter install journal cannot have an empty file plan"
+                            .to_owned(),
+                    ));
+                }
+                let desired = operation
+                    .changes
+                    .iter()
+                    .filter_map(|change| {
+                        change
+                            .after_content
+                            .as_deref()
+                            .map(|content| (&change.relative_path, change.kind, sha256(content)))
+                    })
+                    .collect::<Vec<_>>();
+                if manifest.managed_files.len() != desired.len() {
+                    return Err(DaemonError::InvalidConfig(
+                        "adapter journal manifest does not match its file plan".to_owned(),
+                    ));
+                }
+                for managed in &manifest.managed_files {
+                    let path = Path::new(&managed.path);
+                    validate_manifest_managed_path(&workspace, path, managed.kind)?;
+                    let relative = path.strip_prefix(&workspace).map_err(|_| {
+                        DaemonError::InvalidConfig(
+                            "adapter journal manifest path escaped its workspace".to_owned(),
+                        )
+                    })?;
+                    let relative = relative.to_str().ok_or_else(|| {
+                        DaemonError::InvalidConfig(
+                            "adapter journal manifest path is not UTF-8".to_owned(),
+                        )
+                    })?;
+                    let matches = desired.iter().filter(|(candidate, kind, hash)| {
+                        candidate.as_str() == relative
+                            && *kind == managed.kind
+                            && hash == &managed.installed_hash
+                    });
+                    if matches.count() != 1 {
+                        return Err(DaemonError::InvalidConfig(
+                            "adapter journal manifest content does not match its file plan"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+            ProjectAgentAdapterDelivery::HostPlugin => {
+                if operation.adapter != ProjectAgentAdapterKind::Codex
+                    || !manifest.managed_files.is_empty()
+                    || operation.changes.iter().any(|change| match change.kind {
+                        ManagedFileKind::Exclusive => change.after_content.is_some(),
+                        ManagedFileKind::CodexConfig | ManagedFileKind::CodexHooks => {
+                            change.before_content.is_none() && change.after_content.is_some()
+                        }
+                        _ => true,
+                    })
+                {
+                    return Err(DaemonError::InvalidConfig(
+                        "a host-plugin adapter journal is not a Codex legacy cleanup plan"
+                            .to_owned(),
+                    ));
+                }
             }
         }
+    } else if operation.action == AdapterFsAction::Install {
+        return Err(DaemonError::InvalidConfig(
+            "adapter install journal has no manifest".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -1832,6 +1892,36 @@ pub(crate) async fn list_all(
     })
 }
 
+pub(crate) async fn require_runtime_delivery(
+    state: &DaemonState,
+    binding: &crate::DaemonProjectBinding,
+    required: crate::ProjectAgentAdapterRuntimeRequirement,
+) -> Result<(), DaemonError> {
+    let raw_manifest: Option<String> = sqlx::query_scalar(
+        "SELECT manifest_json
+         FROM project_agent_adapters
+         WHERE server_url = $1 AND workspace_root = $2 AND project_id = $3 AND adapter = $4",
+    )
+    .bind(&binding.server_url)
+    .bind(&binding.workspace_root)
+    .bind(&binding.project_id)
+    .bind(required.adapter.as_str())
+    .fetch_optional(&state.inner.pool)
+    .await?;
+    let enabled = raw_manifest
+        .as_deref()
+        .map(serde_json::from_str::<AdapterManifest>)
+        .transpose()?
+        .is_some_and(|manifest| manifest.delivery == required.delivery);
+    if !enabled {
+        return Err(state_error(
+            "project_agent_adapter_not_enabled",
+            "The requested Coding Agent integration is not enabled for this workspace.",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn inspect_legacy(
     state: &DaemonState,
     request: DaemonLegacyAgentAdapterInspectionRequest,
@@ -1889,28 +1979,57 @@ pub(crate) async fn install(
     verify_code_signature(&runtime_binary)?;
     let runtime_hash = sha256_file(&runtime_binary)?;
     let previous_manifest = existing.as_ref().map(|record| &record.manifest);
-    let mut changes = install_plan_with_project(
-        request.adapter,
-        &workspace_root,
-        &runtime_binary,
-        previous_manifest,
-        Some(&server_url),
-        Some(&project_id),
-    )?;
-    // Retire previously-managed files the new plan no longer includes (the
-    // retired thin skills) instead of silently orphaning them on disk.
-    changes.extend(retire_stale_managed_changes(
-        &changes,
-        previous_manifest,
-        &workspace_root,
-    )?);
+    let (changes, manifest) = if request.adapter == ProjectAgentAdapterKind::Codex {
+        codex_plugin::ensure_installed(
+            &state.inner.config.root_dir,
+            &runtime_binary,
+            &runtime_hash,
+            request.host_binary_path.as_deref(),
+        )
+        .await?;
+        let changes = match previous_manifest {
+            Some(manifest) if manifest.delivery == ProjectAgentAdapterDelivery::LegacyFiles => {
+                remove_plan(manifest, &workspace_root)?
+            }
+            Some(manifest) if !manifest.managed_files.is_empty() => {
+                return Err(DaemonError::InvalidConfig(
+                    "a host-plugin Adapter manifest cannot own workspace files".to_owned(),
+                ));
+            }
+            _ => Vec::new(),
+        };
+        let manifest = AdapterManifest {
+            runtime_binary_hash: runtime_hash,
+            runtime_binary_path: runtime_binary.display().to_string(),
+            delivery: ProjectAgentAdapterDelivery::HostPlugin,
+            managed_files: Vec::new(),
+        };
+        (changes, manifest)
+    } else {
+        let mut changes = install_plan_with_project(
+            request.adapter,
+            &workspace_root,
+            &runtime_binary,
+            previous_manifest,
+            Some(&server_url),
+            Some(&project_id),
+        )?;
+        // Retire previously-managed files the new plan no longer includes
+        // instead of silently orphaning them on disk.
+        changes.extend(retire_stale_managed_changes(
+            &changes,
+            previous_manifest,
+            &workspace_root,
+        )?);
+        let manifest = manifest_for_changes(&changes, &runtime_binary, runtime_hash);
+        (changes, manifest)
+    };
     let files_changed = changes
         .iter()
         .map(change_is_needed)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .any(|changed| changed);
-    let manifest = manifest_for_changes(&changes, &runtime_binary, runtime_hash);
     let next_revision = match &existing {
         Some(record) if !files_changed && record.manifest == manifest => record.status.revision,
         Some(record) => record.status.revision + 1,
@@ -3528,6 +3647,7 @@ fn manifest_for_changes(
     AdapterManifest {
         runtime_binary_hash,
         runtime_binary_path: runtime_binary.display().to_string(),
+        delivery: ProjectAgentAdapterDelivery::LegacyFiles,
         managed_files: changes
             .iter()
             .filter_map(|change| {
@@ -4231,6 +4351,7 @@ fn adapter_record_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AdapterRecor
             project_id: row.try_get("project_id")?,
             workspace_root: row.try_get("workspace_root")?,
             adapter,
+            delivery: manifest.delivery,
             revision: row.try_get("revision")?,
             managed_files: manifest
                 .managed_files
@@ -5467,6 +5588,7 @@ name: legacy
         let previous_manifest = AdapterManifest {
             runtime_binary_hash: "helper-hash".to_owned(),
             runtime_binary_path: helper.display().to_string(),
+            delivery: ProjectAgentAdapterDelivery::LegacyFiles,
             managed_files: vec![
                 ManagedFile {
                     path: codex_activate.display().to_string(),
@@ -5552,6 +5674,7 @@ name: legacy
         let previous_manifest = AdapterManifest {
             runtime_binary_hash: "helper-hash".to_owned(),
             runtime_binary_path: helper.display().to_string(),
+            delivery: ProjectAgentAdapterDelivery::LegacyFiles,
             managed_files: vec![ManagedFile {
                 path: skill_path.display().to_string(),
                 kind: ManagedFileKind::Exclusive,
@@ -5885,6 +6008,211 @@ name: legacy
         .await
         .unwrap();
         (pool, server_url, workspace_root, project_id)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn manifest_delivery_migration_rewrites_live_and_pending_records() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (pool, server_url, workspace_root, project_id) =
+            journal_test_pool(workspace.path()).await;
+        let legacy = json!({
+            "runtime_binary_hash": "a".repeat(64),
+            "runtime_binary_path": "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
+            "managed_files": []
+        })
+        .to_string();
+        assert!(serde_json::from_str::<AdapterManifest>(&legacy).is_err());
+        sqlx::query(
+            "INSERT INTO project_agent_adapters
+                 (server_url, workspace_root, project_id, adapter, revision, manifest_json)
+             VALUES ($1, $2, $3, 'codex', 1, $4)",
+        )
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .bind(&project_id)
+        .bind(&legacy)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO adapter_fs_ops
+                 (operation_id, server_url, workspace_root, project_id, adapter, action,
+                  expected_revision, next_revision, manifest_json, changes_json)
+             VALUES ($1, $2, $3, $4, 'opencode', 'install', NULL, 1, $5, '[]')",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&server_url)
+        .bind(&workspace_root)
+        .bind(&project_id)
+        .bind(&legacy)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate(&pool).await.unwrap();
+        migrate(&pool).await.unwrap();
+        for table in ["project_agent_adapters", "adapter_fs_ops"] {
+            let query = format!("SELECT manifest_json FROM {table} LIMIT 1");
+            let raw: String = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+            let manifest: AdapterManifest = serde_json::from_str(&raw).unwrap();
+            assert_eq!(manifest.delivery, ProjectAgentAdapterDelivery::LegacyFiles);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_plugin_transition_recovers_cleanup_and_preserves_user_content() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (pool, server_url, workspace_root, project_id) =
+            journal_test_pool(workspace.path()).await;
+        let workspace_root = PathBuf::from(workspace_root);
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+        let config_path = workspace_root.join(".codex/config.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "[model]\nname = \"gpt\"\n").unwrap();
+        let hooks_path = workspace_root.join(".codex/hooks.json");
+        fs::write(
+            &hooks_path,
+            br#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"lint","timeout":2}]}]}}"#,
+        )
+        .unwrap();
+
+        let legacy_changes = install_plan(
+            ProjectAgentAdapterKind::Codex,
+            &workspace_root,
+            helper,
+            None,
+        )
+        .unwrap();
+        apply_changes(&legacy_changes).unwrap();
+        let legacy_manifest = manifest_for_changes(&legacy_changes, helper, "a".repeat(64));
+        sqlx::query(
+            "INSERT INTO project_agent_adapters
+                 (server_url, workspace_root, project_id, adapter, revision, manifest_json)
+             VALUES ($1, $2, $3, 'codex', 1, $4)",
+        )
+        .bind(&server_url)
+        .bind(workspace_root.display().to_string())
+        .bind(&project_id)
+        .bind(serde_json::to_string(&legacy_manifest).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cleanup = remove_plan(&legacy_manifest, &workspace_root).unwrap();
+        let host_manifest = AdapterManifest {
+            runtime_binary_hash: "a".repeat(64),
+            runtime_binary_path: helper.display().to_string(),
+            delivery: ProjectAgentAdapterDelivery::HostPlugin,
+            managed_files: Vec::new(),
+        };
+        let operation = prepared_adapter_fs_op(
+            PreparedAdapterFsOp {
+                operation_id: Uuid::new_v4().to_string(),
+                server_url,
+                workspace_root: workspace_root.clone(),
+                project_id,
+                adapter: ProjectAgentAdapterKind::Codex,
+                action: AdapterFsAction::Install,
+                expected_revision: Some(1),
+                next_revision: Some(2),
+                manifest_json: Some(serde_json::to_string(&host_manifest).unwrap()),
+                changes: Vec::new(),
+            },
+            &cleanup,
+        )
+        .unwrap();
+        persist_prepared_adapter_fs_op(&pool, &operation)
+            .await
+            .unwrap();
+        apply_journal_change_cas(&operation, 0, &operation.changes[0]).unwrap();
+        recover_pending_fs_ops(&pool).await.unwrap();
+
+        let config = fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("[model]"));
+        assert!(!config.contains("mcp_servers.clumsies"));
+        let hooks: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
+        assert!(hooks["hooks"].get("PreToolUse").is_some());
+        assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
+        assert!(
+            !workspace_root
+                .join(".codex/hooks/issue-run-event.sh")
+                .exists()
+        );
+        assert!(
+            !workspace_root
+                .join(".codex/hooks/resolve-binary.sh")
+                .exists()
+        );
+        let raw: String = sqlx::query_scalar(
+            "SELECT manifest_json FROM project_agent_adapters WHERE adapter = 'codex'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let manifest: AdapterManifest = serde_json::from_str(&raw).unwrap();
+        assert_eq!(manifest.delivery, ProjectAgentAdapterDelivery::HostPlugin);
+        assert!(manifest.managed_files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_plugin_cleanup_accepts_already_missing_legacy_shared_files() {
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_root = fs::canonicalize(workspace.path()).unwrap();
+        let helper = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
+        let legacy_manifest = AdapterManifest {
+            runtime_binary_hash: "a".repeat(64),
+            runtime_binary_path: helper.display().to_string(),
+            delivery: ProjectAgentAdapterDelivery::LegacyFiles,
+            managed_files: vec![
+                ManagedFile {
+                    path: workspace_root
+                        .join(".codex/config.toml")
+                        .display()
+                        .to_string(),
+                    kind: ManagedFileKind::CodexConfig,
+                    installed_hash: "b".repeat(64),
+                },
+                ManagedFile {
+                    path: workspace_root
+                        .join(".codex/hooks.json")
+                        .display()
+                        .to_string(),
+                    kind: ManagedFileKind::CodexHooks,
+                    installed_hash: "c".repeat(64),
+                },
+            ],
+        };
+        let cleanup = remove_plan(&legacy_manifest, &workspace_root).unwrap();
+        assert!(
+            cleanup
+                .iter()
+                .all(|change| { change.expected.content.is_none() && change.desired.is_none() })
+        );
+
+        let host_manifest = AdapterManifest {
+            delivery: ProjectAgentAdapterDelivery::HostPlugin,
+            managed_files: Vec::new(),
+            ..legacy_manifest
+        };
+        prepared_adapter_fs_op(
+            PreparedAdapterFsOp {
+                operation_id: Uuid::new_v4().to_string(),
+                server_url: "https://app.clumsies.ai".to_owned(),
+                workspace_root,
+                project_id: "prj_missing_legacy_files".to_owned(),
+                adapter: ProjectAgentAdapterKind::Codex,
+                action: AdapterFsAction::Install,
+                expected_revision: Some(1),
+                next_revision: Some(2),
+                manifest_json: Some(serde_json::to_string(&host_manifest).unwrap()),
+                changes: Vec::new(),
+            },
+            &cleanup,
+        )
+        .unwrap();
     }
 
     #[cfg(unix)]

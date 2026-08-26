@@ -83,11 +83,12 @@ MCP keeps the public `memory` (`op.store`) tool shape. Internally it adds the
 current bound Project as the Draft carrier and marks Organization authority as
 the proposal target. These are separate axes: the Project owns the pre-merge
 overlay; `org` describes the Ref an approved Review may eventually move. At
-process startup, MCP gives its current working directory to daemon;
-daemon canonicalizes the path and resolves the nearest bound ancestor in
-SQLite. MCP never treats a legacy Workspace ID as a Project ID. The Rust MCP
-contract tests exercise the exact Agent-facing envelopes before they are mapped
-to typed daemon requests.
+process startup, MCP gives its current working directory to daemon; daemon
+canonicalizes the path and resolves the nearest bound ancestor in SQLite. A
+Codex host-plugin proxy repeats that resolution and its exact Adapter-delivery
+check before every `tools/call`. MCP never treats a legacy Workspace ID as a
+Project ID. The Rust MCP contract tests exercise the exact Agent-facing
+envelopes before they are mapped to typed daemon requests.
 
 Agent-originated updates are exact text replacements, not complete-document
 writes. MCP forwards the resource ID, the complete-resource hash returned by

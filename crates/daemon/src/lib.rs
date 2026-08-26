@@ -25,7 +25,7 @@ pub use agent_adapter::{
     DaemonLegacyAgentAdapterInspectionResponse, DaemonProjectAgentAdapter,
     DaemonProjectAgentAdapterInstallRequest, DaemonProjectAgentAdapterListRequest,
     DaemonProjectAgentAdapterListResponse, DaemonProjectAgentAdapterRemoveRequest,
-    DaemonProjectAgentAdapterRemoveResponse, ProjectAgentAdapterKind,
+    DaemonProjectAgentAdapterRemoveResponse, ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
 };
 pub use commit_sync::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,
@@ -104,8 +104,8 @@ pub use types::{
     DaemonProjectBindingResolveRequest, DaemonProjectConfig, DaemonProjectConfigUpdateRequest,
     DaemonProjectSelectionRequest, DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse,
     DaemonSyncRetryRequest, DaemonSyncStatus, DraftOperationSyncStatus, ErrorEnvelope,
-    LaunchAgentRuntimeStatus, LocalDbStatus, McpAdapterStatus, SyncChannelStatus, SyncRetryChannel,
-    SyncState,
+    LaunchAgentRuntimeStatus, LocalDbStatus, McpAdapterStatus,
+    ProjectAgentAdapterRuntimeRequirement, SyncChannelStatus, SyncRetryChannel, SyncState,
 };
 pub use types::{
     DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,

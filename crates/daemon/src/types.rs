@@ -207,6 +207,14 @@ pub struct DaemonProjectSelectionRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonProjectBindingResolveRequest {
     pub workspace_path: String,
+    #[serde(default)]
+    pub required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ProjectAgentAdapterRuntimeRequirement {
+    pub adapter: crate::ProjectAgentAdapterKind,
+    pub delivery: crate::ProjectAgentAdapterDelivery,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

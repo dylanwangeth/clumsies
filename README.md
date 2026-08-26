@@ -38,7 +38,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 - **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Organization Memory. A Project selects the Organization resources it uses and carries private Draft overlays; reviewed changes merge atomically into immutable Organization Commit history.
 - **Hybrid Retrieval & Precise Activation**: Combines SQLite FTS5 BM25 text search, local dense vector embeddings, Reciprocal Rank Fusion (RRF), and Cross-Encoder reranking. Agents retrieve task-relevant fragments on demand without exhausting token budgets.
 - **Agent-Native Asynchronous Kanban**: Agents autonomously claim tasks (`begin_work`), build dependency DAGs, evaluate blocking predicates, and record structured verification steps. Human approval gates (`approve_closure`) ensure only verified work transitions to Done.
-- **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.
+- **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Codex is delivered as an Adapter-managed plugin; project-maintained skills remain in Memory Space and are loaded on demand. Restart Codex and start a new task after enabling or updating it, then complete the one-time `/hooks` review before its plugin Hook runs. Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.
 - **Self-Hosted Authority**: Run the Rust Server and PostgreSQL in your own infrastructure with organization OIDC, while the local resident daemon owns fast local state and XPC transport.
 
 ---
@@ -49,7 +49,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 | :--- | :--- | :--- | :--- |
 | **Google Antigravity** | MCP + Lifecycle Hook | `.mcp.json`, `.agents/hooks.json` | `PreInvocation`; no root `Stop` |
 | **Claude Code** | MCP + Lifecycle Hook | `.mcp.json`, `.claude/settings.json` | Prompt, subagent, failure, and session events; no root `Stop` |
-| **OpenAI Codex** | MCP + Config Hook | `.codex/config.toml`, `.codex/hooks.json` | Prompt, subagent, and session events; no root `Stop` |
+| **OpenAI Codex** | Plugin: MCP + Hook + bootstrap Skill | App-managed user plugin; no project files | Prompt, subagent, and session events after Hook trust; no root `Stop` |
 | **opencode** | MCP + Plugin | `opencode.json`, `.opencode/plugins/clumsies.ts` | Prompt, failure, and session events; no normal root `Stop` |
 | **DeepSeek Harness (dsh)** | MCP + Hook Bridge | `.dsh/clumsies.json` | Prompt, failure, and session events; no normal root `Stop` |
 

@@ -483,6 +483,7 @@ impl DaemonState {
         &self,
         request: DaemonProjectBindingResolveRequest,
     ) -> Result<DaemonProjectBinding, DaemonError> {
+        let required_adapter = request.required_adapter;
         let workspace_path = canonical_workspace_directory(&request.workspace_path)?;
         let server_url = canonical_server_url(&self.project_config().server_url)?;
         let rows = sqlx::query(
@@ -526,14 +527,19 @@ impl DaemonState {
             }
         }
 
-        best.map(|(_, binding)| binding)
+        let binding = best
+            .map(|(_, binding)| binding)
             .ok_or_else(|| DaemonError::State {
                 code: "project_binding_not_found",
                 message: format!(
                     "No Project is bound to workspace path {} on {server_url}",
                     workspace_path.display()
                 ),
-            })
+            })?;
+        if let Some(required) = required_adapter {
+            agent_adapter::require_runtime_delivery(self, &binding, required).await?;
+        }
+        Ok(binding)
     }
 
     pub async fn list_project_bindings(

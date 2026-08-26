@@ -126,14 +126,13 @@ Memory {
 - Workflow Skill generation is explicitly retired: it lived in the archived
   Zig CLI (`archive/zig-cli/src/client/adapter/workflow_skills.zig`), which
   is outside the active build boundary.
-- The thin host-native skills layer is retired as well (ISSUE-064): the Rust
-  Agent Adapter no longer installs or manages `activate` / `ntmd` (or any
-  other) host skills; every host uses the MCP tools directly, and the adapter
-  update path deletes previously-installed skill files. All host-skill
-  templates were removed from `assets/adapters/` and their archived mirrors,
-  and the `.agents/skills` / `.claude/skills` artifacts are cleaned up. A
-  documented decision records the retirement rather than a silent
-  disappearance.
+- The former `activate` / `ntmd` host-native layer is retired (ISSUE-064).
+  Direct-file adapters no longer install project guidance as host skills and
+  clean up their old `.agents/skills` / `.claude/skills` artifacts. The Codex
+  plugin adds only a generic Clumsies bootstrap Skill: it uses MCP to activate
+  Memory and dynamically load relevant project-maintained skills. Those skills
+  remain ordinary resources in Memory Space, are governed by the unified
+  Memory contract, and are never copied into Codex's skill directories.
 
 ## macOS
 

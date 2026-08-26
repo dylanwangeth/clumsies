@@ -1,0 +1,30 @@
+{
+  "name": "clumsies",
+  "version": "0.1.0",
+  "description": "Use project Memory and Kanban through Clumsies from Codex.",
+  "author": {
+    "name": "Clumsies Lab"
+  },
+  "repository": "https://github.com/lilhammerfun/clumsies",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "kanban",
+    "coding-agent"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Clumsies",
+    "shortDescription": "Project Memory and Kanban for Codex",
+    "longDescription": "Activate project knowledge, load project-maintained skills from Memory, and coordinate durable work through the Clumsies Kanban.",
+    "developerName": "Clumsies Lab",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Activate Clumsies Memory for this project."
+    ]
+  }
+}

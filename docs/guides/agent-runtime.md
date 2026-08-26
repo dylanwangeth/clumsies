@@ -4,20 +4,34 @@ This page describes the host runtime path, not the human member workflow.
 
 ## Entrypoint
 
-Supported adapters register the App-bundled runtime as:
+Direct-file adapters register the App-bundled runtime as:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd mcp serve
 ```
 
-This is an adapter-managed command, not a general-purpose CLI. The repository
+Codex receives the same runtime through the Adapter-installed Clumsies plugin:
+
+```bash
+/path/to/Clumsies.app/Contents/Resources/clumsiesd \
+  mcp serve --host codex --delivery host-plugin
+```
+
+These are adapter-managed commands, not a general-purpose CLI. The repository
 must already have a daemon-owned Project binding, the resident macOS daemon must
-be running, and the matching Project Commit generation must be ready. Adapters
-also register the private lifecycle bridge:
+be running, and the matching Project Commit generation must be ready. A
+direct-file Hook invokes the private lifecycle bridge as:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd \
   _agent issue-run-event --host codex|claude-code|opencode
+```
+
+The Codex plugin Hook instead invokes the exact gated form:
+
+```bash
+/path/to/Clumsies.app/Contents/Resources/clumsiesd \
+  _agent issue-run-event --host codex --delivery host-plugin
 ```
 
 Both modes are short-lived proxies. They are parsed before daemon
@@ -97,11 +111,26 @@ context.
 
 ## Adapter boundary
 
-Adapters make a concrete host launch the MCP server; hosts consume the MCP
-tools directly, so no host-native skill layer is installed. Adapters manage
-host-specific hooks for lifecycle observation outside the MCP memory contract,
-but those hooks must not reimplement retrieval or inject a second bootstrap
-protocol.
+Adapters make a concrete host launch the MCP server. Codex receives one thin
+bootstrap Skill inside the plugin; it coordinates `memory.activate`, loads
+relevant project-maintained skills from Memory Space with `memory.load`, and
+uses Kanban when durable work exists. The project skills themselves remain
+ordinary Memory resources and are never installed into a host skill directory.
+Other hosts consume the MCP tools directly. Host-specific Hooks observe
+lifecycle outside the MCP memory contract and must not reimplement retrieval or
+inject a second bootstrap protocol.
+
+Codex plugin proxies identify both `host=codex` and `delivery=host-plugin`.
+After resolving the canonical Project, the resident daemon requires the exact
+enabled Adapter delivery at startup and before every `tools/call`. Removing the
+Adapter, changing its delivery, or rebinding the workspace makes an already
+running plugin proxy fail its next call closed. This makes a globally installed
+plugin harmless when the integration is disabled for a Project. Plugin
+installation does not grant Hook trust: the user must review the current
+Clumsies Hook in `/hooks` before AgentRun injection and run-bound Kanban actions
+become available. Installation also does not hot-load the plugin into an
+existing Codex task; restart Codex after install or update, then start a new
+task with the new plugin snapshot.
 
 The native daemon installer writes the exact code-signed App-bundled
 `clumsiesd` path into host configuration and its managed resolver. It does not
