@@ -1,0 +1,63 @@
+name: Feature request
+description: Propose a product or engineering improvement
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem and desired outcome. A solution is useful, but not required.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, what are they trying to do, and what prevents them today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable success without prescribing an implementation
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional interaction, API, or architecture proposal
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds or simpler options you evaluated
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List the smallest verifiable conditions that make this request complete
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and dependencies
+      description: Compatibility, migration, privacy, security, performance, or rollout concerns
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This request describes a concrete user or engineering problem.
+          required: true

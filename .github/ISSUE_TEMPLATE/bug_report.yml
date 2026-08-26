@@ -1,0 +1,94 @@
+name: Bug report
+description: Report a reproducible defect in Clumsies
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Clumsies. Do not disclose security vulnerabilities in a public issue. Remove credentials, tokens, private Memory, and personal data from every field and attachment.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How severely does this affect normal use?
+      options:
+        - Blocker — data loss or no usable workaround
+        - High — core workflow is unavailable
+        - Medium — workflow is degraded but has a workaround
+        - Low — minor or cosmetic problem
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: App version, release tag, or commit SHA where the issue occurs
+      placeholder: v1.2.3 or abc1234
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, installation method, and relevant server or daemon details
+      placeholder: macOS 15.6, Apple Silicon, release build, self-hosted server
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest deterministic sequence that reproduces the problem
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include exact error text when useful
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression
+      description: Did this work in an earlier version?
+      options:
+        - "Yes"
+        - "No"
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or evidence
+      description: Add sanitized logs, screenshots, traces, or a minimal repository if available
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed secrets, credentials, private Memory, and personal data.
+          required: true
