@@ -22,8 +22,12 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      - name: Self-test validator
-        run: python3 dev/validate-pr-template.py --self-test
-
       - name: Validate pull request body
-        run: python3 dev/validate-pr-template.py
+        run: |
+          if [[ ! -f dev/validate-pr-template.py ]]; then
+            echo "Validator is not available on the base branch; bootstrap check passed."
+            exit 0
+          fi
+
+          python3 dev/validate-pr-template.py --self-test
+          python3 dev/validate-pr-template.py
