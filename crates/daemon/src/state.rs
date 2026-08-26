@@ -3031,6 +3031,64 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn http_client_negotiates_and_decodes_gzip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const BODY: &str = "compressed response";
+        const GZIP_BODY: &[u8] = &[
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x4b, 0xce, 0xcf, 0x2d,
+            0x28, 0x4a, 0x2d, 0x2e, 0x4e, 0x4d, 0x51, 0x00, 0x52, 0x05, 0xf9, 0x79, 0xc5, 0xa9,
+            0x00, 0xb1, 0xff, 0x32, 0x6f, 0x13, 0x00, 0x00, 0x00,
+        ];
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0_u8; 1024];
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(read, 0, "client closed before completing HTTP headers");
+                request.extend_from_slice(&buffer[..read]);
+                assert!(
+                    request.len() <= 8 * 1024,
+                    "request headers are unexpectedly large"
+                );
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            let accepts_gzip = request.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.trim() == "accept-encoding"
+                        && value.split(',').any(|encoding| encoding.trim() == "gzip")
+                })
+            });
+            assert!(accepts_gzip, "client did not negotiate gzip: {request}");
+
+            let response_head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                GZIP_BODY.len()
+            );
+            stream.write_all(response_head.as_bytes()).await.unwrap();
+            stream.write_all(GZIP_BODY).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        let client = build_http_client(Duration::from_secs(1), Duration::from_secs(1))
+            .expect("build test HTTP client");
+        let response = client
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .expect("send compressed request");
+        assert_eq!(response.text().await.unwrap(), BODY);
+        server.await.unwrap();
+    }
+
     struct BlockingCredentialStore {
         gate: Arc<(StdMutex<bool>, Condvar)>,
     }
