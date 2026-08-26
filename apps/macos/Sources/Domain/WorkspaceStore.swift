@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import CryptoKit
 import Foundation
@@ -261,6 +262,7 @@ struct ReviewDecisionReadiness: Equatable, Sendable {
 enum ProjectSetupError: LocalizedError, Sendable {
     case noRepositories
     case bundledAgentRuntimeMissing
+    case codexHostMissing
     case bundleNotFound
     case bundleContainsUnavailableMemory
 
@@ -270,6 +272,8 @@ enum ProjectSetupError: LocalizedError, Sendable {
             "Choose at least one local repository."
         case .bundledAgentRuntimeMissing:
             "The clumsiesd Agent runtime is missing from this app build."
+        case .codexHostMissing:
+            "Install or update the Codex app before enabling its Clumsies integration."
         case .bundleNotFound:
             "The selected Bundle is no longer available."
         case .bundleContainsUnavailableMemory:
@@ -1297,6 +1301,9 @@ final class WorkspaceStore: ObservableObject {
         }
         if !adapters.isEmpty {
             let agentRuntimePath = try bundledAgentRuntimePath()
+            let codexHostPath = adapters.contains(.codex)
+                ? try WorkspaceLoader.installedCodexHostBinaryPath()
+                : nil
             for repositoryPath in repositoryPaths {
                 for adapter in adapters.sorted(by: { $0.rawValue < $1.rawValue }) {
                     _ = try await daemon.installProjectAgentAdapter(
@@ -1305,6 +1312,7 @@ final class WorkspaceStore: ObservableObject {
                             workspaceRoot: repositoryPath,
                             adapter: adapter,
                             runtimeBinaryPath: agentRuntimePath,
+                            hostBinaryPath: adapter == .codex ? codexHostPath : nil,
                             expectedRevision: nil
                         )
                     )
@@ -1492,6 +1500,9 @@ final class WorkspaceStore: ObservableObject {
                     workspaceRoot: workspaceRoot,
                     adapter: adapter,
                     runtimeBinaryPath: try bundledAgentRuntimePath(),
+                    hostBinaryPath: adapter == .codex
+                        ? try WorkspaceLoader.installedCodexHostBinaryPath()
+                        : nil,
                     expectedRevision: current?.revision
                 )
             )
@@ -5534,9 +5545,16 @@ struct WorkspaceLoader: Sendable {
         -> LocalAgentAdapterReconciliationResult {
         let runtimePath = try Self.bundledAgentRuntimePath()
         let installed = try await daemon.allProjectAgentAdapters()
+        let codexHostPath = Self.hasReachableCodexAdapter(
+            installed: installed,
+            workspaceExists: { FileManager.default.fileExists(atPath: $0) }
+        )
+            ? try await MainActor.run { try Self.installedCodexHostBinaryPath() }
+            : nil
         let requests = Self.agentAdapterReconciliationPlan(
             installed: installed,
             runtimePath: runtimePath,
+            codexHostPath: codexHostPath,
             workspaceExists: { FileManager.default.fileExists(atPath: $0) }
         )
         for request in requests {
@@ -5605,9 +5623,19 @@ struct WorkspaceLoader: Sendable {
         )
     }
 
+    static func hasReachableCodexAdapter(
+        installed: [DaemonProjectAgentAdapter],
+        workspaceExists: (String) -> Bool
+    ) -> Bool {
+        installed.contains {
+            $0.adapter == .codex && workspaceExists($0.workspaceRoot)
+        }
+    }
+
     static func agentAdapterReconciliationPlan(
         installed: [DaemonProjectAgentAdapter],
         runtimePath: String,
+        codexHostPath: String?,
         workspaceExists: (String) -> Bool
     ) -> [DaemonProjectAgentAdapterInstallRequest] {
         installed
@@ -5624,6 +5652,7 @@ struct WorkspaceLoader: Sendable {
                     workspaceRoot: $0.workspaceRoot,
                     adapter: $0.adapter,
                     runtimeBinaryPath: runtimePath,
+                    hostBinaryPath: $0.adapter == .codex ? codexHostPath : nil,
                     expectedRevision: $0.revision
                 )
             }
@@ -5637,6 +5666,33 @@ struct WorkspaceLoader: Sendable {
         guard let path = bundle.resourceURL?.appending(path: "clumsiesd").path,
               fileManager.isExecutableFile(atPath: path) else {
             throw ProjectSetupError.bundledAgentRuntimeMissing
+        }
+        return path
+    }
+
+    @MainActor
+    static func installedCodexHostBinaryPath(
+        workspace: NSWorkspace = .shared,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        try codexHostBinaryPath(
+            applicationURL: workspace.urlForApplication(
+                withBundleIdentifier: "com.openai.codex"
+            ),
+            fileManager: fileManager
+        )
+    }
+
+    static func codexHostBinaryPath(
+        applicationURL: URL?,
+        fileManager: FileManager = .default
+    ) throws -> String {
+        guard let path = applicationURL?
+            .appending(path: "Contents/Resources/codex")
+            .path,
+            fileManager.isExecutableFile(atPath: path)
+        else {
+            throw ProjectSetupError.codexHostMissing
         }
         return path
     }

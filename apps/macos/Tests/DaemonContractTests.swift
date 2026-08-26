@@ -10,17 +10,20 @@ final class DaemonContractTests: XCTestCase {
 
     func testAgentAdapterRequestUsesBundledDaemonRuntimePath() throws {
         let runtime = "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
+        let host = "/Applications/Codex.app/Contents/Resources/codex"
         let request = DaemonProjectAgentAdapterInstallRequest(
             projectId: "project-1",
             workspaceRoot: "/tmp/repository",
             adapter: .codex,
             runtimeBinaryPath: runtime,
+            hostBinaryPath: host,
             expectedRevision: nil
         )
 
         let data = try JSONCoding.encoder().encode(request)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(object["runtime_binary_path"] as? String, runtime)
+        XCTAssertEqual(object["host_binary_path"] as? String, host)
         XCTAssertTrue((object["runtime_binary_path"] as? String)?.hasSuffix("/clumsiesd") == true)
     }
 
@@ -43,6 +46,7 @@ final class DaemonContractTests: XCTestCase {
                 projectId: "project-2",
                 workspaceRoot: "/repos/missing",
                 adapter: .opencode,
+                delivery: .legacyFiles,
                 revision: 4,
                 managedFiles: [],
                 createdAt: "2026-08-01T00:00:00Z",
@@ -53,6 +57,7 @@ final class DaemonContractTests: XCTestCase {
                 projectId: "project-1",
                 workspaceRoot: "/repos/active",
                 adapter: .codex,
+                delivery: .hostPlugin,
                 revision: 7,
                 managedFiles: [],
                 createdAt: "2026-08-01T00:00:00Z",
@@ -63,6 +68,7 @@ final class DaemonContractTests: XCTestCase {
                 projectId: "project-1",
                 workspaceRoot: "/repos/active",
                 adapter: .claudeCode,
+                delivery: .legacyFiles,
                 revision: 3,
                 managedFiles: [],
                 createdAt: "2026-08-01T00:00:00Z",
@@ -73,6 +79,7 @@ final class DaemonContractTests: XCTestCase {
         let planned = WorkspaceLoader.agentAdapterReconciliationPlan(
             installed: adapters,
             runtimePath: "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
+            codexHostPath: "/Applications/Codex.app/Contents/Resources/codex",
             workspaceExists: { $0 == "/repos/active" }
         )
 
@@ -81,6 +88,19 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertTrue(planned.allSatisfy {
             $0.runtimeBinaryPath == "/Applications/Clumsies.app/Contents/Resources/clumsiesd"
         })
+        XCTAssertNil(planned.first { $0.adapter == .claudeCode }?.hostBinaryPath)
+        XCTAssertEqual(
+            planned.first { $0.adapter == .codex }?.hostBinaryPath,
+            "/Applications/Codex.app/Contents/Resources/codex"
+        )
+        XCTAssertTrue(WorkspaceLoader.hasReachableCodexAdapter(
+            installed: adapters,
+            workspaceExists: { $0 == "/repos/active" }
+        ))
+        XCTAssertFalse(WorkspaceLoader.hasReachableCodexAdapter(
+            installed: adapters,
+            workspaceExists: { _ in false }
+        ))
     }
 
     func testWorkspaceCoreReconcilesManagedAdaptersWithoutLegacyInspection() async {

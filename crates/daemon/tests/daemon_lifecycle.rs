@@ -26,8 +26,8 @@ use daemon::{
     DaemonProjectStorageRequest, DaemonProjectStorageResetRequest, DaemonServerRequest,
     DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
     IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
-    ProjectAgentAdapterKind, RecordAgentRunEventResponse, ServerCredentials, SyncRetryChannel,
-    SyncState,
+    ProjectAgentAdapterDelivery, ProjectAgentAdapterKind, ProjectAgentAdapterRuntimeRequirement,
+    RecordAgentRunEventResponse, ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -3272,9 +3272,11 @@ async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts(
 
     let first_resolution = service.resolve_project_binding(DaemonProjectBindingResolveRequest {
         workspace_path: first_nested.display().to_string(),
+        required_adapter: None,
     });
     let second_resolution = service.resolve_project_binding(DaemonProjectBindingResolveRequest {
         workspace_path: second_root.display().to_string(),
+        required_adapter: None,
     });
     let (first_resolution, second_resolution) = tokio::join!(first_resolution, second_resolution);
     assert_eq!(first_resolution.unwrap().project_id, "prj_first");
@@ -3284,6 +3286,7 @@ async fn project_bindings_resolve_by_canonical_root_and_persist_across_restarts(
     let persisted = restarted
         .resolve_project_binding(DaemonProjectBindingResolveRequest {
             workspace_path: first_nested.display().to_string(),
+            required_adapter: None,
         })
         .await
         .unwrap();
@@ -3358,6 +3361,7 @@ async fn project_bindings_resolve_when_the_workspace_root_is_replaced_by_a_symli
     let resolved = service
         .resolve_project_binding(DaemonProjectBindingResolveRequest {
             workspace_path: bound_root.display().to_string(),
+            required_adapter: None,
         })
         .await
         .unwrap();
@@ -3409,8 +3413,9 @@ async fn adapter_install_normalizes_an_empty_binding_after_a_workspace_symlink_m
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_moved_adapter".to_owned(),
             workspace_root: bound_root.display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::Dsh,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
@@ -3436,7 +3441,7 @@ async fn adapter_install_normalizes_an_empty_binding_after_a_workspace_symlink_m
     service
         .remove_project_agent_adapter(DaemonProjectAgentAdapterRemoveRequest {
             workspace_root: bound_root.display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::Dsh,
             expected_revision: installed.revision,
         })
         .await
@@ -3462,9 +3467,8 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
 
     let daemon_root = tempfile::tempdir().unwrap();
     let repository_root = tempfile::tempdir().unwrap();
-    let codex_config = repository_root.path().join(".codex/config.toml");
-    std::fs::create_dir_all(codex_config.parent().unwrap()).unwrap();
-    std::fs::write(&codex_config, "[model]\nname = \"gpt\"\n").unwrap();
+    let agent_config = repository_root.path().join("opencode.json");
+    std::fs::write(&agent_config, r#"{"model":"gpt"}"#).unwrap();
     let mut config = DaemonConfig::for_root(daemon_root.path());
     config.project.server_url = format!("http://{address}");
     let credential_store = common::TestCredentialStore::new(Some(ServerCredentials {
@@ -3488,16 +3492,17 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::Opencode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
         .unwrap();
     assert_eq!(installed.revision, 1);
-    let rendered_config = std::fs::read_to_string(&codex_config).unwrap();
-    assert!(rendered_config.contains("[model]"));
-    assert!(rendered_config.contains("[mcp_servers.clumsies]"));
+    let rendered_config = std::fs::read_to_string(&agent_config).unwrap();
+    assert!(rendered_config.contains("\"model\""));
+    assert!(rendered_config.contains("\"clumsies\""));
     assert!(
         rendered_config.contains(
             &std::fs::canonicalize(&helper)
@@ -3519,8 +3524,9 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::Opencode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
@@ -3537,14 +3543,14 @@ async fn project_agent_adapter_install_is_reversible_and_repository_binding_can_
     service
         .remove_project_agent_adapter(DaemonProjectAgentAdapterRemoveRequest {
             workspace_root: repository_root.path().display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::Opencode,
             expected_revision: installed.revision,
         })
         .await
         .unwrap();
-    let restored_config = std::fs::read_to_string(&codex_config).unwrap();
-    assert!(restored_config.contains("[model]"));
-    assert!(!restored_config.contains("mcp_servers.clumsies"));
+    let restored_config = std::fs::read_to_string(&agent_config).unwrap();
+    assert!(restored_config.contains("\"model\""));
+    assert!(!restored_config.contains("\"clumsies\""));
     assert!(
         !repository_root
             .path()
@@ -3608,8 +3614,9 @@ async fn adapter_update_retires_stale_managed_skill_files() {
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::ClaudeCode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
@@ -3620,8 +3627,8 @@ async fn adapter_update_retires_stale_managed_skill_files() {
     // the stored manifest still manages them (as older releases wrote it).
     let activate = repository_root
         .path()
-        .join(".agents/skills/activate/SKILL.md");
-    let ntmd = repository_root.path().join(".agents/skills/ntmd/SKILL.md");
+        .join(".claude/skills/activate/SKILL.md");
+    let ntmd = repository_root.path().join(".claude/skills/ntmd/SKILL.md");
     std::fs::create_dir_all(activate.parent().unwrap()).unwrap();
     std::fs::create_dir_all(ntmd.parent().unwrap()).unwrap();
     let content = b"---\nname: legacy\n---\n";
@@ -3637,7 +3644,7 @@ async fn adapter_update_retires_stale_managed_skill_files() {
     let canonical_root = std::fs::canonicalize(repository_root.path()).unwrap();
     let manifest_json: String = sqlx::query_scalar(
         "SELECT manifest_json FROM project_agent_adapters
-         WHERE workspace_root = $1 AND adapter = 'codex'",
+         WHERE workspace_root = $1 AND adapter = 'claude-code'",
     )
     .bind(canonical_root.display().to_string())
     .fetch_one(&db)
@@ -3646,8 +3653,8 @@ async fn adapter_update_retires_stale_managed_skill_files() {
     let mut manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
     let hash = format!("{:x}", Sha256::digest(content));
     for relative in [
-        ".agents/skills/activate/SKILL.md",
-        ".agents/skills/ntmd/SKILL.md",
+        ".claude/skills/activate/SKILL.md",
+        ".claude/skills/ntmd/SKILL.md",
     ] {
         manifest["managed_files"]
             .as_array_mut()
@@ -3669,8 +3676,9 @@ async fn adapter_update_retires_stale_managed_skill_files() {
         .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
             project_id: "prj_adapter".to_owned(),
             workspace_root: repository_root.path().display().to_string(),
-            adapter: ProjectAgentAdapterKind::Codex,
+            adapter: ProjectAgentAdapterKind::ClaudeCode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: Some(installed.revision),
         })
         .await
@@ -3678,11 +3686,11 @@ async fn adapter_update_retires_stale_managed_skill_files() {
     assert_eq!(updated.revision, 2);
     assert!(!activate.exists());
     assert!(!ntmd.exists());
-    assert!(!repository_root.path().join(".agents").exists());
+    assert!(!repository_root.path().join(".claude/skills").exists());
 
     let manifest_json: String = sqlx::query_scalar(
         "SELECT manifest_json FROM project_agent_adapters
-         WHERE workspace_root = $1 AND adapter = 'codex'",
+         WHERE workspace_root = $1 AND adapter = 'claude-code'",
     )
     .bind(canonical_root.display().to_string())
     .fetch_one(&db)
@@ -3740,6 +3748,7 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Opencode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
@@ -3784,6 +3793,7 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
             workspace_root: repository_root.path().display().to_string(),
             adapter: ProjectAgentAdapterKind::Opencode,
             runtime_binary_path: helper.display().to_string(),
+            host_binary_path: None,
             expected_revision: None,
         })
         .await
@@ -3836,6 +3846,77 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
 }
 
 #[tokio::test]
+async fn host_plugin_runtime_requires_exact_adapter_delivery() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let daemon_root = root.path().join("daemon");
+    let mut config = DaemonConfig::for_root(&daemon_root);
+    config.project.server_url = "https://app.clumsies.ai".to_owned();
+    let state = common::initialize_daemon(config, common::TestCredentialStore::default()).await;
+    let workspace_root = std::fs::canonicalize(workspace.path())
+        .unwrap()
+        .display()
+        .to_string();
+    let db = sqlx::SqlitePool::connect(&format!(
+        "sqlite://{}",
+        daemon_root.join("local.db").display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO project_bindings
+             (server_url, workspace_root, project_id, revision)
+         VALUES ('https://app.clumsies.ai', $1, 'prj_plugin_gate', 1)",
+    )
+    .bind(&workspace_root)
+    .execute(&db)
+    .await
+    .unwrap();
+    let manifest = |delivery: &str| {
+        json!({
+            "runtime_binary_hash": "a".repeat(64),
+            "runtime_binary_path": "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
+            "delivery": delivery,
+            "managed_files": []
+        })
+        .to_string()
+    };
+    sqlx::query(
+        "INSERT INTO project_agent_adapters
+             (server_url, workspace_root, project_id, adapter, revision, manifest_json)
+         VALUES ('https://app.clumsies.ai', $1, 'prj_plugin_gate', 'codex', 1, $2)",
+    )
+    .bind(&workspace_root)
+    .bind(manifest("legacy_files"))
+    .execute(&db)
+    .await
+    .unwrap();
+    let request = || DaemonProjectBindingResolveRequest {
+        workspace_path: workspace.path().display().to_string(),
+        required_adapter: Some(ProjectAgentAdapterRuntimeRequirement {
+            adapter: ProjectAgentAdapterKind::Codex,
+            delivery: ProjectAgentAdapterDelivery::HostPlugin,
+        }),
+    };
+    let rejected = state.resolve_project_binding(request()).await.unwrap_err();
+    assert!(matches!(
+        rejected,
+        DaemonError::State {
+            code: "project_agent_adapter_not_enabled",
+            ..
+        }
+    ));
+
+    sqlx::query("UPDATE project_agent_adapters SET manifest_json = $1 WHERE adapter = 'codex'")
+        .bind(manifest("host_plugin"))
+        .execute(&db)
+        .await
+        .unwrap();
+    let accepted = state.resolve_project_binding(request()).await.unwrap();
+    assert_eq!(accepted.project_id, "prj_plugin_gate");
+}
+
+#[tokio::test]
 async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("unbound");
@@ -3846,6 +3927,7 @@ async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
     let error = state
         .resolve_project_binding(DaemonProjectBindingResolveRequest {
             workspace_path: workspace.display().to_string(),
+            required_adapter: None,
         })
         .await
         .unwrap_err();

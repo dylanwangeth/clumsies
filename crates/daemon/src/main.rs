@@ -6,11 +6,13 @@ use daemon::agent_runtime::hook::{
     HookEventName, HookHost, MAX_HOOK_INPUT_BYTES, NormalizedHookEvent, normalize_hook_event,
 };
 use daemon::agent_runtime::mcp::McpServer;
+use daemon::agent_runtime::{AgentRuntimeBackend, mcp_contract::AgentRuntimeRequest};
 use daemon::{
     AgentRunKind, CredentialStore, CredentialStoreError, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    DaemonError, DaemonIpcClient, DaemonIpcServer, DaemonIpcService,
+    DaemonError, DaemonIpcClient, DaemonIpcResponse, DaemonIpcServer, DaemonIpcService,
     DaemonProjectBindingResolveRequest, DaemonState, IssueBoardState, IssueDetailRequest,
-    LaunchAgentConfig, LaunchAgentController, RecordAgentRunEventResponse, ServerCredentials,
+    LaunchAgentConfig, LaunchAgentController, ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
+    ProjectAgentAdapterRuntimeRequirement, RecordAgentRunEventResponse, ServerCredentials,
 };
 use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
@@ -19,8 +21,11 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProcessMode {
-    McpServe,
-    AgentIssueRunEvent(HookHost),
+    McpServe(Option<ProjectAgentAdapterRuntimeRequirement>),
+    AgentIssueRunEvent {
+        host: HookHost,
+        required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
+    },
     Daemon,
 }
 
@@ -35,6 +40,42 @@ const AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV: &str =
 const AGENT_RUNTIME_STARTUP_IPC_TIMEOUT: Duration = Duration::from_secs(30);
 const AGENT_RUNTIME_MCP_IPC_TIMEOUT: Duration = Duration::from_secs(65);
 const AGENT_RUNTIME_HOOK_IPC_TIMEOUT: Duration = Duration::from_secs(3);
+
+struct DeliveryCheckedBackend {
+    client: DaemonIpcClient,
+    workspace_path: String,
+    project_id: String,
+    required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
+}
+
+impl AgentRuntimeBackend for DeliveryCheckedBackend {
+    fn execute(&self, request: AgentRuntimeRequest) -> Result<DaemonIpcResponse, DaemonError> {
+        if let Some(required_adapter) = self.required_adapter {
+            let binding =
+                self.client
+                    .resolve_project_binding(DaemonProjectBindingResolveRequest {
+                        workspace_path: self.workspace_path.clone(),
+                        required_adapter: Some(required_adapter),
+                    })?;
+            if binding.project_id != self.project_id {
+                return Err(DaemonError::State {
+                    code: "project_binding_changed",
+                    message: "The Project binding changed after this Agent runtime started; start a new Agent task."
+                        .to_owned(),
+                });
+            }
+        }
+        self.client.execute(request)
+    }
+
+    fn guidelines_path(&self) -> Result<Option<String>, DaemonError> {
+        self.client.guidelines_path()
+    }
+
+    fn active_project_id(&self) -> Result<Option<String>, DaemonError> {
+        self.client.active_project_id()
+    }
+}
 
 #[derive(Debug)]
 struct IsolatedTestCredentialStore;
@@ -60,12 +101,15 @@ impl CredentialStore for IsolatedTestCredentialStore {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match process_mode(&args)? {
-        ProcessMode::McpServe => run_mcp_proxy(),
-        ProcessMode::AgentIssueRunEvent(host) => {
+        ProcessMode::McpServe(required_adapter) => run_mcp_proxy(required_adapter),
+        ProcessMode::AgentIssueRunEvent {
+            host,
+            required_adapter,
+        } => {
             // Lifecycle observation is fail-open. The managed wrapper records
             // bounded diagnostics, while raw Hook input is never echoed here.
             init_hook_tracing();
-            if run_hook_proxy(host).is_err() {
+            if run_hook_proxy(host, required_adapter).is_err() {
                 tracing::error!("clumsiesd Hook proxy could not record this lifecycle event");
             }
             Ok(())
@@ -105,34 +149,83 @@ fn init_hook_tracing() {
 
 fn process_mode(args: &[String]) -> Result<ProcessMode, Box<dyn std::error::Error>> {
     match args {
-        [first, second] if first == "mcp" && second == "serve" => Ok(ProcessMode::McpServe),
+        [first, second] if first == "mcp" && second == "serve" => Ok(ProcessMode::McpServe(None)),
+        [first, second, host_flag, host, delivery_flag, delivery]
+            if first == "mcp"
+                && second == "serve"
+                && host_flag == "--host"
+                && delivery_flag == "--delivery" =>
+        {
+            let (_, required_adapter) = agent_runtime_requirement(host, delivery)?;
+            Ok(ProcessMode::McpServe(Some(required_adapter)))
+        }
         [agent, command, flag, host]
             if agent == "_agent" && command == "issue-run-event" && flag == "--host" =>
         {
-            let host = match host.as_str() {
-                "codex" => HookHost::Codex,
-                "claude-code" => HookHost::ClaudeCode,
-                "opencode" => HookHost::Opencode,
-                "dsh" => HookHost::Dsh,
-                "antigravity" => HookHost::Antigravity,
-                _ => return Err("unsupported Agent Hook host".into()),
-            };
-            Ok(ProcessMode::AgentIssueRunEvent(host))
+            let (host, _) = agent_runtime_requirement(host, "legacy-files")?;
+            Ok(ProcessMode::AgentIssueRunEvent {
+                host,
+                required_adapter: None,
+            })
+        }
+        [agent, command, host_flag, host, delivery_flag, delivery]
+            if agent == "_agent"
+                && command == "issue-run-event"
+                && host_flag == "--host"
+                && delivery_flag == "--delivery" =>
+        {
+            let (host, required_adapter) = agent_runtime_requirement(host, delivery)?;
+            Ok(ProcessMode::AgentIssueRunEvent {
+                host,
+                required_adapter: Some(required_adapter),
+            })
         }
         _ => Ok(ProcessMode::Daemon),
     }
 }
 
-fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
+fn agent_runtime_requirement(
+    host: &str,
+    delivery: &str,
+) -> Result<(HookHost, ProjectAgentAdapterRuntimeRequirement), Box<dyn std::error::Error>> {
+    let (host, adapter) = match host {
+        "codex" => (HookHost::Codex, ProjectAgentAdapterKind::Codex),
+        "claude-code" => (HookHost::ClaudeCode, ProjectAgentAdapterKind::ClaudeCode),
+        "opencode" => (HookHost::Opencode, ProjectAgentAdapterKind::Opencode),
+        "dsh" => (HookHost::Dsh, ProjectAgentAdapterKind::Dsh),
+        "antigravity" => (HookHost::Antigravity, ProjectAgentAdapterKind::Antigravity),
+        _ => return Err("unsupported Agent runtime host".into()),
+    };
+    let delivery = match delivery {
+        "legacy-files" => ProjectAgentAdapterDelivery::LegacyFiles,
+        "host-plugin" => ProjectAgentAdapterDelivery::HostPlugin,
+        _ => return Err("unsupported Agent runtime delivery".into()),
+    };
+    Ok((
+        host,
+        ProjectAgentAdapterRuntimeRequirement { adapter, delivery },
+    ))
+}
+
+fn run_mcp_proxy(
+    required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let client = agent_runtime_client(AGENT_RUNTIME_STARTUP_IPC_TIMEOUT)?;
     verify_agent_runtime(&client)?;
     let workspace_path = std::env::current_dir()?.to_string_lossy().into_owned();
-    let project_id = client
-        .resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })
-        .ok()
-        .map(|binding| binding.project_id)
-        .or_else(|| client.project_config().ok().and_then(|cfg| cfg.project_id))
-        .unwrap_or_default();
+    let binding = client.resolve_project_binding(DaemonProjectBindingResolveRequest {
+        workspace_path: workspace_path.clone(),
+        required_adapter,
+    });
+    let project_id = match (binding, required_adapter) {
+        (Ok(binding), _) => binding.project_id,
+        (Err(error), Some(_)) => return Err(error.into()),
+        (Err(_), None) => client
+            .project_config()
+            .ok()
+            .and_then(|cfg| cfg.project_id)
+            .unwrap_or_default(),
+    };
     // The debug-only test seam changes the backend identity only after the
     // startup health and binding requests. This models a resident replacement
     // between MCP initialize and the next tools/call over real XPC.
@@ -141,6 +234,12 @@ fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
             .with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
         None => client.with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
     };
+    let backend = DeliveryCheckedBackend {
+        client: backend,
+        workspace_path,
+        project_id: project_id.clone(),
+        required_adapter,
+    };
     let mut server = McpServer::new(backend, project_id, env!("CARGO_PKG_VERSION"));
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -148,7 +247,10 @@ fn run_mcp_proxy() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_hook_proxy(host: HookHost) -> Result<(), Box<dyn std::error::Error>> {
+fn run_hook_proxy(
+    host: HookHost,
+    required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut raw = Vec::new();
     std::io::stdin()
         .take((MAX_HOOK_INPUT_BYTES + 1) as u64)
@@ -161,8 +263,10 @@ fn run_hook_proxy(host: HookHost) -> Result<(), Box<dyn std::error::Error>> {
     };
     let client = agent_runtime_client(AGENT_RUNTIME_HOOK_IPC_TIMEOUT)?;
     verify_agent_runtime(&client)?;
-    let binding =
-        client.resolve_project_binding(DaemonProjectBindingResolveRequest { workspace_path })?;
+    let binding = client.resolve_project_binding(DaemonProjectBindingResolveRequest {
+        workspace_path,
+        required_adapter,
+    })?;
     let response = client.record_agent_run_event(event.to_record_request(&binding.project_id))?;
     if response.duplicate {
         return Ok(());
@@ -494,7 +598,7 @@ mod tests {
     fn proxy_modes_are_parsed_before_daemon_initialization() {
         assert_eq!(
             process_mode(&["mcp".to_owned(), "serve".to_owned()]).unwrap(),
-            ProcessMode::McpServe
+            ProcessMode::McpServe(None)
         );
         assert_eq!(
             process_mode(&[
@@ -504,7 +608,41 @@ mod tests {
                 "codex".to_owned(),
             ])
             .unwrap(),
-            ProcessMode::AgentIssueRunEvent(HookHost::Codex)
+            ProcessMode::AgentIssueRunEvent {
+                host: HookHost::Codex,
+                required_adapter: None,
+            }
+        );
+        let plugin_requirement = ProjectAgentAdapterRuntimeRequirement {
+            adapter: ProjectAgentAdapterKind::Codex,
+            delivery: ProjectAgentAdapterDelivery::HostPlugin,
+        };
+        assert_eq!(
+            process_mode(&[
+                "mcp".to_owned(),
+                "serve".to_owned(),
+                "--host".to_owned(),
+                "codex".to_owned(),
+                "--delivery".to_owned(),
+                "host-plugin".to_owned(),
+            ])
+            .unwrap(),
+            ProcessMode::McpServe(Some(plugin_requirement))
+        );
+        assert_eq!(
+            process_mode(&[
+                "_agent".to_owned(),
+                "issue-run-event".to_owned(),
+                "--host".to_owned(),
+                "codex".to_owned(),
+                "--delivery".to_owned(),
+                "host-plugin".to_owned(),
+            ])
+            .unwrap(),
+            ProcessMode::AgentIssueRunEvent {
+                host: HookHost::Codex,
+                required_adapter: Some(plugin_requirement),
+            }
         );
         assert_eq!(process_mode(&[]).unwrap(), ProcessMode::Daemon);
     }

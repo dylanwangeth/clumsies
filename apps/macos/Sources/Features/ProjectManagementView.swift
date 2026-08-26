@@ -617,6 +617,13 @@ private struct ProjectLocalSetupSettings: View {
                                 isOn: adapterBinding(adapter, repository: binding)
                             )
                             .disabled(workingKeys.contains(adapterKey(adapter, binding.workspaceRoot)))
+                            if adapter == .codex,
+                               currentAdapter(adapter, binding.workspaceRoot)?.delivery == .hostPlugin {
+                                Text("Restart Codex after enabling or updating this plugin, then start a new task. In that task, open /hooks and trust the current Clumsies Hook to enable AgentRun and run-bound Kanban actions.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                     .padding(.vertical, 2)

@@ -1,8 +1,8 @@
 #![cfg(target_os = "macos")]
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use daemon::{DaemonHealth, DaemonIpcClient, DaemonProjectBindingResolveRequest};
@@ -160,6 +160,53 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
         );
     }
 
+    let mut plugin_mcp = spawn_proxy(
+        &binary,
+        &[
+            "mcp",
+            "serve",
+            "--host",
+            "codex",
+            "--delivery",
+            "host-plugin",
+        ],
+        &workspace,
+        &service_name,
+        &[],
+    );
+    let mut plugin_stdin = plugin_mcp.stdin.take().unwrap();
+    let mut plugin_stdout = BufReader::new(plugin_mcp.stdout.take().unwrap());
+    plugin_stdin
+        .write_all(
+            concat!(
+                "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"initialize\"}\n",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+                "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    plugin_stdin.flush().unwrap();
+    assert_eq!(read_proxy_json_line(&mut plugin_stdout)["id"], 20);
+    let before_remove = read_proxy_json_line(&mut plugin_stdout);
+    assert_eq!(before_remove["id"], 21);
+    assert_eq!(before_remove["result"]["isError"], false, "{before_remove}");
+
+    remove_codex_adapter(&daemon_root.join("local.db")).await;
+    plugin_stdin
+        .write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n",
+        )
+        .unwrap();
+    plugin_stdin.flush().unwrap();
+    let after_remove = read_proxy_json_line(&mut plugin_stdout);
+    assert_eq!(after_remove["id"], 22);
+    assert_eq!(after_remove["result"]["isError"], true, "{after_remove}");
+    drop(plugin_stdin);
+    drop(plugin_stdout);
+    let plugin_output = plugin_mcp.wait_with_output().unwrap();
+    assert_process_succeeded("delivery-gated MCP proxy", &plugin_output);
+
     let hook_fixture = json!({
         "session_id": "issue049-e2e-session",
         "turn_id": "issue049-e2e-turn",
@@ -220,6 +267,7 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     let missing_identity = ordinary_client
         .resolve_project_binding(DaemonProjectBindingResolveRequest {
             workspace_path: workspace.display().to_string(),
+            required_adapter: None,
         })
         .unwrap_err();
     assert!(
@@ -312,6 +360,38 @@ async fn seed_project_fixture(local_db: &Path, workspace: &Path) {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query(
+        "INSERT INTO project_agent_adapters
+             (server_url, workspace_root, project_id, adapter, revision, manifest_json)
+         VALUES ($1, $2, $3, 'codex', 1, $4)",
+    )
+    .bind(SERVER_URL)
+    .bind(workspace.display().to_string())
+    .bind(PROJECT_ID)
+    .bind(
+        json!({
+            "runtime_binary_hash": "a".repeat(64),
+            "runtime_binary_path": "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
+            "delivery": "host_plugin",
+            "managed_files": []
+        })
+        .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+}
+
+async fn remove_codex_adapter(local_db: &Path) {
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", local_db.display()))
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM project_agent_adapters WHERE project_id = $1 AND adapter = 'codex'")
+        .bind(PROJECT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
 }
 
@@ -358,16 +438,7 @@ fn run_proxy(
     input: &str,
     extra_env: &[(&str, &str)],
 ) -> Output {
-    let mut child = Command::new(binary)
-        .args(args)
-        .current_dir(workspace)
-        .env(TEST_SERVICE_ENV, service_name)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .envs(extra_env.iter().copied())
-        .spawn()
-        .unwrap();
+    let mut child = spawn_proxy(binary, args, workspace, service_name, extra_env);
     child
         .stdin
         .take()
@@ -388,6 +459,31 @@ fn run_proxy(
         "proxy did not exit; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn spawn_proxy(
+    binary: &Path,
+    args: &[&str],
+    workspace: &Path,
+    service_name: &str,
+    extra_env: &[(&str, &str)],
+) -> Child {
+    Command::new(binary)
+        .args(args)
+        .current_dir(workspace)
+        .env(TEST_SERVICE_ENV, service_name)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(extra_env.iter().copied())
+        .spawn()
+        .unwrap()
+}
+
+fn read_proxy_json_line(reader: &mut impl BufRead) -> Value {
+    let mut line = String::new();
+    assert!(reader.read_line(&mut line).unwrap() > 0);
+    serde_json::from_str(&line).unwrap()
 }
 
 fn assert_process_succeeded(name: &str, output: &Output) {

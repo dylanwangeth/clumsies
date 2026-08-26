@@ -1,10 +1,11 @@
 # Adapter
 
 Adapter is the daemon-owned integration layer that makes the Clumsies Agent
-runtime usable inside Codex, Claude Code, opencode, dsh, and Antigravity. It
-installs each host's MCP registration, non-blocking lifecycle bridge, and
-necessary configuration without creating a second memory or runtime
-implementation.
+runtime usable inside Codex, Claude Code, opencode, dsh, and Antigravity. For
+Codex it installs and reconciles one user-level Clumsies plugin; the other
+hosts retain their direct-file integrations. Both delivery forms provide the
+MCP registration and non-blocking lifecycle bridge without creating a second
+memory or runtime implementation.
 
 ## Runtime boundary
 
@@ -20,7 +21,9 @@ one of two short-lived proxy modes:
 
 ```text
 clumsiesd mcp serve
+clumsiesd mcp serve --host codex --delivery host-plugin
 clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity
+clumsiesd _agent issue-run-event --host codex --delivery host-plugin
 ```
 
 The installer requires an executable whose canonical path ends in
@@ -42,31 +45,48 @@ workspace root, and host.
 
 | Host | MCP registration | Lifecycle integration |
 | --- | --- | --- |
-| Codex | `.codex/config.toml` → `mcp_servers.clumsies` | `.codex/hooks.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
+| Codex | `clumsies@clumsies-local` plugin → pinned MCP server | plugin Hooks; no project files |
 | Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
 | opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
 | dsh | profile-managed MCP registration | `.dsh/clumsies.json` routes the separately installed client bridge |
 | Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` |
 
-Every host consumes the MCP tools directly; the thin host-native skills that
-older releases installed for Codex and Claude Code
-(`.agents/skills/activate|ntmd`, `.claude/skills/activate|ntmd`) are
-retired. The adapter update path deletes those previously-managed skill files
-instead of leaving them behind.
+Every host consumes the MCP tools directly. The Codex plugin carries one thin
+`clumsies` bootstrap Skill that tells the harness when to activate Memory and
+how to use Kanban. Project-maintained skills such as `coding` are ordinary
+resources in Memory Space: the bootstrap loads them through `memory.load` when
+relevant and never copies or installs them into a host skill directory.
 
-Codex and Claude Code MCP entries execute the pinned binary with arguments
-`mcp`, `serve`. The opencode local MCP entry executes the equivalent command
-array. The opencode plugin embeds the same pinned path for lifecycle events.
+The unrelated host-native `activate` / `ntmd` skills installed by older Codex
+and Claude Code releases are retired. Codex plugin migration removes the exact
+legacy `.codex/config.toml`, `.codex/hooks.json`, and managed Hook fragments;
+the direct-file update paths likewise delete previously managed retired skill
+files without touching user-owned content.
+
+The Codex plugin executes the pinned binary as `mcp serve --host codex
+--delivery host-plugin`. The delivery marker requires an exact, enabled Codex
+Adapter record at startup and again before every `tools/call`; a removal,
+delivery change, or Project rebind therefore fails the next call closed. Claude
+Code and the remaining direct-file hosts retain their existing commands. The
+opencode plugin embeds the same pinned path for lifecycle events.
 
 ## Lifecycle bridge
 
-Codex and Claude Code register one managed `issue-run-event.sh` for prompt,
-subagent, and session lifecycle. Claude Code additionally registers
-`StopFailure`. Antigravity registers `PreInvocation`. None of these adapters
-registers a normal root `Stop`. The opencode plugin forwards user messages,
-failed assistant completions, and session deletion, but does not turn a normal
-assistant completion into `Stop`. The dsh client bridge follows the same
-non-blocking boundary.
+The Codex plugin and Claude Code direct-file adapter each register an
+`issue-run-event.sh` for prompt, subagent, and session lifecycle. Codex forwards
+the same `host-plugin` delivery marker used by MCP; a stale global plugin is
+therefore inert for Projects without an enabled matching Adapter record.
+Codex treats plugin Hooks as non-managed code and skips a new or changed Hook
+until the user reviews and trusts its current hash in `/hooks`. Adapter never
+bypasses that trust boundary. Plugin changes do not hot-load into an already
+open Codex task: restart Codex after install or update, then start a new task.
+MCP and Memory are then available; AgentRun injection and run-bound Kanban
+actions begin after Hook trust.
+Claude Code additionally registers `StopFailure`. Antigravity registers
+`PreInvocation`. None of these adapters registers a normal root `Stop`. The
+opencode plugin forwards user messages, failed assistant completions, and
+session deletion, but does not turn a normal assistant completion into `Stop`.
+The dsh client bridge follows the same non-blocking boundary.
 
 ```text
 host event
@@ -100,11 +120,23 @@ authority boundary.
 
 ## Safe install, update, and remove
 
-Adapter merges shared host configuration while treating generated scripts
-and plugins as exclusive managed files. Its manifest records the installed
-hash of every managed file, and the update path retires previously-managed
-files the current plan no longer includes (for example the retired thin
-skills).
+Direct-file adapters merge shared host configuration while treating generated
+scripts and plugins as exclusive managed files. Their manifests record the
+installed hash of every managed file, and update retires managed files that the
+current plan no longer includes.
+
+Codex uses a distinct `host_plugin` delivery. The daemon verifies the explicit
+Codex App CLI, materializes an App-owned local marketplace, and reconciles the
+exact enabled plugin version through the Codex plugin CLI. Only after that
+succeeds does its journal remove exact legacy project fragments and flip the
+Project Adapter record from `legacy_files` to `host_plugin`. Disabling Codex in
+v1 deletes the Project Adapter record but deliberately leaves the global plugin
+installed; the runtime delivery gate makes it inert for that Project. Installed
+and enabled describes plugin delivery, not Hook trust. Project settings keep a
+visible `/hooks` reminder because Codex owns that explicit user decision.
+The same reminder requires a Codex restart and a new task after install or
+update; an existing task is not a valid convergence probe for the new plugin
+snapshot and may still own a retired legacy proxy until it exits.
 
 The App refuses to bootstrap `clumsiesd` or persist an Agent runtime path while
 macOS is running it from an App Translocation mount. Move the released App to
@@ -129,7 +161,8 @@ temporary quarantine UUID from entering LaunchAgent and host configuration.
   refuses foreign or drifted entries instead of silently adopting them.
 - Remove deletes only exact managed entries and files; drift becomes a conflict
   instead of an overwrite.
-- Filesystem changes are rolled back if the adapter record cannot be committed.
+- Filesystem and record changes are journaled so an interrupted install or
+  migration is recovered deterministically on the next reconciliation pass.
 
 This keeps unrelated host configuration intact and prevents an old worktree or
 helper copy from silently taking over the Agent runtime.
@@ -139,10 +172,13 @@ helper copy from silently taking over the Agent runtime.
 | Concern | Active path |
 | --- | --- |
 | Native installer, merge rules, and legacy discovery | `crates/daemon/src/agent_adapter.rs` |
+| Codex plugin materialization and CLI reconciliation | `crates/daemon/src/agent_adapter/codex_plugin.rs` |
+| Codex plugin source bundle | `packages/clumsies/` |
 | MCP and Hook proxy modes | `crates/daemon/src/main.rs` |
 | Typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
 | Hook normalization | `crates/daemon/src/agent_runtime/hook.rs` |
-| Codex and Claude Code Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| Codex plugin Hook template | `packages/clumsies/scripts/issue-run-event.sh.tpl` |
+| Direct-file Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
 | opencode lifecycle plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
 The retired Zig adapter implementation is historical source under
