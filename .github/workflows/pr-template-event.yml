@@ -1,0 +1,29 @@
+name: PR template event
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-template-event-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: pr-template-event
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Self-test validator
+        run: python3 dev/validate-pr-template.py --self-test
+
+      - name: Validate pull request body
+        run: python3 dev/validate-pr-template.py

@@ -1,31 +1,53 @@
-## Summary
+<!-- Complete every section. Use "None" only where the prompt allows it. -->
 
-<!-- What changed, and why is this the smallest complete change? -->
+## Context and summary
 
-<!-- Use "Closes #123" when this PR should close an issue. -->
+<!-- Link the related Issue or decision. Explain the problem, user impact,
+root cause when applicable, and the chosen solution. -->
 
-## Change type
+## Affected areas
 
-- [ ] Bug fix
-- [ ] Feature
-- [ ] Refactor or maintenance
+<!-- Select every affected surface. -->
+
+- [ ] Rust daemon/runtime
+- [ ] Server/API
+- [ ] macOS app
+- [ ] Web Admin
+- [ ] MCP, CLI, or agent protocol
+- [ ] Storage, configuration, or schema
 - [ ] Documentation
+- [ ] CI, deployment, or release
+
+## Behavior and evidence
+
+<!-- Describe before/after behavior. Add sanitized screenshots, logs, traces,
+performance evidence, or request/response examples where relevant.
+Write "None — no user-visible behavior" only when genuinely applicable. -->
 
 ## Verification
 
-<!-- List exact commands, automated checks, and manual evidence. -->
+<!-- List exact automated commands and manual scenarios with their results.
+Identify anything not run and explain why. -->
 
-## Risk and rollout
+## Compatibility and migration
 
-<!-- Name compatibility, migration, security, privacy, or performance risks. Write "None" when not applicable. -->
+<!-- Cover API, configuration, and data compatibility; upgrade, downgrade, and
+mixed-version behavior; and migration or restore evidence.
+Write "None" when not applicable. -->
 
-- Risk:
+## Risk, security, and privacy
+
+<!-- Cover trust boundaries, permissions, private Memory or Hook payloads,
+reliability, performance, cancellation, concurrency, and platform risks.
+Write "None" when not applicable. -->
+
+## Rollout and rollback
+
+- Rollout:
+- Observability:
 - Rollback:
 
-## Checklist
+## Reviewer focus
 
-- [ ] The PR has one clear purpose and no unrelated changes.
-- [ ] Tests cover behavior changes and pass locally or in CI.
-- [ ] User-facing behavior and operational docs are updated when needed.
-- [ ] Migrations and breaking changes include compatibility and rollback plans.
-- [ ] No credentials, private data, unintended generated/build artifacts, or debug output are included.
+<!-- Name risky code paths, deliberate tradeoffs, known limitations, and linked
+follow-up Issues. Write "None" when not applicable. -->

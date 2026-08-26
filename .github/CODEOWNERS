@@ -1,0 +1,5 @@
+# Pull request policy changes require repository-owner review.
+/.github/workflows/ @lilhammerfun
+/.github/pull_request_template.md @lilhammerfun
+/.github/CODEOWNERS @lilhammerfun
+/dev/validate-pr-template.py @lilhammerfun
