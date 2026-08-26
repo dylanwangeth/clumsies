@@ -1083,6 +1083,25 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertTrue(WorkspaceStore.resourceGenerationMatches(current, current))
     }
 
+    func testCancelledDeferredMemoryLoadDoesNotPresentError() async {
+        let store = WorkspaceStore()
+        let resource = orgResource(id: "memory", contentLoaded: false)
+        let item = MemoryListItem(
+            id: resource.id,
+            resource: resource,
+            draft: nil,
+            inherited: false
+        )
+
+        await Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await store.loadContentIfNeeded(item)
+        }.value
+
+        XCTAssertNil(store.errorMessage)
+        XCTAssertFalse(store.loadingResourceIds.contains(resource.id))
+    }
+
     func testRenameOnlyDraftDoesNotTreatAnUnloadedOrphanBaselineAsEditableContent() {
         var unloaded = projectResource(
             id: "removed-memory",
