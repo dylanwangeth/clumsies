@@ -403,7 +403,7 @@ final class DaemonContractTests: XCTestCase {
         let loaded = try await WorkspaceLoader.loadDeferredDrafts(
             resources: [],
             accessibleProjectIds: ["project-1"],
-            listDrafts: {
+            listDrafts: { _ in
                 .init(items: summaries)
             },
             loadDraft: { draftId in
@@ -423,6 +423,52 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertFalse(loaded.hasStaleServerResponse)
     }
 
+    func testDeferredDraftLoadPaginatesPastTerminalHistory() async throws {
+        let terminal = (0..<500).map { index in
+            inventorySummary(
+                id: "terminal-\(index)",
+                status: index.isMultiple(of: 2) ? .discarded : .merged,
+                updatedAt: "2026-08-26T12:00:00Z"
+            )
+        }
+        let active = [
+            inventorySummary(id: "older-open", updatedAt: "2026-08-25T12:00:00Z"),
+            inventorySummary(
+                id: "older-submitted",
+                status: .submitted,
+                updatedAt: "2026-08-25T11:00:00Z"
+            ),
+        ]
+
+        let loaded = try await WorkspaceLoader.loadDeferredDrafts(
+            resources: [],
+            accessibleProjectIds: ["project-1"],
+            listDrafts: { query in
+                XCTAssertEqual(query.limit, 500)
+                switch query.cursor {
+                case nil:
+                    return .init(items: terminal, nextCursor: "page-2")
+                case "page-2":
+                    return .init(items: active)
+                default:
+                    throw DaemonContractTestError.unexpectedServerRequest
+                }
+            },
+            loadDraft: { draftId in
+                guard let summary = active.first(where: { $0.draftId == draftId }) else {
+                    throw DaemonContractTestError.unexpectedServerRequest
+                }
+                return .init(draft: summary, operations: [])
+            },
+            loadContent: { resource in
+                XCTFail("A create Draft must not load a shared baseline.")
+                return (resource, false)
+            }
+        )
+
+        XCTAssertEqual(Set(loaded.drafts.map(\.id)), Set(active.map(\.draftId)))
+    }
+
     func testDeferredDraftLoadCarriesBaselineFreshness() async throws {
         var baseline = resource(id: "memory-1", kind: .rules, path: "rules/shared.md")
         baseline.contentLoaded = false
@@ -435,7 +481,7 @@ final class DaemonContractTests: XCTestCase {
         let loaded = try await WorkspaceLoader.loadDeferredDrafts(
             resources: [baseline],
             accessibleProjectIds: ["project-1"],
-            listDrafts: {
+            listDrafts: { _ in
                 .init(items: [summary])
             },
             loadDraft: { draftId in

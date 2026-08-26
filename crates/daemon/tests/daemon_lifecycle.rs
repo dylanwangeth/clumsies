@@ -2890,6 +2890,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             resource: Some("memory".to_owned()),
             status: Some("open".to_owned()),
             limit: None,
+            cursor: None,
         })
         .await
         .unwrap();
@@ -2941,6 +2942,109 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
     assert!(matches!(
         service.get_draft("missing").await,
         Err(DaemonError::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn local_draft_inventory_paginates_past_terminal_history() {
+    let (_root, state, service) = common::test_daemon().await;
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "WITH RECURSIVE sequence(value) AS (
+            VALUES(0)
+            UNION ALL
+            SELECT value + 1 FROM sequence WHERE value < 501
+         )
+         INSERT INTO local_drafts (
+            draft_id, project_id, resource_scope, resource_kind, status, created_at, updated_at
+         )
+         SELECT
+            printf('draft-%03d', value),
+            'prj_test',
+            'org',
+            'memory',
+            CASE
+                WHEN value < 500 AND value % 2 = 0 THEN 'discarded'
+                WHEN value < 500 THEN 'merged'
+                WHEN value = 500 THEN 'open'
+                ELSE 'submitted'
+            END,
+            CASE
+                WHEN value < 500 THEN '2026-08-26T12:00:00Z'
+                ELSE '2026-08-25T12:00:00Z'
+            END,
+            CASE
+                WHEN value < 500 THEN '2026-08-26T12:00:00Z'
+                ELSE '2026-08-25T12:00:00Z'
+            END
+         FROM sequence",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let first = service
+        .list_drafts(DaemonDraftListQuery {
+            resource: None,
+            status: None,
+            cursor: None,
+            limit: Some(500),
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.items.len(), 500);
+    assert!(first.items.iter().all(|draft| matches!(
+        draft.status,
+        DaemonLocalDraftStatus::Discarded | DaemonLocalDraftStatus::Merged
+    )));
+    let cursor = first
+        .next_cursor
+        .expect("the full first page must expose a cursor");
+
+    let second = service
+        .list_drafts(DaemonDraftListQuery {
+            resource: None,
+            status: None,
+            cursor: Some(cursor),
+            limit: Some(500),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|draft| draft.draft_id.as_str())
+            .collect::<Vec<_>>(),
+        ["draft-500", "draft-501"]
+    );
+    assert_eq!(
+        second
+            .items
+            .iter()
+            .map(|draft| draft.status)
+            .collect::<Vec<_>>(),
+        [
+            DaemonLocalDraftStatus::Open,
+            DaemonLocalDraftStatus::Submitted
+        ]
+    );
+    assert!(second.next_cursor.is_none());
+
+    let invalid = service
+        .list_drafts(DaemonDraftListQuery {
+            resource: None,
+            status: None,
+            cursor: Some("not-a-cursor".to_owned()),
+            limit: Some(500),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        invalid,
+        DaemonError::InvalidRequest(message) if message == "Invalid Draft list cursor"
     ));
 }
 

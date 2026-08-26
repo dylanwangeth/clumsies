@@ -4920,14 +4920,18 @@ final class WorkspaceStore: ObservableObject {
         guard workspaceReloadGeneration == generation,
               phase == .ready,
               !Task.isCancelled,
-              let page = try? await daemon.listDrafts(.init(limit: 500)) else {
+              let inventory = try? await WorkspaceLoader.listAllDraftSummaries(
+                  listDrafts: { query in
+                      try await self.daemon.listDrafts(query)
+                  }
+              ) else {
             return
         }
         guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
             return
         }
         let plan = Self.draftInventoryPlan(
-            summaries: page.items,
+            summaries: inventory,
             currentDrafts: drafts,
             includeFailed: includeFailed
         )
@@ -4950,7 +4954,7 @@ final class WorkspaceStore: ObservableObject {
             draftInventoryLoadState = .loaded
             return
         }
-        let summaries = page.items.filter { refreshIds.contains($0.draftId) }
+        let summaries = inventory.filter { refreshIds.contains($0.draftId) }
         let originalById = Dictionary(
             drafts.filter { refreshIds.contains($0.id) }.map { ($0.id, $0) },
             uniquingKeysWith: { _, latest in latest }
@@ -5280,6 +5284,26 @@ struct WorkspaceLoader: Sendable {
         )
     }
 
+    static func listAllDraftSummaries(
+        listDrafts: @escaping @Sendable (DaemonDraftListQuery) async throws -> DaemonDraftListResponse
+    ) async throws -> [DaemonDraftSummary] {
+        var items: [DaemonDraftSummary] = []
+        var cursor: String?
+
+        while true {
+            let page = try await listDrafts(.init(cursor: cursor, limit: 500))
+            try Task.checkCancellation()
+            items.append(contentsOf: page.items)
+            guard let nextCursor = page.nextCursor else {
+                return items
+            }
+            guard !page.items.isEmpty, nextCursor != cursor else {
+                throw DaemonXPCError.invalidReply
+            }
+            cursor = nextCursor
+        }
+    }
+
     func loadDeferredDrafts(
         resources: [MemoryResource],
         accessibleProjectIds: Set<String>
@@ -5291,8 +5315,8 @@ struct WorkspaceLoader: Sendable {
         try await Self.loadDeferredDrafts(
             resources: resources,
             accessibleProjectIds: accessibleProjectIds,
-            listDrafts: {
-                try await daemon.listDrafts(.init(limit: 500))
+            listDrafts: { query in
+                try await daemon.listDrafts(query)
             },
             loadDraft: { draftId in
                 try await daemon.draft(draftId)
@@ -5309,7 +5333,7 @@ struct WorkspaceLoader: Sendable {
     static func loadDeferredDrafts(
         resources: [MemoryResource],
         accessibleProjectIds: Set<String>,
-        listDrafts: @escaping @Sendable () async throws -> DaemonDraftListResponse,
+        listDrafts: @escaping @Sendable (DaemonDraftListQuery) async throws -> DaemonDraftListResponse,
         loadDraft: @escaping @Sendable (String) async throws -> DaemonDraftDetail,
         loadContent: @escaping @Sendable (MemoryResource) async throws
             -> (resource: MemoryResource, hasStaleServerResponse: Bool)
@@ -5318,9 +5342,9 @@ struct WorkspaceLoader: Sendable {
         drafts: [LocalDraft],
         hasStaleServerResponse: Bool
     ) {
-        let draftPage = try await listDrafts()
+        let draftSummaries = try await listAllDraftSummaries(listDrafts: listDrafts)
         try Task.checkCancellation()
-        let activeDrafts = draftPage.items.filter {
+        let activeDrafts = draftSummaries.filter {
             $0.status != .discarded
                 && $0.status != .merged
                 && accessibleProjectIds.contains($0.projectId)
