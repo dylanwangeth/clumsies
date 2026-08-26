@@ -258,6 +258,10 @@ pub(super) fn apply_draft_overlay(
         .iter()
         .find_map(|(_, _, operation)| operation.target_id().map(ToOwned::to_owned))
         .unwrap_or_else(|| draft.draft_id.clone());
+    let creates_resource = draft
+        .operations
+        .first()
+        .is_some_and(|(_, _, operation)| operation.create.is_some());
     let mut draft_resources = BTreeMap::new();
     if let Some(base_resource) = draft.base_resource {
         draft_resources.insert(target_key.clone(), base_resource);
@@ -287,7 +291,12 @@ pub(super) fn apply_draft_overlay(
                 ))
                 .into());
             };
-            let existing = draft_resources.remove(&update.id).ok_or_else(|| {
+            let target_id = if creates_resource && update.id == draft.draft_id {
+                &created_resource_id
+            } else {
+                &update.id
+            };
+            let existing = draft_resources.remove(target_id).ok_or_else(|| {
                 SearchFailure::failed(format!(
                     "Draft {} update target {} is absent from its Base Commit",
                     draft.draft_id, update.id
@@ -305,10 +314,15 @@ pub(super) fn apply_draft_overlay(
                 &draft.draft_id,
                 &draft_revision,
             )?;
-            draft_resources.insert(update.id.clone(), updated);
+            draft_resources.insert(target_id.clone(), updated);
         }
         if let Some(rename) = &operation.rename
-            && let Some(resource) = draft_resources.get_mut(&rename.id)
+            && let Some(resource) =
+                draft_resources.get_mut(if creates_resource && rename.id == draft.draft_id {
+                    &created_resource_id
+                } else {
+                    &rename.id
+                })
         {
             resource.source.path = rename.new_path.clone();
             if markdown_title(&resource.source.content).is_none() {
@@ -318,7 +332,11 @@ pub(super) fn apply_draft_overlay(
             resource.source.draft_revision = Some(draft_revision.clone());
         }
         if let Some(delete) = &operation.delete {
-            draft_resources.remove(&delete.id);
+            draft_resources.remove(if creates_resource && delete.id == draft.draft_id {
+                &created_resource_id
+            } else {
+                &delete.id
+            });
         }
     }
     if let Some(target_id) = draft.target_id.as_ref() {

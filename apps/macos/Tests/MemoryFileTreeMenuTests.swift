@@ -7,7 +7,9 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         scope: MemoryScope,
         inherited: Bool,
         projectId: String? = nil,
-        draft: LocalDraft? = nil
+        draft: LocalDraft? = nil,
+        path: String? = nil,
+        kind: MemoryKind = .context
     ) -> MemoryListItem {
         MemoryListItem(
             id: id,
@@ -16,12 +18,16 @@ final class MemoryFileTreeMenuTests: XCTestCase {
                 scope: scope,
                 projectId: projectId,
                 projectName: nil,
-                kind: .context,
+                kind: kind,
                 contentHash: "hash-\(id)",
                 updatedAt: "2026-01-01T00:00:00Z",
                 refCommitId: nil,
                 contentLoaded: false,
-                document: EditableMemoryDocument(title: id, path: "\(id).md", body: "")
+                document: EditableMemoryDocument(
+                    title: id,
+                    path: path ?? "\(id).md",
+                    body: ""
+                )
             ),
             draft: draft,
             inherited: inherited
@@ -33,7 +39,9 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         scope: MemoryScope,
         targetId: String? = nil,
         isDeletion: Bool = false,
-        status: DaemonLocalDraftStatus = .open
+        status: DaemonLocalDraftStatus = .open,
+        path: String? = nil,
+        kind: MemoryKind = .context
     ) -> LocalDraft {
         LocalDraft(
             id: id,
@@ -47,13 +55,17 @@ final class MemoryFileTreeMenuTests: XCTestCase {
             reconciliation: .clean,
             reconciliationCandidateId: nil,
             scope: scope,
-            kind: .context,
+            kind: kind,
             targetId: targetId,
             status: status,
             origin: .desktop,
             syncStatus: .queued,
             updatedAt: "2026-01-01T00:00:00Z",
-            document: EditableMemoryDocument(title: id, path: "\(id).md", body: ""),
+            document: EditableMemoryDocument(
+                title: id,
+                path: path ?? "\(id).md",
+                body: ""
+            ),
             isDeletion: isDeletion
         )
     }
@@ -62,12 +74,21 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         _ id: String,
         scope: MemoryScope,
         targetId: String? = nil,
-        isDeletion: Bool = false
+        isDeletion: Bool = false,
+        path: String? = nil,
+        kind: MemoryKind = .context
     ) -> MemoryListItem {
         MemoryListItem(
             id: targetId ?? id,
             resource: nil,
-            draft: localDraft(id, scope: scope, targetId: targetId, isDeletion: isDeletion),
+            draft: localDraft(
+                id,
+                scope: scope,
+                targetId: targetId,
+                isDeletion: isDeletion,
+                path: path,
+                kind: kind
+            ),
             inherited: false
         )
     }
@@ -146,6 +167,13 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertEqual(MemoryFileTreeMenu.creationScope(inOrgView: false), .org)
     }
 
+    func testProjectViewCanRenamePureCreateDraft() {
+        let item = draftItem("draft", scope: .org, path: "notes/new.md")
+
+        XCTAssertTrue(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: true))
+    }
+
     func testDirectoryReviewIncludesOnlyOpenOrganizationDraftsInProjectView() {
         let openOrg = resourceItem(
             "org-open",
@@ -176,6 +204,225 @@ final class MemoryFileTreeMenuTests: XCTestCase {
         XCTAssertTrue(
             MemoryFileTreeMenu.reviewableDrafts([openOrg], inOrgView: true).isEmpty
         )
+    }
+
+    func testDirectoryDiscardIncludesEveryProjectCarriedDraftOnce() {
+        let open = draftItem("open", scope: .org, path: "notes/open.md")
+        let submitted = resourceItem(
+            "shared",
+            scope: .org,
+            inherited: true,
+            draft: localDraft(
+                "submitted",
+                scope: .org,
+                targetId: "shared",
+                status: .submitted,
+                path: "notes/shared.md"
+            ),
+            path: "notes/shared.md"
+        )
+
+        XCTAssertEqual(
+            MemoryFileTreeMenu.discardableDrafts(
+                [open, submitted, submitted],
+                inOrgView: false
+            ).map(\.id),
+            ["open", "submitted"]
+        )
+        XCTAssertTrue(
+            MemoryFileTreeMenu.discardableDrafts([open], inOrgView: true).isEmpty
+        )
+    }
+
+    func testDirectoryRenamePreservesNestedPathsAndWorkflowNamespace() throws {
+        let context = resourceItem(
+            "context",
+            scope: .org,
+            inherited: true,
+            path: "guides/nested/context.md"
+        )
+        let workflow = resourceItem(
+            "workflow",
+            scope: .org,
+            inherited: true,
+            path: "workflow/guides/run.md",
+            kind: .workflows
+        )
+
+        let plan = try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:guides",
+            newName: "handbook",
+            items: [context, workflow],
+            occupiedPaths: [context.document.path, workflow.document.path],
+            occupiedTreePaths: ["guides/nested/context.md", "guides/run.md"],
+            inOrgView: false
+        )
+
+        XCTAssertEqual(
+            Dictionary(uniqueKeysWithValues: plan.changes.map { ($0.item.id, $0.newPath) }),
+            [
+                "context": "handbook/nested/context.md",
+                "workflow": "workflow/handbook/run.md",
+            ]
+        )
+    }
+
+    func testDirectoryRenameRejectsExistingDestinationDirectory() {
+        let source = resourceItem(
+            "source",
+            scope: .org,
+            inherited: true,
+            path: "guides/source.md"
+        )
+
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:guides",
+            newName: "existing",
+            items: [source],
+            occupiedPaths: [source.document.path, "existing/other.md"],
+            occupiedTreePaths: [source.document.path, "existing/other.md"],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(
+                error as? MemoryDirectoryMutationError,
+                .pathCollision("existing/source.md")
+            )
+        }
+    }
+
+    func testDirectoryRenameRejectsFileAtDestinationDirectory() {
+        let source = resourceItem(
+            "source",
+            scope: .org,
+            inherited: true,
+            path: "guides/source.md"
+        )
+
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:guides",
+            newName: "handbook",
+            items: [source],
+            occupiedPaths: [source.document.path, "handbook"],
+            occupiedTreePaths: [source.document.path, "handbook"],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(
+                error as? MemoryDirectoryMutationError,
+                .pathCollision("handbook/source.md")
+            )
+        }
+    }
+
+    func testDirectoryRenameRejectsFileAboveDestinationDirectory() {
+        let source = resourceItem(
+            "source",
+            scope: .org,
+            inherited: true,
+            path: "parent/guides/source.md"
+        )
+
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:parent/guides",
+            newName: "handbook",
+            items: [source],
+            occupiedPaths: [source.document.path, "parent"],
+            occupiedTreePaths: [source.document.path, "parent"],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(
+                error as? MemoryDirectoryMutationError,
+                .pathCollision("parent/handbook/source.md")
+            )
+        }
+    }
+
+    func testDirectoryRenameRejectsCaseInsensitiveDestinationCollision() {
+        let source = resourceItem(
+            "source",
+            scope: .org,
+            inherited: true,
+            path: "guides/source.md"
+        )
+
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:guides",
+            newName: "handbook",
+            items: [source],
+            occupiedPaths: [source.document.path, "HandBook/other.md"],
+            occupiedTreePaths: [source.document.path, "HandBook/other.md"],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(
+                error as? MemoryDirectoryMutationError,
+                .pathCollision("handbook/source.md")
+            )
+        }
+    }
+
+    func testDirectoryRenameRejectsHiddenWorkflowTreeCollision() {
+        let source = resourceItem(
+            "source",
+            scope: .org,
+            inherited: true,
+            path: "guides/source.md"
+        )
+
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:guides",
+            newName: "handbook",
+            items: [source],
+            occupiedPaths: [source.document.path, "workflow/handbook/other.md"],
+            occupiedTreePaths: [source.document.path, "handbook/other.md"],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(
+                error as? MemoryDirectoryMutationError,
+                .pathCollision("handbook/source.md")
+            )
+        }
+    }
+
+    func testDirectoryDeletionCombinesSharedDeletionAndPureDraftDiscard() throws {
+        let shared = resourceItem(
+            "shared",
+            scope: .org,
+            inherited: true,
+            path: "notes/shared.md"
+        )
+        let draft = draftItem("draft", scope: .org, path: "notes/new.md")
+        let plan = try XCTUnwrap(
+            MemoryFileTreeMenu.directoryDeletionPlan(
+                [shared, draft],
+                inOrgView: false
+            )
+        )
+
+        XCTAssertEqual(plan.itemsToDelete.map(\.id), ["shared"])
+        XCTAssertEqual(plan.draftsToDiscard.map(\.id), ["draft"])
+    }
+
+    func testDirectoryMutationRejectsLegacyProjectAuthority() {
+        let legacy = resourceItem(
+            "legacy",
+            scope: .project,
+            inherited: false,
+            projectId: "p1",
+            path: "notes/legacy.md"
+        )
+
+        XCTAssertNil(
+            MemoryFileTreeMenu.directoryDeletionPlan([legacy], inOrgView: false)
+        )
+        XCTAssertThrowsError(try MemoryFileTreeMenu.directoryRenamePlan(
+            directoryId: "directory:notes",
+            newName: "renamed",
+            items: [legacy],
+            occupiedPaths: [legacy.document.path],
+            occupiedTreePaths: [legacy.document.path],
+            inOrgView: false
+        )) { error in
+            XCTAssertEqual(error as? MemoryDirectoryMutationError, .readOnly)
+        }
     }
 
     func testSelectedOrgAuthorityOffersExplicitMutationActionsInProjectView() {

@@ -1177,8 +1177,8 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(retargeted.body, "unsaved body")
     }
 
-    func testPureCreateDraftDoesNotOfferATargetBackedRename() {
-        let draft = localDraft(id: "draft", targetId: nil)
+    func testPureCreateDraftRenameUsesItsProvisionalDraftId() throws {
+        let draft = localDraft(id: "draft", targetId: nil, scope: .org)
         let item = MemoryListItem(
             id: draft.id,
             resource: nil,
@@ -1186,12 +1186,14 @@ final class WorkspaceNavigationTests: XCTestCase {
             inherited: false
         )
 
-        XCTAssertNil(WorkspaceStore.documentRenamePlan(
+        let plan = try XCTUnwrap(WorkspaceStore.documentRenamePlan(
             for: item,
             currentDraft: draft,
             newPath: "renamed.md"
         ))
-        XCTAssertFalse(MemoryFileTreeMenu.canRename(item, inOrgView: false))
+        XCTAssertEqual(plan.targetId, draft.id)
+        XCTAssertEqual(plan.newPath, "renamed.md")
+        XCTAssertTrue(MemoryFileTreeMenu.canRename(item, inOrgView: false))
     }
 
     func testDraftUploadBarrierRequiresASettledServerDraft() {

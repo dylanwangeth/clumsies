@@ -225,6 +225,39 @@ private struct PendingDirectoryReview: Identifiable {
     let initialTitle: String
 }
 
+private struct PendingDirectoryDiscard: Identifiable {
+    let id = UUID()
+    let name: String
+    let drafts: [LocalDraft]
+}
+
+private struct PendingDirectoryDeletion: Identifiable {
+    let id = UUID()
+    let name: String
+    let plan: MemoryDirectoryDeletionPlan
+
+    var message: String {
+        var effects: [String] = []
+        if !plan.itemsToDelete.isEmpty {
+            let noun = plan.itemsToDelete.count == 1 ? "memory" : "memories"
+            effects.append(
+                "create deletion proposals for \(plan.itemsToDelete.count) shared "
+                    + noun
+            )
+        }
+        if !plan.draftsToDiscard.isEmpty {
+            let noun = plan.draftsToDiscard.count == 1 ? "draft" : "drafts"
+            effects.append(
+                "discard \(plan.draftsToDiscard.count) unpublished "
+                    + noun
+            )
+        }
+        let joinedEffects = effects.joined(separator: " and ")
+        return "This will \(joinedEffects) in \(name). "
+            + "Shared memories are removed only after review and merge."
+    }
+}
+
 private struct FileTreeView: View {
     @ObservedObject var store: WorkspaceStore
     let items: [MemoryListItem]
@@ -234,7 +267,11 @@ private struct FileTreeView: View {
     @State private var initializedExpansion = false
     @State private var itemToRename: MemoryListItem?
     @State private var proposedName = ""
+    @State private var directoryToRenameId: String?
+    @State private var proposedDirectoryName = ""
     @State private var pendingOrganizationDeletion: PendingOrganizationDeletion?
+    @State private var pendingDirectoryDeletion: PendingDirectoryDeletion?
+    @State private var pendingDirectoryDiscard: PendingDirectoryDiscard?
     @State private var pendingDirectoryReview: PendingDirectoryReview?
 
     private var roots: [FileTreeNode] {
@@ -291,11 +328,15 @@ private struct FileTreeView: View {
         .onChange(of: store.activeProjectId) { _, _ in
             itemToRename = nil
             proposedName = ""
+            directoryToRenameId = nil
+            proposedDirectoryName = ""
             pendingOrganizationDeletion = nil
+            pendingDirectoryDeletion = nil
+            pendingDirectoryDiscard = nil
             pendingDirectoryReview = nil
         }
         .alert(
-            "Propose Organization Rename",
+            itemRenameTitle,
             isPresented: Binding(
                 get: { itemToRename != nil },
                 set: {
@@ -310,15 +351,35 @@ private struct FileTreeView: View {
             Button("Cancel", role: .cancel) {
                 itemToRename = nil
             }
-            Button("Propose Rename") {
+            Button(itemRenameConfirmationTitle) {
                 renameSelectedItem()
             }
             .disabled(!isValidProposedName)
         } message: {
-            Text(
-                "This creates a draft proposal. If it is reviewed and merged, "
-                    + "the organization memory will be renamed for every project that includes it."
+            Text(itemRenameMessage)
+        }
+        .alert(
+            "Rename Folder",
+            isPresented: Binding(
+                get: { directoryToRenameId != nil },
+                set: {
+                    if !$0 {
+                        directoryToRenameId = nil
+                        proposedDirectoryName = ""
+                    }
+                }
             )
+        ) {
+            TextField("Folder name", text: $proposedDirectoryName)
+            Button("Cancel", role: .cancel) {
+                directoryToRenameId = nil
+            }
+            Button(directoryRenameConfirmationTitle) {
+                renameSelectedDirectory()
+            }
+            .disabled(!isValidProposedDirectoryName)
+        } message: {
+            Text(directoryRenameMessage)
         }
         .alert(item: $pendingOrganizationDeletion) { deletion in
             Alert(
@@ -326,6 +387,33 @@ private struct FileTreeView: View {
                 message: Text(deletion.message),
                 primaryButton: .destructive(Text(deletion.confirmationTitle)) {
                     deleteItems(deletion.items)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert(item: $pendingDirectoryDiscard) { request in
+            Alert(
+                title: Text(
+                    request.drafts.count == 1
+                        ? "Discard Draft in \(request.name)?"
+                        : "Discard \(request.drafts.count) Drafts in \(request.name)?"
+                ),
+                message: Text(
+                    "This removes the Project-carried Drafts in this folder. "
+                        + "Shared Organization Memory is unchanged."
+                ),
+                primaryButton: .destructive(Text("Discard Drafts")) {
+                    discardDrafts(request.drafts)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert(item: $pendingDirectoryDeletion) { request in
+            Alert(
+                title: Text("Delete \(request.name)?"),
+                message: Text(request.message),
+                primaryButton: .destructive(Text("Delete Folder")) {
+                    deleteDirectory(request.plan)
                 },
                 secondaryButton: .cancel()
             )
@@ -347,6 +435,58 @@ private struct FileTreeView: View {
     private var isValidProposedName: Bool {
         let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
         return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
+    }
+
+    private var itemRenameTitle: String {
+        itemToRename?.resource == nil ? "Rename Draft" : "Propose Organization Rename"
+    }
+
+    private var itemRenameConfirmationTitle: String {
+        itemToRename?.resource == nil ? "Rename" : "Propose Rename"
+    }
+
+    private var itemRenameMessage: String {
+        if itemToRename?.resource == nil {
+            return "This changes the path in the current Project-carried Draft."
+        }
+        return "This creates a draft proposal. If it is reviewed and merged, "
+            + "the organization memory will be renamed for every project that includes it."
+    }
+
+    private var directoryRenameItems: [MemoryListItem] {
+        guard let directoryToRenameId else { return [] }
+        return FileTreeNode.items(in: roots, selectedNodeIds: [directoryToRenameId])
+    }
+
+    private var directoryRenameConfirmationTitle: String {
+        directoryRenameItems.contains { $0.resource != nil } ? "Propose Renames" : "Rename"
+    }
+
+    private var directoryRenameMessage: String {
+        let items = directoryRenameItems
+        let sharedCount = items.filter { $0.resource != nil }.count
+        let draftCount = items.count - sharedCount
+        if sharedCount == 0 {
+            return "This preserves every relative file path in the current Project-carried "
+                + "Drafts. Shared Organization Memory is unchanged."
+        }
+        if draftCount > 0 {
+            return "This preserves every relative file path, renames \(draftCount) unpublished "
+                + "Drafts, and creates \(sharedCount) rename proposals. Shared Organization "
+                + "Memory changes only after review and merge."
+        }
+        return "This preserves every relative file path and creates Project-carried rename "
+            + "Drafts. Organization Memory changes only after review and merge."
+    }
+
+    private var isValidProposedDirectoryName: Bool {
+        let name = proposedDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
+              let directoryToRenameId,
+              let directory = FileTreeNode.node(withId: directoryToRenameId, in: roots) else {
+            return false
+        }
+        return name != directory.name
     }
 
     private func beginRenaming(_ item: MemoryListItem) {
@@ -383,6 +523,79 @@ private struct FileTreeView: View {
             } catch {
                 store.errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    private func beginRenamingDirectory(_ directory: FileTreeNode) {
+        let targetItems = FileTreeNode.items(
+            in: roots,
+            selectedNodeIds: [directory.id]
+        )
+        guard targetItems.allSatisfy({
+            MemoryFileTreeMenu.canRename($0, inOrgView: false)
+                && store.canEditMemory($0)
+                && !store.isSynchronizingDocument($0.id)
+        }) else {
+            store.errorMessage = MemoryDirectoryMutationError.readOnly.localizedDescription
+            return
+        }
+        directoryToRenameId = directory.id
+        proposedDirectoryName = directory.name
+    }
+
+    private func renameSelectedDirectory() {
+        guard let directoryToRenameId else { return }
+        let name = proposedDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetItems = FileTreeNode.items(
+            in: roots,
+            selectedNodeIds: [directoryToRenameId]
+        )
+        do {
+            guard targetItems.allSatisfy({
+                MemoryFileTreeMenu.canRename($0, inOrgView: false)
+                    && store.canEditMemory($0)
+                    && !store.isSynchronizingDocument($0.id)
+            }) else {
+                throw MemoryDirectoryMutationError.readOnly
+            }
+            let resources = store.resources.filter {
+                $0.scope == .org
+                    || ($0.scope == .project && $0.projectId == store.activeProjectId)
+            }
+            let drafts = store.drafts.filter {
+                $0.projectId == store.activeProjectId
+                    && $0.status != .discarded
+                    && $0.status != .merged
+            }
+            let occupiedPaths = Set(resources.map(\.document.path))
+                .union(drafts.map(\.document.path))
+            let occupiedTreePaths = Set(items.map { FileTreeNode.treePath(for: $0) })
+            let plan = try MemoryFileTreeMenu.directoryRenamePlan(
+                directoryId: directoryToRenameId,
+                newName: name,
+                items: targetItems,
+                occupiedPaths: occupiedPaths,
+                occupiedTreePaths: occupiedTreePaths,
+                inOrgView: false
+            )
+            self.directoryToRenameId = nil
+            proposedDirectoryName = ""
+            Task {
+                var completed = 0
+                do {
+                    for change in plan.changes {
+                        try await store.rename(change.item, to: change.newPath)
+                        completed += 1
+                    }
+                } catch {
+                    let prefix = completed == 0
+                        ? ""
+                        : "Renamed \(completed) of \(plan.changes.count) memories. "
+                    store.errorMessage = prefix + error.localizedDescription
+                }
+            }
+        } catch {
+            store.errorMessage = error.localizedDescription
         }
     }
 
@@ -438,7 +651,13 @@ private struct FileTreeView: View {
     @ViewBuilder
     private func fileTreeMenu(for nodeIds: Set<String>) -> some View {
         let targetItems = FileTreeNode.items(in: roots, selectedNodeIds: nodeIds)
-        let singleItem = targetItems.count == 1 ? targetItems.first : nil
+        let selectedDirectory = FileTreeNode.selectedDirectory(
+            in: roots,
+            selectedNodeIds: nodeIds
+        )
+        let singleItem = selectedDirectory == nil && targetItems.count == 1
+            ? targetItems.first
+            : nil
         let isOrgView = store.activeProjectId == nil
         let addableItems = MemoryFileTreeMenu.addable(targetItems, inOrgView: isOrgView)
         let removableItems = MemoryFileTreeMenu.removable(targetItems, inOrgView: isOrgView)
@@ -470,18 +689,50 @@ private struct FileTreeView: View {
         let reviewSelectionIsReady = !reviewDrafts.isEmpty && reviewDrafts.allSatisfy {
             $0.syncStatus == .synced && $0.serverId != nil && $0.freshness == .current
         }
-        let hasDraftAction = !isOrgView && singleItem?.draft != nil
+        let directoryDrafts = selectedDirectory == nil
+            ? []
+            : MemoryFileTreeMenu.discardableDrafts(targetItems, inOrgView: isOrgView)
+        let directoryRenameable = selectedDirectory != nil
+            && !targetItems.isEmpty
+            && targetItems.allSatisfy {
+                MemoryFileTreeMenu.canRename($0, inOrgView: isOrgView)
+                    && store.canEditMemory($0)
+            }
+        let directoryDeletionPlan = selectedDirectory.flatMap { _ in
+            MemoryFileTreeMenu.directoryDeletionPlan(targetItems, inOrgView: isOrgView)
+        }
+        let directoryDeletionAllowed = directoryDeletionPlan?.itemsToDelete.allSatisfy {
+            store.canEditMemory($0)
+        } == true
+        let hasDraftAction = !isOrgView
+            && (singleItem?.draft != nil || !directoryDrafts.isEmpty)
         let hasDomainSection = !addableItems.isEmpty || !removableItems.isEmpty
             || hasDraftAction || !reviewDrafts.isEmpty || singleStale
 
         // ---- generic document operations (standard macOS conventions) ----
-        if let singleItem {
+        if let selectedDirectory {
+            if directoryRenameable {
+                Button("Rename Folder…") { beginRenamingDirectory(selectedDirectory) }
+                    .disabled(selectionContainsSynchronizingDocument)
+            }
+            if let directoryDeletionPlan, directoryDeletionAllowed {
+                Button("Delete Folder…", role: .destructive) {
+                    pendingDirectoryDeletion = .init(
+                        name: selectedDirectory.name,
+                        plan: directoryDeletionPlan
+                    )
+                }
+                .disabled(selectionContainsSynchronizingDocument)
+            }
+        } else if let singleItem {
             Button("Open") { store.open(singleItem) }
             if singleItem.supportsMarkdownPreview {
                 Button("Open Source") { store.open(singleItem, mode: .source) }
             }
             if singleRenameable {
-                Button("Propose Organization Rename…") { beginRenaming(singleItem) }
+                Button(
+                    singleItem.resource == nil ? "Rename…" : "Propose Organization Rename…"
+                ) { beginRenaming(singleItem) }
                     .disabled(singleSynchronizing)
             }
             if singleTrashable {
@@ -537,6 +788,20 @@ private struct FileTreeView: View {
                 )
             }
             .disabled(!reviewSelectionIsReady || selectionContainsSynchronizingDocument)
+        }
+        if let selectedDirectory, !directoryDrafts.isEmpty {
+            Button(
+                directoryDrafts.count == 1
+                    ? "Discard Draft in Folder…"
+                    : "Discard \(directoryDrafts.count) Drafts in Folder…",
+                role: .destructive
+            ) {
+                pendingDirectoryDiscard = .init(
+                    name: selectedDirectory.name,
+                    drafts: directoryDrafts
+                )
+            }
+            .disabled(selectionContainsSynchronizingDocument)
         }
         if let singleItem {
             let resourceIsStale = singleItem.resource.map {
@@ -630,7 +895,51 @@ private struct FileTreeView: View {
     private func deleteItems(_ items: [MemoryListItem]) {
         Task {
             for item in items {
-                await store.delete(item)
+                guard await store.delete(item) else { return }
+            }
+        }
+    }
+
+    private func discardDrafts(_ drafts: [LocalDraft]) {
+        Task {
+            for (index, draft) in drafts.enumerated() {
+                guard await store.discard(draft) else {
+                    if index > 0 {
+                        let detail = store.errorMessage ?? "The remaining Drafts were not changed."
+                        store.errorMessage = "Discarded \(index) of \(drafts.count) Drafts. "
+                            + detail
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    private func deleteDirectory(_ plan: MemoryDirectoryDeletionPlan) {
+        Task {
+            let total = plan.itemsToDelete.count + plan.draftsToDiscard.count
+            var completed = 0
+            for item in plan.itemsToDelete {
+                guard await store.delete(item) else {
+                    if completed > 0 {
+                        let detail = store.errorMessage ?? "The remaining files were not changed."
+                        store.errorMessage = "Completed \(completed) of \(total) folder changes. "
+                            + detail
+                    }
+                    return
+                }
+                completed += 1
+            }
+            for draft in plan.draftsToDiscard {
+                guard await store.discard(draft) else {
+                    if completed > 0 {
+                        let detail = store.errorMessage ?? "The remaining files were not changed."
+                        store.errorMessage = "Completed \(completed) of \(total) folder changes. "
+                            + detail
+                    }
+                    return
+                }
+                completed += 1
             }
         }
     }
@@ -853,13 +1162,9 @@ struct FileTreeNode: Identifiable {
         var itemsById: [String: MemoryListItem] = [:]
         let pathItems = items.map { item in
             itemsById[item.id] = item
-            var components = item.document.path.split(separator: "/").map(String.init)
-            if item.kind == .workflows, components.first == "workflow", components.count > 1 {
-                components.removeFirst()
-            }
             return PathTreeItem(
                 id: item.id,
-                path: components.joined(separator: "/"),
+                path: treePath(for: item),
                 fallbackName: item.document.title
             )
         }
@@ -874,6 +1179,33 @@ struct FileTreeNode: Identifiable {
         }
 
         return PathTreeNode.build(pathItems).map(convert)
+    }
+
+    static func treePath(for item: MemoryListItem) -> String {
+        treePath(for: item.document.path, kind: item.kind)
+    }
+
+    static func treePath(for documentPath: String, kind: MemoryKind) -> String {
+        var components = documentPath.split(separator: "/").map(String.init)
+        if kind == .workflows, components.first == "workflow", components.count > 1 {
+            components.removeFirst()
+        }
+        return components.joined(separator: "/")
+    }
+
+    static func documentPath(fromTreePath path: String, for item: MemoryListItem) -> String {
+        guard item.kind == .workflows,
+              item.document.path.split(separator: "/").first == "workflow" else {
+            return path
+        }
+        return "workflow/\(path)"
+    }
+
+    static func directoryPath(from id: String) -> String? {
+        let prefix = "directory:"
+        guard id.hasPrefix(prefix) else { return nil }
+        let path = String(id.dropFirst(prefix.count))
+        return path.isEmpty ? nil : path
     }
 
     static func directoryIds(in nodes: [FileTreeNode]) -> Set<String> {
@@ -899,6 +1231,19 @@ struct FileTreeNode: Identifiable {
             }
         }
         return nil
+    }
+
+    static func selectedDirectory(
+        in nodes: [FileTreeNode],
+        selectedNodeIds: Set<String>
+    ) -> FileTreeNode? {
+        guard selectedNodeIds.count == 1,
+              let id = selectedNodeIds.first,
+              let node = node(withId: id, in: nodes),
+              node.item == nil else {
+            return nil
+        }
+        return node
     }
 
     static func items(
@@ -1803,6 +2148,40 @@ private struct ReviewRequestSheet: View {
     }
 }
 
+struct MemoryDirectoryRenameChange: Hashable, Sendable {
+    let item: MemoryListItem
+    let newPath: String
+}
+
+struct MemoryDirectoryRenamePlan: Hashable, Sendable {
+    let changes: [MemoryDirectoryRenameChange]
+}
+
+struct MemoryDirectoryDeletionPlan: Hashable, Sendable {
+    let itemsToDelete: [MemoryListItem]
+    let draftsToDiscard: [LocalDraft]
+}
+
+enum MemoryDirectoryMutationError: LocalizedError, Equatable {
+    case invalidDirectory
+    case invalidName
+    case readOnly
+    case pathCollision(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidDirectory:
+            "This folder no longer contains any memory."
+        case .invalidName:
+            "Choose a different folder name without a slash."
+        case .readOnly:
+            "Every memory in the folder must be editable before the folder can be changed."
+        case .pathCollision(let path):
+            "The folder cannot be renamed because \(path) already exists."
+        }
+    }
+}
+
 /// Pure classification of file-tree context menu operations (design v2).
 ///
 /// Menu = generic document operations (standard macOS conventions) + domain
@@ -1822,18 +2201,147 @@ enum MemoryFileTreeMenu {
         }
     }
 
+    static func discardableDrafts(
+        _ items: [MemoryListItem],
+        inOrgView: Bool
+    ) -> [LocalDraft] {
+        guard !inOrgView else { return [] }
+        var seen = Set<String>()
+        return items.compactMap(\.draft).filter {
+            $0.status != .discarded
+                && $0.status != .merged
+                && seen.insert($0.id).inserted
+        }
+            .sorted {
+                $0.document.path.localizedStandardCompare($1.document.path)
+                    == .orderedAscending
+            }
+    }
+
     /// Rename is an organization-authority proposal. Project views only
     /// expose it for Org resources that are still selected by that project.
     /// The Org overview is authority-only/read-only because it has no
     /// unambiguous Project carrier for a LocalDraft.
-    /// Target-backed draft-only rows (for example, after Remove from Project)
-    /// and legacy Project authority are intentionally excluded.
+    /// Pure create Drafts keep their full local document and can be renamed;
+    /// target-backed orphan rows and legacy Project authority stay read-only.
     static func canRename(_ item: MemoryListItem, inOrgView: Bool) -> Bool {
-        guard item.resource?.scope == .org,
-              item.draft?.isDeletion != true else {
+        guard !inOrgView, item.draft?.isDeletion != true else {
             return false
         }
-        return !inOrgView && item.inherited
+        if item.resource?.scope == .org { return item.inherited }
+        return item.resource == nil
+            && item.draft?.scope == .org
+            && item.draft?.targetId == nil
+    }
+
+    static func directoryRenamePlan(
+        directoryId: String,
+        newName: String,
+        items: [MemoryListItem],
+        occupiedPaths: Set<String>,
+        occupiedTreePaths: Set<String>,
+        inOrgView: Bool
+    ) throws -> MemoryDirectoryRenamePlan {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
+            throw MemoryDirectoryMutationError.invalidName
+        }
+        guard let sourceDirectory = FileTreeNode.directoryPath(from: directoryId),
+              !items.isEmpty else {
+            throw MemoryDirectoryMutationError.invalidDirectory
+        }
+        guard items.allSatisfy({ canRename($0, inOrgView: inOrgView) }) else {
+            throw MemoryDirectoryMutationError.readOnly
+        }
+
+        let parent = sourceDirectory.split(separator: "/").dropLast().joined(separator: "/")
+        let destinationDirectory = parent.isEmpty ? name : "\(parent)/\(name)"
+        guard destinationDirectory != sourceDirectory else {
+            throw MemoryDirectoryMutationError.invalidName
+        }
+
+        let sourcePaths = Set(items.flatMap { item in
+            [item.resource?.document.path, item.draft?.document.path].compactMap { $0 }
+        }.map { $0.lowercased() })
+        let sourceTreePaths = Set(items.flatMap { item in
+            [item.resource?.document.path, item.draft?.document.path]
+                .compactMap { $0 }
+                .map { FileTreeNode.treePath(for: $0, kind: item.kind) }
+        }.map { $0.lowercased() })
+        let externalPaths = Set(occupiedPaths.map { $0.lowercased() })
+            .subtracting(sourcePaths)
+        let externalTreePaths = Set(occupiedTreePaths.map { $0.lowercased() })
+            .subtracting(sourceTreePaths)
+        var destinationPaths = Set<String>()
+        var destinationTreePaths = Set<String>()
+        var changes: [MemoryDirectoryRenameChange] = []
+
+        for item in items {
+            let treePath = FileTreeNode.treePath(for: item)
+            let sourcePrefix = sourceDirectory + "/"
+            guard treePath.hasPrefix(sourcePrefix) else {
+                throw MemoryDirectoryMutationError.invalidDirectory
+            }
+            let relativePath = String(treePath.dropFirst(sourcePrefix.count))
+            let destinationTreePath = destinationDirectory + "/" + relativePath
+            let destinationPath = FileTreeNode.documentPath(
+                fromTreePath: destinationTreePath,
+                for: item
+            )
+            let destinationRoot = FileTreeNode.documentPath(
+                fromTreePath: destinationDirectory,
+                for: item
+            )
+            let normalizedDestinationRoot = destinationRoot.lowercased()
+            let normalizedDestinationDirectory = destinationDirectory.lowercased()
+            if containsPathConflict(externalPaths, at: normalizedDestinationRoot)
+                || containsPathConflict(
+                    externalTreePaths,
+                    at: normalizedDestinationDirectory
+                )
+                || !destinationPaths.insert(destinationPath.lowercased()).inserted
+                || !destinationTreePaths.insert(destinationTreePath.lowercased()).inserted {
+                throw MemoryDirectoryMutationError.pathCollision(destinationPath)
+            }
+            changes.append(.init(item: item, newPath: destinationPath))
+        }
+
+        return .init(changes: changes.sorted {
+            $0.item.document.path.localizedStandardCompare($1.item.document.path)
+                == .orderedAscending
+        })
+    }
+
+    private static func containsPathConflict(_ paths: Set<String>, at root: String) -> Bool {
+        let prefix = root + "/"
+        return paths.contains {
+            $0 == root || $0.hasPrefix(prefix) || root.hasPrefix($0 + "/")
+        }
+    }
+
+    static func directoryDeletionPlan(
+        _ items: [MemoryListItem],
+        inOrgView: Bool
+    ) -> MemoryDirectoryDeletionPlan? {
+        guard !inOrgView, !items.isEmpty else { return nil }
+        var itemsToDelete: [MemoryListItem] = []
+        var draftsToDiscard: [LocalDraft] = []
+        for item in items {
+            if canProposeOrganizationDeletion(item, inOrgView: inOrgView) {
+                itemsToDelete.append(item)
+            } else if item.resource == nil, let draft = item.draft {
+                draftsToDiscard.append(draft)
+            } else if item.draft?.isDeletion == true {
+                continue
+            } else {
+                return nil
+            }
+        }
+        guard !itemsToDelete.isEmpty || !draftsToDiscard.isEmpty else { return nil }
+        return .init(
+            itemsToDelete: itemsToDelete,
+            draftsToDiscard: draftsToDiscard
+        )
     }
 
     /// New memories are Project-bound proposals for Org authority. The Org

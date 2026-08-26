@@ -96,14 +96,14 @@ enum ProjectMemberError: LocalizedError, Sendable {
 enum MemoryValidationError: LocalizedError, Sendable {
     case invalidPath(String)
     case emptyRule
-    case unpublishedMemoryCannotBeRenamed
+    case memoryCannotBeRenamed
 
     var errorDescription: String? {
         switch self {
         case .invalidPath(let message): message
         case .emptyRule: "A Rule needs content."
-        case .unpublishedMemoryCannotBeRenamed:
-            "A new memory can be renamed after it becomes shared."
+        case .memoryCannotBeRenamed:
+            "This memory is no longer available to rename."
         }
     }
 }
@@ -2376,10 +2376,10 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    /// Renames a target-backed memory without coupling the path mutation to
-    /// whatever body happens to be loaded in the file tree. In particular,
-    /// metadata-only resources carry an empty placeholder body and must never
-    /// turn a rename into an empty-content update.
+    /// Renames without coupling the path mutation to whatever body happens to
+    /// be loaded in the file tree. Target-backed resources use their stable
+    /// resource id; a pure create Draft uses its provisional Draft id. Both
+    /// keep content and semantic metadata untouched.
     func rename(_ item: MemoryListItem, to newPath: String) async throws {
         guard !isSwitchingMemoryContext else {
             throw ServerClientError.forbidden(
@@ -2419,7 +2419,7 @@ final class WorkspaceStore: ObservableObject {
                 currentDraft: draft,
                 newPath: newPath
             ) else {
-                throw MemoryValidationError.unpublishedMemoryCannotBeRenamed
+                throw MemoryValidationError.memoryCannotBeRenamed
             }
             guard let projectId = draftCarrierProjectId(for: item, currentDraft: draft) else {
                 throw WorkspaceLoadError.noProjects
@@ -2474,7 +2474,10 @@ final class WorkspaceStore: ObservableObject {
         currentDraft: LocalDraft?,
         newPath: String
     ) -> DocumentRenamePlan? {
-        guard let targetId = item.resource?.id ?? currentDraft?.targetId else { return nil }
+        let targetId = item.resource?.id
+            ?? currentDraft?.targetId
+            ?? (item.resource == nil ? currentDraft?.id : nil)
+        guard let targetId else { return nil }
         return .init(targetId: targetId, newPath: newPath)
     }
 
@@ -2487,23 +2490,24 @@ final class WorkspaceStore: ObservableObject {
         return retargeted
     }
 
-    func delete(_ item: MemoryListItem) async {
-        guard item.draft?.isDeletion != true else { return }
+    @discardableResult
+    func delete(_ item: MemoryListItem) async -> Bool {
+        guard item.draft?.isDeletion != true else { return false }
         guard !isSwitchingMemoryContext else {
             errorMessage = "Wait for the Memory context switch to finish before deleting."
-            return
+            return false
         }
         guard canEditMemory(item) else {
             errorMessage = "You do not have permission to delete this memory."
-            return
+            return false
         }
         guard synchronizationItemId(for: item) == nil else {
             errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
-            return
+            return false
         }
         cancelDocumentSave(item)
         guard let projectId = draftCarrierProjectId(for: item, currentDraft: item.draft),
-              let targetId = item.resource?.id ?? item.draft?.targetId else { return }
+              let targetId = item.resource?.id ?? item.draft?.targetId else { return false }
         do {
             try await withDraftMutation {
                 guard synchronizationItemId(for: item) == nil else {
@@ -2523,15 +2527,18 @@ final class WorkspaceStore: ObservableObject {
                 )
                 try await refreshDraft(response.draftId)
             }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
-    func discard(_ draft: LocalDraft) async {
+    @discardableResult
+    func discard(_ draft: LocalDraft) async -> Bool {
         guard synchronizationItemId(for: draft) == nil else {
             errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
-            return
+            return false
         }
         cancelDocumentSave(
             .init(projectId: draft.projectId, itemId: draft.targetId ?? draft.id)
@@ -2556,8 +2563,10 @@ final class WorkspaceStore: ObservableObject {
                 pruneOrphanedMemoryTabs()
                 selectedItemId = nil
             }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
