@@ -350,13 +350,13 @@ struct DaemonServerResponse: Codable, Sendable {
 }
 
 struct DaemonDraftListQuery: Codable, Sendable {
-    let projectId: String?
+    let resource: String?
     let status: String?
     let cursor: String?
     let limit: Int?
 
-    init(projectId: String? = nil, status: String? = nil, cursor: String? = nil, limit: Int? = nil) {
-        self.projectId = projectId
+    init(resource: String? = nil, status: String? = nil, cursor: String? = nil, limit: Int? = nil) {
+        self.resource = resource
         self.status = status
         self.cursor = cursor
         self.limit = limit
@@ -365,6 +365,12 @@ struct DaemonDraftListQuery: Codable, Sendable {
 
 struct DaemonDraftListResponse: Codable, Sendable {
     let items: [DaemonDraftSummary]
+    let nextCursor: String?
+
+    init(items: [DaemonDraftSummary], nextCursor: String? = nil) {
+        self.items = items
+        self.nextCursor = nextCursor
+    }
 }
 
 struct DaemonDraftDetailRequest: Codable, Sendable {

@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -25,6 +28,13 @@ use crate::types::{
 use crate::{commit_sync, delete_server_json, get_server_json, load_meta_value, post_server_json};
 
 const MAX_CONCURRENT_DRAFT_PROJECTION_REQUESTS: usize = 8;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DraftListCursor {
+    updated_at: String,
+    created_at: String,
+    draft_id: String,
+}
 
 pub(crate) struct LocalDraftResolutionInput<'a> {
     pub(crate) requested_draft_id: Option<&'a str>,
@@ -244,6 +254,11 @@ pub(crate) async fn list_local_drafts(
         .transpose()?
         .map(ToOwned::to_owned);
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(decode_draft_list_cursor)
+        .transpose()?;
     let rows = sqlx::query(
         "SELECT
             d.draft_id, d.project_id, d.server_draft_id, d.server_version, d.base_commit_id,
@@ -264,20 +279,57 @@ pub(crate) async fn list_local_drafts(
          FROM local_drafts d
          WHERE ($1 IS NULL OR d.resource_kind = $1)
            AND ($2 IS NULL OR d.status = $2)
+           AND (
+                $3 IS NULL
+                OR d.updated_at < $3
+                OR (d.updated_at = $3 AND d.created_at < $4)
+                OR (d.updated_at = $3 AND d.created_at = $4 AND d.draft_id > $5)
+           )
          ORDER BY d.updated_at DESC, d.created_at DESC, d.draft_id ASC
-         LIMIT $3",
+         LIMIT $6",
     )
     .bind(resource_kind.as_deref())
     .bind(status.as_deref())
-    .bind(limit)
+    .bind(cursor.as_ref().map(|cursor| cursor.updated_at.as_str()))
+    .bind(cursor.as_ref().map(|cursor| cursor.created_at.as_str()))
+    .bind(cursor.as_ref().map(|cursor| cursor.draft_id.as_str()))
+    .bind(limit + 1)
     .fetch_all(pool)
     .await?;
 
+    let has_more = rows.len() as i64 > limit;
     let items = rows
         .iter()
+        .take(limit as usize)
         .map(local_draft_summary_from_row)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(DaemonDraftListResponse { items })
+    let next_cursor = if has_more {
+        items
+            .last()
+            .map(|draft| {
+                encode_draft_list_cursor(&DraftListCursor {
+                    updated_at: draft.updated_at.clone(),
+                    created_at: draft.created_at.clone(),
+                    draft_id: draft.draft_id.clone(),
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(DaemonDraftListResponse { items, next_cursor })
+}
+
+fn encode_draft_list_cursor(cursor: &DraftListCursor) -> Result<String, DaemonError> {
+    Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?))
+}
+
+fn decode_draft_list_cursor(cursor: &str) -> Result<DraftListCursor, DaemonError> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| DaemonError::InvalidRequest("Invalid Draft list cursor".to_owned()))?;
+    serde_json::from_slice(&decoded)
+        .map_err(|_| DaemonError::InvalidRequest("Invalid Draft list cursor".to_owned()))
 }
 
 pub(crate) async fn load_local_draft_detail(

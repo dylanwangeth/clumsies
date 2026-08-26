@@ -371,12 +371,14 @@ pub struct McpAdapterStatus {
 pub struct DaemonDraftListQuery {
     pub resource: Option<String>,
     pub status: Option<String>,
+    pub cursor: Option<String>,
     pub limit: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonDraftListResponse {
     pub items: Vec<DaemonDraftSummary>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
