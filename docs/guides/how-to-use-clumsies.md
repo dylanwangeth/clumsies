@@ -18,14 +18,13 @@ profiles in the app.
 
 ## Browse memory
 
-The unified **Memory** section shows both scopes of one Memory model in a
-single navigator, with a Project filter that also offers the **Org** scope for
-organization-shared memory:
+The unified **Memory** section shows two views of one Organization-authority
+model in a single navigator:
 
 - **Org** (organization scope, historically called Hub) contains
   organization-shared Memory.
-- **Project** (project scope, historically called Local) contains the selected
-  project's resources and local drafts.
+- **Project** contains that Project's selected Organization resources plus its
+  private pre-merge Organization Draft overlays.
 
 There are no closed Context / Rule / Workflow types — a Memory's role is
 carried by its content and path. The navigator lists Memory by path; opening

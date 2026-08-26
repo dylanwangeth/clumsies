@@ -71,7 +71,7 @@ async fn bearer_identity_enforces_personal_and_project_boundaries() {
                         title: "Owner draft".to_owned(),
                         description: None,
                         resource: DraftResourceRef {
-                            scope: ResourceScope::Project,
+                            scope: ResourceScope::Org,
                             id: None,
                             path: Some("context/private.md".to_owned()),
                         },

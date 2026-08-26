@@ -35,7 +35,7 @@ async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
     )
     .await;
     let resource = DraftResourceRef {
-        scope: ResourceScope::Project,
+        scope: ResourceScope::Org,
         id: None,
         path: Some("rules/new-rule.md".to_owned()),
     };
@@ -113,7 +113,7 @@ async fn draft_created_resource_must_be_discarded_instead_of_deleted() {
 }
 
 #[tokio::test]
-async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
+async fn project_authority_drafts_are_rejected_at_creation() {
     let postgres = common::migrated_postgres().await;
     let repo = ServerRepository::new(postgres.pool.clone());
     let bootstrap = common::initialize_installation(
@@ -130,7 +130,7 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
         id: None,
         path: Some("context/legacy.md".to_owned()),
     };
-    let legacy_draft = repo
+    let error = repo
         .create_draft(
             &bootstrap.user_id,
             CreateDraftRequest {
@@ -139,21 +139,67 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
                 base_commit_id: None,
                 title: "Legacy Project draft".to_owned(),
                 description: None,
-                resource: legacy_resource.clone(),
+                resource: legacy_resource,
                 operations: Vec::new(),
             },
         )
         .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Project is a Draft carrier, not a Memory authority scope")
+    );
+    let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drafts")
+        .fetch_one(&postgres.pool)
+        .await
         .unwrap();
+    assert_eq!(draft_count, 0);
+}
 
-    let create_review_error = repo
+#[tokio::test]
+async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "External Memory",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Migration Project",
+    )
+    .await;
+    sqlx::query("ALTER TABLE drafts DROP CONSTRAINT drafts_no_active_project_authority")
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO drafts (
+            draft_id, project_id, author_user_id, title, description,
+            resource_scope, resource_kind, path, status, version,
+            daemon_installation_id
+         ) VALUES
+            ('drf_legacy_open', $1, $2, 'Legacy open', '',
+             'project', 'memory', 'context/legacy-open.md', 'open', 1, 'daemon_legacy'),
+            ('drf_legacy_submitted', $1, $2, 'Legacy submitted', '',
+             'project', 'memory', 'context/legacy-submitted.md', 'submitted', 1,
+             'daemon_legacy')",
+    )
+    .bind(&bootstrap.project_id)
+    .bind(&bootstrap.user_id)
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
+    let create_error = repo
         .create_review(
             &bootstrap.user_id,
             None,
             CreateReviewRequest {
                 drafts: vec![ReviewDraftRequest {
-                    draft_id: legacy_draft.draft.draft_id.clone(),
-                    expected_draft_version: legacy_draft.draft.version,
+                    draft_id: "drf_legacy_open".to_owned(),
+                    expected_draft_version: 1,
                 }],
                 title: None,
                 description: None,
@@ -164,36 +210,45 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
         .await
         .unwrap_err();
     assert!(
-        create_review_error
+        create_error
             .to_string()
-            .contains("project-scoped Memory authority is read-only")
+            .contains("Project is not a Memory authority scope")
     );
 
-    let rejected_review_id = "rev_legacy_rejected";
     sqlx::query(
         "INSERT INTO reviews (
             review_id, draft_id, project_id, author_user_id,
             title, description, status, version
-         )
-         VALUES ($1, $2, $3, $4, 'Legacy rejected Review', '', 'rejected', 1)",
+         ) VALUES
+            ('rev_legacy_rejected', 'drf_legacy_open', $1, $2,
+             'Legacy rejected', '', 'rejected', 1),
+            ('rev_legacy_approved', 'drf_legacy_submitted', $1, $2,
+             'Legacy approved', '', 'approved', 1)",
     )
-    .bind(rejected_review_id)
-    .bind(&legacy_draft.draft.draft_id)
     .bind(&bootstrap.project_id)
     .bind(&bootstrap.user_id)
     .execute(&postgres.pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO review_drafts (review_id, draft_id, ordinal) VALUES
+            ('rev_legacy_rejected', 'drf_legacy_open', 0),
+            ('rev_legacy_approved', 'drf_legacy_submitted', 0)",
+    )
+    .execute(&postgres.pool)
+    .await
+    .unwrap();
+
     let resubmit_error = repo
         .create_review_submission(
-            rejected_review_id,
+            "rev_legacy_rejected",
             &bootstrap.user_id,
             None,
             CreateReviewSubmissionRequest {
                 expected_review_version: 1,
                 drafts: vec![ReviewDraftRequest {
-                    draft_id: legacy_draft.draft.draft_id.clone(),
-                    expected_draft_version: legacy_draft.draft.version,
+                    draft_id: "drf_legacy_open".to_owned(),
+                    expected_draft_version: 1,
                 }],
                 title: None,
                 description: None,
@@ -206,47 +261,12 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
     assert!(
         resubmit_error
             .to_string()
-            .contains("project-scoped Memory authority is read-only")
+            .contains("Project is not a Memory authority scope")
     );
 
-    let approved_draft = repo
-        .create_draft(
-            &bootstrap.user_id,
-            CreateDraftRequest {
-                daemon_installation_id: "daemon_legacy".to_owned(),
-                project_id: bootstrap.project_id.clone(),
-                base_commit_id: None,
-                title: "Legacy approved Project draft".to_owned(),
-                description: None,
-                resource: legacy_resource,
-                operations: Vec::new(),
-            },
-        )
-        .await
-        .unwrap();
-    sqlx::query("UPDATE drafts SET status = 'submitted' WHERE draft_id = $1")
-        .bind(&approved_draft.draft.draft_id)
-        .execute(&postgres.pool)
-        .await
-        .unwrap();
-    let approved_review_id = "rev_legacy_approved";
-    sqlx::query(
-        "INSERT INTO reviews (
-            review_id, draft_id, project_id, author_user_id,
-            title, description, status, version, approved_result_hash
-         )
-         VALUES ($1, $2, $3, $4, 'Legacy approved Review', '', 'approved', 1, 'legacy')",
-    )
-    .bind(approved_review_id)
-    .bind(&approved_draft.draft.draft_id)
-    .bind(&bootstrap.project_id)
-    .bind(&bootstrap.user_id)
-    .execute(&postgres.pool)
-    .await
-    .unwrap();
     let merge_error = repo
         .create_review_merge(
-            approved_review_id,
+            "rev_legacy_approved",
             &bootstrap.user_id,
             None,
             CreateReviewMergeRequest {
@@ -258,7 +278,7 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
     assert!(
         merge_error
             .to_string()
-            .contains("project-scoped Memory authority is read-only")
+            .contains("Project is not a Memory authority scope")
     );
 }
 
@@ -1390,6 +1410,10 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
     // Compatibility fixture: releases before Org-only authority could leave
     // Project-owned rows behind. They remain readable but no Review may
     // create or mutate them after this cutover.
+    sqlx::query("ALTER TABLE resources DROP CONSTRAINT resources_no_active_project_authority")
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO resources (
             resource_id, org_id, project_id, scope, resource_kind, path, name,
@@ -2709,6 +2733,10 @@ async fn project_org_selection_rejects_foreign_and_colliding_resources_atomicall
         )
         .await
         .unwrap();
+    sqlx::query("ALTER TABLE resources DROP CONSTRAINT resources_no_active_project_authority")
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO resources (
             resource_id, org_id, project_id, scope, resource_kind, path, name,
@@ -3814,14 +3842,14 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         title: "Valid memory under workflow namespace".to_owned(),
         description: None,
         resource: DraftResourceRef {
-            scope: ResourceScope::Project,
+            scope: ResourceScope::Org,
             id: None,
             path: Some("workflows/valid".to_owned()),
         },
         operations: vec![DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("workflows/valid".to_owned()),
             },
@@ -3848,14 +3876,14 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         title: "Invalid empty memory draft".to_owned(),
         description: None,
         resource: DraftResourceRef {
-            scope: ResourceScope::Project,
+            scope: ResourceScope::Org,
             id: None,
             path: Some("memories/empty".to_owned()),
         },
         operations: vec![DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("memories/empty".to_owned()),
             },
@@ -3880,14 +3908,14 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         title: "Empty Rule".to_owned(),
         description: None,
         resource: DraftResourceRef {
-            scope: ResourceScope::Project,
+            scope: ResourceScope::Org,
             id: None,
             path: Some("rules/empty".to_owned()),
         },
         operations: vec![DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("rules/empty".to_owned()),
             },
@@ -3912,14 +3940,14 @@ async fn invalid_memory_paths_and_rule_shapes_are_rejected_before_draft_storage(
         title: "Invalid Context path".to_owned(),
         description: None,
         resource: DraftResourceRef {
-            scope: ResourceScope::Project,
+            scope: ResourceScope::Org,
             id: None,
             path: Some("context//invalid.md".to_owned()),
         },
         operations: vec![DraftOperationInput {
             action: DraftOperationAction::Create,
             resource: DraftResourceRef {
-                scope: ResourceScope::Project,
+                scope: ResourceScope::Org,
                 id: None,
                 path: Some("context//invalid.md".to_owned()),
             },

@@ -87,7 +87,8 @@ export default withMermaid(
               items: [
                 { text: "Organization memory", link: "/artifact" },
                 { text: "Project", link: "/workspace" },
-                { text: "Unified Memory model", link: "/unified-memory-model" }
+                { text: "Unified Memory model", link: "/unified-memory-model" },
+                { text: "Project authority cutover", link: "/project-authority-migration" }
               ]
             },
             {

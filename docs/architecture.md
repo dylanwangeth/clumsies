@@ -66,7 +66,7 @@ sequenceDiagram
     participant S as Server
     participant P as PostgreSQL
 
-    C->>D: store(project_id, scope, memory ref, op, base_commit_id)
+    C->>D: store(project_id, org memory ref, op, org base_commit_id)
     D->>P: no direct access
     D->>D: persist local draft and queued operation
     D-->>C: local operation accepted
@@ -101,9 +101,11 @@ sequenceDiagram
     Server-->>Desktop: new commit_id
 ```
 
-Organization and project Refs are independent. Merging an organization-scope
-draft advances the organization Ref only; merging a project-scope draft
-advances the selected project Ref only.
+Organization is the sole Memory authority, so every publishable Draft targets
+the Organization Ref. A Project Ref is an independently versioned projection of
+that Project's selected Organization Memory and configuration; selection or
+Organization-authority changes rebuild affected Project projections. No Review
+merge publishes to a Project authority namespace.
 
 ## Authority read path
 
@@ -129,11 +131,13 @@ sequenceDiagram
     D-->>P: ranked fragments or complete resources
 ```
 
-The SQLite Ref is the only mutable authority pointer. Moving it does not move a
-Draft Base. Search heads are local derived pointers bound to an Effective Memory
-hash. For Draft resources, that memory uses `Base + operations`; for all other
-resources it uses the latest installed Commit. MCP never scans cache files or
-falls back to an old generation when daemon has no matching ready index.
+The Organization Ref is the mutable authority pointer. The locally installed
+Project Ref selects one immutable materialization generation; moving it does
+not move an Organization Draft Base. Search heads are local derived pointers
+bound to an Effective Memory hash. For Draft resources, that memory uses
+`Base + operations`; for all other resources it uses the latest installed
+Project projection. MCP never scans cache files or falls back to an old
+generation when daemon has no matching ready index.
 
 ## Project Local Storage
 

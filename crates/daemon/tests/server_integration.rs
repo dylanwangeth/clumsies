@@ -2315,7 +2315,7 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2375,7 +2375,7 @@ async fn two_daemon_installations_converge_on_the_same_draft_history() {
             draft_id: Some(projected_on_b.draft.draft_id.clone()),
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2519,33 +2519,33 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO resources (
-            resource_id, org_id, project_id, scope, resource_kind, path, name,
-            status, content_hash, body
-         ) VALUES (
-            'ctx_secondary_project', $1, $2, 'project', 'memory',
-            'context/secondary.md', 'Secondary', 'active', 'secondary-hash',
-            '# Secondary project'
-         )",
-    )
-    .bind(&bootstrap.org_id)
-    .bind(&secondary_project_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    let secondary_memory_id = repository
+        .create_org_context(
+            &bootstrap.org_id,
+            "context/secondary.md",
+            "# Secondary project",
+        )
+        .await
+        .unwrap();
     repository
         .replace_project_org_selection(
             &secondary_project_id,
             0,
             ReplaceProjectOrgSelectionRequest {
-                resource_ids: Vec::new(),
+                resource_ids: vec![secondary_memory_id],
             },
         )
         .await
         .unwrap();
     let secondary_commit_id = repository
         .get_project_commit_state(&secondary_project_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
+    let initial_org_commit_id = repository
+        .get_org_commit_state(&bootstrap.org_id, None)
         .await
         .unwrap()
         .reference
@@ -2607,7 +2607,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
             CreateDraftRequest {
                 daemon_installation_id: "daemon_commit_origin".to_owned(),
                 project_id: bootstrap.project_id.clone(),
-                base_commit_id: None,
+                base_commit_id: Some(initial_org_commit_id.clone()),
                 title: "Add synchronized context".to_owned(),
                 description: None,
                 resource: DraftResourceRef {
@@ -2635,7 +2635,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let review = repository
         .create_review(
             &bootstrap.user_id,
-            None,
+            Some(&initial_org_commit_id),
             CreateReviewRequest {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft.draft.draft_id,
@@ -2665,7 +2665,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         .create_review_merge(
             &approved.review.review_id,
             &approved.review.author.user_id,
-            None,
+            Some(&initial_org_commit_id),
             CreateReviewMergeRequest {
                 expected_review_version: approved.review.version,
             },
@@ -2804,12 +2804,19 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
         Some(roots[0].to_str().unwrap())
     );
 
+    let current_org_commit_id = repository
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id
+        .unwrap();
     let next_draft = restarted_a
         .store_draft_operation(DaemonDraftOperationRequest {
             draft_id: None,
             base_commit_id: None,
             project_id: bootstrap.project_id.clone(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2829,7 +2836,7 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
     let next_draft = restarted_a.get_draft(&next_draft.draft_id).await.unwrap();
     assert_eq!(
         next_draft.draft.base_commit_id.as_deref(),
-        Some(commit_id.as_str())
+        Some(current_org_commit_id.as_str())
     );
 
     let selected = restarted_a

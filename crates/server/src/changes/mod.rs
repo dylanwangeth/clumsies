@@ -1,4 +1,4 @@
 pub(crate) mod api;
 pub(crate) mod http;
-mod postgres;
+pub(crate) mod postgres;
 mod service;

@@ -352,7 +352,7 @@ async fn project_storage_is_local_per_project_and_moves_managed_cache_safely() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_a".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2011,7 +2011,7 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2053,7 +2053,7 @@ async fn draft_operation_service_method_writes_local_queue_without_http() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2348,7 +2348,7 @@ async fn deleting_an_authoritative_resource_keeps_an_open_deletion_draft() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -2373,7 +2373,7 @@ async fn deleting_an_authoritative_resource_keeps_an_open_deletion_draft() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -2615,7 +2615,7 @@ async fn ipc_dispatch_routes_the_complete_daemon_api() {
                 draft_id: None,
                 base_commit_id: None,
                 project_id: "prj_test".to_owned(),
-                scope: DaemonDraftScope::Project,
+                scope: DaemonDraftScope::Org,
                 resource: DaemonDraftResourceKind::Memory,
                 op: DaemonDraftOperation {
                     create: Some(DaemonCreateDraftOperation {
@@ -2707,7 +2707,7 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
             "method": "store_draft_operation",
             "payload": {
                 "project_id": "prj_mcp",
-                "scope": "project",
+                "scope": "org",
                 "resource": "memory",
                 "op": {
                     "create": {
@@ -2736,7 +2736,7 @@ async fn mcp_store_envelope_matches_the_daemon_contract() {
         .unwrap();
     assert_eq!(drafts.items.len(), 1);
     assert_eq!(drafts.items[0].project_id, "prj_mcp");
-    assert_eq!(drafts.items[0].scope, DaemonDraftScope::Project);
+    assert_eq!(drafts.items[0].scope, DaemonDraftScope::Org);
 
     let detail = service.get_draft(&drafts.items[0].draft_id).await.unwrap();
     assert_eq!(detail.operations.len(), 1);
@@ -2842,7 +2842,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -2865,7 +2865,7 @@ async fn local_drafts_can_be_listed_and_read_with_operation_history() {
             draft_id: Some(created.draft_id.clone()),
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -4062,7 +4062,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             ),
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -4141,7 +4141,7 @@ async fn sync_retry_uploads_new_local_draft_to_server() {
     assert_eq!(requests.len(), 1);
     assert!(requests[0].get("author_user_id").is_none());
     assert_eq!(requests[0]["project_id"], "prj_test");
-    assert_eq!(requests[0]["resource"]["scope"], "project");
+    assert_eq!(requests[0]["resource"]["scope"], "org");
     assert_eq!(
         requests[0]["base_commit_id"],
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -4438,7 +4438,7 @@ async fn queued_draft_syncs_after_project_config_is_set() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_late".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -4517,7 +4517,7 @@ async fn draft_operation_notifies_auto_sync_worker() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -4586,7 +4586,7 @@ async fn transient_server_failure_is_retried_automatically() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_recovery".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -4709,7 +4709,7 @@ async fn successful_new_draft_does_not_hide_an_existing_retrying_operation() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_retrying".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -4753,7 +4753,7 @@ async fn daemon_restart_requeues_an_interrupted_operation() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_restart".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -5153,7 +5153,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -5193,7 +5193,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             draft_id: Some(first.draft_id.clone()),
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {
@@ -5233,7 +5233,7 @@ async fn sync_retry_uploads_later_new_resource_edits_to_the_same_draft() {
             draft_id: Some(first.draft_id),
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: None,
@@ -5301,7 +5301,7 @@ async fn draft_operation_rejects_multiple_operation_variants() {
             draft_id: None,
             base_commit_id: None,
             project_id: "prj_test".to_owned(),
-            scope: DaemonDraftScope::Project,
+            scope: DaemonDraftScope::Org,
             resource: DaemonDraftResourceKind::Memory,
             op: DaemonDraftOperation {
                 create: Some(DaemonCreateDraftOperation {

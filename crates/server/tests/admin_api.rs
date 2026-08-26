@@ -605,6 +605,17 @@ async fn seed_memory(seed: SeedMemory<'_>) {
 #[tokio::test]
 async fn memory_export_contains_verifiable_full_state() {
     let postgres = common::migrated_postgres().await;
+    // This export fixture intentionally represents a pre-cutover database.
+    // The production migration installs these guards as NOT VALID around
+    // existing legacy rows, so remove them before seeding that old state.
+    sqlx::query("ALTER TABLE resources DROP CONSTRAINT resources_no_active_project_authority")
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE drafts DROP CONSTRAINT drafts_no_active_project_authority")
+        .execute(&postgres.pool)
+        .await
+        .unwrap();
     let bootstrap = common::initialize_installation(
         postgres.pool.clone(),
         "Acme Memory",

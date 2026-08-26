@@ -9,10 +9,11 @@ the unified Memory model. The Rust binary and container are named Server.
 Server owns:
 
 - organization membership, project membership, roles, and token sessions
-- organization and project Memory (the unified model)
+- Organization Memory authority and Project Memory selections/projections
 - personal Bundles (`resource_ids`)
 - drafts, draft operation history, reviews, decisions, comments, and merges
-- immutable Commit history, Trees, Blobs, and movable organization/project Refs
+- immutable Commit history, Trees, Blobs, the Organization authority Ref, and
+  Project projection Refs
 - admin configuration, token revocation, audit events, and health reporting
 
 Desktop and MCP write local drafts through the daemon. The daemon synchronizes
@@ -32,10 +33,12 @@ Blob -> Tree -> Commit -> Ref
 Draft(base_commit_id)
 ```
 
-Each organization and project has its own Ref. A merge locks the target Ref,
+Each Organization has an authority Ref; each Project has a separately versioned
+Ref for its selected-memory projection. A merge locks the Organization Ref,
 checks `If-Match`, verifies that the Draft is based on that Commit, creates a new
-immutable Commit, and advances only that Ref. Project metadata revision is
-separate from memory history.
+immutable Organization Commit, and advances the authority Ref. Project Refs are
+rebuilt when their selection or selected Organization authority changes.
+Project metadata revision is separate from both histories.
 
 The unified Memory endpoints are `GET /api/v1/org/memories`,
 `GET /api/v1/projects/{project_id}/memories`, and the corresponding

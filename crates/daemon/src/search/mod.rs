@@ -1780,23 +1780,23 @@ mod tests {
         let first = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                query: "hybrid".to_owned(),
+                query: "testing".to_owned(),
                 state: None,
             })
             .await
             .unwrap();
         assert!(first.fragments.iter().any(|fragment| {
-            fragment.resource_id == "ctx_retrieval"
+            fragment.resource_id == "rule_testing"
                 && fragment.action == ActivationAction::Add
                 && fragment
                     .content
                     .as_deref()
-                    .is_some_and(|content| content.contains("BM25"))
+                    .is_some_and(|content| content.contains("integration tests"))
         }));
         let second = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                query: "hybrid".to_owned(),
+                query: "testing".to_owned(),
                 state: Some(first.next_state.clone()),
             })
             .await
@@ -1804,7 +1804,7 @@ mod tests {
         let reused = second
             .fragments
             .iter()
-            .find(|fragment| fragment.resource_id == "ctx_retrieval")
+            .find(|fragment| fragment.resource_id == "rule_testing")
             .unwrap();
         assert_eq!(reused.action, ActivationAction::Reuse);
         assert!(reused.content.is_none());
@@ -1812,18 +1812,18 @@ mod tests {
         state
             .store_draft_operation(DaemonDraftOperationRequest {
                 draft_id: None,
-                base_commit_id: None,
+                base_commit_id: Some("commit_test".to_owned()),
                 project_id: "prj_test".to_owned(),
-                scope: crate::DaemonDraftScope::Project,
+                scope: crate::DaemonDraftScope::Org,
                 resource: crate::DaemonDraftResourceKind::Memory,
                 op: DaemonDraftOperation {
                     create: None,
                     update: Some(DaemonUpdateDraftOperation::Content(
                         DaemonContentDraftUpdate {
-                        id: "ctx_retrieval".to_owned(),
+                        id: "rule_testing".to_owned(),
                         content: DaemonDraftContent {
                             description: None,
-                            content: "# Retrieval\n\nHybrid search now uses BM25, vectors, RRF, and reranking."
+                            content: "# Testing\n\nTesting now covers BM25, vectors, RRF, and reranking."
                                 .to_owned(),
                         },
                         description: None,
@@ -1843,7 +1843,7 @@ mod tests {
         let stale = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                query: "hybrid".to_owned(),
+                query: "testing".to_owned(),
                 state: Some(second.next_state.clone()),
             })
             .await
@@ -1854,7 +1854,7 @@ mod tests {
         let third = state
             .activate_memory(ActivateMemoryRequest {
                 project_id: "prj_test".to_owned(),
-                query: "hybrid".to_owned(),
+                query: "testing".to_owned(),
                 state: Some(second.next_state),
             })
             .await
@@ -1863,7 +1863,7 @@ mod tests {
         let replaced = third
             .fragments
             .iter()
-            .find(|fragment| fragment.resource_id == "ctx_retrieval")
+            .find(|fragment| fragment.resource_id == "rule_testing")
             .unwrap();
         assert_eq!(replaced.action, ActivationAction::Replace);
         assert!(
@@ -1878,13 +1878,13 @@ mod tests {
                 "load_memory",
                 serde_json::to_value(LoadMemoryRequest {
                     project_id: "prj_test".to_owned(),
-                    ids: vec!["architecture/retrieval.md".to_owned()],
+                    ids: vec!["coding/TESTING.md".to_owned()],
                     known_hashes: BTreeMap::from([(
-                        "ctx_retrieval".to_owned(),
+                        "rule_testing".to_owned(),
                         first
                             .fragments
                             .iter()
-                            .find(|fragment| fragment.resource_id == "ctx_retrieval")
+                            .find(|fragment| fragment.resource_id == "rule_testing")
                             .unwrap()
                             .content_hash
                             .clone(),
@@ -2543,33 +2543,32 @@ mod tests {
         let (_temp, state) = test_state().await;
         let pool = state.inner.pool.clone();
         let service = DaemonIpcService::new(state);
-        let draft = service
-            .store_draft_operation(DaemonDraftOperationRequest {
-                draft_id: None,
-                base_commit_id: None,
-                project_id: "prj_test".to_owned(),
-                scope: crate::DaemonDraftScope::Project,
-                resource: crate::DaemonDraftResourceKind::Memory,
-                op: DaemonDraftOperation {
-                    create: None,
-                    update: Some(DaemonUpdateDraftOperation::Content(
-                        DaemonContentDraftUpdate {
-                            id: "ctx_retrieval".to_owned(),
-                            content: DaemonDraftContent {
-                                description: None,
-                                content: "# Legacy draft\n\nCleanup only.".to_owned(),
-                            },
-                            description: None,
-                        },
-                    )),
-                    rename: None,
-                    delete: None,
-                    discard: None,
-                },
-                source: Some(DaemonDraftOperationSource::Desktop),
-            })
-            .await
-            .unwrap();
+        let draft_id = "draft_legacy_project";
+        sqlx::query(
+            "INSERT INTO local_drafts (
+                draft_id, project_id, base_commit_id, current_commit_id,
+                resource_scope, resource_kind, target_id, status
+             ) VALUES ($1, 'prj_test', 'commit_test', 'commit_test',
+                       'project', 'memory', 'ctx_retrieval', 'open')",
+        )
+        .bind(draft_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO local_draft_operations (
+                local_operation_id, draft_id, resource_kind, operation_json,
+                source, sync_status
+             ) VALUES (
+                'op_legacy_project', $1, 'memory',
+                '{\"update\":{\"id\":\"ctx_retrieval\",\"content\":{\"description\":null,\"content\":\"# Legacy draft\\n\\nCleanup only.\"},\"description\":null}}',
+                'server', 'synced'
+             )",
+        )
+        .bind(draft_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let discarded = service
             .dispatch(DaemonIpcRequest::new(
@@ -2578,7 +2577,7 @@ mod tests {
                     "project_id": "prj_test",
                     "scope": "org",
                     "resource": "memory",
-                    "op": {"discard": {"id": draft.draft_id}},
+                    "op": {"discard": {"id": draft_id}},
                     "source": "mcp_store"
                 }),
             ))
@@ -2586,8 +2585,8 @@ mod tests {
         assert!(discarded.ok, "discard failed: {:?}", discarded.error);
         let response: DaemonDraftOperationResponse =
             serde_json::from_value(discarded.payload).unwrap();
-        assert_eq!(response.draft_id, draft.draft_id);
-        let detail = service.get_draft(&draft.draft_id).await.unwrap();
+        assert_eq!(response.draft_id, draft_id);
+        let detail = service.get_draft(draft_id).await.unwrap();
         assert_eq!(detail.draft.scope, crate::DaemonDraftScope::Project);
         assert_eq!(
             detail.draft.status,
@@ -2618,6 +2617,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(final_draft_count, 1);
+    }
+
+    #[tokio::test]
+    async fn desktop_cannot_create_new_project_authority_drafts() {
+        let (_temp, state) = test_state().await;
+        let error = state
+            .store_draft_operation(DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: Some("commit_test".to_owned()),
+                project_id: "prj_test".to_owned(),
+                scope: crate::DaemonDraftScope::Project,
+                resource: crate::DaemonDraftResourceKind::Memory,
+                op: DaemonDraftOperation {
+                    create: Some(DaemonCreateDraftOperation {
+                        path: "project/new.md".to_owned(),
+                        content: DaemonDraftContent {
+                            description: Some("No Project authority".to_owned()),
+                            content: "# New".to_owned(),
+                        },
+                        description: None,
+                    }),
+                    update: None,
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Project is a Draft carrier, not a Memory authority scope")
+        );
+        let draft_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts")
+            .fetch_one(&state.inner.pool)
+            .await
+            .unwrap();
+        assert_eq!(draft_count, 0);
     }
 
     #[tokio::test]

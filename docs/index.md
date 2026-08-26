@@ -19,13 +19,13 @@ hero:
 features:
   - icon: 🧠
     title: One Memory model
-    details: Rules, workflows, and context are a single Markdown-backed Memory object with a semantic description and stable IDs, in organization or project scope.
+    details: Rules, workflows, and context are one Markdown-backed Organization Memory object with a semantic description and stable IDs; Projects select resources and carry private Draft overlays.
   - icon: 📝
     title: Automatic drafts
     details: Desktop and MCP write to the same always-on daemon; local changes synchronize without a manual push step.
   - icon: ✅
     title: Reviewed authority
-    details: Drafts become authoritative only through review and a Commit that advances the organization or project Ref.
+    details: Project-carried Drafts become authoritative only through review and a Commit that advances the Organization Ref.
   - icon: 🗂️
     title: Agent-native Kanban
     details: Agents claim, pause, and propose closure of native Issues through typed kanban operations; only the user's Approve gate makes an Issue Done.

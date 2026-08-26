@@ -6,6 +6,7 @@ use crate::auth::AuthService;
 use crate::config::ServerConfig;
 use crate::db::{DatabaseConfig, connect, run_migrations};
 use crate::installation::InstallationService;
+use crate::project_authority_migration::{MigrationMode, migrate_project_authority};
 use crate::telemetry;
 
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(4);
@@ -50,6 +51,22 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         result?;
     }
     tracing::info!("clumsies server stopped");
+    Ok(())
+}
+
+pub async fn run_project_authority_migration(
+    expected_plan_hash: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let database_url = std::env::var("DATABASE_URL")?;
+    let pool = connect(&DatabaseConfig::from_url(database_url)).await?;
+    if expected_plan_hash.is_some() {
+        run_migrations(&pool).await?;
+    }
+    let mode = expected_plan_hash.map_or(MigrationMode::DryRun, |expected_plan_hash| {
+        MigrationMode::Apply { expected_plan_hash }
+    });
+    let report = migrate_project_authority(&pool, mode).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
