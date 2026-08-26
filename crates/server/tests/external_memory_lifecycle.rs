@@ -4341,6 +4341,7 @@ where
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-transform");
     let etag = response
         .headers()
         .get("etag")
