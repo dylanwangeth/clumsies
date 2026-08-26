@@ -283,6 +283,22 @@ private struct FileTreeView: View {
     }
 
     var body: some View {
+        fileTreeWithDestructiveAlerts
+        .sheet(item: $pendingDirectoryReview) { request in
+            ReviewRequestSheet(
+                initialTitle: request.initialTitle,
+                loadCandidate: { throw ReviewRequestError.reconcileDirectoryDrafts }
+            ) { title, description, _, _ in
+                try await store.requestReview(
+                    for: request.drafts,
+                    title: title,
+                    description: description
+                )
+            }
+        }
+    }
+
+    private var fileTreeContent: some View {
         List(selection: selection) {
             ForEach(visibleNodes) { entry in
                 fileTreeRow(for: entry)
@@ -322,6 +338,10 @@ private struct FileTreeView: View {
             pendingDirectoryDiscard = nil
             pendingDirectoryReview = nil
         }
+    }
+
+    private var fileTreeWithRenameAlerts: some View {
+        fileTreeContent
         .alert(
             itemRenameTitle,
             isPresented: Binding(
@@ -368,6 +388,10 @@ private struct FileTreeView: View {
         } message: {
             Text(directoryRenameMessage)
         }
+    }
+
+    private var fileTreeWithDestructiveAlerts: some View {
+        fileTreeWithRenameAlerts
         .alert(item: $pendingOrganizationDeletion) { deletion in
             Alert(
                 title: Text(deletion.title),
@@ -404,18 +428,6 @@ private struct FileTreeView: View {
                 },
                 secondaryButton: .cancel()
             )
-        }
-        .sheet(item: $pendingDirectoryReview) { request in
-            ReviewRequestSheet(
-                initialTitle: request.initialTitle,
-                loadCandidate: { throw ReviewRequestError.reconcileDirectoryDrafts }
-            ) { title, description, _, _ in
-                try await store.requestReview(
-                    for: request.drafts,
-                    title: title,
-                    description: description
-                )
-            }
         }
     }
 
