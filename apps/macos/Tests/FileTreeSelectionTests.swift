@@ -78,6 +78,27 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(selected.map(\.id), ["a", "b"])
     }
 
+    func testSingleFileDirectoryKeepsDirectoryIdentity() throws {
+        let roots = FileTreeNode.build([
+            memoryItem(id: "only", path: "notes/only.md"),
+        ])
+
+        let directory = try XCTUnwrap(FileTreeNode.selectedDirectory(
+            in: roots,
+            selectedNodeIds: ["directory:notes"]
+        ))
+
+        XCTAssertEqual(directory.id, "directory:notes")
+        XCTAssertNil(directory.item)
+        XCTAssertEqual(
+            FileTreeNode.items(
+                in: roots,
+                selectedNodeIds: [directory.id]
+            ).map(\.id),
+            ["only"]
+        )
+    }
+
     func testFileSelectionDoesNotIncludeSiblingFiles() {
         let items = [
             memoryItem(id: "a", path: "design/a.md"),

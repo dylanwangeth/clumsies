@@ -2660,6 +2660,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pure_create_draft_path_only_rename_preserves_content_and_description() {
+        let (_temp, state) = test_state().await;
+        let service = DaemonIpcService::new(state.clone());
+        let original_content = DaemonDraftContent {
+            description: Some("Keep this semantic description.".to_owned()),
+            content: "# New Memory\n\nOriginal body.".to_owned(),
+        };
+        let created = service
+            .store_draft_operation(DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: None,
+                project_id: "prj_test".to_owned(),
+                scope: crate::DaemonDraftScope::Org,
+                resource: crate::DaemonDraftResourceKind::Memory,
+                op: DaemonDraftOperation {
+                    create: Some(DaemonCreateDraftOperation {
+                        path: "guides/original.md".to_owned(),
+                        content: original_content.clone(),
+                        description: None,
+                    }),
+                    update: None,
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .await
+            .unwrap();
+
+        let renamed = service
+            .store_draft_operation(DaemonDraftOperationRequest {
+                draft_id: Some(created.draft_id.clone()),
+                base_commit_id: None,
+                project_id: "prj_test".to_owned(),
+                scope: crate::DaemonDraftScope::Org,
+                resource: crate::DaemonDraftResourceKind::Memory,
+                op: DaemonDraftOperation {
+                    create: None,
+                    update: None,
+                    rename: Some(DaemonRenameDraftOperation {
+                        id: created.draft_id.clone(),
+                        new_path: "guides/renamed.md".to_owned(),
+                        description: None,
+                    }),
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(renamed.draft_id, created.draft_id);
+        let detail = service.get_draft(&created.draft_id).await.unwrap();
+        assert_eq!(detail.operations.len(), 2);
+        assert_eq!(
+            detail.operations[0]
+                .operation
+                .create
+                .as_ref()
+                .unwrap()
+                .content,
+            original_content
+        );
+
+        let effective = load_effective_memory(&state, "prj_test").await.unwrap();
+        let loaded = effective
+            .resources
+            .iter()
+            .find(|resource| resource.resource_id == created.draft_id)
+            .unwrap();
+        assert_eq!(loaded.path, "guides/renamed.md");
+        assert_eq!(loaded.description, "Keep this semantic description.");
+        assert_eq!(loaded.content, "# New Memory\n\nOriginal body.");
+    }
+
+    #[tokio::test]
     async fn mcp_text_update_of_org_resource_resolves_its_real_scope() {
         let (_temp, state) = test_state().await;
         sqlx::query(
@@ -2965,12 +3043,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_create_draft_uses_the_provisional_resource_id_from_later_operations() {
+    fn remote_create_draft_accepts_the_server_draft_id_as_a_provisional_alias() {
         let create = DaemonDraftOperation {
             create: Some(DaemonCreateDraftOperation {
                 path: "context/new.md".to_owned(),
                 content: DaemonDraftContent {
-                    description: None,
+                    description: Some("Semantic metadata".to_owned()),
                     content: "# Initial".to_owned(),
                 },
                 description: None,
@@ -2996,6 +3074,17 @@ mod tests {
             delete: None,
             discard: None,
         };
+        let rename = DaemonDraftOperation {
+            create: None,
+            update: None,
+            rename: Some(DaemonRenameDraftOperation {
+                id: "drf_server".to_owned(),
+                new_path: "context/renamed.md".to_owned(),
+                description: None,
+            }),
+            delete: None,
+            discard: None,
+        };
         let overlay = super::overlay::DraftOverlay {
             draft_id: "drf_server".to_owned(),
             base_commit_id: Some("commit_base".to_owned()),
@@ -3007,6 +3096,7 @@ mod tests {
             operations: vec![
                 (1, serde_json::to_string(&create).unwrap(), create),
                 (2, serde_json::to_string(&update).unwrap(), update),
+                (3, serde_json::to_string(&rename).unwrap(), rename),
             ],
         };
 
@@ -3014,6 +3104,14 @@ mod tests {
         super::overlay::apply_draft_overlay("prj_test", &mut resources, overlay).unwrap();
 
         assert_eq!(resources["draft_provisional"].source.content, "# Updated");
+        assert_eq!(
+            resources["draft_provisional"].source.description,
+            "Semantic metadata"
+        );
+        assert_eq!(
+            resources["draft_provisional"].source.path,
+            "context/renamed.md"
+        );
         assert_eq!(
             resources["draft_provisional"].source.draft_id.as_deref(),
             Some("drf_server")
