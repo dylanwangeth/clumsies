@@ -1700,6 +1700,8 @@ final class WorkspaceStore: ObservableObject {
                 )
                 guard workspaceReloadGeneration == generation else { return }
             }
+        } catch is CancellationError {
+            return
         } catch {
             guard workspaceReloadGeneration == generation else { return }
             errorMessage = error.localizedDescription
@@ -1944,6 +1946,8 @@ final class WorkspaceStore: ObservableObject {
                 server: server
             ).loadContent(for: resource)
             installLoadedResourceIfCurrent(loaded)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
         }
