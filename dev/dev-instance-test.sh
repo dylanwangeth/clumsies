@@ -12,6 +12,7 @@ fake_docker_state=$test_root/docker.running
 fake_app_state=$test_root/app.running
 fake_daemon_state=$test_root/daemon.running
 fake_server_registry=$test_root/server.registry
+fake_setup_state=$test_root/setup.state
 compose_descriptor_marker=$test_root/compose-descriptor.checked
 test_home=$test_root/home
 dev_root=$test_root/dev-root
@@ -23,6 +24,7 @@ mkdir -p "$fake_bin" "$test_home/Applications/Clumsies.app" \
 printf 'stable-app\n' > "$test_home/Applications/Clumsies.app/sentinel"
 printf 'stable-daemon\n' > "$test_home/Library/Application Support/ai.clumsies/sentinel"
 printf 'stable-codex\n' > "$test_home/.codex/sentinel"
+printf 'setup_required\n' > "$fake_setup_state"
 
 cleanup() {
   if [ -n "${reset_pid:-}" ]; then
@@ -113,7 +115,7 @@ PY
     if [ "$#" -eq 2 ] && [ "$2" = --remove-orphans ]; then
       :
     elif [ "$#" -eq 3 ] && [ "$2" = -v ] && [ "$3" = --remove-orphans ]; then
-      :
+      printf 'setup_required\n' > "$FAKE_SETUP_STATE"
     else
       reject "$@"
     fi
@@ -131,20 +133,84 @@ cat > "$fake_bin/curl" <<'EOF'
 #!/bin/sh
 set -eu
 printf 'curl %s\n' "$*" >> "$FAKE_COMMAND_LOG"
-[ "$#" -eq 5 ] && [ "$1" = --fail ] && [ "$2" = --silent ] \
-  && [ "$3" = --max-time ] && [ "$4" = 3 ] || {
+reject() {
   printf 'curl %s\n' "$*" >> "$FAKE_REJECT_LOG"
   exit 97
 }
-case "$5" in
-  http://127.0.0.1:*/api/v1/admin/health|https://pr-*.example.test/api/v1/admin/health) ;;
-  *)
-    printf 'curl %s\n' "$*" >> "$FAKE_REJECT_LOG"
-    exit 97
-    ;;
-esac
+
+arg_after() {
+  wanted=$1
+  shift
+  while [ "$#" -gt 1 ]; do
+    if [ "$1" = "$wanted" ]; then
+      printf '%s\n' "$2"
+      return 0
+    fi
+    shift
+  done
+  return 1
+}
+
+has_arg() {
+  wanted=$1
+  shift
+  for argument do
+    [ "$argument" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+for argument do url=$argument; done
+case "${url:-}" in http://*|https://*) ;; *) reject "$@" ;; esac
 [ "${FAKE_CURL_FAIL:-0}" = 0 ] || exit 22
-printf '{"status":"ok"}\n'
+
+case "$url" in
+  http://127.0.0.1:*/api/v1/admin/health|https://pr-*.example.test/api/v1/admin/health)
+    printf '{"status":"ok"}\n'
+    ;;
+  "$FAKE_OPEN_SERVER_URL/api/v1/setup")
+    printf '{"state":"%s"}\n' "$(cat "$FAKE_SETUP_STATE")"
+    ;;
+  "$FAKE_OPEN_SERVER_URL/api/v1/setup/sessions")
+    output=$(arg_after --output "$@") || reject "$@"
+    cookie_jar=$(arg_after --cookie-jar "$@") || reject "$@"
+    body=$(cat)
+    expected_setup_code=$(awk -F= '$1 == "CLUMSIES_SETUP_CODE" { print substr($0, index($0, "=") + 1) }' "$FAKE_COMPOSE_ENV")
+    printf '%s' "$body" | FAKE_EXPECTED_SETUP_CODE="$expected_setup_code" /usr/bin/python3 -c \
+      'import json,os,sys; assert json.load(sys.stdin) == {"setup_code": os.environ["FAKE_EXPECTED_SETUP_CODE"]}' \
+      || reject
+    : > "$cookie_jar"
+    printf '%s\n' '{"csrf_token":"fake-csrf-token","expires_at":"2099-01-01T00:00:00Z"}' > "$output"
+    ;;
+  "$FAKE_OPEN_SERVER_URL/api/v1/setup/configuration")
+    cookie_file=$(arg_after --cookie "$@") || reject "$@"
+    csrf_header=$(printf '%s\n' "$@" | sed -n 's#^@\(/.*\)#\1#p')
+    [ -f "$cookie_file" ] && [ -f "$csrf_header" ] || reject "$@"
+    grep -Fx 'x-csrf-token: fake-csrf-token' "$csrf_header" >/dev/null || reject
+    /usr/bin/python3 -c \
+      'import json,sys; assert json.load(sys.stdin) == {"org_name":"Clumsies Dev","default_project_name":"Default","allowed_email_domains":[]}' \
+      || reject
+    ;;
+  "$FAKE_OPEN_SERVER_URL/api/v1/setup/oidc-authorizations")
+    output=$(arg_after --output "$@") || reject "$@"
+    cookie_file=$(arg_after --cookie "$@") || reject "$@"
+    csrf_header=$(printf '%s\n' "$@" | sed -n 's#^@\(/.*\)#\1#p')
+    [ -f "$cookie_file" ] && [ -f "$csrf_header" ] || reject "$@"
+    grep -Fx 'x-csrf-token: fake-csrf-token' "$csrf_header" >/dev/null || reject
+    FAKE_EXPECTED_REDIRECT="$FAKE_OPEN_SERVER_URL/admin/setup/callback" \
+      /usr/bin/python3 -c \
+      'import json,os,sys; assert json.load(sys.stdin) == {"redirect_uri": os.environ["FAKE_EXPECTED_REDIRECT"]}' \
+      || reject
+    printf '%s\n' \
+      '{"authorization_url":"http://127.0.0.1:18091/clumsies/authorize?state=fake"}' \
+      > "$output"
+    ;;
+  http://127.0.0.1:18091/clumsies/authorize\?state=fake)
+    has_arg --location "$@" || reject "$@"
+    printf 'initialized\n' > "$FAKE_SETUP_STATE"
+    ;;
+  *) reject ;;
+esac
 EOF
 
 cat > "$fake_bin/bun" <<'EOF'
@@ -283,6 +349,11 @@ printf 'open %s\n' "$*" >> "$FAKE_COMMAND_LOG"
   printf 'open %s\n' "$*" >> "$FAKE_REJECT_LOG"
   exit 97
 }
+case "$FAKE_OPEN_SERVER_URL" in
+  http://127.0.0.1:*) [ "$(cat "$FAKE_SETUP_STATE")" = initialized ] || exit 97 ;;
+  https://*) ;;
+  *) exit 97 ;;
+esac
 : > "$FAKE_APP_STATE"
 : > "$FAKE_DAEMON_STATE"
 EOF
@@ -558,6 +629,7 @@ runner_environment() {
     FAKE_APP_STATE="$fake_app_state" \
     FAKE_DAEMON_STATE="$fake_daemon_state" \
     FAKE_SERVER_REGISTRY="$fake_server_registry" \
+    FAKE_SETUP_STATE="$fake_setup_state" \
     FAKE_COMPOSE_DESCRIPTOR_MARKER="$compose_descriptor_marker" \
     FAKE_RUNTIME_FILE="$runtime" \
     FAKE_INSTANCE_ROOT="$instance_root" \
@@ -654,6 +726,15 @@ wait "$launcher_pid" 2>/dev/null || true
 run up > "$test_root/recovered-up.out"
 [ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$runtime")" = running ]
 [ -f "$compose_descriptor_marker" ]
+setup_sequence=$(awk '
+  /\/api\/v1\/setup\/sessions$/ { print "session"; next }
+  /\/api\/v1\/setup\/configuration$/ { print "configuration"; next }
+  /\/api\/v1\/setup\/oidc-authorizations$/ { print "authorization"; next }
+  /\/clumsies\/authorize[?]state=fake$/ { print "oidc"; next }
+  /\/api\/v1\/setup$/ { print "state"; next }
+' "$fake_log")
+[ "$setup_sequence" = "$(printf '%s\n' state session configuration authorization oidc state)" ]
+setup_sessions_before_reset=$(grep -c '/api/v1/setup/sessions' "$fake_log")
 run reset
 
 FAKE_XCODEBUILD_FAIL=1
@@ -663,6 +744,8 @@ if run up > "$test_root/failed-up.out" 2> "$test_root/failed-up.err"; then
   exit 1
 fi
 unset FAKE_XCODEBUILD_FAIL
+setup_sessions_after_reset=$(grep -c '/api/v1/setup/sessions' "$fake_log")
+[ "$setup_sessions_after_reset" -eq $((setup_sessions_before_reset + 1)) ]
 [ -f "$runtime" ]
 [ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$runtime")" = stopped ]
 [ ! -f "$fake_server_registry" ]
@@ -727,9 +810,12 @@ xcodebuild_after=$(grep -c '^xcodebuild ' "$fake_log" || true)
 [ ! -e "$instance_lock" ]
 
 xcodebuild_before=$(grep -c '^xcodebuild ' "$fake_log" || true)
+setup_sessions_before=$(grep -c '/api/v1/setup/sessions' "$fake_log" || true)
 run up > "$test_root/repeated-up.out"
 xcodebuild_after=$(grep -c '^xcodebuild ' "$fake_log" || true)
+setup_sessions_after=$(grep -c '/api/v1/setup/sessions' "$fake_log" || true)
 [ "$xcodebuild_after" -eq $((xcodebuild_before + 1)) ]
+[ "$setup_sessions_after" -eq "$setup_sessions_before" ]
 
 cp "$runtime" "$test_root/runtime.saved"
 /usr/bin/python3 - "$runtime" <<'PY'
@@ -917,9 +1003,12 @@ grep -F 'Preview Server is not healthy' "$test_root/unhealthy-preview.err" >/dev
 FAKE_OPEN_SERVER_URL=https://pr-73.example.test
 export FAKE_OPEN_SERVER_URL
 preview_curl_before=$(grep -c '^curl ' "$fake_log" || true)
+preview_setup_before=$(grep -c '/api/v1/setup' "$fake_log" || true)
 run up --preview "$preview_a" >/dev/null
 preview_curl_after=$(grep -c '^curl ' "$fake_log" || true)
+preview_setup_after=$(grep -c '/api/v1/setup' "$fake_log" || true)
 [ "$preview_curl_after" -ge $((preview_curl_before + 2)) ]
+[ "$preview_setup_after" -eq "$preview_setup_before" ]
 if run up --preview "$preview_b" > "$test_root/changed-preview.out" 2> "$test_root/changed-preview.err"; then
   echo "expected a changed Preview identity to require reset" >&2
   exit 1

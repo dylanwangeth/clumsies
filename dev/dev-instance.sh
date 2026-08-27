@@ -81,6 +81,7 @@ app_process_pattern=$(printf '%s' "$app_executable" | sed 's/[][\\.^$*+?(){}|]/\
 server_log=$logs_dir/server.log
 app_stdout=$logs_dir/app.out.log
 app_stderr=$logs_dir/app.err.log
+setup_temp_dir=
 
 compose() {
   docker compose \
@@ -523,6 +524,87 @@ server_is_healthy() {
     >/dev/null 2>&1
 }
 
+server_setup_state() {
+  curl --fail --silent --show-error --max-time 3 "$server_url/api/v1/setup" \
+    | "$python" -c '
+import json, sys
+state = json.load(sys.stdin).get("state")
+if state not in {"setup_required", "initialized"}:
+    raise SystemExit("invalid Server setup state")
+print(state)
+'
+}
+
+cleanup_setup_temp() {
+  case "${setup_temp_dir:-}" in
+    "$instance_root"/setup.*) rm -rf -- "$setup_temp_dir" ;;
+    '') ;;
+  esac
+  setup_temp_dir=
+}
+
+initialize_local_server() {
+  setup_state=$(server_setup_state) || die "could not read Server setup state"
+  case "$setup_state" in
+    initialized) return 0 ;;
+    setup_required) ;;
+    *) die "Server returned an invalid setup state" ;;
+  esac
+
+  setup_temp_dir=$(mktemp -d "$instance_root/setup.XXXXXX") \
+    || die "could not create temporary Server setup state"
+  setup_cookie_file=$setup_temp_dir/cookies
+  setup_csrf_header=$setup_temp_dir/csrf-header
+  setup_session_file=$setup_temp_dir/session.json
+  setup_authorization_file=$setup_temp_dir/authorization.json
+
+  printf '{"setup_code":"%s"}' "$setup_code" \
+    | curl --fail --silent --show-error --max-time 10 \
+      --request POST \
+      --header 'content-type: application/json' \
+      --cookie-jar "$setup_cookie_file" \
+      --data-binary @- \
+      --output "$setup_session_file" \
+      "$server_url/api/v1/setup/sessions"
+  setup_csrf_token=$(json_get "$setup_session_file" csrf_token) \
+    || die "Server setup session did not return a CSRF token"
+  [ -n "$setup_csrf_token" ] || die "Server setup session returned an empty CSRF token"
+  printf 'x-csrf-token: %s\n' "$setup_csrf_token" > "$setup_csrf_header"
+
+  printf '%s' \
+    '{"org_name":"Clumsies Dev","default_project_name":"Default","allowed_email_domains":[]}' \
+    | curl --fail --silent --show-error --max-time 10 \
+      --request PUT \
+      --header 'content-type: application/json' \
+      --header "@$setup_csrf_header" \
+      --cookie "$setup_cookie_file" \
+      --data-binary @- \
+      --output /dev/null \
+      "$server_url/api/v1/setup/configuration"
+
+  printf '{"redirect_uri":"%s/admin/setup/callback"}' "$server_url" \
+    | curl --fail --silent --show-error --max-time 10 \
+      --request POST \
+      --header 'content-type: application/json' \
+      --header "@$setup_csrf_header" \
+      --cookie "$setup_cookie_file" \
+      --data-binary @- \
+      --output "$setup_authorization_file" \
+      "$server_url/api/v1/setup/oidc-authorizations"
+  setup_authorization_url=$(json_get "$setup_authorization_file" authorization_url) \
+    || die "Server setup did not return an OIDC authorization URL"
+  case "$setup_authorization_url" in
+    "$oidc_issuer"/*) ;;
+    *) die "Server setup returned an unexpected OIDC authorization URL" ;;
+  esac
+  curl --fail --silent --show-error --location --max-time 30 \
+    --output /dev/null "$setup_authorization_url"
+
+  [ "$(server_setup_state)" = initialized ] \
+    || die "Server setup did not reach initialized state"
+  cleanup_setup_temp
+}
+
 daemon_is_running() {
   uid=$(id -u)
   launchctl print "gui/$uid/$daemon_label" >/dev/null 2>&1
@@ -682,6 +764,7 @@ on_exit() {
   if [ "$command_name" = up ] && [ "$status" -ne 0 ]; then
     cleanup_failed_up
   fi
+  cleanup_setup_temp
   cleanup_recovery_compose_env
   release_lock
   exit "$status"
@@ -894,6 +977,7 @@ run_up() {
       attempts=$((attempts + 1))
     done
     server_is_healthy || die "Server health did not become ready; see $server_log"
+    initialize_local_server
   else
     mv -f "$preview_candidate" "$preview_file"
     preview_candidate=
