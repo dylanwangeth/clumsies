@@ -118,6 +118,11 @@ private struct RuntimeDiagnosticsView: View {
                     LabeledContent("Log directory", value: runtime.health.logDir)
                 }
                 Section("Synchronization") {
+                    let retryProjectId = store.activeProjectId ?? runtime.health.projectId
+                    let isRetrying = store.isRetryingSync(
+                        channel: "all",
+                        projectId: retryProjectId
+                    )
                     LabeledContent("Drafts", value: runtime.sync?.draftSync.state.capitalized ?? "Loading")
                     LabeledContent("Commits", value: runtime.sync?.commitSync.state.capitalized ?? "Loading")
                     LabeledContent(
@@ -136,7 +141,14 @@ private struct RuntimeDiagnosticsView: View {
                         "Reconciliation conflicts",
                         value: runtime.sync.map { String($0.reconciliationConflictCount) } ?? "Loading"
                     )
-                    Button("Retry") { Task { await store.retrySync() } }
+                    Button(isRetrying ? "Retrying…" : "Retry Current Project") {
+                        Task {
+                            _ = await store.retrySync(
+                                projectId: retryProjectId
+                            )
+                        }
+                    }
+                    .disabled(isRetrying)
                 }
                 Section("Server") {
                     LabeledContent("Data source", value: runtime.serverDataSource.capitalized)

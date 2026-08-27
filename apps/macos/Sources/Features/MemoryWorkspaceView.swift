@@ -194,28 +194,125 @@ private struct ProjectPreparationView: View {
     }
 }
 
-private struct PendingOrganizationDeletion: Identifiable {
-    let id = UUID()
-    let items: [MemoryListItem]
+enum MemoryFileTreeAlert: Identifiable {
+    enum ID: Hashable {
+        case itemRename(String)
+        case directoryRename(String)
+        case organizationDeletion
+        case directoryDiscard
+        case directoryDeletion
+    }
+
+    case itemRename(item: MemoryListItem)
+    case directoryRename(id: String, items: [MemoryListItem])
+    case organizationDeletion(items: [MemoryListItem])
+    case directoryDiscard(name: String, drafts: [LocalDraft])
+    case directoryDeletion(name: String, plan: MemoryDirectoryDeletionPlan)
+
+    var id: ID {
+        switch self {
+        case .itemRename(let item):
+            .itemRename(item.id)
+        case .directoryRename(let id, _):
+            .directoryRename(id)
+        case .organizationDeletion:
+            .organizationDeletion
+        case .directoryDiscard:
+            .directoryDiscard
+        case .directoryDeletion:
+            .directoryDeletion
+        }
+    }
 
     var title: String {
-        items.count == 1
-            ? "Propose Organization Deletion?"
-            : "Propose \(items.count) Organization Deletions?"
+        switch self {
+        case .itemRename(let item):
+            item.resource == nil ? "Rename Draft" : "Propose Organization Rename"
+        case .directoryRename:
+            "Rename Folder"
+        case .organizationDeletion(let items):
+            items.count == 1
+                ? "Propose Organization Deletion?"
+                : "Propose \(items.count) Organization Deletions?"
+        case .directoryDiscard(let name, let drafts):
+            drafts.count == 1
+                ? "Discard Draft in \(name)?"
+                : "Discard \(drafts.count) Drafts in \(name)?"
+        case .directoryDeletion(let name, _):
+            "Delete \(name)?"
+        }
     }
 
     var confirmationTitle: String {
-        items.count == 1 ? "Propose Deletion" : "Propose Deletions"
+        switch self {
+        case .itemRename(let item):
+            item.resource == nil ? "Rename" : "Propose Rename"
+        case .directoryRename(_, let items):
+            items.contains { $0.resource != nil } ? "Propose Renames" : "Rename"
+        case .organizationDeletion(let items):
+            items.count == 1 ? "Propose Deletion" : "Propose Deletions"
+        case .directoryDiscard:
+            "Discard Drafts"
+        case .directoryDeletion:
+            "Delete Folder"
+        }
     }
 
     var message: String {
-        let subject = items.count == 1
-            ? "this organization memory"
-            : "these \(items.count) organization memories"
-        let proposal = items.count == 1 ? "a deletion draft proposal" : "deletion draft proposals"
-        let object = items.count == 1 ? "it" : "them"
-        return "This creates \(proposal). If reviewed and merged, \(subject) "
-            + "will be removed for every project that includes \(object)."
+        switch self {
+        case .itemRename(let item):
+            if item.resource == nil {
+                return "This changes the path in the current Project-carried Draft."
+            }
+            return "This creates a draft proposal. If it is reviewed and merged, "
+                + "the organization memory will be renamed for every project that includes it."
+        case .directoryRename(_, let items):
+            let sharedCount = items.filter { $0.resource != nil }.count
+            let draftCount = items.count - sharedCount
+            if sharedCount == 0 {
+                return "This preserves every relative file path in the current Project-carried "
+                    + "Drafts. Shared Organization Memory is unchanged."
+            }
+            if draftCount > 0 {
+                return "This preserves every relative file path, renames \(draftCount) unpublished "
+                    + "Drafts, and creates \(sharedCount) rename proposals. Shared Organization "
+                    + "Memory changes only after review and merge."
+            }
+            return "This preserves every relative file path and creates Project-carried rename "
+                + "Drafts. Organization Memory changes only after review and merge."
+        case .organizationDeletion(let items):
+            let subject = items.count == 1
+                ? "this organization memory"
+                : "these \(items.count) organization memories"
+            let proposal = items.count == 1
+                ? "a deletion draft proposal"
+                : "deletion draft proposals"
+            let object = items.count == 1 ? "it" : "them"
+            return "This creates \(proposal). If reviewed and merged, \(subject) "
+                + "will be removed for every project that includes \(object)."
+        case .directoryDiscard:
+            return "This removes the Project-carried Drafts in this folder. "
+                + "Shared Organization Memory is unchanged."
+        case .directoryDeletion(let name, let plan):
+            var effects: [String] = []
+            if !plan.itemsToDelete.isEmpty {
+                let noun = plan.itemsToDelete.count == 1 ? "memory" : "memories"
+                effects.append(
+                    "create deletion proposals for \(plan.itemsToDelete.count) shared "
+                        + noun
+                )
+            }
+            if !plan.draftsToDiscard.isEmpty {
+                let noun = plan.draftsToDiscard.count == 1 ? "draft" : "drafts"
+                effects.append(
+                    "discard \(plan.draftsToDiscard.count) unpublished "
+                        + noun
+                )
+            }
+            let joinedEffects = effects.joined(separator: " and ")
+            return "This will \(joinedEffects) in \(name). "
+                + "Shared memories are removed only after review and merge."
+        }
     }
 }
 
@@ -225,39 +322,6 @@ private struct PendingDirectoryReview: Identifiable {
     let initialTitle: String
 }
 
-private struct PendingDirectoryDiscard: Identifiable {
-    let id = UUID()
-    let name: String
-    let drafts: [LocalDraft]
-}
-
-private struct PendingDirectoryDeletion: Identifiable {
-    let id = UUID()
-    let name: String
-    let plan: MemoryDirectoryDeletionPlan
-
-    var message: String {
-        var effects: [String] = []
-        if !plan.itemsToDelete.isEmpty {
-            let noun = plan.itemsToDelete.count == 1 ? "memory" : "memories"
-            effects.append(
-                "create deletion proposals for \(plan.itemsToDelete.count) shared "
-                    + noun
-            )
-        }
-        if !plan.draftsToDiscard.isEmpty {
-            let noun = plan.draftsToDiscard.count == 1 ? "draft" : "drafts"
-            effects.append(
-                "discard \(plan.draftsToDiscard.count) unpublished "
-                    + noun
-            )
-        }
-        let joinedEffects = effects.joined(separator: " and ")
-        return "This will \(joinedEffects) in \(name). "
-            + "Shared memories are removed only after review and merge."
-    }
-}
-
 private struct FileTreeView: View {
     @ObservedObject var store: WorkspaceStore
     let items: [MemoryListItem]
@@ -265,14 +329,11 @@ private struct FileTreeView: View {
     @State private var selectedNodeIds: Set<String> = []
     @State private var selectionAnchorId: String?
     @State private var initializedExpansion = false
-    @State private var itemToRename: MemoryListItem?
     @State private var proposedName = ""
-    @State private var directoryToRenameId: String?
     @State private var proposedDirectoryName = ""
-    @State private var pendingOrganizationDeletion: PendingOrganizationDeletion?
-    @State private var pendingDirectoryDeletion: PendingDirectoryDeletion?
-    @State private var pendingDirectoryDiscard: PendingDirectoryDiscard?
+    @State private var pendingAlert: MemoryFileTreeAlert?
     @State private var pendingDirectoryReview: PendingDirectoryReview?
+    @State private var directoryOperationProgress: String?
 
     private var roots: [FileTreeNode] {
         FileTreeNode.build(items)
@@ -283,7 +344,7 @@ private struct FileTreeView: View {
     }
 
     var body: some View {
-        fileTreeWithDestructiveAlerts
+        fileTreeWithAlert
         .sheet(item: $pendingDirectoryReview) { request in
             ReviewRequestSheet(
                 initialTitle: request.initialTitle,
@@ -307,6 +368,21 @@ private struct FileTreeView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color(nsColor: .controlBackgroundColor))
+        .safeAreaInset(edge: .bottom) {
+            if let directoryOperationProgress {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(directoryOperationProgress)
+                        .font(.caption)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(directoryOperationProgress)
+            }
+        }
         .contextMenu(forSelectionType: String.self) { nodeIds in
             fileTreeMenu(for: nodeIds)
         }
@@ -329,105 +405,45 @@ private struct FileTreeView: View {
             synchronizeSelectionWithActiveItem()
         }
         .onChange(of: store.activeProjectId) { _, _ in
-            itemToRename = nil
-            proposedName = ""
-            directoryToRenameId = nil
-            proposedDirectoryName = ""
-            pendingOrganizationDeletion = nil
-            pendingDirectoryDeletion = nil
-            pendingDirectoryDiscard = nil
+            dismissAlert()
             pendingDirectoryReview = nil
         }
     }
 
-    private var fileTreeWithRenameAlerts: some View {
+    private var fileTreeWithAlert: some View {
         fileTreeContent
         .alert(
-            itemRenameTitle,
+            pendingAlert?.title ?? "",
             isPresented: Binding(
-                get: { itemToRename != nil },
-                set: {
-                    if !$0 {
-                        itemToRename = nil
-                        proposedName = ""
-                    }
+                get: { pendingAlert != nil },
+                set: { if !$0 { dismissAlert() } }
+            ),
+            presenting: pendingAlert
+        ) { alert in
+            switch alert {
+            case .itemRename:
+                TextField("File name", text: $proposedName)
+                Button("Cancel", role: .cancel) { dismissAlert() }
+                Button(alert.confirmationTitle) { renameSelectedItem() }
+                    .disabled(
+                        directoryOperationProgress != nil || !isValidProposedName
+                    )
+            case .directoryRename:
+                TextField("Folder name", text: $proposedDirectoryName)
+                Button("Cancel", role: .cancel) { dismissAlert() }
+                Button(alert.confirmationTitle) { renameSelectedDirectory() }
+                    .disabled(
+                        directoryOperationProgress != nil || !isValidProposedDirectoryName
+                    )
+            case .organizationDeletion, .directoryDiscard, .directoryDeletion:
+                Button("Cancel", role: .cancel) { dismissAlert() }
+                Button(alert.confirmationTitle, role: .destructive) {
+                    confirm(alert)
                 }
-            )
-        ) {
-            TextField("File name", text: $proposedName)
-            Button("Cancel", role: .cancel) {
-                itemToRename = nil
+                .disabled(directoryOperationProgress != nil)
             }
-            Button(itemRenameConfirmationTitle) {
-                renameSelectedItem()
-            }
-            .disabled(!isValidProposedName)
-        } message: {
-            Text(itemRenameMessage)
-        }
-        .alert(
-            "Rename Folder",
-            isPresented: Binding(
-                get: { directoryToRenameId != nil },
-                set: {
-                    if !$0 {
-                        directoryToRenameId = nil
-                        proposedDirectoryName = ""
-                    }
-                }
-            )
-        ) {
-            TextField("Folder name", text: $proposedDirectoryName)
-            Button("Cancel", role: .cancel) {
-                directoryToRenameId = nil
-            }
-            Button(directoryRenameConfirmationTitle) {
-                renameSelectedDirectory()
-            }
-            .disabled(!isValidProposedDirectoryName)
-        } message: {
-            Text(directoryRenameMessage)
-        }
-    }
-
-    private var fileTreeWithDestructiveAlerts: some View {
-        fileTreeWithRenameAlerts
-        .alert(item: $pendingOrganizationDeletion) { deletion in
-            Alert(
-                title: Text(deletion.title),
-                message: Text(deletion.message),
-                primaryButton: .destructive(Text(deletion.confirmationTitle)) {
-                    deleteItems(deletion.items)
-                },
-                secondaryButton: .cancel()
-            )
-        }
-        .alert(item: $pendingDirectoryDiscard) { request in
-            Alert(
-                title: Text(
-                    request.drafts.count == 1
-                        ? "Discard Draft in \(request.name)?"
-                        : "Discard \(request.drafts.count) Drafts in \(request.name)?"
-                ),
-                message: Text(
-                    "This removes the Project-carried Drafts in this folder. "
-                        + "Shared Organization Memory is unchanged."
-                ),
-                primaryButton: .destructive(Text("Discard Drafts")) {
-                    discardDrafts(request.drafts)
-                },
-                secondaryButton: .cancel()
-            )
-        }
-        .alert(item: $pendingDirectoryDeletion) { request in
-            Alert(
-                title: Text("Delete \(request.name)?"),
-                message: Text(request.message),
-                primaryButton: .destructive(Text("Delete Folder")) {
-                    deleteDirectory(request.plan)
-                },
-                secondaryButton: .cancel()
-            )
+        } message: { alert in
+            Text(alert.message)
         }
     }
 
@@ -455,46 +471,14 @@ private struct FileTreeView: View {
         return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
     }
 
-    private var itemRenameTitle: String {
-        itemToRename?.resource == nil ? "Rename Draft" : "Propose Organization Rename"
+    private var itemToRename: MemoryListItem? {
+        guard case .itemRename(let item) = pendingAlert else { return nil }
+        return item
     }
 
-    private var itemRenameConfirmationTitle: String {
-        itemToRename?.resource == nil ? "Rename" : "Propose Rename"
-    }
-
-    private var itemRenameMessage: String {
-        if itemToRename?.resource == nil {
-            return "This changes the path in the current Project-carried Draft."
-        }
-        return "This creates a draft proposal. If it is reviewed and merged, "
-            + "the organization memory will be renamed for every project that includes it."
-    }
-
-    private var directoryRenameItems: [MemoryListItem] {
-        guard let directoryToRenameId else { return [] }
-        return FileTreeNode.items(in: roots, selectedNodeIds: [directoryToRenameId])
-    }
-
-    private var directoryRenameConfirmationTitle: String {
-        directoryRenameItems.contains { $0.resource != nil } ? "Propose Renames" : "Rename"
-    }
-
-    private var directoryRenameMessage: String {
-        let items = directoryRenameItems
-        let sharedCount = items.filter { $0.resource != nil }.count
-        let draftCount = items.count - sharedCount
-        if sharedCount == 0 {
-            return "This preserves every relative file path in the current Project-carried "
-                + "Drafts. Shared Organization Memory is unchanged."
-        }
-        if draftCount > 0 {
-            return "This preserves every relative file path, renames \(draftCount) unpublished "
-                + "Drafts, and creates \(sharedCount) rename proposals. Shared Organization "
-                + "Memory changes only after review and merge."
-        }
-        return "This preserves every relative file path and creates Project-carried rename "
-            + "Drafts. Organization Memory changes only after review and merge."
+    private var directoryToRenameId: String? {
+        guard case .directoryRename(let id, _) = pendingAlert else { return nil }
+        return id
     }
 
     private var isValidProposedDirectoryName: Bool {
@@ -507,21 +491,28 @@ private struct FileTreeView: View {
         return name != directory.name
     }
 
+    private func dismissAlert() {
+        pendingAlert = nil
+        proposedName = ""
+        proposedDirectoryName = ""
+    }
+
     private func beginRenaming(_ item: MemoryListItem) {
+        guard directoryOperationProgress == nil else { return }
         guard !store.isSynchronizingDocument(item.id) else {
             store.errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
             return
         }
         proposedName = item.document.path.split(separator: "/").last.map(String.init)
             ?? item.document.path
-        itemToRename = item
+        pendingAlert = .itemRename(item: item)
     }
 
     private func renameSelectedItem() {
+        guard directoryOperationProgress == nil else { return }
         guard let item = itemToRename else { return }
         guard !store.isSynchronizingDocument(item.id) else {
-            itemToRename = nil
-            proposedName = ""
+            dismissAlert()
             store.errorMessage = DocumentSyncError.mutationWhileSynchronizing.localizedDescription
             return
         }
@@ -533,8 +524,7 @@ private struct FileTreeView: View {
             .dropLast()
             .joined(separator: "/")
         document.path = parent.isEmpty ? name : "\(parent)/\(name)"
-        itemToRename = nil
-        proposedName = ""
+        dismissAlert()
         Task {
             do {
                 try await store.rename(item, to: document.path)
@@ -545,6 +535,7 @@ private struct FileTreeView: View {
     }
 
     private func beginRenamingDirectory(_ directory: FileTreeNode) {
+        guard directoryOperationProgress == nil else { return }
         let targetItems = FileTreeNode.items(
             in: roots,
             selectedNodeIds: [directory.id]
@@ -557,11 +548,12 @@ private struct FileTreeView: View {
             store.errorMessage = MemoryDirectoryMutationError.readOnly.localizedDescription
             return
         }
-        directoryToRenameId = directory.id
         proposedDirectoryName = directory.name
+        pendingAlert = .directoryRename(id: directory.id, items: targetItems)
     }
 
     private func renameSelectedDirectory() {
+        guard directoryOperationProgress == nil else { return }
         guard let directoryToRenameId else { return }
         let name = proposedDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetItems = FileTreeNode.items(
@@ -596,12 +588,15 @@ private struct FileTreeView: View {
                 occupiedTreePaths: occupiedTreePaths,
                 inOrgView: false
             )
-            self.directoryToRenameId = nil
-            proposedDirectoryName = ""
+            dismissAlert()
             Task {
                 var completed = 0
+                directoryOperationProgress = "Renaming \(plan.changes.count) memories…"
+                defer { directoryOperationProgress = nil }
                 do {
-                    for change in plan.changes {
+                    for (index, change) in plan.changes.enumerated() {
+                        directoryOperationProgress =
+                            "Renaming \(index + 1) of \(plan.changes.count) memories…"
                         try await store.rename(change.item, to: change.newPath)
                         completed += 1
                     }
@@ -731,16 +726,22 @@ private struct FileTreeView: View {
         if let selectedDirectory {
             if directoryRenameable {
                 Button("Rename Folder…") { beginRenamingDirectory(selectedDirectory) }
-                    .disabled(selectionContainsSynchronizingDocument)
+                    .disabled(
+                        directoryOperationProgress != nil
+                            || selectionContainsSynchronizingDocument
+                    )
             }
             if let directoryDeletionPlan, directoryDeletionAllowed {
                 Button("Delete Folder…", role: .destructive) {
-                    pendingDirectoryDeletion = .init(
+                    pendingAlert = .directoryDeletion(
                         name: selectedDirectory.name,
                         plan: directoryDeletionPlan
                     )
                 }
-                .disabled(selectionContainsSynchronizingDocument)
+                .disabled(
+                    directoryOperationProgress != nil
+                        || selectionContainsSynchronizingDocument
+                )
             }
         } else if let singleItem {
             Button("Open") { store.open(singleItem) }
@@ -751,13 +752,13 @@ private struct FileTreeView: View {
                 Button(
                     singleItem.resource == nil ? "Rename…" : "Propose Organization Rename…"
                 ) { beginRenaming(singleItem) }
-                    .disabled(singleSynchronizing)
+                    .disabled(directoryOperationProgress != nil || singleSynchronizing)
             }
             if singleTrashable {
                 Button("Propose Organization Deletion", role: .destructive) {
                     proposeOrganizationDeletion([singleItem])
                 }
-                .disabled(singleSynchronizing)
+                .disabled(directoryOperationProgress != nil || singleSynchronizing)
             }
         } else if !targetItems.isEmpty {
             Button("Open") { targetItems.forEach { store.open($0) } }
@@ -765,7 +766,10 @@ private struct FileTreeView: View {
                 Button(organizationDeletionTitle(count: trashableItems.count), role: .destructive) {
                     proposeOrganizationDeletion(trashableItems)
                 }
-                .disabled(trashSelectionContainsSynchronizingDocument)
+                .disabled(
+                    directoryOperationProgress != nil
+                        || trashSelectionContainsSynchronizingDocument
+                )
             }
         }
 
@@ -787,7 +791,8 @@ private struct FileTreeView: View {
                 }
             }
             .disabled(
-                !store.canManageOrgSelection
+                directoryOperationProgress != nil
+                    || !store.canManageOrgSelection
                     || store.projects.isEmpty
                     || selectionContainsSynchronizingDocument
             )
@@ -796,7 +801,11 @@ private struct FileTreeView: View {
             Button(removeFromProjectTitle(count: removableItems.count)) {
                 removeFromProject(removableItems)
             }
-            .disabled(!store.canManageOrgSelection || selectionContainsSynchronizingDocument)
+            .disabled(
+                directoryOperationProgress != nil
+                    || !store.canManageOrgSelection
+                    || selectionContainsSynchronizingDocument
+            )
         }
         if !isOrgView, !reviewDrafts.isEmpty {
             Button(reviewRequestTitle(count: reviewDrafts.count)) {
@@ -805,7 +814,11 @@ private struct FileTreeView: View {
                     initialTitle: directoryReviewTitle(for: nodeIds, draftCount: reviewDrafts.count)
                 )
             }
-            .disabled(!reviewSelectionIsReady || selectionContainsSynchronizingDocument)
+            .disabled(
+                directoryOperationProgress != nil
+                    || !reviewSelectionIsReady
+                    || selectionContainsSynchronizingDocument
+            )
         }
         if let selectedDirectory, !directoryDrafts.isEmpty {
             Button(
@@ -814,12 +827,15 @@ private struct FileTreeView: View {
                     : "Discard \(directoryDrafts.count) Drafts in Folder…",
                 role: .destructive
             ) {
-                pendingDirectoryDiscard = .init(
+                pendingAlert = .directoryDiscard(
                     name: selectedDirectory.name,
                     drafts: directoryDrafts
                 )
             }
-            .disabled(selectionContainsSynchronizingDocument)
+            .disabled(
+                directoryOperationProgress != nil
+                    || selectionContainsSynchronizingDocument
+            )
         }
         if let singleItem {
             let resourceIsStale = singleItem.resource.map {
@@ -832,44 +848,72 @@ private struct FileTreeView: View {
                       draft.freshness == .behind || resourceIsStale {
                 switch draft.syncStatus {
                 case .queued, .syncing, .retrying:
-                    Button("Waiting for Draft Sync…") {}
+                    Button("Uploading Draft Changes…") {}
                         .disabled(true)
                 case .failed:
-                    Button("Retry Draft Sync") {
-                        Task { await store.retrySync() }
+                    if store.isRetryingSync(
+                        channel: "drafts",
+                        projectId: draft.projectId
+                    ) {
+                        Button("Retrying Draft Sync…") {}
+                            .disabled(true)
+                    } else {
+                        Button("Retry Draft Sync") {
+                            Task {
+                                _ = await store.retrySync(
+                                    channel: "drafts",
+                                    projectId: draft.projectId
+                                )
+                            }
+                        }
+                        .disabled(directoryOperationProgress != nil)
                     }
                 case .synced:
                     if draft.serverId == nil {
                         Button("Draft Not Ready") {}
                             .disabled(true)
                     } else {
-                        Button(draft.hasUpstreamResourceChanges ? "Review Changes" : "Sync") {
+                        Button(
+                            draft.hasUpstreamResourceChanges
+                                ? "Review Shared Changes"
+                                : "Update from Shared Version"
+                        ) {
+                            guard directoryOperationProgress == nil else { return }
                             store.syncDocument(singleItem)
                         }
+                        .disabled(directoryOperationProgress != nil)
                     }
                 }
             } else if resourceIsStale {
-                Button("Sync") {
+                Button("Update from Shared Version") {
+                    guard directoryOperationProgress == nil else { return }
                     store.syncDocument(singleItem)
                 }
+                .disabled(directoryOperationProgress != nil)
             }
             if !isOrgView, let draft = singleItem.draft {
                 Button("Discard Draft") {
+                    guard directoryOperationProgress == nil else { return }
                     Task { await store.discard(draft) }
                 }
-                .disabled(singleSynchronizing)
+                .disabled(
+                    directoryOperationProgress != nil
+                        || singleSynchronizing
+                )
             }
         }
 
         if targetItems.isEmpty {
             if let scope = MemoryFileTreeMenu.creationScope(inOrgView: isOrgView) {
                 Button("Propose New Organization Memory") {
+                    guard directoryOperationProgress == nil else { return }
                     Task {
                         await store.createMemory(kind: store.selectedKind, scope: scope)
                     }
                 }
                 .disabled(
-                    !store.canCreateMemory(kind: store.selectedKind, scope: scope)
+                    directoryOperationProgress != nil
+                        || !store.canCreateMemory(kind: store.selectedKind, scope: scope)
                 )
             }
         }
@@ -907,26 +951,47 @@ private struct FileTreeView: View {
 
     private func proposeOrganizationDeletion(_ items: [MemoryListItem]) {
         guard !items.isEmpty else { return }
-        pendingOrganizationDeletion = .init(items: items)
+        pendingAlert = .organizationDeletion(items: items)
+    }
+
+    private func confirm(_ alert: MemoryFileTreeAlert) {
+        dismissAlert()
+        switch alert {
+        case .itemRename, .directoryRename:
+            return
+        case .organizationDeletion(let items):
+            deleteItems(items)
+        case .directoryDiscard(_, let drafts):
+            discardDrafts(drafts)
+        case .directoryDeletion(_, let plan):
+            deleteDirectory(plan)
+        }
     }
 
     private func deleteItems(_ items: [MemoryListItem]) {
+        guard directoryOperationProgress == nil else { return }
         Task {
-            for item in items {
+            directoryOperationProgress = "Proposing \(items.count) deletions…"
+            defer { directoryOperationProgress = nil }
+            for (index, item) in items.enumerated() {
+                directoryOperationProgress =
+                    "Proposing deletion \(index + 1) of \(items.count)…"
                 guard await store.delete(item) else { return }
             }
         }
     }
 
     private func discardDrafts(_ drafts: [LocalDraft]) {
+        guard directoryOperationProgress == nil else { return }
         Task {
+            directoryOperationProgress = "Discarding \(drafts.count) Drafts…"
+            defer { directoryOperationProgress = nil }
             for (index, draft) in drafts.enumerated() {
+                directoryOperationProgress =
+                    "Discarding Draft \(index + 1) of \(drafts.count)…"
                 guard await store.discard(draft) else {
-                    if index > 0 {
-                        let detail = store.errorMessage ?? "The remaining Drafts were not changed."
-                        store.errorMessage = "Discarded \(index) of \(drafts.count) Drafts. "
-                            + detail
-                    }
+                    let detail = store.errorMessage ?? "The remaining Drafts were not changed."
+                    store.errorMessage = "Discarded \(index) of \(drafts.count) Drafts. " + detail
                     return
                 }
             }
@@ -934,27 +999,30 @@ private struct FileTreeView: View {
     }
 
     private func deleteDirectory(_ plan: MemoryDirectoryDeletionPlan) {
+        guard directoryOperationProgress == nil else { return }
         Task {
             let total = plan.itemsToDelete.count + plan.draftsToDiscard.count
             var completed = 0
+            directoryOperationProgress = "Applying \(total) folder changes…"
+            defer { directoryOperationProgress = nil }
             for item in plan.itemsToDelete {
+                directoryOperationProgress =
+                    "Applying folder change \(completed + 1) of \(total)…"
                 guard await store.delete(item) else {
-                    if completed > 0 {
-                        let detail = store.errorMessage ?? "The remaining files were not changed."
-                        store.errorMessage = "Completed \(completed) of \(total) folder changes. "
-                            + detail
-                    }
+                    let detail = store.errorMessage ?? "The remaining files were not changed."
+                    store.errorMessage =
+                        "Completed \(completed) of \(total) folder changes. " + detail
                     return
                 }
                 completed += 1
             }
             for draft in plan.draftsToDiscard {
+                directoryOperationProgress =
+                    "Applying folder change \(completed + 1) of \(total)…"
                 guard await store.discard(draft) else {
-                    if completed > 0 {
-                        let detail = store.errorMessage ?? "The remaining files were not changed."
-                        store.errorMessage = "Completed \(completed) of \(total) folder changes. "
-                            + detail
-                    }
+                    let detail = store.errorMessage ?? "The remaining files were not changed."
+                    store.errorMessage =
+                        "Completed \(completed) of \(total) folder changes. " + detail
                     return
                 }
                 completed += 1
@@ -963,6 +1031,7 @@ private struct FileTreeView: View {
     }
 
     private func addToProject(_ items: [MemoryListItem], projectId: String) {
+        guard directoryOperationProgress == nil else { return }
         Task {
             do {
                 try await store.addOrgMemories(
@@ -976,6 +1045,7 @@ private struct FileTreeView: View {
     }
 
     private func removeFromProject(_ items: [MemoryListItem]) {
+        guard directoryOperationProgress == nil else { return }
         guard let projectId = store.activeProjectId else { return }
         Task {
             do {

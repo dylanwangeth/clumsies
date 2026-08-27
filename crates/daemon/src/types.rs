@@ -337,6 +337,17 @@ pub struct DaemonSyncRetryRequest {
     pub channel: SyncRetryChannel,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectSyncStatusRequest {
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonProjectSyncRetryRequest {
+    pub project_id: String,
+    pub channel: SyncRetryChannel,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncRetryChannel {

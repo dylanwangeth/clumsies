@@ -46,8 +46,8 @@ pub use credentials::{
 };
 pub(crate) use draft::{
     LocalDraftResolutionInput, drain_draft_queue, list_local_drafts, load_local_draft_detail,
-    load_sync_status, pull_draft_events, queue_retrying_operations, recover_interrupted_operations,
-    resolve_local_draft,
+    load_project_sync_status, load_sync_status, pull_draft_events, queue_retrying_operations,
+    recover_interrupted_operations, resolve_local_draft,
 };
 pub use ipc::{DaemonIpcClient, DaemonIpcServer};
 pub(crate) use migration::{
@@ -104,10 +104,11 @@ pub use types::{
     DaemonProjectBindingListResponse, DaemonProjectBindingRemoveRequest,
     DaemonProjectBindingRemoveResponse, DaemonProjectBindingReplaceRequest,
     DaemonProjectBindingResolveRequest, DaemonProjectConfig, DaemonProjectConfigUpdateRequest,
-    DaemonProjectSelectionRequest, DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse,
-    DaemonSyncRetryRequest, DaemonSyncStatus, DraftOperationSyncStatus, ErrorEnvelope,
-    LaunchAgentRuntimeStatus, LocalDbStatus, McpAdapterStatus,
-    ProjectAgentAdapterRuntimeRequirement, SyncChannelStatus, SyncRetryChannel, SyncState,
+    DaemonProjectSelectionRequest, DaemonProjectSyncRetryRequest, DaemonProjectSyncStatusRequest,
+    DaemonRetryResponse, DaemonServerRequest, DaemonServerResponse, DaemonSyncRetryRequest,
+    DaemonSyncStatus, DraftOperationSyncStatus, ErrorEnvelope, LaunchAgentRuntimeStatus,
+    LocalDbStatus, McpAdapterStatus, ProjectAgentAdapterRuntimeRequirement, SyncChannelStatus,
+    SyncRetryChannel, SyncState,
 };
 pub use types::{
     DaemonContentDraftUpdate, DaemonCreateDraftOperation, DaemonDeleteDraftOperation,

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -163,7 +162,7 @@ pub(crate) struct DaemonInner {
     pub(crate) daemon_installation_id: String,
     pub(crate) sync_notify: Notify,
     pub(crate) sync_lock: Mutex<()>,
-    pub(crate) commit_sync_running: AtomicBool,
+    pub(crate) commit_sync_run_scope: RwLock<commit_sync::CommitSyncRunScope>,
     pub(crate) token_refresh: Mutex<()>,
     server_response_cache: std::sync::Mutex<ServerResponseCacheState>,
     server_response_cache_write: Mutex<()>,
@@ -292,7 +291,7 @@ impl DaemonState {
                 daemon_installation_id,
                 sync_notify: Notify::new(),
                 sync_lock: Mutex::new(()),
-                commit_sync_running: AtomicBool::new(false),
+                commit_sync_run_scope: RwLock::new(commit_sync::CommitSyncRunScope::Idle),
                 token_refresh: Mutex::new(()),
                 server_response_cache: std::sync::Mutex::new(ServerResponseCacheState::default()),
                 server_response_cache_write: Mutex::new(()),
@@ -1114,6 +1113,13 @@ impl DaemonState {
 
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         load_sync_status(self).await
+    }
+
+    pub async fn project_sync_status(
+        &self,
+        request: DaemonProjectSyncStatusRequest,
+    ) -> Result<DaemonSyncStatus, DaemonError> {
+        load_project_sync_status(self, &request.project_id).await
     }
 
     pub async fn project_storage(
@@ -1991,36 +1997,52 @@ impl DaemonState {
         &self,
         request: DaemonSyncRetryRequest,
     ) -> Result<DaemonRetryResponse, DaemonError> {
+        self.retry_sync_scoped(request.channel, None).await
+    }
+
+    pub async fn project_retry_sync(
+        &self,
+        request: DaemonProjectSyncRetryRequest,
+    ) -> Result<DaemonRetryResponse, DaemonError> {
+        commit_sync::validate_cache_component("project_id", &request.project_id)?;
+        self.retry_sync_scoped(request.channel, Some(&request.project_id))
+            .await
+    }
+
+    async fn retry_sync_scoped(
+        &self,
+        channel: SyncRetryChannel,
+        project_id: Option<&str>,
+    ) -> Result<DaemonRetryResponse, DaemonError> {
         let retry_id = format!("retry_{}", Uuid::new_v4().simple());
-        let channel = request.channel.as_str();
 
         sqlx::query(
             "INSERT INTO sync_retries (retry_id, channel)
              VALUES ($1, $2)",
         )
         .bind(&retry_id)
-        .bind(channel)
+        .bind(channel.as_str())
         .execute(&self.inner.pool)
         .await?;
 
-        let retry_drafts = matches!(
-            request.channel,
-            SyncRetryChannel::Drafts | SyncRetryChannel::All
-        );
-        let retry_commits = matches!(
-            request.channel,
-            SyncRetryChannel::Commits | SyncRetryChannel::All
-        );
+        let retry_drafts = matches!(channel, SyncRetryChannel::Drafts | SyncRetryChannel::All);
+        let retry_commits = matches!(channel, SyncRetryChannel::Commits | SyncRetryChannel::All);
         if retry_drafts {
             sqlx::query(
                 "UPDATE local_draft_operations
                  SET sync_status = 'queued', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                 WHERE sync_status IN ('retrying', 'failed')",
+                 WHERE sync_status IN ('retrying', 'failed')
+                   AND (
+                       $1 IS NULL OR draft_id IN (
+                           SELECT draft_id FROM local_drafts WHERE project_id = $1
+                       )
+                   )",
             )
+            .bind(project_id)
             .execute(&self.inner.pool)
             .await?;
         }
-        self.run_sync_channels(retry_drafts, retry_commits, false)
+        self.run_sync_channels(retry_drafts, retry_commits, false, project_id)
             .await?;
 
         Ok(DaemonRetryResponse {
@@ -2324,8 +2346,8 @@ impl DaemonState {
         load_local_draft_detail(&self.inner.pool, draft_id).await
     }
 
-    async fn drain_draft_queue(&self) -> Result<bool, DaemonError> {
-        drain_draft_queue(self).await
+    async fn drain_draft_queue(&self, project_id: Option<&str>) -> Result<bool, DaemonError> {
+        drain_draft_queue(self, project_id).await
     }
 
     async fn pull_draft_events(&self) -> Result<(), DaemonError> {
@@ -2410,7 +2432,7 @@ impl DaemonState {
     }
 
     async fn run_sync_cycle(&self, retry_transient_failures: bool) -> Result<(), DaemonError> {
-        self.run_sync_channels(true, true, retry_transient_failures)
+        self.run_sync_channels(true, true, retry_transient_failures, None)
             .await
     }
 
@@ -2419,6 +2441,7 @@ impl DaemonState {
         sync_drafts: bool,
         sync_commits: bool,
         retry_transient_failures: bool,
+        project_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _sync_guard = self.inner.sync_lock.lock().await;
         async {
@@ -2427,17 +2450,19 @@ impl DaemonState {
             }
             let mut first_error = None;
             if sync_drafts {
+                let last_attempt_key =
+                    crate::draft::draft_sync_meta_key(META_DRAFT_SYNC_LAST_ATTEMPT_AT, project_id);
+                let last_success_key =
+                    crate::draft::draft_sync_meta_key(META_DRAFT_SYNC_LAST_SUCCESS_AT, project_id);
                 let draft_result = async {
                     if retry_transient_failures {
                         queue_retrying_operations(&self.inner.pool).await?;
                     }
-                    upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT)
-                        .await?;
-                    let queue_converged = self.drain_draft_queue().await?;
+                    upsert_meta_timestamp(&self.inner.pool, &last_attempt_key).await?;
+                    let queue_converged = self.drain_draft_queue(project_id).await?;
                     self.pull_draft_events().await?;
                     if queue_converged {
-                        upsert_meta_timestamp(&self.inner.pool, META_DRAFT_SYNC_LAST_SUCCESS_AT)
-                            .await?;
+                        upsert_meta_timestamp(&self.inner.pool, &last_success_key).await?;
                     }
                     Ok::<(), DaemonError>(())
                 }
@@ -2446,11 +2471,16 @@ impl DaemonState {
                     first_error = Some(error);
                 }
             }
-            if sync_commits
-                && let Err(error) = commit_sync::run(self).await
-                && first_error.is_none()
-            {
-                first_error = Some(error);
+            if sync_commits {
+                let commit_result = match project_id {
+                    Some(project_id) => commit_sync::run_for_project(self, project_id).await,
+                    None => commit_sync::run(self).await,
+                };
+                if let Err(error) = commit_result
+                    && first_error.is_none()
+                {
+                    first_error = Some(error);
+                }
             }
             match first_error {
                 Some(error) => Err(error),
@@ -2624,6 +2654,13 @@ impl DaemonIpcService {
 
     pub async fn sync_status(&self) -> Result<DaemonSyncStatus, DaemonError> {
         self.state.sync_status().await
+    }
+
+    pub async fn project_sync_status(
+        &self,
+        request: DaemonProjectSyncStatusRequest,
+    ) -> Result<DaemonSyncStatus, DaemonError> {
+        self.state.project_sync_status(request).await
     }
 
     pub async fn project_storage(
@@ -2871,6 +2908,13 @@ impl DaemonIpcService {
         self.state.retry_sync(request).await
     }
 
+    pub async fn project_retry_sync(
+        &self,
+        request: DaemonProjectSyncRetryRequest,
+    ) -> Result<DaemonRetryResponse, DaemonError> {
+        self.state.project_retry_sync(request).await
+    }
+
     pub fn mcp_status(&self) -> DaemonMcpStatus {
         self.state.mcp_status()
     }
@@ -2942,6 +2986,9 @@ impl DaemonIpcService {
                 dispatch_async!(self, request.payload, remove_project_agent_adapter)
             }
             "sync_status" => dispatch_result_async!(self, sync_status),
+            "project_sync_status" => {
+                dispatch_async!(self, request.payload, project_sync_status)
+            }
             "project_storage" => dispatch_async!(self, request.payload, project_storage),
             "replace_project_storage" => {
                 dispatch_async!(self, request.payload, replace_project_storage)
@@ -3019,6 +3066,9 @@ impl DaemonIpcService {
                 dispatch_async!(self, request.payload, export_evaluation_set)
             }
             "retry_sync" => dispatch_async!(self, request.payload, retry_sync),
+            "project_retry_sync" => {
+                dispatch_async!(self, request.payload, project_retry_sync)
+            }
             "mcp_status" => dispatch_value!(self, mcp_status),
             "list_drafts" => dispatch_async!(self, request.payload, list_drafts),
             "get_draft" => {

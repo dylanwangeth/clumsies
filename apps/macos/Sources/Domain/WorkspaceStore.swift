@@ -52,6 +52,33 @@ enum WorkspaceCollectionLoadState: Equatable, Sendable {
     }
 }
 
+enum SyncRetryOutcome: Equatable, Sendable {
+    case completed
+    case failed(String)
+    case cancelled
+}
+
+struct SyncRetryKey: Hashable, Sendable {
+    let channel: String
+    let projectId: String?
+}
+
+private struct SyncRetryTaskHandle {
+    let id: UUID
+    let task: Task<SyncRetryOutcome, Never>
+}
+
+private enum WorkspaceBackgroundErrorSource: Hashable {
+    case organizationResources
+    case staleResources(projectId: String)
+    case projectRefresh(projectId: String)
+}
+
+private struct WorkspaceBackgroundErrorPresentation {
+    let source: WorkspaceBackgroundErrorSource
+    let message: String
+}
+
 struct WorkspaceSnapshot: Sendable {
     let account: UserReference
     let organization: OrganizationReference
@@ -343,10 +370,17 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var reviewLoadState: WorkspaceCollectionLoadState = .loading
     @Published private(set) var runtime: RuntimeState?
     @Published private(set) var syncStatusAvailable = true
+    @Published private var retryingSyncKeys: Set<SyncRetryKey> = []
+    @Published private var syncRetryErrors: [SyncRetryKey: String] = [:]
     @Published private(set) var legacyAgentAdapterConflicts: [DaemonLegacyAgentAdapterConflict] = []
     @Published private(set) var legacyAgentAdapterInspectionWarning: String?
 
-    @Published var activeProjectId: String?
+    @Published var activeProjectId: String? = nil {
+        didSet {
+            guard oldValue != activeProjectId else { return }
+            clearIrrelevantScopedErrorPresentation()
+        }
+    }
     @Published var selectedSection: WorkspaceSection = .memory
     @Published var selectedKind: MemoryKind = .context
     @Published var selectedItemId: String?
@@ -397,6 +431,10 @@ final class WorkspaceStore: ObservableObject {
     private var legacyAgentAdapterInspectionTask: Task<Void, Never>?
     private var postReadySyncTask: Task<Void, Never>?
     private var postReadyRetrySyncTask: Task<Void, Never>?
+    private var syncRetryTasks: [SyncRetryKey: SyncRetryTaskHandle] = [:]
+    private var presentedSyncRetryErrorKey: SyncRetryKey?
+    private var dismissedBackgroundErrorSources: Set<WorkspaceBackgroundErrorSource> = []
+    private var presentedBackgroundError: WorkspaceBackgroundErrorPresentation?
     private var isSigningOut = false
     private var projectSelectionGeneration = UUID()
     private let projectSelectionSideEffectGate = ProjectSelectionSideEffectGate()
@@ -422,6 +460,121 @@ final class WorkspaceStore: ObservableObject {
 
     var activeProject: ProjectState? {
         projects.first { $0.id == activeProjectId }
+    }
+
+    var isRetryingSync: Bool {
+        retryingSyncKeys.contains { $0.projectId == activeProjectId }
+    }
+
+    var syncRetryErrorMessage: String? {
+        let messages = syncRetryErrors
+            .filter { $0.key.projectId == activeProjectId }
+            .sorted { $0.key.channel < $1.key.channel }
+            .map(\.value)
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    func isRetryingSync(channel: String, projectId: String?) -> Bool {
+        retryingSyncKeys.contains(
+            SyncRetryKey(channel: channel, projectId: projectId)
+        )
+    }
+
+    func dismissErrorMessage() {
+        if let presentation = presentedBackgroundError,
+           errorMessage == presentation.message {
+            dismissedBackgroundErrorSources.insert(presentation.source)
+        }
+        errorMessage = nil
+        presentedBackgroundError = nil
+        presentedSyncRetryErrorKey = nil
+    }
+
+    private func presentBackgroundError(
+        _ message: String,
+        source: WorkspaceBackgroundErrorSource
+    ) {
+        guard backgroundErrorIsRelevant(source),
+              !dismissedBackgroundErrorSources.contains(source),
+              errorMessage == nil || errorMessage == presentedBackgroundError?.message else {
+            return
+        }
+        presentedBackgroundError = .init(source: source, message: message)
+        errorMessage = message
+    }
+
+    private func resolveBackgroundError(_ source: WorkspaceBackgroundErrorSource) {
+        dismissedBackgroundErrorSources.remove(source)
+        guard let presentation = presentedBackgroundError,
+              presentation.source == source else {
+            return
+        }
+        if errorMessage == presentation.message {
+            errorMessage = nil
+        }
+        presentedBackgroundError = nil
+    }
+
+    private func backgroundErrorIsRelevant(_ source: WorkspaceBackgroundErrorSource) -> Bool {
+        switch source {
+        case .organizationResources:
+            return selectedSection == .memory && activeProjectId == nil
+        case .staleResources(let projectId), .projectRefresh(let projectId):
+            return activeProjectId == projectId
+        }
+    }
+
+    private func clearIrrelevantScopedErrorPresentation() {
+        if let key = presentedSyncRetryErrorKey, key.projectId != activeProjectId {
+            if errorMessage == syncRetryErrors[key] {
+                errorMessage = nil
+            }
+            presentedSyncRetryErrorKey = nil
+        }
+        if let presentation = presentedBackgroundError,
+           !backgroundErrorIsRelevant(presentation.source) {
+            if errorMessage == presentation.message {
+                errorMessage = nil
+            }
+            presentedBackgroundError = nil
+        }
+    }
+
+    private func cancelSyncRetries() {
+        if let key = presentedSyncRetryErrorKey,
+           errorMessage == syncRetryErrors[key] {
+            errorMessage = nil
+        }
+        syncRetryTasks.values.forEach { $0.task.cancel() }
+        syncRetryTasks.removeAll()
+        retryingSyncKeys.removeAll()
+        syncRetryErrors.removeAll()
+        presentedSyncRetryErrorKey = nil
+    }
+
+    private func clearSyncRetryErrors(channel: String, projectId: String?) {
+        let errorKeysToClear = channel == "all"
+            ? syncRetryErrors.keys.filter { $0.projectId == projectId }
+            : [SyncRetryKey(channel: channel, projectId: projectId)]
+        let presentedError = presentedSyncRetryErrorKey.flatMap { syncRetryErrors[$0] }
+        if let presentedSyncRetryErrorKey,
+           errorKeysToClear.contains(presentedSyncRetryErrorKey),
+           errorMessage == presentedError {
+            errorMessage = nil
+            self.presentedSyncRetryErrorKey = nil
+        }
+        for errorKey in errorKeysToClear {
+            syncRetryErrors[errorKey] = nil
+        }
+    }
+
+    private func resetBackgroundErrorPresentation() {
+        if let presentation = presentedBackgroundError,
+           errorMessage == presentation.message {
+            errorMessage = nil
+        }
+        dismissedBackgroundErrorSources.removeAll()
+        presentedBackgroundError = nil
     }
 
     var canManageOrgSelection: Bool {
@@ -1166,6 +1319,7 @@ final class WorkspaceStore: ObservableObject {
         // flushing. Let that serialized intent finish before a later reload.
         guard loadingProjectId == nil, !isSwitchingMemoryContext else { return }
         cancelPostReadyWork()
+        resetBackgroundErrorPresentation()
         let generation = UUID()
         workspaceReloadGeneration = generation
         let hadLoadedWorkspace = account != nil
@@ -2579,6 +2733,7 @@ final class WorkspaceStore: ObservableObject {
                 guard synchronizationItemId(for: draft) == nil else {
                     throw DocumentSyncError.mutationWhileSynchronizing
                 }
+                guard drafts.contains(where: { $0.id == draft.id }) else { return }
                 _ = try await daemon.store(
                     .init(
                         draftId: draft.id,
@@ -2601,24 +2756,85 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func retrySync() async {
-        do {
-            _ = try await daemon.retrySync()
-            await refreshSyncStatus()
-        } catch {
-            syncStatusAvailable = false
-            errorMessage = error.localizedDescription
+    @discardableResult
+    func retrySync(
+        channel: String = "all",
+        projectId: String? = nil
+    ) async -> SyncRetryOutcome {
+        let projectId = projectId ?? activeProjectId
+        let key = SyncRetryKey(channel: channel, projectId: projectId)
+        if let inFlight = syncRetryTasks[key] {
+            return await inFlight.task.value
         }
+
+        clearSyncRetryErrors(channel: channel, projectId: projectId)
+        let predecessors = syncRetryTasks.compactMap { existingKey, handle in
+            existingKey.projectId == projectId ? handle.task : nil
+        }
+
+        let taskId = UUID()
+        let task = Task { @MainActor in
+            do {
+                for predecessor in predecessors {
+                    _ = await predecessor.value
+                    try Task.checkCancellation()
+                }
+                clearSyncRetryErrors(channel: channel, projectId: projectId)
+                try Task.checkCancellation()
+                _ = try await daemon.retrySync(channel: channel, projectId: projectId)
+                try Task.checkCancellation()
+                if channel == "all" {
+                    clearSyncRetryErrors(channel: channel, projectId: projectId)
+                }
+                if activeProjectId == projectId {
+                    await refreshSyncStatus()
+                    try Task.checkCancellation()
+                }
+                return SyncRetryOutcome.completed
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                guard !Task.isCancelled else { return .cancelled }
+                let message = error.localizedDescription
+                syncRetryErrors[key] = message
+                if activeProjectId == projectId {
+                    syncStatusAvailable = false
+                    if errorMessage == nil {
+                        errorMessage = message
+                        presentedSyncRetryErrorKey = key
+                    }
+                }
+                return .failed(message)
+            }
+        }
+        syncRetryTasks[key] = .init(id: taskId, task: task)
+        retryingSyncKeys.insert(key)
+        let outcome = await task.value
+        if syncRetryTasks[key]?.id == taskId {
+            syncRetryTasks[key] = nil
+            retryingSyncKeys.remove(key)
+        }
+        return outcome
     }
 
     func refreshSyncStatus() async {
         guard phase == .ready else { return }
         let generation = workspaceReloadGeneration
+        let projectId = activeProjectId
         await refreshOrgResourcesIfNeeded()
-        guard workspaceReloadGeneration == generation, phase == .ready, let runtime else { return }
+        guard workspaceReloadGeneration == generation,
+              activeProjectId == projectId,
+              phase == .ready,
+              let runtime else {
+            return
+        }
         do {
-            let sync = try await daemon.syncStatus()
-            guard workspaceReloadGeneration == generation, phase == .ready else { return }
+            let sync = try await daemon.syncStatus(projectId: projectId)
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId,
+                  phase == .ready else {
+                return
+            }
             self.runtime = .init(
                 health: runtime.health,
                 sync: sync,
@@ -2628,14 +2844,22 @@ final class WorkspaceStore: ObservableObject {
             syncStatusAvailable = true
             if draftInventoryLoadTask == nil {
                 await refreshDraftInventory(
-                    includeFailed: sync.pendingOperationCount > 0,
+                    includeFailed: sync.pendingOperationCount > 0
+                        || sync.failedOperationCount > 0,
                     generation: generation
                 )
             }
-            guard workspaceReloadGeneration == generation, phase == .ready else { return }
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId,
+                  phase == .ready else {
+                return
+            }
             await refreshStaleResourcesIfNeeded(sync: sync)
         } catch {
-            guard workspaceReloadGeneration == generation else { return }
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId else {
+                return
+            }
             syncStatusAvailable = false
         }
     }
@@ -2753,8 +2977,16 @@ final class WorkspaceStore: ObservableObject {
             let head: (value: CommitStateResponse, response: DaemonServerResponse) =
                 try await server.getWithMetadata("/api/v1/org/commit-state")
             guard workspaceReloadGeneration == workspaceGeneration,
-                  !head.response.isStaleCache,
-                  head.value.ref.commitId != observedOrgRefCommitId else {
+                  phase == .ready,
+                  selectedSection == .memory,
+                  activeProjectId == nil,
+                  !isSwitchingMemoryContext,
+                  orgResourceRefreshGeneration == generation,
+                  !head.response.isStaleCache else {
+                return
+            }
+            guard head.value.ref.commitId != observedOrgRefCommitId else {
+                resolveBackgroundError(.organizationResources)
                 return
             }
             guard let snapshot = try await loadStableOrgAuthoritySnapshot(),
@@ -2819,9 +3051,23 @@ final class WorkspaceStore: ObservableObject {
             }
             pruneOrphanedMemoryTabs()
             refreshAllDocumentTabs()
+            resolveBackgroundError(.organizationResources)
+        } catch is CancellationError {
+            return
         } catch {
-            // Retain the installed Org generation. A later poll retries from
-            // a fresh commit-state response.
+            guard workspaceReloadGeneration == workspaceGeneration,
+                  phase == .ready,
+                  selectedSection == .memory,
+                  activeProjectId == nil,
+                  !isSwitchingMemoryContext,
+                  orgResourceRefreshGeneration == generation else {
+                return
+            }
+            presentBackgroundError(
+                "Couldn’t refresh Organization Memory. Existing content is still available. "
+                    + error.localizedDescription,
+                source: .organizationResources
+            )
         }
     }
 
@@ -3053,10 +3299,15 @@ final class WorkspaceStore: ObservableObject {
     }
 
     private func refreshStaleResourcesIfNeeded(sync: DaemonSyncStatus) async {
+        let workspaceGeneration = workspaceReloadGeneration
         guard let projectId = activeProjectId,
               let project = projects.first(where: { $0.id == projectId }),
-              let serverCursor = sync.commitSync.serverCursor,
-              serverCursor != project.refCommitId else {
+              let serverCursor = sync.commitSync.serverCursor else {
+            return
+        }
+        let errorSource = WorkspaceBackgroundErrorSource.staleResources(projectId: projectId)
+        guard serverCursor != project.refCommitId else {
+            resolveBackgroundError(errorSource)
             return
         }
         let observedRef = project.refCommitId
@@ -3086,6 +3337,7 @@ final class WorkspaceStore: ObservableObject {
                         orgSelectionRevision: project.orgSelectionRevision
                     )
                 }
+                resolveBackgroundError(errorSource)
                 return
             }
             let checkout = try await daemon.projectCheckout(projectId)
@@ -3142,6 +3394,7 @@ final class WorkspaceStore: ObservableObject {
                 snapshot.projectId == projectId
             }
             if !plan.isEmpty, Self.staleResourcePlansMatch(plan, installedPlan) {
+                resolveBackgroundError(errorSource)
                 return
             }
             let hydratedPlan = await hydrateStaleResourcePlan(plan)
@@ -3160,10 +3413,22 @@ final class WorkspaceStore: ObservableObject {
                     orgSelectionRevision: checkout.orgSelectionRevision
                 )
             }
+            resolveBackgroundError(errorSource)
+        } catch is CancellationError {
+            return
         } catch {
-            // Commit sync reports refresh failures separately. Retain a
-            // previously validated plan rather than replacing it with an
-            // unverified checkout.
+            guard workspaceReloadGeneration == workspaceGeneration,
+                  phase == .ready,
+                  activeProjectId == projectId,
+                  projects.first(where: { $0.id == projectId }) == project,
+                  staleResourceRefreshGenerations[projectId] == refreshGeneration else {
+                return
+            }
+            presentBackgroundError(
+                "Couldn’t update from the shared version. Existing content is unchanged. "
+                    + error.localizedDescription,
+                source: errorSource
+            )
         }
     }
 
@@ -3659,7 +3924,9 @@ final class WorkspaceStore: ObservableObject {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(15))
         var requestedRetry = false
-        while clock.now < deadline {
+        var requiresPostRetryCheck = false
+        while clock.now < deadline || requiresPostRetryCheck {
+            requiresPostRetryCheck = false
             try Task.checkCancellation()
             let detail = try await daemon.draft(draft.id)
             let failure = detail.operations.reversed().first {
@@ -3676,8 +3943,16 @@ final class WorkspaceStore: ObservableObject {
                 throw DocumentSyncError.draftUploadFailed(message)
             case .wait:
                 if !requestedRetry {
-                    _ = try await daemon.retrySync(channel: "drafts")
+                    let outcome = await retrySync(
+                        channel: "drafts",
+                        projectId: draft.projectId
+                    )
+                    if case .failed(let message) = outcome {
+                        throw DocumentSyncError.draftUploadFailed(message)
+                    }
                     requestedRetry = true
+                    requiresPostRetryCheck = true
+                    continue
                 }
             case .ready:
                 // A user edit may have been staged while the daemon was
@@ -3686,6 +3961,7 @@ final class WorkspaceStore: ObservableObject {
                 if pendingDocumentSaves[sessionKey] != nil {
                     try await flushDocumentSave(sessionKey)
                     requestedRetry = false
+                    requiresPostRetryCheck = true
                     continue
                 }
                 let mapped = WorkspaceLoader.mapDraft(detail, resources: resources)
@@ -3835,7 +4111,7 @@ final class WorkspaceStore: ObservableObject {
         )
         pruneOrphanedMemoryTabs()
         if projectId == activeProjectId {
-            _ = try? await daemon.retrySync(channel: "commits")
+            _ = await retrySync(channel: "commits", projectId: projectId)
         }
     }
 
@@ -4214,6 +4490,7 @@ final class WorkspaceStore: ObservableObject {
         draftId: String,
         candidate: DraftReconciliationCandidate,
         resolvedState: ReconciliationResourceState?,
+        projectId: String? = nil,
         documentItemId: String? = nil
     ) async throws {
         guard !isSwitchingMemoryContext else {
@@ -4243,6 +4520,9 @@ final class WorkspaceStore: ObservableObject {
                 standaloneReconciliationActivityIds.remove(standaloneActivityId)
             }
         }
+        guard let reconciliationProjectId = projectId ?? documentKey?.projectId else {
+            throw ProjectMemorySelectionError.projectUnavailable
+        }
         let _: DraftRebaseResult = try await server.send(
             method: "POST",
             path: "/api/v1/drafts/\(draftId)/rebases",
@@ -4253,7 +4533,7 @@ final class WorkspaceStore: ObservableObject {
                 resolvedState: resolvedState
             )
         )
-        _ = try? await daemon.retrySync(channel: "drafts")
+        _ = await retrySync(channel: "drafts", projectId: reconciliationProjectId)
         await reload(allowsDuringDocumentReconciliation: true)
     }
 
@@ -4445,6 +4725,8 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func clearAuthorityScopedWorkspace() {
+        cancelSyncRetries()
+        resetBackgroundErrorPresentation()
         Self.invalidateWorkspaceTransitionState(
             generation: &projectSelectionGeneration,
             loadingProjectId: &loadingProjectId,
@@ -4788,7 +5070,7 @@ final class WorkspaceStore: ObservableObject {
                   !Task.isCancelled else {
                 return
             }
-            _ = try? await daemon.retrySync()
+            _ = await self.retrySync(projectId: self.activeProjectId)
         }
 
         postReadySyncTask = Task { @MainActor [weak self] in
@@ -4803,10 +5085,12 @@ final class WorkspaceStore: ObservableObject {
                   !Task.isCancelled else {
                 return
             }
-            async let syncRequest = try? daemon.syncStatus()
+            let projectId = self.activeProjectId
+            async let syncRequest = try? daemon.syncStatus(projectId: projectId)
             async let mcpRequest = try? daemon.mcpStatus()
             let (sync, mcp) = await (syncRequest, mcpRequest)
             guard self.workspaceReloadGeneration == generation,
+                  self.activeProjectId == projectId,
                   self.phase == .ready,
                   !Task.isCancelled,
                   let runtime = self.runtime else {
@@ -4973,14 +5257,25 @@ final class WorkspaceStore: ObservableObject {
     ) async {
         guard workspaceReloadGeneration == generation,
               phase == .ready,
-              !Task.isCancelled,
-              let inventory = try? await WorkspaceLoader.listAllDraftSummaries(
-                  listDrafts: { query in
-                      try await self.daemon.listDrafts(query)
-                  }
-              ) else {
+              !Task.isCancelled else {
             return
         }
+
+        let inventory: [DaemonDraftSummary]
+        do {
+            inventory = try await WorkspaceLoader.listAllDraftSummaries { query in
+                try await self.daemon.listDrafts(query)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard workspaceReloadGeneration == generation, phase == .ready else { return }
+            draftInventoryLoadState = .failed(
+                "Couldn’t refresh Drafts. \(error.localizedDescription)"
+            )
+            return
+        }
+
         guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
             return
         }
@@ -5016,27 +5311,49 @@ final class WorkspaceStore: ObservableObject {
         let targetIds = Set(summaries.compactMap(\.targetId))
         let baselines = resources.filter { targetIds.contains($0.id) && !$0.contentLoaded }
         let loader = WorkspaceLoader(daemon: daemon, bootstrap: bootstrap, server: server)
-        let loadedBaselines = try? await concurrentMap(baselines) {
-            try await loader.loadContent(for: $0)
-        }
-        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
-            return
-        }
-        if let loadedBaselines {
+
+        do {
+            let loadedBaselines = try await concurrentMap(baselines) {
+                try await loader.loadContent(for: $0)
+            }
+            guard workspaceReloadGeneration == generation,
+                  phase == .ready,
+                  !Task.isCancelled else {
+                return
+            }
             for loaded in loadedBaselines {
                 installLoadedResourceIfCurrent(loaded)
             }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard workspaceReloadGeneration == generation, phase == .ready else { return }
+            draftInventoryLoadState = .failed(
+                "Couldn’t refresh Draft source files. \(error.localizedDescription)"
+            )
+            return
         }
 
         let resourceSnapshot = resources
-        let mappedDrafts = try? await concurrentMap(summaries) { summary in
-            WorkspaceLoader.mapDraft(
-                try await self.daemon.draft(summary.draftId),
-                resources: resourceSnapshot
+        let mappedDrafts: [LocalDraft]
+        do {
+            mappedDrafts = try await concurrentMap(summaries) { summary in
+                WorkspaceLoader.mapDraft(
+                    try await self.daemon.draft(summary.draftId),
+                    resources: resourceSnapshot
+                )
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard workspaceReloadGeneration == generation, phase == .ready else { return }
+            draftInventoryLoadState = .failed(
+                "Couldn’t refresh Draft details. \(error.localizedDescription)"
             )
+            return
         }
-        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled,
-              let mappedDrafts else {
+
+        guard workspaceReloadGeneration == generation, phase == .ready, !Task.isCancelled else {
             return
         }
         for mapped in mappedDrafts {
@@ -5056,8 +5373,8 @@ final class WorkspaceStore: ObservableObject {
         projectName: String,
         generation: UUID
     ) async {
+        let workspaceGeneration = workspaceReloadGeneration
         do {
-            let workspaceGeneration = workspaceReloadGeneration
             guard let observedProject = projects.first(where: { $0.id == projectId }),
                   observedProject.name == projectName else { return }
             let loaded = try await WorkspaceLoader(
@@ -5078,8 +5395,21 @@ final class WorkspaceStore: ObservableObject {
                 projectId: projectId,
                 workspaceGeneration: workspaceGeneration
             )
+            resolveBackgroundError(.projectRefresh(projectId: projectId))
+        } catch is CancellationError {
+            return
         } catch {
-            // The installed Commit remains usable; commit sync reports refresh failures separately.
+            guard workspaceReloadGeneration == workspaceGeneration,
+                  projectSelectionGeneration == generation,
+                  phase == .ready,
+                  activeProjectId == projectId else {
+                return
+            }
+            presentBackgroundError(
+                "Couldn’t refresh \(projectName). Existing content is still available. "
+                    + error.localizedDescription,
+                source: .projectRefresh(projectId: projectId)
+            )
         }
     }
 

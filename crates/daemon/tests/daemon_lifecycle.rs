@@ -23,11 +23,12 @@ use daemon::{
     DaemonProjectCacheClearRequest, DaemonProjectCheckout, DaemonProjectCheckoutRequest,
     DaemonProjectConfigUpdateRequest, DaemonProjectSelectionRequest, DaemonProjectStorage,
     DaemonProjectStorageMode, DaemonProjectStorageMoveState, DaemonProjectStorageReplaceRequest,
-    DaemonProjectStorageRequest, DaemonProjectStorageResetRequest, DaemonServerRequest,
-    DaemonState, DaemonSyncRetryRequest, DaemonUpdateDraftOperation, DraftOperationSyncStatus,
-    IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, LaunchAgentRuntimeStatus,
-    ProjectAgentAdapterDelivery, ProjectAgentAdapterKind, ProjectAgentAdapterRuntimeRequirement,
-    RecordAgentRunEventResponse, ServerCredentials, SyncRetryChannel, SyncState,
+    DaemonProjectStorageRequest, DaemonProjectStorageResetRequest, DaemonProjectSyncRetryRequest,
+    DaemonProjectSyncStatusRequest, DaemonServerRequest, DaemonState, DaemonSyncRetryRequest,
+    DaemonUpdateDraftOperation, DraftOperationSyncStatus, IDENTIFIER_NAMESPACE, LaunchAgentConfig,
+    LaunchAgentController, LaunchAgentRuntimeStatus, ProjectAgentAdapterDelivery,
+    ProjectAgentAdapterKind, ProjectAgentAdapterRuntimeRequirement, RecordAgentRunEventResponse,
+    ServerCredentials, SyncRetryChannel, SyncState,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -2049,6 +2050,158 @@ async fn draft_operation_is_written_to_local_queue_and_visible_in_sync_status() 
 }
 
 #[tokio::test]
+async fn project_sync_status_and_retry_are_isolated() {
+    let (_root, state, service) = common::test_daemon().await;
+    for (project_id, path) in [("prj_a", "docs/a.md"), ("prj_b", "docs/b.md")] {
+        service
+            .store_draft_operation(DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: None,
+                project_id: project_id.to_owned(),
+                scope: DaemonDraftScope::Org,
+                resource: DaemonDraftResourceKind::Memory,
+                op: DaemonDraftOperation {
+                    create: Some(DaemonCreateDraftOperation {
+                        path: path.to_owned(),
+                        content: context_content(project_id),
+                        description: None,
+                    }),
+                    update: None,
+                    rename: None,
+                    delete: None,
+                    discard: None,
+                },
+                source: Some(DaemonDraftOperationSource::Desktop),
+            })
+            .await
+            .unwrap();
+    }
+
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE local_draft_operations
+         SET sync_status = 'failed', last_error = 'injected failure'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let global = service.sync_status().await.unwrap();
+    let project_a = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    let project_b = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(global.failed_operation_count, 2);
+    assert_eq!(project_a.failed_operation_count, 1);
+    assert_eq!(project_b.failed_operation_count, 1);
+
+    service
+        .project_retry_sync(DaemonProjectSyncRetryRequest {
+            project_id: "prj_a".to_owned(),
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    let project_a = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    let project_b = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(project_a.pending_operation_count, 1);
+    assert_eq!(project_a.failed_operation_count, 0);
+    assert_eq!(project_b.pending_operation_count, 0);
+    assert_eq!(project_b.failed_operation_count, 1);
+}
+
+#[tokio::test]
+async fn project_draft_sync_uses_explicit_project_and_scoped_timestamps() {
+    let server = FakeServer::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = server.url.clone();
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let service = DaemonIpcService::new(state);
+
+    service
+        .store_draft_operation(DaemonDraftOperationRequest {
+            draft_id: None,
+            base_commit_id: None,
+            project_id: "prj_test".to_owned(),
+            scope: DaemonDraftScope::Org,
+            resource: DaemonDraftResourceKind::Memory,
+            op: DaemonDraftOperation {
+                create: Some(DaemonCreateDraftOperation {
+                    path: "docs/scoped-sync.md".to_owned(),
+                    content: context_content("Scoped sync"),
+                    description: None,
+                }),
+                update: None,
+                rename: None,
+                delete: None,
+                discard: None,
+            },
+            source: Some(DaemonDraftOperationSource::Desktop),
+        })
+        .await
+        .unwrap();
+
+    let before = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_test".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(before.draft_sync.state, SyncState::Queued);
+    assert!(before.draft_sync.last_error.is_none());
+
+    service
+        .project_retry_sync(DaemonProjectSyncRetryRequest {
+            project_id: "prj_test".to_owned(),
+            channel: SyncRetryChannel::Drafts,
+        })
+        .await
+        .unwrap();
+
+    let project = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_test".to_owned(),
+        })
+        .await
+        .unwrap();
+    let other_project = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_other".to_owned(),
+        })
+        .await
+        .unwrap();
+    let global = service.sync_status().await.unwrap();
+    assert!(project.draft_sync.last_attempt_at.is_some());
+    assert!(project.draft_sync.last_success_at.is_some());
+    assert_eq!(other_project.draft_sync.last_attempt_at, None);
+    assert_eq!(other_project.draft_sync.last_success_at, None);
+    assert_eq!(global.draft_sync.last_attempt_at, None);
+    assert_eq!(global.draft_sync.last_success_at, None);
+}
+
+#[tokio::test]
 async fn draft_operation_service_method_writes_local_queue_without_http() {
     let (_root, _state, service) = common::test_daemon().await;
 
@@ -3294,12 +3447,73 @@ async fn empty_org_commit_state() -> impl axum::response::IntoResponse {
     )
 }
 
+async fn failing_a_empty_b_project_commit_state(
+    axum::extract::Path(project_id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    if project_id == "prj_a" {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::ETAG, "\"failure\"")],
+            Json(json!({ "error": "injected project A failure" })),
+        )
+            .into_response();
+    }
+    empty_project_commit_state(axum::extract::Path(project_id))
+        .await
+        .into_response()
+}
+
 #[derive(Clone)]
 struct CommitSyncProbeState {
     org_requests: Arc<AtomicUsize>,
     project_requests: Arc<AtomicUsize>,
     project_in_flight: Arc<AtomicUsize>,
     max_project_in_flight: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct ScopedCommitSyncProbeState {
+    project_requests: Arc<Mutex<Vec<String>>>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[derive(Deserialize)]
+struct ScopedCommitStateQuery {
+    local_commit_id: Option<String>,
+}
+
+async fn blocking_scoped_project_commit_state(
+    axum::extract::State(state): axum::extract::State<ScopedCommitSyncProbeState>,
+    axum::extract::Path(project_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ScopedCommitStateQuery>,
+) -> impl axum::response::IntoResponse {
+    state
+        .project_requests
+        .lock()
+        .unwrap()
+        .push(project_id.clone());
+    state.started.notify_one();
+    state.release.notified().await;
+    (
+        [(axum::http::header::ETAG, "\"ref-none\"")],
+        Json(json!({
+            "update_available": query.local_commit_id.is_some(),
+            "ref": {
+                "name": "refs/heads/main",
+                "scope": "project",
+                "org_id": "org_bindings",
+                "project_id": project_id,
+                "commit_id": null,
+                "updated_at": "2026-08-27T00:00:00Z"
+            },
+            "latest": null,
+            "download_url": null,
+            "incremental_supported": false
+        })),
+    )
 }
 
 async fn probed_empty_project_commit_state(
@@ -4100,6 +4314,17 @@ async fn commit_sync_installs_every_bound_project_independently_of_desktop_selec
         })
         .await
         .unwrap();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    for project_id in ["prj_bound_first", "prj_bound_second"] {
+        sqlx::query("INSERT INTO daemon_meta (key, value) VALUES ($1, 'previous scoped failure')")
+            .bind(format!("commit_sync_last_error:{project_id}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
     state
         .retry_sync(DaemonSyncRetryRequest {
             channel: SyncRetryChannel::Commits,
@@ -4115,12 +4340,254 @@ async fn commit_sync_installs_every_bound_project_independently_of_desktop_selec
             .await
             .unwrap();
         assert_eq!(cache.state, DaemonMemoryCacheState::Ready);
+        assert!(
+            state
+                .project_sync_status(DaemonProjectSyncStatusRequest {
+                    project_id: project_id.to_owned(),
+                })
+                .await
+                .unwrap()
+                .commit_sync
+                .last_error
+                .is_none()
+        );
     }
     assert_eq!(probe.org_requests.load(Ordering::Acquire), 1);
     assert_eq!(probe.project_requests.load(Ordering::Acquire), 3);
     let max_project_in_flight = probe.max_project_in_flight.load(Ordering::Acquire);
     assert!(max_project_in_flight > 1);
     assert!(max_project_in_flight <= 4);
+}
+
+#[tokio::test]
+async fn global_commit_sync_records_failure_and_success_per_project() {
+    let app = Router::new()
+        .route("/api/v1/projects/{project_id}", get(accessible_project))
+        .route(
+            "/api/v1/projects/{project_id}/commit-state",
+            get(failing_a_empty_b_project_commit_state),
+        )
+        .route("/api/v1/org/commit-state", get(empty_org_commit_state));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let daemon_root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(daemon_root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_a".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    state
+        .replace_project_binding(DaemonProjectBindingReplaceRequest {
+            workspace_root: workspace.path().display().to_string(),
+            project_id: "prj_b".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('commit_sync_last_error:prj_b', 'stale project B failure')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let error = state
+        .retry_sync(DaemonSyncRetryRequest {
+            channel: SyncRetryChannel::Commits,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected project A failure"),
+        "unexpected sync error: {error}"
+    );
+
+    let project_a = state
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap()
+        .commit_sync;
+    let project_b = state
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap()
+        .commit_sync;
+    assert_eq!(project_a.state, SyncState::Failed);
+    assert!(
+        project_a
+            .last_error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("injected project A failure")
+    );
+    assert!(project_a.last_attempt_at.is_some());
+    assert_eq!(project_b.state, SyncState::Idle);
+    assert!(project_b.last_error.is_none());
+    assert!(project_b.last_attempt_at.is_some());
+    assert!(project_b.last_success_at.is_some());
+    assert!(project_b.last_attempt_at <= project_b.last_success_at);
+    assert_eq!(
+        state.sync_status().await.unwrap().commit_sync.state,
+        SyncState::Failed
+    );
+}
+
+#[tokio::test]
+async fn project_commit_sync_status_and_retry_are_isolated() {
+    let probe = ScopedCommitSyncProbeState {
+        project_requests: Arc::new(Mutex::new(Vec::new())),
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    let app = Router::new()
+        .route(
+            "/api/v1/projects/{project_id}/commit-state",
+            get(blocking_scoped_project_commit_state),
+        )
+        .route("/api/v1/org/commit-state", get(empty_org_commit_state))
+        .with_state(probe.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let root = tempfile::tempdir().unwrap();
+    let mut config = DaemonConfig::for_root(root.path());
+    config.project.server_url = format!("http://{address}");
+    config.project.project_id = Some("prj_desktop_selection".to_owned());
+    let (state, _) = common::initialize_authenticated_daemon(config, "test-token", None).await;
+    let service = DaemonIpcService::new(state.clone());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    for (project_id, commit_id) in [("prj_a", "commit-a"), ("prj_b", "commit-b")] {
+        sqlx::query(
+            "INSERT INTO cached_refs (
+                ref_key, name, scope, org_id, project_id, commit_id, etag,
+                server_updated_at, installed_at
+             ) VALUES ($1, 'refs/heads/main', 'project', 'org_bindings', $2, $3, $3,
+                       '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z')",
+        )
+        .bind(format!("project:{project_id}"))
+        .bind(project_id)
+        .bind(commit_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('commit_sync_last_error', 'failure from another Project')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let project_a = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    let project_b = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        project_a.commit_sync.server_cursor.as_deref(),
+        Some("commit-a")
+    );
+    assert_eq!(
+        project_b.commit_sync.server_cursor.as_deref(),
+        Some("commit-b")
+    );
+    assert!(project_a.commit_sync.last_error.is_none());
+    assert!(project_b.commit_sync.last_error.is_none());
+
+    let retry_service = service.clone();
+    let retry = tokio::spawn(async move {
+        retry_service
+            .project_retry_sync(DaemonProjectSyncRetryRequest {
+                project_id: "prj_a".to_owned(),
+                channel: SyncRetryChannel::Commits,
+            })
+            .await
+    });
+    probe.started.notified().await;
+
+    let project_a = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    let project_b = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(project_a.commit_sync.state, SyncState::Syncing);
+    assert_eq!(project_b.commit_sync.state, SyncState::Idle);
+
+    probe.release.notify_one();
+    retry.await.unwrap().unwrap();
+
+    let project_a = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_a".to_owned(),
+        })
+        .await
+        .unwrap();
+    let project_b = service
+        .project_sync_status(DaemonProjectSyncStatusRequest {
+            project_id: "prj_b".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(project_a.commit_sync.server_cursor, None);
+    assert!(project_a.commit_sync.last_attempt_at.is_some());
+    assert!(project_a.commit_sync.last_success_at.is_some());
+    assert!(project_a.commit_sync.last_error.is_none());
+    assert_eq!(
+        project_b.commit_sync.server_cursor.as_deref(),
+        Some("commit-b")
+    );
+    assert_eq!(project_b.commit_sync.last_attempt_at, None);
+    assert!(project_b.commit_sync.last_error.is_none());
+    assert_eq!(
+        probe.project_requests.lock().unwrap().as_slice(),
+        &["prj_a".to_owned()]
+    );
+    assert!(
+        service
+            .sync_status()
+            .await
+            .unwrap()
+            .commit_sync
+            .last_error
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -5534,7 +6001,7 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
     config.project.project_id = Some("prj_atomic".to_owned());
     let (state, _) =
         common::initialize_authenticated_daemon(config, "fake-access-token", None).await;
-    let service = DaemonIpcService::new(state);
+    let service = DaemonIpcService::new(state.clone());
 
     service
         .retry_sync(DaemonSyncRetryRequest {
@@ -5559,6 +6026,17 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         "Valid authority"
     );
 
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", state.local_db_path().display()))
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO daemon_meta (key, value)
+         VALUES ('commit_sync_last_error:prj_atomic', 'previous scoped failure')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
     server.publish_invalid_commit();
     let error = service
         .retry_sync(DaemonSyncRetryRequest {
@@ -5602,6 +6080,19 @@ async fn invalid_commit_payload_does_not_advance_the_installed_ref() {
         Some("commit-valid")
     );
     assert!(sync.commit_sync.last_error.is_some());
+    assert!(
+        service
+            .project_sync_status(DaemonProjectSyncStatusRequest {
+                project_id: "prj_atomic".to_owned(),
+            })
+            .await
+            .unwrap()
+            .commit_sync
+            .last_error
+            .unwrap()
+            .message
+            .contains("failed content-address verification")
+    );
 
     std::fs::remove_file(std::path::Path::new(&installed_root).join("manifest.json")).unwrap();
     let corrupted = service

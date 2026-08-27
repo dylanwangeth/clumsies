@@ -855,12 +855,258 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertLessThan(retryTask.lowerBound, statusTask.lowerBound)
         XCTAssertTrue(
             source[retryTask.lowerBound..<statusTask.lowerBound]
-                .contains("daemon.retrySync()")
+                .contains("self.retrySync(projectId: self.activeProjectId)")
         )
         XCTAssertFalse(
             source[statusTask.lowerBound..<statusEnd.lowerBound]
-                .contains("daemon.retrySync()")
+                .contains("self.retrySync(")
         )
+    }
+
+    func testRetrySyncSharesOnlyTheSameProjectAndChannelTask() throws {
+        let draftsA = SyncRetryKey(channel: "drafts", projectId: "project-a")
+        XCTAssertEqual(
+            draftsA,
+            SyncRetryKey(channel: "drafts", projectId: "project-a")
+        )
+        XCTAssertNotEqual(
+            draftsA,
+            SyncRetryKey(channel: "drafts", projectId: "project-b")
+        )
+        XCTAssertNotEqual(
+            draftsA,
+            SyncRetryKey(channel: "commits", projectId: "project-a")
+        )
+
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "    func retrySync("))
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(of: "\n    func refreshSyncStatus()")
+        )
+        let retry = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(retry.contains("if let inFlight = syncRetryTasks[key]"))
+        XCTAssertTrue(retry.contains("return await inFlight.task.value"))
+        XCTAssertTrue(retry.contains("syncRetryTasks[key] = .init(id: taskId, task: task)"))
+        XCTAssertTrue(retry.contains("retryingSyncKeys.insert(key)"))
+        XCTAssertTrue(retry.contains("syncRetryTasks[key]?.id == taskId"))
+        XCTAssertTrue(retry.contains("existingKey.projectId == projectId ? handle.task : nil"))
+        XCTAssertTrue(retry.contains("for predecessor in predecessors"))
+        XCTAssertTrue(retry.contains("clearSyncRetryErrors(channel: channel, projectId: projectId)"))
+        let daemonRetry = try XCTUnwrap(
+            retry.range(of: "_ = try await daemon.retrySync(channel: channel, projectId: projectId)")
+        )
+        let completionClear = try XCTUnwrap(
+            retry[daemonRetry.upperBound...].range(of: "if channel == \"all\"")
+        )
+        let statusRefresh = try XCTUnwrap(
+            retry[completionClear.upperBound...].range(of: "await refreshSyncStatus()")
+        )
+        XCTAssertLessThan(completionClear.lowerBound, statusRefresh.lowerBound)
+        XCTAssertTrue(retry.contains("if errorMessage == nil"))
+        XCTAssertFalse(retry.contains("guard !isRetryingSync"))
+
+        XCTAssertTrue(source.contains(
+            "@Published private var retryingSyncKeys: Set<SyncRetryKey> = []"
+        ))
+        XCTAssertTrue(source.contains(
+            "@Published private var syncRetryErrors: [SyncRetryKey: String] = [:]"
+        ))
+        XCTAssertTrue(source.contains(
+            "retryingSyncKeys.contains { $0.projectId == activeProjectId }"
+        ))
+        XCTAssertTrue(source.contains(
+            "? syncRetryErrors.keys.filter { $0.projectId == projectId }"
+        ))
+        XCTAssertTrue(source.contains(
+            ".filter { $0.key.projectId == activeProjectId }"
+        ))
+    }
+
+    func testRetryControlsUseTheirProjectAndChannelState() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workspace = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let memory = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/MemoryWorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let diagnostics = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/DiagnosticsView.swift"),
+            encoding: .utf8
+        )
+
+        for source in [workspace, memory] {
+            XCTAssertTrue(source.contains(
+                "store.isRetryingSync(\n"
+                    + "                                        channel: \"drafts\""
+            ) || source.contains(
+                "store.isRetryingSync(\n"
+                    + "                        channel: \"drafts\""
+            ))
+        }
+        XCTAssertTrue(diagnostics.contains(
+            "store.isRetryingSync(\n"
+                + "                        channel: \"all\",\n"
+                + "                        projectId: retryProjectId"
+        ))
+    }
+
+    func testAuthorityResetCancelsRetriesAndDismissedBackgroundErrorsStayDismissed() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let clearStart = try XCTUnwrap(source.range(of: "    func clearAuthorityScopedWorkspace()"))
+        let clearEnd = try XCTUnwrap(
+            source[clearStart.lowerBound...].range(of: "\n    private func apply(")
+        )
+        let clear = source[clearStart.lowerBound..<clearEnd.lowerBound]
+        XCTAssertTrue(clear.contains("cancelSyncRetries()"))
+        XCTAssertTrue(clear.contains("resetBackgroundErrorPresentation()"))
+
+        let cancelStart = try XCTUnwrap(source.range(of: "    private func cancelSyncRetries()"))
+        let cancelEnd = try XCTUnwrap(
+            source[cancelStart.lowerBound...].range(
+                of: "\n    private func resetBackgroundErrorPresentation()"
+            )
+        )
+        let cancel = source[cancelStart.lowerBound..<cancelEnd.lowerBound]
+        XCTAssertTrue(cancel.contains("syncRetryTasks.values.forEach { $0.task.cancel() }"))
+        XCTAssertTrue(cancel.contains("retryingSyncKeys.removeAll()"))
+        XCTAssertTrue(cancel.contains("syncRetryErrors.removeAll()"))
+
+        let dismissStart = try XCTUnwrap(source.range(of: "    func dismissErrorMessage()"))
+        let dismissEnd = try XCTUnwrap(
+            source[dismissStart.lowerBound...].range(of: "\n    private func presentBackgroundError(")
+        )
+        let dismiss = source[dismissStart.lowerBound..<dismissEnd.lowerBound]
+        XCTAssertTrue(dismiss.contains(
+            "dismissedBackgroundErrorSources.insert(presentation.source)"
+        ))
+
+        let resolveStart = try XCTUnwrap(
+            source.range(of: "    private func resolveBackgroundError(")
+        )
+        let resolveEnd = try XCTUnwrap(
+            source[resolveStart.lowerBound...].range(
+                of: "\n    private func backgroundErrorIsRelevant("
+            )
+        )
+        let resolve = source[resolveStart.lowerBound..<resolveEnd.lowerBound]
+        XCTAssertTrue(resolve.contains("dismissedBackgroundErrorSources.remove(source)"))
+
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "presentBackgroundError(").count - 1,
+            4
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "resolveBackgroundError(").count - 1,
+            8
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "catch is CancellationError").count - 1,
+            6
+        )
+        XCTAssertTrue(source.contains(
+            "workspaceReloadGeneration == workspaceGeneration,\n"
+                + "                  projectSelectionGeneration == generation"
+        ))
+
+        let workspace = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(workspace.contains("store.dismissErrorMessage()"))
+    }
+
+    func testDiscardRechecksTheDraftInsideTheMutationGate() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "    func discard(_ draft: LocalDraft)"))
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(of: "\n    @discardableResult\n    func retrySync(")
+        )
+        let discard = source[start.lowerBound..<end.lowerBound]
+        let recheck = try XCTUnwrap(
+            discard.range(of: "guard drafts.contains(where: { $0.id == draft.id }) else { return }")
+        )
+        let store = try XCTUnwrap(discard.range(of: "_ = try await daemon.store("))
+
+        XCTAssertLessThan(recheck.lowerBound, store.lowerBound)
+    }
+
+    func testReconciliationRetryUsesTheDraftProject() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let storeSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(storeSource.range(of: "    func applyReconciliation("))
+        let end = try XCTUnwrap(
+            storeSource[start.lowerBound...].range(of: "\n    func reviewDetail(")
+        )
+        let apply = storeSource[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(apply.contains("projectId ?? documentKey?.projectId"))
+        XCTAssertTrue(apply.contains("projectId: reconciliationProjectId"))
+        XCTAssertFalse(apply.contains("projectId: activeProjectId"))
+
+        let reviewSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/ReviewsView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(reviewSource.contains(
+            "$0.detail.draft.draftId == candidate.draftId"
+        ))
+        XCTAssertTrue(reviewSource.contains("}?.detail.draft.projectId"))
+    }
+
+    func testDraftUploadBarrierRechecksAfterRetryPastDeadline() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(of: "    private func synchronizedDraftForReconciliation(")
+        )
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(of: "\n    private func installSynchronizedDraft(")
+        )
+        let barrier = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(barrier.contains(
+            "while clock.now < deadline || requiresPostRetryCheck"
+        ))
+        XCTAssertTrue(barrier.contains(
+            "requestedRetry = true\n                    requiresPostRetryCheck = true\n                    continue"
+        ))
+        XCTAssertTrue(barrier.contains(
+            "try await flushDocumentSave(sessionKey)\n                    requestedRetry = false\n                    requiresPostRetryCheck = true\n                    continue"
+        ))
     }
 
     func testOrgResourceRefreshIsScopedToWorkspaceGeneration() throws {
