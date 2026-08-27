@@ -4,8 +4,129 @@ import XCTest
 final class DaemonContractTests: XCTestCase {
     func testNativeClientUsesClumsiesIdentifierNamespace() {
         XCTAssertEqual(ClumsiesIdentifiers.namespace, "ai.clumsies")
+        XCTAssertEqual(ClumsiesIdentifiers.appDisplayName, "Clumsies")
+        XCTAssertNil(ClumsiesIdentifiers.developmentInstanceID)
+        XCTAssertFalse(ClumsiesIdentifiers.developmentConfigurationDetected)
         XCTAssertEqual(DaemonBootstrapController.label, "ai.clumsies.daemon")
         XCTAssertEqual(DaemonXPCClient.serviceName, "ai.clumsies.daemon")
+        XCTAssertEqual(AuthenticationClient.serverURL, URL(string: "https://app.clumsies.ai"))
+    }
+
+    func testDevInstanceDerivesItsOwnDaemonService() {
+        XCTAssertEqual(
+            ClumsiesIdentifiers.daemonServiceName(for: "a1b2c3d4"),
+            "ai.clumsies.daemon.dev.a1b2c3d4"
+        )
+        XCTAssertEqual(ClumsiesIdentifiers.daemonServiceName(for: nil), "ai.clumsies.daemon")
+        XCTAssertEqual(ClumsiesIdentifiers.daemonServiceName(for: ""), "ai.clumsies.daemon")
+        XCTAssertTrue(
+            ClumsiesIdentifiers.isStableServerURL(URL(string: "https://app.clumsies.ai")!)
+        )
+        XCTAssertTrue(
+            ClumsiesIdentifiers.isStableServerURL(URL(string: "https://app.clumsies.ai.")!)
+        )
+        XCTAssertFalse(
+            ClumsiesIdentifiers.isStableServerURL(URL(string: "http://127.0.0.1:49152")!)
+        )
+    }
+
+    func testMalformedDevBundleCannotFallBackToStableDaemon() {
+        XCTAssertTrue(ClumsiesIdentifiers.detectsDevelopmentConfiguration(
+            bundleIdentifier: "ai.clumsies.desktop.dev.a1b2c3d4",
+            appDisplayName: "Clumsies",
+            developmentInstanceID: nil,
+            serverURL: URL(string: "https://app.clumsies.ai"),
+            devOnlySettingValues: []
+        ))
+        XCTAssertTrue(ClumsiesIdentifiers.detectsDevelopmentConfiguration(
+            bundleIdentifier: "ai.clumsies.desktop",
+            appDisplayName: "Clumsies",
+            developmentInstanceID: nil,
+            serverURL: URL(string: "https://app.clumsies.ai"),
+            devOnlySettingValues: ["/private/tmp/clumsies-dev/root"]
+        ))
+        XCTAssertFalse(ClumsiesIdentifiers.detectsDevelopmentConfiguration(
+            bundleIdentifier: "ai.clumsies.desktop",
+            appDisplayName: "Clumsies",
+            developmentInstanceID: nil,
+            serverURL: URL(string: "https://app.clumsies.ai"),
+            devOnlySettingValues: []
+        ))
+        XCTAssertEqual(
+            ClumsiesIdentifiers.daemonServiceName(
+                for: nil,
+                developmentConfigurationDetected: true
+            ),
+            "ai.clumsies.daemon.dev.invalid-configuration"
+        )
+    }
+
+    func testDaemonControlEnvironmentKeepsStableServerAndCallerEnvironment() {
+        let environment = ClumsiesIdentifiers.daemonEnvironment(base: ["PATH": "/usr/bin"])
+
+        XCTAssertEqual(environment["PATH"], "/usr/bin")
+        XCTAssertEqual(environment["CLUMSIES_SERVER_URL"], "https://app.clumsies.ai")
+        XCTAssertNil(environment["CLUMSIES_DEV_INSTANCE_ID"])
+        XCTAssertNil(environment["CODEX_HOME"])
+        XCTAssertNil(environment["CLUMSIES_CODEX_HOME"])
+    }
+
+    func testInfoPlistCarriesDevInstanceBuildSettings() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let data = try Data(contentsOf: macOSRoot.appending(path: "Config/Info.plist"))
+        let info = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        XCTAssertEqual(info["CFBundleDisplayName"] as? String, "$(CLUMSIES_APP_DISPLAY_NAME)")
+        XCTAssertEqual(info["CFBundleName"] as? String, "$(PRODUCT_NAME)")
+        for key in [
+            "CLUMSIES_APP_DISPLAY_NAME",
+            "CLUMSIES_DEV_INSTANCE_ID",
+            "CLUMSIES_DAEMON_ROOT",
+            "CLUMSIES_DAEMON_CACHE_DIR",
+            "CLUMSIES_DAEMON_LOG_DIR",
+            "CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR",
+            "CLUMSIES_SERVER_URL",
+            "CLUMSIES_CODEX_HOME",
+        ] {
+            XCTAssertEqual(info[key] as? String, "$(\(key))")
+        }
+        XCTAssertNil(info["CLUMSIES_DAEMON_CODE_SIGN_IDENTIFIER"])
+    }
+
+    func testDevAppIdentityOverridesDoNotRenameTheTestBundle() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let projectYAML = try String(
+            contentsOf: macOSRoot.appending(path: "project.yml"),
+            encoding: .utf8
+        )
+        let appStart = try XCTUnwrap(projectYAML.range(of: "  Clumsies:\n"))
+        let testsStart = try XCTUnwrap(projectYAML.range(of: "  ClumsiesTests:\n"))
+        let schemesStart = try XCTUnwrap(projectYAML.range(of: "schemes:\n"))
+        let defaults = projectYAML[..<appStart.lowerBound]
+        let appTarget = projectYAML[appStart.lowerBound..<testsStart.lowerBound]
+        let testsTarget = projectYAML[testsStart.lowerBound..<schemesStart.lowerBound]
+
+        XCTAssertTrue(defaults.contains("CLUMSIES_APP_PRODUCT_NAME: Clumsies"))
+        XCTAssertTrue(defaults.contains("CLUMSIES_APP_BUNDLE_IDENTIFIER: ai.clumsies.desktop"))
+        XCTAssertTrue(appTarget.contains(
+            "PRODUCT_BUNDLE_IDENTIFIER: $(CLUMSIES_APP_BUNDLE_IDENTIFIER)"
+        ))
+        XCTAssertTrue(appTarget.contains("PRODUCT_NAME: $(CLUMSIES_APP_PRODUCT_NAME)"))
+        XCTAssertTrue(appTarget.contains("PRODUCT_MODULE_NAME: Clumsies"))
+        XCTAssertTrue(testsTarget.contains(
+            "PRODUCT_BUNDLE_IDENTIFIER: ai.clumsies.desktop.tests"
+        ))
+        XCTAssertTrue(testsTarget.contains(
+            "TEST_HOST: $(BUILT_PRODUCTS_DIR)/$(CLUMSIES_APP_PRODUCT_NAME).app/Contents/MacOS/$(CLUMSIES_APP_PRODUCT_NAME)"
+        ))
+        XCTAssertTrue(testsTarget.contains("BUNDLE_LOADER: $(TEST_HOST)"))
+        XCTAssertFalse(testsTarget.contains("PRODUCT_NAME:"))
     }
 
     func testCodexPluginRequestIsGlobalAndUsesBundledRuntimePath() throws {
@@ -696,7 +817,7 @@ final class DaemonContractTests: XCTestCase {
         )
 
         XCTAssertTrue(warning.contains("Archived integration inspection was skipped"))
-        XCTAssertTrue(warning.contains("bun run dev:macos"))
+        XCTAssertTrue(warning.contains("just promote-debug-macos"))
         XCTAssertTrue(warning.contains("distributed Release"))
         XCTAssertFalse(warning.contains("archived Zig CLI integration store"))
     }

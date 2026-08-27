@@ -13,8 +13,7 @@ enum AppBundleRuntimeLocationError: LocalizedError, Sendable {
 
 enum AppBundleRuntimeLocation {
     static var defaultLogDirectoryURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appending(components: "Library", "Logs", "ai.clumsies")
+        ClumsiesIdentifiers.daemonLogDirectoryURL
     }
 
     static func requireStable(_ bundleURL: URL) throws {

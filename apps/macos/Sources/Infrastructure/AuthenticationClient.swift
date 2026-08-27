@@ -28,7 +28,7 @@ enum AuthenticationError: LocalizedError, Sendable {
 }
 
 struct AuthenticationClient: Sendable {
-    static let serverURL = URL(string: "https://app.clumsies.ai")!
+    static let serverURL = ClumsiesIdentifiers.serverURL
 
     let daemon: DaemonXPCClient
 

@@ -10,17 +10,12 @@
   "scripts": {
     "dev": "vitepress dev docs",
     "dev:site": "python3 -m http.server 4000 --directory site",
-    "dev:macos": "sh apps/macos/Scripts/run.sh",
     "dev:web-admin": "bun run --cwd apps/web-admin dev",
     "dev:infra": "docker compose up -d --wait postgres fake-oidc",
     "dev:infra:down": "docker compose down",
     "dev:server": "sh dev/server.sh",
     "build": "vitepress build docs",
     "build:web-admin": "bun run --cwd apps/web-admin build",
-    "build:macos": "sh apps/macos/Scripts/build.sh",
-    "test:macos:package": "sh apps/macos/Scripts/test-runtime-package.sh",
-    "test:macos": "sh apps/macos/Scripts/test.sh",
-    "test:macos:live": "xcodegen generate --spec apps/macos/project.yml && CLUMSIES_SKIP_DAEMON_BUILD=1 xcodebuild -quiet -project apps/macos/Clumsies.xcodeproj -scheme ClumsiesLiveTests -configuration Debug -derivedDataPath /private/tmp/clumsies-macos-live-tests test",
     "preview": "vitepress preview docs",
     "api:generate": "bun run --cwd packages/api-contract generate",
     "api:check": "bun run --cwd packages/api-contract check && bun run --cwd packages/api-client typecheck && bun run --cwd packages/api-client test"

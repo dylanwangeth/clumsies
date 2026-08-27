@@ -5660,7 +5660,8 @@ struct WorkspaceLoader: Sendable {
            payload.code == "project_agent_adapter_invalid_runtime" {
             return "The resident daemon rejected the bundled Agent runtime. Archived integration "
                 + "inspection was skipped. Reinstall and restart Clumsies so the App and daemon use "
-                + "the same build. For local development, use bun run dev:macos; distributed Release "
+                + "the same build. To replace the resident Debug installation, run "
+                + "just promote-debug-macos; distributed Release "
                 + "builds must use an accepted release signature."
         }
         return "Clumsies updated its managed integrations, but could not inspect the "

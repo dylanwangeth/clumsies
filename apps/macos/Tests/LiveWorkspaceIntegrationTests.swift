@@ -2,6 +2,41 @@ import XCTest
 @testable import Clumsies
 
 final class LiveWorkspaceIntegrationTests: XCTestCase {
+    private enum DraftSyncBarrierDecision: Equatable {
+        case complete
+        case wait
+        case failed(Int)
+    }
+
+    private enum DraftSyncBarrierError: LocalizedError {
+        case failedOperations(Int)
+        case timedOut
+
+        var errorDescription: String? {
+            switch self {
+            case let .failedOperations(count):
+                "Draft sync reported \(count) failed operation(s)."
+            case .timedOut:
+                "Draft sync did not drain its pending operations within 30 seconds."
+            }
+        }
+    }
+
+    func testDraftSyncBarrierOnlyCompletesForAHealthyEmptyQueue() {
+        XCTAssertEqual(
+            Self.draftSyncBarrierDecision(pendingOperationCount: 0, failedOperationCount: 0),
+            .complete
+        )
+        XCTAssertEqual(
+            Self.draftSyncBarrierDecision(pendingOperationCount: 1, failedOperationCount: 0),
+            .wait
+        )
+        XCTAssertEqual(
+            Self.draftSyncBarrierDecision(pendingOperationCount: 0, failedOperationCount: 1),
+            .failed(1)
+        )
+    }
+
     func testLoadsAuthenticatedWorkspaceThroughDaemon() async throws {
         guard ProcessInfo.processInfo.environment["CLUMSIES_RUN_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set CLUMSIES_RUN_LIVE_TESTS=1 to exercise the local daemon and configured Server.")
@@ -74,6 +109,7 @@ final class LiveWorkspaceIntegrationTests: XCTestCase {
             }
             throw error
         }
+        try await waitForDraftSync(daemon: DaemonXPCClient())
     }
 
     @MainActor
@@ -90,7 +126,8 @@ final class LiveWorkspaceIntegrationTests: XCTestCase {
                 id: createdDraft.id,
                 resource: nil,
                 draft: createdDraft,
-                inherited: false
+                inherited: false,
+                projectContextId: createdDraft.projectId
             )
             try await store.save(item, document: document)
             let updatedDraft = try XCTUnwrap(store.drafts.first { $0.id == createdDraft.id })
@@ -104,5 +141,37 @@ final class LiveWorkspaceIntegrationTests: XCTestCase {
             }
             throw error
         }
+    }
+
+    private static func draftSyncBarrierDecision(
+        pendingOperationCount: Int,
+        failedOperationCount: Int
+    ) -> DraftSyncBarrierDecision {
+        if failedOperationCount > 0 {
+            return .failed(failedOperationCount)
+        }
+        return pendingOperationCount == 0 ? .complete : .wait
+    }
+
+    @MainActor
+    private func waitForDraftSync(daemon: DaemonXPCClient) async throws {
+        let maximumAttempts = 300
+        for attempt in 0..<maximumAttempts {
+            let status = try await daemon.syncStatus()
+            switch Self.draftSyncBarrierDecision(
+                pendingOperationCount: status.pendingOperationCount,
+                failedOperationCount: status.failedOperationCount
+            ) {
+            case .complete:
+                return
+            case .wait:
+                if attempt + 1 < maximumAttempts {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+            case let .failed(count):
+                throw DraftSyncBarrierError.failedOperations(count)
+            }
+        }
+        throw DraftSyncBarrierError.timedOut
     }
 }

@@ -15,6 +15,16 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    CLUMSIES_APP_PRODUCT_NAME: Clumsies
+    CLUMSIES_APP_BUNDLE_IDENTIFIER: ai.clumsies.desktop
+    CLUMSIES_APP_DISPLAY_NAME: Clumsies
+    CLUMSIES_DEV_INSTANCE_ID: ""
+    CLUMSIES_DAEMON_ROOT: ""
+    CLUMSIES_DAEMON_CACHE_DIR: ""
+    CLUMSIES_DAEMON_LOG_DIR: ""
+    CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR: ""
+    CLUMSIES_SERVER_URL: https://app.clumsies.ai
+    CLUMSIES_CODEX_HOME: ""
 packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
@@ -36,10 +46,18 @@ targets:
     info:
       path: Config/Info.plist
       properties:
-        CFBundleDisplayName: Clumsies
-        CFBundleName: Clumsies
+        CFBundleDisplayName: $(CLUMSIES_APP_DISPLAY_NAME)
+        CFBundleName: $(PRODUCT_NAME)
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CLUMSIES_APP_DISPLAY_NAME: $(CLUMSIES_APP_DISPLAY_NAME)
+        CLUMSIES_DEV_INSTANCE_ID: $(CLUMSIES_DEV_INSTANCE_ID)
+        CLUMSIES_DAEMON_ROOT: $(CLUMSIES_DAEMON_ROOT)
+        CLUMSIES_DAEMON_CACHE_DIR: $(CLUMSIES_DAEMON_CACHE_DIR)
+        CLUMSIES_DAEMON_LOG_DIR: $(CLUMSIES_DAEMON_LOG_DIR)
+        CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR: $(CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR)
+        CLUMSIES_SERVER_URL: $(CLUMSIES_SERVER_URL)
+        CLUMSIES_CODEX_HOME: $(CLUMSIES_CODEX_HOME)
         LSApplicationCategoryType: public.app-category.productivity
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
@@ -49,8 +67,9 @@ targets:
         SUPublicEDKey: oCAiBe/ez4wochO1I9ziO1uCEpmES+e7ypC74HJwIvw=
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.clumsies.desktop
-        PRODUCT_NAME: Clumsies
+        PRODUCT_BUNDLE_IDENTIFIER: $(CLUMSIES_APP_BUNDLE_IDENTIFIER)
+        PRODUCT_NAME: $(CLUMSIES_APP_PRODUCT_NAME)
+        PRODUCT_MODULE_NAME: Clumsies
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_STYLE: Automatic
@@ -81,6 +100,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.clumsies.desktop.tests
         GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/$(CLUMSIES_APP_PRODUCT_NAME).app/Contents/MacOS/$(CLUMSIES_APP_PRODUCT_NAME)
+        BUNDLE_LOADER: $(TEST_HOST)
 schemes:
   Clumsies:
     build:

@@ -9,19 +9,20 @@ enum DaemonXPCError: LocalizedError, Sendable {
     case daemon(APIErrorPayload)
 
     var errorDescription: String? {
+        let logHint = "Review logs in \(ClumsiesIdentifiers.daemonLogDirectoryURL.path)."
         switch self {
         case .invalidRequest:
             return "Could not encode the daemon request."
         case .connectionFailed(let detail):
             if let detail, !detail.isEmpty {
-                return "The local Clumsies daemon is unavailable (\(detail)). Review logs in ~/Library/Logs/ai.clumsies."
+                return "The local Clumsies daemon is unavailable (\(detail)). \(logHint)"
             }
-            return "The local Clumsies daemon is unavailable. Review logs in ~/Library/Logs/ai.clumsies."
+            return "The local Clumsies daemon is unavailable. \(logHint)"
         case .requestTimedOut(let timeout):
             if let timeout {
-                return "The local Clumsies daemon did not respond within \(String(format: "%.1f", timeout))s. Review logs in ~/Library/Logs/ai.clumsies."
+                return "The local Clumsies daemon did not respond within \(String(format: "%.1f", timeout))s. \(logHint)"
             }
-            return "The local Clumsies daemon did not respond in time. Review logs in ~/Library/Logs/ai.clumsies."
+            return "The local Clumsies daemon did not respond in time. \(logHint)"
         case .invalidReply:
             return "The local Clumsies daemon returned an invalid response."
         case .daemon(let error):

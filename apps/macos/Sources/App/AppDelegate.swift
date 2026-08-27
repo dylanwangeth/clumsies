@@ -242,7 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func presentMainLoading() {
-        presentMainContent(LaunchView(), surface: .loading, title: "Clumsies")
+        presentMainContent(
+            LaunchView(),
+            surface: .loading,
+            title: ClumsiesIdentifiers.appDisplayName
+        )
     }
 
     private func presentMainFailure(message: String, retry: @escaping () -> Void) {
@@ -253,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 onShowLogs: { [weak self] in self?.showLogsInFinder() }
             ),
             surface: .failure,
-            title: "Clumsies"
+            title: ClumsiesIdentifiers.appDisplayName
         )
     }
 
@@ -317,7 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             backing: .buffered,
             defer: false
         )
-        window.title = "Clumsies"
+        window.title = ClumsiesIdentifiers.appDisplayName
         window.contentViewController = controller
         window.contentMinSize = size
         window.contentMaxSize = size
@@ -415,13 +419,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = item.button else { return }
         let image = NSImage(named: "MenuBarIcon")
-            ?? NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Clumsies")
+            ?? NSImage(
+                systemSymbolName: "wand.and.stars",
+                accessibilityDescription: ClumsiesIdentifiers.appDisplayName
+            )
         image?.isTemplate = true
         image?.size = NSSize(width: 18, height: 18)
         button.image = image
         button.imagePosition = .imageOnly
         button.imageScaling = .scaleProportionallyDown
-        button.toolTip = "Clumsies"
+        button.toolTip = ClumsiesIdentifiers.appDisplayName
         button.target = self
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -431,7 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func makeStatusMenu() -> NSMenu {
         let menu = NSMenu()
         let open = menu.addItem(
-            withTitle: "Open Clumsies",
+            withTitle: "Open \(ClumsiesIdentifiers.appDisplayName)",
             action: #selector(openFromStatusItem(_:)),
             keyEquivalent: ""
         )
@@ -450,7 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         revealLogs.target = self
         menu.addItem(.separator())
         menu.addItem(
-            withTitle: "Quit Clumsies",
+            withTitle: "Quit \(ClumsiesIdentifiers.appDisplayName)",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: ""
         )
@@ -494,17 +501,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let applicationItem = NSMenuItem()
         mainMenu.addItem(applicationItem)
         let applicationMenu = NSMenu()
-        applicationMenu.addItem(withTitle: "About Clumsies", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        applicationMenu.addItem(
+            withTitle: "About \(ClumsiesIdentifiers.appDisplayName)",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
         applicationMenu.addItem(.separator())
         let settings = applicationMenu.addItem(withTitle: "Settings...", action: #selector(showSettings(_:)), keyEquivalent: ",")
         settings.target = self
         let updates = applicationMenu.addItem(withTitle: "Check for Updates...", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
         updates.target = self
         applicationMenu.addItem(.separator())
-        applicationMenu.addItem(withTitle: "Hide Clumsies", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        applicationMenu.addItem(
+            withTitle: "Hide \(ClumsiesIdentifiers.appDisplayName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
         applicationMenu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h").keyEquivalentModifierMask = [.command, .option]
         applicationMenu.addItem(.separator())
-        applicationMenu.addItem(withTitle: "Quit Clumsies", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationMenu.addItem(
+            withTitle: "Quit \(ClumsiesIdentifiers.appDisplayName)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
         applicationItem.submenu = applicationMenu
 
         let fileItem = NSMenuItem()
@@ -690,7 +709,7 @@ private struct LaunchView: View {
                 BrandLogoView(size: 68, isBreathing: true)
 
                 VStack(spacing: 4) {
-                    Text("Clumsies")
+                    Text(ClumsiesIdentifiers.appDisplayName)
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(.primary)
 

@@ -8,11 +8,12 @@ use daemon::agent_runtime::hook::{
 use daemon::agent_runtime::mcp::McpServer;
 use daemon::agent_runtime::{AgentRuntimeBackend, mcp_contract::AgentRuntimeRequest};
 use daemon::{
-    AgentRunKind, CredentialStore, CredentialStoreError, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    DaemonError, DaemonIpcClient, DaemonIpcResponse, DaemonIpcServer, DaemonIpcService,
-    DaemonProjectBindingResolveRequest, DaemonState, IssueBoardState, IssueDetailRequest,
-    LaunchAgentConfig, LaunchAgentController, ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
-    ProjectAgentAdapterRuntimeRequirement, RecordAgentRunEventResponse, ServerCredentials,
+    AgentRunKind, CredentialStore, CredentialStoreError, DAEMON_MACH_SERVICE_NAME,
+    DEV_INSTANCE_ID_ENV, DaemonConfig, DaemonError, DaemonIpcClient, DaemonIpcResponse,
+    DaemonIpcServer, DaemonIpcService, DaemonProjectBindingResolveRequest, DaemonState,
+    IssueBoardState, IssueDetailRequest, LaunchAgentConfig, LaunchAgentController,
+    ProjectAgentAdapterDelivery, ProjectAgentAdapterKind, ProjectAgentAdapterRuntimeRequirement,
+    RecordAgentRunEventResponse, ServerCredentials,
 };
 use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
@@ -40,6 +41,12 @@ const AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV: &str =
 const AGENT_RUNTIME_STARTUP_IPC_TIMEOUT: Duration = Duration::from_secs(30);
 const AGENT_RUNTIME_MCP_IPC_TIMEOUT: Duration = Duration::from_secs(65);
 const AGENT_RUNTIME_HOOK_IPC_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DaemonRuntimeMode {
+    mach_service_name: String,
+    isolated_test: bool,
+}
 
 struct DeliveryCheckedBackend {
     client: DaemonIpcClient,
@@ -210,7 +217,8 @@ fn agent_runtime_requirement(
 fn run_mcp_proxy(
     required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = agent_runtime_client(AGENT_RUNTIME_STARTUP_IPC_TIMEOUT)?;
+    let runtime_mode = daemon_runtime_mode_from_env()?;
+    let client = agent_runtime_client(AGENT_RUNTIME_STARTUP_IPC_TIMEOUT, &runtime_mode);
     verify_agent_runtime(&client)?;
     let workspace_path = std::env::current_dir()?.to_string_lossy().into_owned();
     let binding = client.resolve_project_binding(DaemonProjectBindingResolveRequest {
@@ -229,7 +237,7 @@ fn run_mcp_proxy(
     // The debug-only test seam changes the backend identity only after the
     // startup health and binding requests. This models a resident replacement
     // between MCP initialize and the next tools/call over real XPC.
-    let backend = match stale_tool_identity_for_test()? {
+    let backend = match stale_tool_identity_for_test(&runtime_mode)? {
         Some(identity) => DaemonIpcClient::for_agent_runtime(client.service_name(), identity)
             .with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
         None => client.with_timeout(AGENT_RUNTIME_MCP_IPC_TIMEOUT),
@@ -261,7 +269,8 @@ fn run_hook_proxy(
         Some(path) => path.to_owned(),
         None => std::env::current_dir()?.to_string_lossy().into_owned(),
     };
-    let client = agent_runtime_client(AGENT_RUNTIME_HOOK_IPC_TIMEOUT)?;
+    let runtime_mode = daemon_runtime_mode_from_env()?;
+    let client = agent_runtime_client(AGENT_RUNTIME_HOOK_IPC_TIMEOUT, &runtime_mode);
     verify_agent_runtime(&client)?;
     let binding = client.resolve_project_binding(DaemonProjectBindingResolveRequest {
         workspace_path,
@@ -288,28 +297,75 @@ fn verify_agent_runtime(client: &DaemonIpcClient) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-fn agent_runtime_client(request_timeout: Duration) -> Result<DaemonIpcClient, DaemonError> {
-    Ok(DaemonIpcClient::for_agent_runtime(
-        agent_runtime_mach_service_name()?,
+fn agent_runtime_client(
+    request_timeout: Duration,
+    runtime_mode: &DaemonRuntimeMode,
+) -> DaemonIpcClient {
+    DaemonIpcClient::for_agent_runtime(
+        runtime_mode.mach_service_name.clone(),
         daemon::agent_runtime::current_identity(),
     )
-    .with_timeout(request_timeout))
+    .with_timeout(request_timeout)
 }
 
 /// An isolated Mach service is required by the process/XPC integration test.
 /// The strict prefix and character allowlist prevent this seam from targeting
 /// the installed service or another user's launchd job.
-fn agent_runtime_mach_service_name() -> Result<String, DaemonError> {
-    let Some(service_name) = std::env::var(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV).ok() else {
-        return Ok(DAEMON_MACH_SERVICE_NAME.to_owned());
-    };
-    if !cfg!(debug_assertions) {
+fn daemon_runtime_mode_from_env() -> Result<DaemonRuntimeMode, DaemonError> {
+    let dev_instance_id = DaemonConfig::dev_instance_id_from_env()?;
+    daemon_runtime_mode(dev_instance_id.as_deref())
+}
+
+fn daemon_runtime_mode(dev_instance_id: Option<&str>) -> Result<DaemonRuntimeMode, DaemonError> {
+    let test_service_name = optional_utf8_env(
+        AGENT_RUNTIME_TEST_MACH_SERVICE_ENV,
+        std::env::var(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV),
+    )?;
+    resolve_daemon_runtime_mode(test_service_name.as_deref(), dev_instance_id)
+}
+
+fn resolve_daemon_runtime_mode(
+    test_service_name: Option<&str>,
+    dev_instance_id: Option<&str>,
+) -> Result<DaemonRuntimeMode, DaemonError> {
+    if test_service_name.is_some() && dev_instance_id.is_some() {
         return Err(DaemonError::InvalidConfig(format!(
-            "{AGENT_RUNTIME_TEST_MACH_SERVICE_ENV} is unavailable in release builds"
+            "{AGENT_RUNTIME_TEST_MACH_SERVICE_ENV} cannot be combined with {DEV_INSTANCE_ID_ENV}"
         )));
     }
-    validate_test_mach_service_name(&service_name)?;
-    Ok(service_name)
+    if let Some(service_name) = test_service_name {
+        if !cfg!(debug_assertions) {
+            return Err(DaemonError::InvalidConfig(format!(
+                "{AGENT_RUNTIME_TEST_MACH_SERVICE_ENV} is unavailable in release builds"
+            )));
+        }
+        validate_test_mach_service_name(service_name)?;
+        return Ok(DaemonRuntimeMode {
+            mach_service_name: service_name.to_owned(),
+            isolated_test: true,
+        });
+    }
+    let mach_service_name = match dev_instance_id {
+        Some(instance_id) => DaemonConfig::dev_mach_service_name(instance_id),
+        None => Ok(DAEMON_MACH_SERVICE_NAME.to_owned()),
+    }?;
+    Ok(DaemonRuntimeMode {
+        mach_service_name,
+        isolated_test: false,
+    })
+}
+
+fn optional_utf8_env(
+    name: &str,
+    value: Result<String, std::env::VarError>,
+) -> Result<Option<String>, DaemonError> {
+    match value {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(DaemonError::InvalidConfig(format!(
+            "{name} must be valid UTF-8"
+        ))),
+    }
 }
 
 fn validate_test_mach_service_name(service_name: &str) -> Result<(), DaemonError> {
@@ -326,12 +382,18 @@ fn validate_test_mach_service_name(service_name: &str) -> Result<(), DaemonError
     Ok(())
 }
 
-fn stale_tool_identity_for_test() -> Result<Option<daemon::AgentRuntimeIdentity>, DaemonError> {
-    let Some(build_id) = std::env::var(AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV).ok() else {
+fn stale_tool_identity_for_test(
+    runtime_mode: &DaemonRuntimeMode,
+) -> Result<Option<daemon::AgentRuntimeIdentity>, DaemonError> {
+    let Some(build_id) = optional_utf8_env(
+        AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV,
+        std::env::var(AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV),
+    )?
+    else {
         return Ok(None);
     };
     if !cfg!(debug_assertions)
-        || std::env::var(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV).is_err()
+        || !runtime_mode.isolated_test
         || build_id.is_empty()
         || build_id.len() > 128
         || !build_id.bytes().all(|byte| byte.is_ascii_graphic())
@@ -340,9 +402,6 @@ fn stale_tool_identity_for_test() -> Result<Option<daemon::AgentRuntimeIdentity>
             "{AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ENV} is allowed only for a bounded debug test service build id"
         )));
     }
-    // Re-validate the service here so the stale identity seam can never be
-    // used with the installed resident endpoint.
-    agent_runtime_mach_service_name()?;
     Ok(Some(daemon::AgentRuntimeIdentity {
         protocol_revision: daemon::agent_runtime::AGENT_RUNTIME_PROTOCOL_REVISION,
         build_id,
@@ -433,8 +492,8 @@ fn board_state_title(state: IssueBoardState) -> &'static str {
 
 async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env()?;
-    let test_mach_service = std::env::var_os(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV).is_some();
-    let mach_service_name = agent_runtime_mach_service_name()?;
+    let runtime_mode = daemon_runtime_mode(config.dev_instance_id.as_deref())?;
+    let mach_service_name = runtime_mode.mach_service_name.clone();
 
     let log_file = Mutex::new(
         std::fs::OpenOptions::new()
@@ -555,7 +614,7 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
 
     install_crash_observability(&config);
 
-    let state = if test_mach_service {
+    let state = if runtime_mode.isolated_test {
         DaemonState::initialize_with_credential_store(config, Arc::new(IsolatedTestCredentialStore))
             .await?
     } else {
@@ -565,10 +624,13 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
     let _ipc_server = DaemonIpcServer::start(mach_service_name.clone(), service.clone())?;
     // The unique test service exercises the real process/XPC boundary while
     // deliberately avoiding network sync and model downloads in user space.
-    let _sync_worker = (!test_mach_service).then(|| state.start_sync_worker());
-    let _search_model_worker = (!test_mach_service).then(|| state.start_search_model_worker());
-    let _search_index_worker = (!test_mach_service).then(|| state.start_search_index_worker());
-    let _run_reaper = (!test_mach_service).then(|| state.start_run_reaper());
+    // Dev instances are not test services and retain every production worker.
+    let _sync_worker = (!runtime_mode.isolated_test).then(|| state.start_sync_worker());
+    let _search_model_worker =
+        (!runtime_mode.isolated_test).then(|| state.start_search_model_worker());
+    let _search_index_worker =
+        (!runtime_mode.isolated_test).then(|| state.start_search_index_worker());
+    let _run_reaper = (!runtime_mode.isolated_test).then(|| state.start_run_reaper());
     let health = service.health().await;
 
     tracing::info!(
@@ -671,5 +733,57 @@ mod tests {
         let error = validate_test_mach_service_name(DAEMON_MACH_SERVICE_NAME).unwrap_err();
         assert!(matches!(error, DaemonError::InvalidConfig(_)));
         assert!(validate_test_mach_service_name("ai.clumsies.test.issue049_1").is_ok());
+    }
+
+    #[test]
+    fn dev_proxy_uses_its_derived_service_without_entering_the_test_seam() {
+        let dev = resolve_daemon_runtime_mode(None, Some("a1b2c3d4e5f6")).unwrap();
+        assert_eq!(dev.mach_service_name, "ai.clumsies.daemon.dev.a1b2c3d4e5f6");
+        assert!(!dev.isolated_test);
+
+        let stable = resolve_daemon_runtime_mode(None, None).unwrap();
+        assert_eq!(stable.mach_service_name, DAEMON_MACH_SERVICE_NAME);
+        assert!(!stable.isolated_test);
+    }
+
+    #[test]
+    fn test_mach_service_and_dev_identity_are_mutually_exclusive() {
+        let error =
+            resolve_daemon_runtime_mode(Some("ai.clumsies.test.issue073"), Some("a1b2c3d4e5f6"))
+                .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidConfig(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV)
+        );
+        assert!(error.to_string().contains(DEV_INSTANCE_ID_ENV));
+    }
+
+    #[test]
+    fn validated_test_mode_drives_both_endpoint_and_isolation() {
+        let mode = resolve_daemon_runtime_mode(Some("ai.clumsies.test.issue073"), None).unwrap();
+        assert_eq!(mode.mach_service_name, "ai.clumsies.test.issue073");
+        assert!(mode.isolated_test);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_test_service_cannot_fall_back_to_the_stable_endpoint() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let error = optional_utf8_env(
+            AGENT_RUNTIME_TEST_MACH_SERVICE_ENV,
+            Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from_vec(vec![0xff]),
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(error, DaemonError::InvalidConfig(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(AGENT_RUNTIME_TEST_MACH_SERVICE_ENV)
+        );
     }
 }
