@@ -119,6 +119,8 @@ source is preserved under `archive/zig-cli/` only.
 Adapter is the host integration layer. It connects clumsies to coding agents
 such as Codex, Claude Code, opencode, and the DeepSeek Harness by installing
 the hooks, config, and runtime glue needed for the protocol to actually run.
+Codex uses one App-managed user-global Plugin; repository-writing hosts use
+project-scoped adapters.
 Hosts consume the MCP tools directly; the former thin host-native skill layer
 is retired.
 

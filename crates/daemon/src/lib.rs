@@ -21,11 +21,12 @@ mod util;
 mod work_tracking;
 
 pub use agent_adapter::{
-    DaemonLegacyAgentAdapterConflict, DaemonLegacyAgentAdapterInspectionRequest,
-    DaemonLegacyAgentAdapterInspectionResponse, DaemonProjectAgentAdapter,
-    DaemonProjectAgentAdapterInstallRequest, DaemonProjectAgentAdapterListRequest,
-    DaemonProjectAgentAdapterListResponse, DaemonProjectAgentAdapterRemoveRequest,
-    DaemonProjectAgentAdapterRemoveResponse, ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
+    DaemonCodexPluginRequest, DaemonCodexPluginStatus, DaemonLegacyAgentAdapterConflict,
+    DaemonLegacyAgentAdapterInspectionRequest, DaemonLegacyAgentAdapterInspectionResponse,
+    DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
+    DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
+    DaemonProjectAgentAdapterRemoveRequest, DaemonProjectAgentAdapterRemoveResponse,
+    ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
 };
 pub use commit_sync::{
     DaemonMemoryCacheRequest, DaemonMemoryCacheState, DaemonMemoryCacheStatus,

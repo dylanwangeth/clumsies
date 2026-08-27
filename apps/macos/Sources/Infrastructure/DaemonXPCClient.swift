@@ -106,6 +106,16 @@ struct DaemonXPCClient: Sendable {
         )
     }
 
+    func inspectCodexPlugin(_ request: DaemonCodexPluginRequest) async throws
+        -> DaemonCodexPluginStatus {
+        try await call(method: "inspect_codex_plugin", payload: request, timeout: 40)
+    }
+
+    func reconcileCodexPlugin(_ request: DaemonCodexPluginRequest) async throws
+        -> DaemonCodexPluginStatus {
+        try await call(method: "reconcile_codex_plugin", payload: request, timeout: 130)
+    }
+
     func installProjectAgentAdapter(_ request: DaemonProjectAgentAdapterInstallRequest) async throws
         -> DaemonProjectAgentAdapter {
         try await call(method: "install_project_agent_adapter", payload: request)

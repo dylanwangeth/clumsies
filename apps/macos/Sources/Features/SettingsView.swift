@@ -1,9 +1,66 @@
 import AppKit
 import SwiftUI
 
+enum SettingsPane: String, CaseIterable {
+    case general
+    case agent
+    case advanced
+
+    static let defaultsKey = "ClumsiesSettingsPane"
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .agent: "Agent"
+        case .advanced: "Advanced"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .agent: "person.2"
+        case .advanced: "wrench.and.screwdriver"
+        }
+    }
+
+    static func restored(from defaults: UserDefaults = .standard) -> Self {
+        defaults.string(forKey: defaultsKey).flatMap(Self.init(rawValue:)) ?? .general
+    }
+
+    func persist(in defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 struct NativeSettingsView: View {
     @ObservedObject var store: WorkspaceStore
-    let softwareUpdateController: SoftwareUpdateController
+    @ObservedObject var softwareUpdateController: SoftwareUpdateController
+    let pane: SettingsPane
+    let onOpenDiagnostics: () -> Void
+    let onShowLogs: () -> Void
+
+    var body: some View {
+        Group {
+            switch pane {
+            case .general:
+                GeneralSettingsView(softwareUpdateController: softwareUpdateController)
+            case .agent:
+                AgentsSettingsView(store: store)
+            case .advanced:
+                AdvancedSettingsView(
+                    store: store,
+                    onOpenDiagnostics: onOpenDiagnostics,
+                    onShowLogs: onShowLogs
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct GeneralSettingsView: View {
+    @ObservedObject var softwareUpdateController: SoftwareUpdateController
 
     private var version: String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
@@ -13,18 +70,138 @@ struct NativeSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Application") {
-                LabeledContent("Version", value: version)
+            Section("Updates") {
+                Toggle(
+                    "Automatically check for updates",
+                    isOn: Binding(
+                        get: { softwareUpdateController.automaticallyChecksForUpdates },
+                        set: { softwareUpdateController.automaticallyChecksForUpdates = $0 }
+                    )
+                )
+                Toggle(
+                    "Automatically download updates",
+                    isOn: Binding(
+                        get: { softwareUpdateController.automaticallyDownloadsUpdates },
+                        set: { softwareUpdateController.automaticallyDownloadsUpdates = $0 }
+                    )
+                )
+                .disabled(!softwareUpdateController.allowsAutomaticUpdates)
                 Button("Check for Updates...") { softwareUpdateController.checkForUpdates() }
+                    .disabled(!softwareUpdateController.canCheckForUpdates)
             }
-            Section("Connection") {
+            Section("About") {
+                LabeledContent("Version", value: version)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(12)
+    }
+}
+
+private struct AgentsSettingsView: View {
+    @ObservedObject var store: WorkspaceStore
+    @State private var status: DaemonCodexPluginStatus?
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @State private var repairMessage: String?
+
+    var body: some View {
+        Form {
+            Section("Codex") {
+                if let status {
+                    LabeledContent("Host", value: status.hostInstalled ? "Installed" : "Not installed")
+                    LabeledContent("Marketplace", value: marketplaceLabel(status))
+                    LabeledContent("Plugin installed", value: status.pluginInstalled ? "Yes" : "No")
+                    LabeledContent("Plugin enabled", value: status.pluginEnabled ? "Yes" : "No")
+                    LabeledContent("Installed version", value: status.installedVersion ?? "Not installed")
+                    LabeledContent("Expected version", value: status.expectedVersion)
+                    LabeledContent("Status", value: status.ready ? "Ready" : "Needs repair")
+                } else if errorMessage == nil {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Text("Clumsies installs and keeps this user-level Plugin enabled automatically. Repository bindings only choose the Project used by Memory and Kanban.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .textSelection(.enabled)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let repairMessage {
+                    Text(repairMessage)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Button("Repair") { Task { await repair() } }
+                    .disabled(isWorking || status?.hostInstalled == false)
+            }
+
+            Section("After Plugin Changes") {
+                Text("Restart Codex and start a new task. In that task, open /hooks and review the current Clumsies Hook. Plugin Enabled does not mean Hook Trusted or AgentRun Ready.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(12)
+        .task { await load() }
+    }
+
+    private func marketplaceLabel(_ status: DaemonCodexPluginStatus) -> String {
+        if status.marketplaceConflict { return "Conflict" }
+        return status.marketplaceInstalled ? "Installed" : "Not installed"
+    }
+
+    private func load() async {
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        do {
+            status = try await store.codexPluginStatus()
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func repair() async {
+        isWorking = true
+        errorMessage = nil
+        repairMessage = nil
+        defer { isWorking = false }
+        do {
+            status = try await store.repairCodexPlugin()
+            repairMessage = "Repair completed. Restart Codex and start a new task."
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct AdvancedSettingsView: View {
+    @ObservedObject var store: WorkspaceStore
+    let onOpenDiagnostics: () -> Void
+    let onShowLogs: () -> Void
+
+    var body: some View {
+        Form {
+            Section("Runtime") {
                 LabeledContent("Server", value: store.runtime?.health.serverUrl ?? "Unavailable")
-                LabeledContent("Project", value: store.activeProject?.name ?? "Not selected")
-                LabeledContent("Organization", value: store.organization?.name ?? "Unavailable")
-            }
-            Section("Local Runtime") {
-                LabeledContent("Draft synchronization", value: "Automatic")
+                LabeledContent("Daemon", value: store.runtime?.health.daemonVersion ?? "Unavailable")
                 LabeledContent("Background service", value: "LaunchAgent")
+            }
+            Section {
+                Button("Open Runtime Status...") { onOpenDiagnostics() }
+                Button("Show Logs in Finder") { onShowLogs() }
             }
         }
         .formStyle(.grouped)

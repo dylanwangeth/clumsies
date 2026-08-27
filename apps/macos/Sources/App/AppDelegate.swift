@@ -13,7 +13,20 @@ enum SettingsWindowLayout {
     static let defaultContentSize = NSSize(width: 620, height: 470)
     static let minimumContentSize = NSSize(width: 520, height: 400)
 
-    static func normalize(_ window: NSWindow) {
+    static func configure(_ window: NSWindow, pane: SettingsPane) {
+        window.styleMask.remove(.miniaturizable)
+        window.styleMask.remove(.resizable)
+        window.title = pane.title
+        window.toolbarStyle = .preference
+        window.toolbar?.allowsUserCustomization = false
+        window.toolbar?.autosavesConfiguration = false
+        window.toolbar?.displayMode = .iconAndLabel
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+    }
+
+    static func normalize(_ window: NSWindow, pane: SettingsPane) {
+        configure(window, pane: pane)
         window.contentMinSize = minimumContentSize
         let contentSize = window.contentLayoutRect.size
         guard contentSize.width < minimumContentSize.width
@@ -22,6 +35,53 @@ enum SettingsWindowLayout {
             return
         }
         window.setContentSize(defaultContentSize)
+    }
+}
+
+@MainActor
+final class SettingsTabViewController: NSTabViewController {
+    private let panes: [SettingsPane]
+    private let defaults: UserDefaults
+
+    init(
+        items: [(SettingsPane, NSViewController)],
+        selectedPane: SettingsPane,
+        defaults: UserDefaults = .standard
+    ) {
+        panes = items.map(\.0)
+        self.defaults = defaults
+        super.init(nibName: nil, bundle: nil)
+        tabStyle = .toolbar
+        for (pane, controller) in items {
+            controller.title = pane.title
+            let item = NSTabViewItem(viewController: controller)
+            item.identifier = pane.rawValue
+            item.label = pane.title
+            item.image = NSImage(systemSymbolName: pane.systemImage, accessibilityDescription: pane.title)
+            addTabViewItem(item)
+        }
+        selectedTabViewItemIndex = panes.firstIndex(of: selectedPane) ?? 0
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    var selectedPane: SettingsPane {
+        panes.indices.contains(selectedTabViewItemIndex)
+            ? panes[selectedTabViewItemIndex]
+            : .general
+    }
+
+    override func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: tabViewItem)
+        guard let rawValue = tabViewItem?.identifier as? String,
+              let pane = SettingsPane(rawValue: rawValue) else {
+            return
+        }
+        pane.persist(in: defaults)
+        view.window?.title = pane.title
     }
 }
 
@@ -270,26 +330,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func presentSettingsWindow() {
         if let settingsWindow {
-            SettingsWindowLayout.normalize(settingsWindow)
+            let pane = (settingsWindow.contentViewController as? SettingsTabViewController)?
+                .selectedPane ?? .general
+            SettingsWindowLayout.normalize(settingsWindow, pane: pane)
             settingsWindow.makeKeyAndOrderFront(nil)
             return
         }
-        let controller = NSHostingController(
-            rootView: NativeSettingsView(
-                store: store,
-                softwareUpdateController: softwareUpdateController
+        let selectedPane = SettingsPane.restored()
+        let items = SettingsPane.allCases.map { pane in
+            let controller = NSHostingController(
+                rootView: NativeSettingsView(
+                    store: store,
+                    softwareUpdateController: softwareUpdateController,
+                    pane: pane,
+                    onOpenDiagnostics: { [weak self] in
+                        self?.presentDiagnosticsWindow(.runtime)
+                    },
+                    onShowLogs: { [weak self] in self?.showLogsInFinder() }
+                )
             )
-        )
-        controller.sizingOptions = []
+            controller.sizingOptions = []
+            return (pane, controller as NSViewController)
+        }
+        let controller = SettingsTabViewController(items: items, selectedPane: selectedPane)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: SettingsWindowLayout.defaultContentSize),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Settings"
         window.contentViewController = controller
-        SettingsWindowLayout.normalize(window)
+        SettingsWindowLayout.normalize(window, pane: selectedPane)
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)

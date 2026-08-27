@@ -5809,7 +5809,7 @@ mod tests {
                 verification_level: VerificationLevel::HumanRequired,
                 verification_steps: vec![
                     VerificationStep {
-                        text: "Open Settings > Coding Agents".to_owned(),
+                        text: "Open Settings > Agent".to_owned(),
                         completed: false,
                     },
                     VerificationStep {

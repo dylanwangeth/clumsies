@@ -2,7 +2,7 @@
 
 Adapter is the daemon-owned integration layer that makes the Clumsies Agent
 runtime usable inside Codex, Claude Code, opencode, dsh, and Antigravity. For
-Codex it installs and reconciles one user-level Clumsies plugin; the other
+Codex it automatically installs and reconciles one user-level Clumsies plugin; the other
 hosts retain their direct-file integrations. Both delivery forms provide the
 MCP registration and non-blocking lifecycle bridge without creating a second
 memory or runtime implementation.
@@ -38,10 +38,11 @@ release is detected and must be restarted.
 
 ## Managed host surfaces
 
-Adapter is installed and removed from native Project Management. The resident
-daemon requires the repository's canonical Project binding first, serializes
-local setup, and persists one revisioned adapter record per Server authority,
-workspace root, and host.
+Codex is a global host integration managed from **Settings → Agent**. It is
+installed and enabled by default when the Codex App is available, and it never
+writes files into a repository. The other hosts are installed and removed from
+native Project Management; their direct-file integrations retain one revisioned
+adapter record per Server authority, workspace root, and host.
 
 | Host | MCP registration | Lifecycle integration |
 | --- | --- | --- |
@@ -58,24 +59,28 @@ resources in Memory Space: the bootstrap loads them through `memory.load` when
 relevant and never copies or installs them into a host skill directory.
 
 The unrelated host-native `activate` / `ntmd` skills installed by older Codex
-and Claude Code releases are retired. Codex plugin migration removes the exact
-legacy `.codex/config.toml`, `.codex/hooks.json`, and managed Hook fragments;
-the direct-file update paths likewise delete previously managed retired skill
-files without touching user-owned content.
+and Claude Code releases are retired. Historical Codex Adapter rows retain
+enough ownership metadata to remove exact legacy `.codex/config.toml`,
+`.codex/hooks.json`, and managed Hook fragments when that repository is
+removed. Direct-file update paths likewise delete previously managed retired
+skill files without touching user-owned content.
 
 The Codex plugin executes the pinned binary as `mcp serve --host codex
---delivery host-plugin`. The delivery marker requires an exact, enabled Codex
-Adapter record at startup and again before every `tools/call`; a removal,
-delivery change, or Project rebind therefore fails the next call closed. Claude
-Code and the remaining direct-file hosts retain their existing commands. The
-opencode plugin embeds the same pinned path for lifecycle events.
+--delivery host-plugin`. The marker identifies the global plugin delivery; it
+does not select or authorize a Project. At startup and again before every
+`tools/call`, daemon resolves the repository's canonical Project binding and
+requires it to remain the same Project. A missing or changed binding therefore
+fails closed without consulting a Codex project Adapter row. Claude Code and
+the remaining direct-file hosts retain their existing commands and Adapter
+delivery checks. The opencode plugin embeds the same pinned path for lifecycle
+events.
 
 ## Lifecycle bridge
 
 The Codex plugin and Claude Code direct-file adapter each register an
 `issue-run-event.sh` for prompt, subagent, and session lifecycle. Codex forwards
-the same `host-plugin` delivery marker used by MCP; a stale global plugin is
-therefore inert for Projects without an enabled matching Adapter record.
+the same `host-plugin` delivery marker used by MCP; the Hook resolves its
+repository binding rather than a project-level Codex switch.
 Codex treats plugin Hooks as non-managed code and skips a new or changed Hook
 until the user reviews and trusts its current hash in `/hooks`. Adapter never
 bypasses that trust boundary. Plugin changes do not hot-load into an already
@@ -125,18 +130,21 @@ scripts and plugins as exclusive managed files. Their manifests record the
 installed hash of every managed file, and update retires managed files that the
 current plan no longer includes.
 
-Codex uses a distinct `host_plugin` delivery. The daemon verifies the explicit
-Codex App CLI, materializes an App-owned local marketplace, and reconciles the
-exact enabled plugin version through the Codex plugin CLI. Only after that
-succeeds does its journal remove exact legacy project fragments and flip the
-Project Adapter record from `legacy_files` to `host_plugin`. Disabling Codex in
-v1 deletes the Project Adapter record but deliberately leaves the global plugin
-installed; the runtime delivery gate makes it inert for that Project. Installed
-and enabled describes plugin delivery, not Hook trust. Project settings keep a
-visible `/hooks` reminder because Codex owns that explicit user decision.
-The same reminder requires a Codex restart and a new task after install or
-update; an existing task is not a valid convergence probe for the new plugin
-snapshot and may still own a retired legacy proxy until it exits.
+Codex uses a distinct `host_plugin` delivery. Before authentication, the App
+inspects the Codex host, App-owned local marketplace, installed/enabled state,
+and expected plugin version. Missing or stale managed state is reconciled
+through the signed Codex CLI. Inspection is read-only; automatic reconciliation
+and the explicit **Repair** action in **Settings → Agent** materialize the
+marketplace and install or update the plugin. Neither operation writes a
+`project_agent_adapters` row or repository file.
+
+Installed and enabled describes plugin delivery, not Hook trust or AgentRun
+readiness. Settings therefore keeps the `/hooks` reminder and requires a Codex
+restart and a new task after plugin changes; an existing task is not a valid
+convergence probe for the new plugin snapshot and may still own a retired
+legacy proxy until it exits. Historical Codex Adapter rows remain readable only
+so repository removal and legacy-file cleanup can retire them safely; current
+installation and runtime routing ignore them.
 
 The App refuses to bootstrap `clumsiesd` or persist an Agent runtime path while
 macOS is running it from an App Translocation mount. Move the released App to
@@ -152,11 +160,9 @@ temporary quarantine UUID from entering LaunchAgent and host configuration.
   best-effort, has a short App-side deadline, and never blocks reconciliation
   of daemon-owned integrations, including while signed out or offline. Their external
   manifests are not accepted as native ownership proof.
-- Archived `repo`-scope generations are reported as unsupported. For a
-  workspace install, remove its old Clumsies MCP/Hook entries and reinstall in
-  Project settings. For a user-wide install, remove the global entries and
-  enable the integration separately for each repository; the App deliberately
-  has no global-install ownership mode.
+- Archived `repo`-scope generations are reported as unsupported. Remove their
+  old Clumsies MCP/Hook entries; the App-owned global Codex Plugin replaces
+  repository-local Codex integration, while other hosts remain project-scoped.
 - Reinstalling from the App is the explicit handoff: the native installer
   refuses foreign or drifted entries instead of silently adopting them.
 - Remove deletes only exact managed entries and files; drift becomes a conflict

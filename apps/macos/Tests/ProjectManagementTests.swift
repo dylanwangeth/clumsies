@@ -2,6 +2,13 @@ import XCTest
 @testable import Clumsies
 
 final class ProjectManagementTests: XCTestCase {
+    func testProjectScopedAgentsExcludeGlobalCodexPlugin() {
+        XCTAssertEqual(
+            ProjectAgentAdapterKind.projectScopedCases,
+            [.claudeCode, .opencode, .dsh, .antigravity]
+        )
+    }
+
     func testProjectMetadataRequiresANonEmptyName() {
         XCTAssertFalse(ProjectMetadataValidation.isValid(name: "   ", description: "Description"))
         XCTAssertTrue(ProjectMetadataValidation.isValid(name: " Project ", description: "Description"))

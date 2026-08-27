@@ -1,9 +1,10 @@
 use crate::{
     ActivateMemoryRequest, ActivateMemoryResponse, AgentRuntimeIdentity, ApplyIssueGateRequest,
     ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
-    CreateIssueRequest, DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery,
-    DaemonDraftListResponse, DaemonDraftOperationRequest, DaemonDraftOperationResponse,
-    DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
+    CreateIssueRequest, DaemonCodexPluginRequest, DaemonCodexPluginStatus, DaemonDraftDetail,
+    DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
+    DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
+    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
     DaemonLegacyAgentAdapterInspectionRequest, DaemonLegacyAgentAdapterInspectionResponse,
     DaemonMcpStatus, DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
     DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
@@ -184,6 +185,28 @@ impl DaemonIpcClient {
     ) -> Result<DaemonLegacyAgentAdapterInspectionResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "inspect_legacy_agent_adapters",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn inspect_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "inspect_codex_plugin",
+            serde_json::to_value(request)?,
+        ))?
+        .into_payload()
+    }
+
+    pub fn reconcile_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        self.call(DaemonIpcRequest::new(
+            "reconcile_codex_plugin",
             serde_json::to_value(request)?,
         ))?
         .into_payload()

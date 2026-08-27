@@ -38,7 +38,7 @@ AI 编程智能体（Coding Agents）正在彻底重构软件开发的控制面�
 - **记忆即团队资产（Git 语义上下文管理）**：将架构规则、工作流规范与项目上下文收敛为统一的 Markdown 组织记忆。Project 只选择要使用的组织记忆并承载项目内可见的 Draft overlay；变更经过团队 Review 后原子合入组织 Commit 历史，杜绝静默覆盖。
 - **混合检索与按需精准激活**：深度融合 SQLite FTS5 BM25 全文检索、本地向量嵌入、倒数排名融合（RRF）与交叉编码器（Cross-Encoder）重排。Agent 通过 `activate` 按需动态召回最相关切片，避免上下文窗口浪费。
 - **面向 Agent 的原生异步看板（Issue DAG）**：Agent 通过类型化 MCP 操作自主认领任务（`begin_work`）、构建有向无环依赖图、评估阻塞谓词并沉淀验证步骤。最终必须由人类通过审批关卡（`approve_closure`）验收完成。
-- **MCP + 非阻塞生命周期集成**：原生支持 Google Antigravity、Claude Code、OpenAI Codex、opencode 与 DeepSeek Harness (dsh)，由统一签名的 Rust 守护进程（`clumsiesd`）提供代理。Codex 由 Adapter 安装用户级 Plugin，项目维护的 Skill 留在 Memory Space 并按需加载；启用或更新后需重启 Codex 并新建 task，Plugin Hook 首次运行前还需要用户在 `/hooks` 中审查并信任。纳管适配器不安装正常根 `Stop` Hook；Issue 关闭由可选 skill 或人工维护的工作流显式决定。
+- **MCP + 非阻塞生命周期集成**：原生支持 Google Antigravity、Claude Code、OpenAI Codex、opencode 与 DeepSeek Harness (dsh)，由统一签名的 Rust 守护进程（`clumsiesd`）提供代理。Codex 使用 App 自动维护的用户级 Plugin，项目维护的 Skill 留在 Memory Space 并按需加载；Plugin 变化后需重启 Codex 并新建 task，Plugin Hook 首次运行前还需要用户在 `/hooks` 中审查并信任。纳管适配器不安装正常根 `Stop` Hook；Issue 关闭由可选 skill 或人工维护的工作流显式决定。
 - **私有化权威部署**：在自有基础设施中运行 Rust Server 与 PostgreSQL（支持组织 OIDC 鉴权），本地守护进程独立管理高速本地缓存与 XPC 通信。
 
 ---
@@ -62,7 +62,7 @@ AI 编程智能体（Coding Agents）正在彻底重构软件开发的控制面�
 1. 在 [Releases 发布页面](https://github.com/lilhammerfun/clumsies/releases) 下载最新的安装包。
 2. 将 `Clumsies.app` 拖入 `/Applications` 或 `~/Applications` 目录。
 3. 打开 `Clumsies.app`，系统将自动配置常驻后台守护进程（`ai.clumsies.daemon`）并连接至组织服务器。
-4. 在 **Project Settings → Coding Agents** 中勾选需要激活的 Coding Agent 即可开箱即用。
+4. 将仓库绑定到对应 Project。Codex 会自动使用全局 Plugin；需要写入仓库的其他 Agent 可在 **Project Settings → Agent** 中配置。
 
 ### 源码构建与本地开发
 
