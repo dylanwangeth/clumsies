@@ -802,8 +802,9 @@ run_up() {
 
     if [ -n "${CLUMSIES_DEV_SERVER_BIN:-}" ]; then
       server_source_binary=$CLUMSIES_DEV_SERVER_BIN
-      [ -f "$server_source_binary" ] && [ -x "$server_source_binary" ] \
-        || die "CLUMSIES_DEV_SERVER_BIN is not executable"
+      if [ ! -f "$server_source_binary" ] || [ ! -x "$server_source_binary" ]; then
+        die "CLUMSIES_DEV_SERVER_BIN is not executable"
+      fi
     else
       cargo build --locked -p server --bin clumsies-server
       server_source_binary=$repo_root/target/debug/clumsies-server
@@ -994,8 +995,9 @@ run_test_live() {
     "dev-$instance_id-"*) ;;
     *) die "runtime descriptor build identity is not owned by this instance" ;;
   esac
-  [ -d "$app_path" ] && [ -x "$app_path/Contents/Resources/clumsiesd" ] \
-    || die "Dev App is missing; run up before test-live"
+  if [ ! -d "$app_path" ] || [ ! -x "$app_path/Contents/Resources/clumsiesd" ]; then
+    die "Dev App is missing; run up before test-live"
+  fi
   daemon_is_running || die "Dev daemon is not running; run up before test-live"
   server_is_healthy || die "Dev Server is not healthy; run up before test-live"
   if [ "$mode" = local ]; then

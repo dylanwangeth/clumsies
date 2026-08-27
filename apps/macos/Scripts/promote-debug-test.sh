@@ -36,8 +36,10 @@ assert_absent() {
 assert_before() {
   first_line="$(line_of "$1")"
   second_line="$(line_of "$2")"
-  [ -n "$first_line" ] && [ -n "$second_line" ] && [ "$first_line" -lt "$second_line" ] \
-    || fail "expected '$1' before '$2'"
+  if [ -z "$first_line" ] || [ -z "$second_line" ] \
+    || [ "$first_line" -ge "$second_line" ]; then
+    fail "expected '$1' before '$2'"
+  fi
 }
 
 assert_installed_version() {
