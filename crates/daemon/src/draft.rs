@@ -431,49 +431,86 @@ pub(crate) fn local_draft_operation_from_row(
 }
 
 pub(crate) async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncStatus, DaemonError> {
+    load_sync_status_scoped(state, None).await
+}
+
+pub(crate) async fn load_project_sync_status(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<DaemonSyncStatus, DaemonError> {
+    load_sync_status_scoped(state, Some(project_id)).await
+}
+
+async fn load_sync_status_scoped(
+    state: &DaemonState,
+    project_id: Option<&str>,
+) -> Result<DaemonSyncStatus, DaemonError> {
     let pool = &state.inner.pool;
     let pending_operation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM local_draft_operations
-         WHERE sync_status IN ('queued', 'syncing', 'retrying')",
+         FROM local_draft_operations AS o
+         JOIN local_drafts AS d ON d.draft_id = o.draft_id
+         WHERE o.sync_status IN ('queued', 'syncing', 'retrying')
+           AND ($1 IS NULL OR d.project_id = $1)",
     )
+    .bind(project_id)
     .fetch_one(pool)
     .await?;
     let failed_operation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM local_draft_operations
-         WHERE sync_status = 'failed'",
+         FROM local_draft_operations AS o
+         JOIN local_drafts AS d ON d.draft_id = o.draft_id
+         WHERE o.sync_status = 'failed'
+           AND ($1 IS NULL OR d.project_id = $1)",
     )
+    .bind(project_id)
     .fetch_one(pool)
     .await?;
     let retrying_operation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM local_draft_operations
-         WHERE sync_status = 'retrying'",
+         FROM local_draft_operations AS o
+         JOIN local_drafts AS d ON d.draft_id = o.draft_id
+         WHERE o.sync_status = 'retrying'
+           AND ($1 IS NULL OR d.project_id = $1)",
     )
+    .bind(project_id)
     .fetch_one(pool)
     .await?;
-    let behind_draft_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE freshness = 'behind'")
-            .fetch_one(pool)
-            .await?;
-    let reconciliation_conflict_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM local_drafts WHERE reconciliation = 'conflicts'")
-            .fetch_one(pool)
-            .await?;
+    let behind_draft_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM local_drafts
+         WHERE freshness = 'behind' AND ($1 IS NULL OR project_id = $1)",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await?;
+    let reconciliation_conflict_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM local_drafts
+         WHERE reconciliation = 'conflicts' AND ($1 IS NULL OR project_id = $1)",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await?;
     let server_cursor = load_meta_value(pool, META_DRAFT_EVENTS_CURSOR).await?;
-    let last_attempt_at = load_meta_value(pool, META_DRAFT_SYNC_LAST_ATTEMPT_AT).await?;
-    let last_success_at = load_meta_value(pool, META_DRAFT_SYNC_LAST_SUCCESS_AT).await?;
+    let last_attempt_key = draft_sync_meta_key(META_DRAFT_SYNC_LAST_ATTEMPT_AT, project_id);
+    let last_success_key = draft_sync_meta_key(META_DRAFT_SYNC_LAST_SUCCESS_AT, project_id);
+    let last_attempt_at = load_meta_value(pool, &last_attempt_key).await?;
+    let last_success_at = load_meta_value(pool, &last_success_key).await?;
     let last_error: Option<String> = sqlx::query_scalar(
-        "SELECT last_error
-         FROM local_draft_operations
-         WHERE sync_status IN ('retrying', 'failed') AND last_error IS NOT NULL
-         ORDER BY updated_at DESC
+        "SELECT o.last_error
+         FROM local_draft_operations AS o
+         JOIN local_drafts AS d ON d.draft_id = o.draft_id
+         WHERE o.sync_status IN ('retrying', 'failed') AND o.last_error IS NOT NULL
+           AND ($1 IS NULL OR d.project_id = $1)
+         ORDER BY o.updated_at DESC
          LIMIT 1",
     )
+    .bind(project_id)
     .fetch_optional(pool)
     .await?;
-    let readiness = state.project_config().readiness();
+    let readiness = match project_id {
+        Some(_) => state.project_config().server_readiness(),
+        None => state.project_config().readiness(),
+    };
     let config_error = (!readiness.ready
         && state.inner.config.sync.enabled
         && pending_operation_count > 0)
@@ -497,7 +534,10 @@ pub(crate) async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncSt
     } else {
         SyncState::Idle
     };
-    let commit_sync = commit_sync::status(state).await?;
+    let commit_sync = match project_id {
+        Some(project_id) => commit_sync::status_for_project(state, project_id).await?,
+        None => commit_sync::status(state).await?,
+    };
     let overall_last_success_at = match (&last_success_at, &commit_sync.last_success_at) {
         (Some(draft), Some(commit)) => Some(std::cmp::max(draft, commit).clone()),
         (Some(draft), None) => Some(draft.clone()),
@@ -533,10 +573,21 @@ pub(crate) async fn load_sync_status(state: &DaemonState) -> Result<DaemonSyncSt
     })
 }
 
-pub(crate) async fn drain_draft_queue(state: &DaemonState) -> Result<bool, DaemonError> {
+pub(crate) fn draft_sync_meta_key(base: &str, project_id: Option<&str>) -> String {
+    match project_id {
+        Some(project_id) => format!("{base}:{project_id}"),
+        None => base.to_owned(),
+    }
+}
+
+pub(crate) async fn drain_draft_queue(
+    state: &DaemonState,
+    project_id: Option<&str>,
+) -> Result<bool, DaemonError> {
     let mut queue_converged = true;
     loop {
-        let Some(operation) = load_next_queued_operation(&state.inner.pool).await? else {
+        let Some(operation) = load_next_queued_operation(&state.inner.pool, project_id).await?
+        else {
             break;
         };
         mark_operation_syncing(&state.inner.pool, &operation.local_operation_id).await?;
@@ -561,9 +612,12 @@ pub(crate) async fn drain_draft_queue(state: &DaemonState) -> Result<bool, Daemo
     }
     let unsynced_operation_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM local_draft_operations
-         WHERE sync_status != 'synced'",
+         FROM local_draft_operations AS o
+         JOIN local_drafts AS d ON d.draft_id = o.draft_id
+         WHERE o.sync_status != 'synced'
+           AND ($1 IS NULL OR d.project_id = $1)",
     )
+    .bind(project_id)
     .fetch_one(&state.inner.pool)
     .await?;
     Ok(queue_converged && unsynced_operation_count == 0)
@@ -666,6 +720,7 @@ pub(crate) async fn sync_one_draft_operation(
 
 pub(crate) async fn load_next_queued_operation(
     pool: &SqlitePool,
+    project_id: Option<&str>,
 ) -> Result<Option<QueuedDraftOperation>, DaemonError> {
     let Some(row) = sqlx::query(
         "SELECT
@@ -675,6 +730,7 @@ pub(crate) async fn load_next_queued_operation(
          FROM local_draft_operations o
          JOIN local_drafts d ON d.draft_id = o.draft_id
          WHERE o.sync_status = 'queued'
+           AND ($1 IS NULL OR d.project_id = $1)
            AND NOT EXISTS (
                SELECT 1
                FROM local_draft_operations AS prior
@@ -685,6 +741,7 @@ pub(crate) async fn load_next_queued_operation(
          ORDER BY o.created_at, o.rowid
          LIMIT 1",
     )
+    .bind(project_id)
     .fetch_optional(pool)
     .await?
     else {

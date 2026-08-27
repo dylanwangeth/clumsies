@@ -65,7 +65,9 @@ enum SyncToolbarPresentation: Equatable {
     var label: String {
         switch self {
         case .syncing(let count):
-            count == 1 ? "Syncing 1 change" : count > 1 ? "Syncing \(count) changes" : "Syncing"
+            count == 1
+                ? "Uploading 1 Draft change"
+                : count > 1 ? "Uploading \(count) Draft changes" : "Uploading Draft changes"
         case .failed:
             "Sync failed"
         case .unavailable:
@@ -78,7 +80,7 @@ enum SyncToolbarPresentation: Equatable {
     var detail: String {
         switch self {
         case .syncing:
-            return "Clumsies is synchronizing changes in the background."
+            return "Clumsies is uploading Project-carried Draft changes in the background."
         case .failed(let count, let message):
             if let message, !message.isEmpty { return message }
             return count == 1
@@ -172,15 +174,24 @@ struct WorkspaceView: View {
     }
 
     var body: some View {
-        switch store.selectedSection {
-        case .issues:
-            issuesWorkspace
-        case .reviews:
-            reviewsWorkspace
-        case .sessions:
-            recallWorkspace
-        default:
-            regularWorkspace
+        Group {
+            switch store.selectedSection {
+            case .issues:
+                issuesWorkspace
+            case .reviews:
+                reviewsWorkspace
+            case .sessions:
+                recallWorkspace
+            default:
+                regularWorkspace
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let message = store.errorMessage {
+                WorkspaceOperationErrorBanner(message: message) {
+                    store.dismissErrorMessage()
+                }
+            }
         }
     }
 
@@ -286,8 +297,7 @@ struct WorkspaceView: View {
                                 .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
                                     SyncIssuePopover(
                                         presentation: syncToolbarPresentation,
-                                        store: store,
-                                        isPresented: $showsSyncIssuePopover
+                                        store: store
                                     )
                                 }
                             }
@@ -326,13 +336,30 @@ struct WorkspaceView: View {
                                         .help("Saving draft changes before sync")
                                         .accessibilityLabel("Saving draft changes before sync")
                                 case .failed:
-                                    Button {
-                                        Task { await store.retrySync() }
-                                    } label: {
-                                        Image(systemName: "arrow.clockwise")
+                                    if store.isRetryingSync(
+                                        channel: "drafts",
+                                        projectId: item.draft?.projectId ?? store.activeProjectId
+                                    ) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .frame(width: 24, height: 24)
+                                            .help("Retrying Draft Sync")
+                                            .accessibilityLabel("Retrying Draft Sync")
+                                    } else {
+                                        Button {
+                                            Task {
+                                                _ = await store.retrySync(
+                                                    channel: "drafts",
+                                                    projectId: item.draft?.projectId
+                                                        ?? store.activeProjectId
+                                                )
+                                            }
+                                        } label: {
+                                            Image(systemName: "arrow.clockwise")
+                                        }
+                                        .help("Retry Draft Sync")
+                                        .accessibilityLabel("Retry Draft Sync")
                                     }
-                                    .help("Retry Draft Sync")
-                                    .accessibilityLabel("Retry Draft Sync")
                                 case .unavailable:
                                     Button {} label: {
                                         Image(systemName: "exclamationmark.triangle")
@@ -480,18 +507,6 @@ struct WorkspaceView: View {
                     return
                 }
             }
-        }
-        .alert(
-            "Clumsies",
-            isPresented: Binding(
-                get: { store.errorMessage != nil },
-                set: { if !$0 { store.errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { store.errorMessage = nil }
-        } message: {
-            Text(store.errorMessage ?? "")
-                .textSelection(.enabled)
         }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
@@ -663,18 +678,6 @@ struct WorkspaceView: View {
                 }
             }
         }
-        .alert(
-            "Clumsies",
-            isPresented: Binding(
-                get: { store.errorMessage != nil },
-                set: { if !$0 { store.errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { store.errorMessage = nil }
-        } message: {
-            Text(store.errorMessage ?? "")
-                .textSelection(.enabled)
-        }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
         }
@@ -845,8 +848,7 @@ struct WorkspaceView: View {
                     .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
                         SyncIssuePopover(
                             presentation: syncToolbarPresentation,
-                            store: store,
-                            isPresented: $showsSyncIssuePopover
+                            store: store
                         )
                     }
                 }
@@ -1064,8 +1066,7 @@ struct WorkspaceView: View {
                                 .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
                                     SyncIssuePopover(
                                         presentation: syncToolbarPresentation,
-                                        store: store,
-                                        isPresented: $showsSyncIssuePopover
+                                        store: store
                                     )
                                 }
                             }
@@ -1136,18 +1137,6 @@ struct WorkspaceView: View {
         }
         .task(id: store.activeProjectId) {
             await store.refreshProjectMembers()
-        }
-        .alert(
-            "Clumsies",
-            isPresented: Binding(
-                get: { store.errorMessage != nil },
-                set: { if !$0 { store.errorMessage = nil } }
-            )
-        ) {
-            Button("OK") { store.errorMessage = nil }
-        } message: {
-            Text(store.errorMessage ?? "")
-                .textSelection(.enabled)
         }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
@@ -1449,11 +1438,50 @@ private extension SyncToolbarPresentation {
     }
 }
 
+private struct WorkspaceOperationErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Operation Failed")
+                    .font(.headline)
+                Text(message)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Operation failed: \(message)")
+
+            Spacer(minLength: 16)
+
+            Button("Copy Details") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message, forType: .string)
+            }
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss operation failure")
+        }
+        .padding(10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+}
+
 private struct SyncIssuePopover: View {
     let presentation: SyncToolbarPresentation
     @ObservedObject var store: WorkspaceStore
-    @Binding var isPresented: Bool
-    @State private var isRetrying = false
+    @State private var isReloading = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1468,6 +1496,14 @@ private struct SyncIssuePopover: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if let message = store.syncRetryErrorMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Sync retry failed: \(message)")
+            }
+
             Divider()
 
             HStack {
@@ -1475,39 +1511,35 @@ private struct SyncIssuePopover: View {
                 switch presentation {
                 case .failed, .unavailable:
                     Button {
-                        isRetrying = true
                         Task {
-                            await store.retrySync()
-                            isRetrying = false
-                            isPresented = false
+                            _ = await store.retrySync(projectId: store.activeProjectId)
                         }
                     } label: {
-                        if isRetrying {
+                        if store.isRetryingSync {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("Try Again")
+                            Text("Retry Project Sync")
                         }
                     }
-                    .disabled(isRetrying)
+                    .disabled(store.isRetryingSync)
                     .keyboardShortcut(.defaultAction)
                 case .stale:
                     Button {
-                        isRetrying = true
+                        isReloading = true
                         Task {
                             await store.reload()
-                            isRetrying = false
-                            isPresented = false
+                            isReloading = false
                         }
                     } label: {
-                        if isRetrying {
+                        if isReloading {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("Refresh")
+                            Text("Refresh Project")
                         }
                     }
-                    .disabled(isRetrying)
+                    .disabled(isReloading)
                     .keyboardShortcut(.defaultAction)
                 case .syncing:
                     EmptyView()
@@ -1515,7 +1547,7 @@ private struct SyncIssuePopover: View {
             }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 360)
     }
 }
 

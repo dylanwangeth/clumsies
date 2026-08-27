@@ -346,6 +346,15 @@ struct DaemonSyncRetryRequest: Codable, Sendable {
     let channel: String
 }
 
+struct DaemonProjectSyncStatusRequest: Codable, Sendable {
+    let projectId: String
+}
+
+struct DaemonProjectSyncRetryRequest: Codable, Sendable {
+    let projectId: String
+    let channel: String
+}
+
 struct DaemonRetryResponse: Codable, Sendable {
     let retryId: String
     let started: Bool

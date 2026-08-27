@@ -494,4 +494,114 @@ final class MemoryFileTreeMenuTests: XCTestCase {
             ["org-ref"]
         )
     }
+
+    // MARK: - Destructive operation confirmation
+
+    func testDestructiveAlertsDescribeTheirActualEffects() {
+        let shared = resourceItem(
+            "shared",
+            scope: .org,
+            inherited: true,
+            path: "notes/shared.md"
+        )
+        let draft = localDraft(
+            "draft",
+            scope: .org,
+            path: "notes/new.md"
+        )
+
+        let organization = MemoryFileTreeAlert.organizationDeletion(items: [shared])
+        XCTAssertEqual(organization.title, "Propose Organization Deletion?")
+        XCTAssertEqual(organization.confirmationTitle, "Propose Deletion")
+        XCTAssertTrue(organization.message.contains("every project"))
+
+        let discard = MemoryFileTreeAlert.directoryDiscard(
+            name: "notes",
+            drafts: [draft]
+        )
+        XCTAssertEqual(discard.title, "Discard Draft in notes?")
+        XCTAssertEqual(discard.confirmationTitle, "Discard Drafts")
+        XCTAssertTrue(discard.message.contains("Shared Organization Memory is unchanged"))
+
+        let deletion = MemoryFileTreeAlert.directoryDeletion(
+            name: "notes",
+            plan: .init(itemsToDelete: [shared], draftsToDiscard: [draft])
+        )
+        XCTAssertEqual(deletion.title, "Delete notes?")
+        XCTAssertEqual(deletion.confirmationTitle, "Delete Folder")
+        XCTAssertTrue(deletion.message.contains("create deletion proposals"))
+        XCTAssertTrue(deletion.message.contains("discard 1 unpublished draft"))
+    }
+
+    func testFileTreeOwnsExactlyOneAlertPresenter() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/MemoryWorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private struct FileTreeView: View {"))
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(of: "\nprivate struct FileTreeRow: View")
+        )
+        let fileTree = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertEqual(fileTree.components(separatedBy: ".alert(").count - 1, 1)
+        XCTAssertTrue(fileTree.contains("pendingAlert = .organizationDeletion"))
+        XCTAssertTrue(fileTree.contains("pendingAlert = .directoryDiscard"))
+        XCTAssertTrue(fileTree.contains("pendingAlert = .directoryDeletion"))
+    }
+
+    func testSingleDraftDiscardIsBlockedDuringDirectoryOperation() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/MemoryWorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(of: "if !isOrgView, let draft = singleItem.draft {")
+        )
+        let end = try XCTUnwrap(
+            source[start.lowerBound...].range(of: "\n        if targetItems.isEmpty {")
+        )
+        let discardAction = source[start.lowerBound..<end.lowerBound]
+
+        XCTAssertTrue(
+            discardAction.contains("guard directoryOperationProgress == nil else { return }")
+        )
+        XCTAssertTrue(discardAction.contains("directoryOperationProgress != nil"))
+        XCTAssertTrue(discardAction.contains("|| singleSynchronizing"))
+    }
+
+    func testItemMutationsAreBlockedDuringDirectoryOperation() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/MemoryWorkspaceView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertGreaterThanOrEqual(
+            source.components(
+                separatedBy: ".disabled(directoryOperationProgress != nil || singleSynchronizing)"
+            ).count - 1,
+            2
+        )
+        XCTAssertTrue(source.contains(
+            "directoryOperationProgress != nil\n                        "
+                + "|| trashSelectionContainsSynchronizingDocument"
+        ))
+        XCTAssertTrue(source.contains(
+            "directoryOperationProgress != nil\n                    "
+                + "|| !reviewSelectionIsReady"
+        ))
+        XCTAssertTrue(source.contains(
+            "guard directoryOperationProgress == nil else { return }\n"
+                + "        guard let item = itemToRename"
+        ))
+    }
 }

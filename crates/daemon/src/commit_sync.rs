@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use reqwest::header::ETAG;
 use serde::{Deserialize, Serialize};
@@ -17,6 +16,106 @@ const META_COMMIT_SYNC_LAST_ERROR: &str = "commit_sync_last_error";
 const MAIN_REF: &str = "refs/heads/main";
 const EMPTY_GENERATION: &str = "ref-none";
 const MAX_CONCURRENT_PROJECT_STATE_REQUESTS: usize = 4;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum CommitSyncRunScope {
+    Idle,
+    Global,
+    Project(String),
+}
+
+impl CommitSyncRunScope {
+    fn new(project_id: Option<&str>) -> Self {
+        match project_id {
+            Some(project_id) => Self::Project(project_id.to_owned()),
+            None => Self::Global,
+        }
+    }
+
+    fn is_running_for(&self, project_id: Option<&str>) -> bool {
+        match (self, project_id) {
+            (Self::Idle, _) => false,
+            (_, None) | (Self::Global, Some(_)) => true,
+            (Self::Project(running_project_id), Some(project_id)) => {
+                running_project_id == project_id
+            }
+        }
+    }
+}
+
+struct CommitSyncOutcome {
+    attempted_project_ids: BTreeSet<String>,
+    project_errors: BTreeMap<String, String>,
+    error: Option<DaemonError>,
+}
+
+impl CommitSyncOutcome {
+    fn from_project_errors(
+        attempted_project_ids: BTreeSet<String>,
+        errors: BTreeMap<String, DaemonError>,
+    ) -> Self {
+        let project_errors = errors
+            .iter()
+            .map(|(project_id, error)| (project_id.clone(), error.to_string()))
+            .collect();
+        Self {
+            attempted_project_ids,
+            project_errors,
+            error: errors.into_values().next(),
+        }
+    }
+
+    fn from_shared_error(
+        attempted_project_ids: BTreeSet<String>,
+        errors: BTreeMap<String, DaemonError>,
+        shared_error: DaemonError,
+    ) -> Self {
+        Self::from_shared_error_inner(attempted_project_ids, errors, shared_error, false)
+    }
+
+    fn from_shared_error_after_project_errors(
+        attempted_project_ids: BTreeSet<String>,
+        errors: BTreeMap<String, DaemonError>,
+        shared_error: DaemonError,
+    ) -> Self {
+        Self::from_shared_error_inner(attempted_project_ids, errors, shared_error, true)
+    }
+
+    fn from_shared_error_inner(
+        attempted_project_ids: BTreeSet<String>,
+        errors: BTreeMap<String, DaemonError>,
+        shared_error: DaemonError,
+        project_error_first: bool,
+    ) -> Self {
+        let shared_message = shared_error.to_string();
+        let mut project_errors = errors
+            .iter()
+            .map(|(project_id, error)| (project_id.clone(), error.to_string()))
+            .collect::<BTreeMap<_, _>>();
+        for project_id in &attempted_project_ids {
+            project_errors
+                .entry(project_id.clone())
+                .or_insert_with(|| shared_message.clone());
+        }
+        let error = if project_error_first {
+            errors.into_values().next().unwrap_or(shared_error)
+        } else {
+            shared_error
+        };
+        Self {
+            attempted_project_ids,
+            project_errors,
+            error: Some(error),
+        }
+    }
+
+    fn into_result(self) -> Result<(), DaemonError> {
+        match self.error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DaemonMemoryCacheRequest {
@@ -127,60 +226,121 @@ pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), DaemonError> {
 }
 
 pub(super) async fn run(state: &DaemonState) -> Result<(), DaemonError> {
-    state
+    run_scoped(state, None).await
+}
+
+pub(super) async fn run_for_project(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<(), DaemonError> {
+    validate_cache_component("project_id", project_id)?;
+    run_scoped(state, Some(project_id)).await
+}
+
+async fn run_scoped(state: &DaemonState, project_id: Option<&str>) -> Result<(), DaemonError> {
+    *state
         .inner
-        .commit_sync_running
-        .store(true, Ordering::Release);
+        .commit_sync_run_scope
+        .write()
+        .expect("commit sync scope rwlock poisoned") = CommitSyncRunScope::new(project_id);
+    let last_attempt_key = commit_sync_meta_key(META_COMMIT_SYNC_LAST_ATTEMPT_AT, project_id);
+    let last_error_key = commit_sync_meta_key(META_COMMIT_SYNC_LAST_ERROR, project_id);
     let result = async {
-        upsert_meta_timestamp(&state.inner.pool, META_COMMIT_SYNC_LAST_ATTEMPT_AT).await?;
-        let sync_result = sync_refs(state).await;
-        match &sync_result {
-            Ok(()) => {
-                let mut tx = state.inner.pool.begin().await?;
-                upsert_meta_value(&mut tx, META_COMMIT_SYNC_LAST_ERROR, None).await?;
-                tx.commit().await?;
-                upsert_meta_timestamp(&state.inner.pool, META_COMMIT_SYNC_LAST_SUCCESS_AT).await?;
+        upsert_meta_timestamp(&state.inner.pool, &last_attempt_key).await?;
+        let outcome = match project_id {
+            Some(project_id) => sync_refs(state, BTreeSet::from([project_id.to_owned()])).await,
+            None => match sync_project_ids(state).await {
+                Ok(project_ids) => {
+                    record_project_attempts(&state.inner.pool, &project_ids).await?;
+                    sync_refs(state, project_ids).await
+                }
+                Err(error) => {
+                    CommitSyncOutcome::from_shared_error(BTreeSet::new(), BTreeMap::new(), error)
+                }
+            },
+        };
+        let mut tx = state.inner.pool.begin().await?;
+        match &outcome.error {
+            None => {
+                upsert_meta_value(&mut tx, &last_error_key, None).await?;
+                if project_id.is_none() {
+                    sqlx::query(
+                        "DELETE FROM daemon_meta
+                         WHERE key GLOB 'commit_sync_last_error:*'",
+                    )
+                    .execute(&mut *tx)
+                    .await?;
+                }
             }
-            Err(error) => {
-                let mut tx = state.inner.pool.begin().await?;
-                upsert_meta_value(
-                    &mut tx,
-                    META_COMMIT_SYNC_LAST_ERROR,
-                    Some(&error.to_string()),
-                )
-                .await?;
-                tx.commit().await?;
+            Some(error) => {
+                upsert_meta_value(&mut tx, &last_error_key, Some(&error.to_string())).await?;
+                if project_id.is_none() {
+                    for attempted_project_id in &outcome.attempted_project_ids {
+                        let key = commit_sync_meta_key(
+                            META_COMMIT_SYNC_LAST_ERROR,
+                            Some(attempted_project_id),
+                        );
+                        upsert_meta_value(
+                            &mut tx,
+                            &key,
+                            outcome
+                                .project_errors
+                                .get(attempted_project_id)
+                                .map(String::as_str),
+                        )
+                        .await?;
+                    }
+                }
             }
         }
-        sync_result
+        tx.commit().await?;
+        if project_id.is_none() && outcome.error.is_none() {
+            upsert_meta_timestamp(&state.inner.pool, META_COMMIT_SYNC_LAST_SUCCESS_AT).await?;
+        }
+        outcome.into_result()
     }
     .await;
-    state
+    *state
         .inner
-        .commit_sync_running
-        .store(false, Ordering::Release);
+        .commit_sync_run_scope
+        .write()
+        .expect("commit sync scope rwlock poisoned") = CommitSyncRunScope::Idle;
     result
 }
 
 pub(super) async fn status(state: &DaemonState) -> Result<SyncChannelStatus, DaemonError> {
+    status_scoped(state, None).await
+}
+
+pub(super) async fn status_for_project(
+    state: &DaemonState,
+    project_id: &str,
+) -> Result<SyncChannelStatus, DaemonError> {
+    validate_cache_component("project_id", project_id)?;
+    status_scoped(state, Some(project_id)).await
+}
+
+async fn status_scoped(
+    state: &DaemonState,
+    scoped_project_id: Option<&str>,
+) -> Result<SyncChannelStatus, DaemonError> {
     let config = state.project_config();
     let readiness = config.server_readiness();
-    let project_id = config.project_id.as_deref();
-    let server_cursor = match project_id {
-        Some(project_id) => {
-            load_ref_commit(&state.inner.pool, &project_ref_key(project_id)).await?
-        }
-        None => None,
+    let project_id = scoped_project_id.or(config.project_id.as_deref());
+    let (server_cursor, installed_at) = match project_id {
+        Some(project_id) => load_project_ref_status(&state.inner.pool, project_id).await?,
+        None => (None, None),
     };
-    let ref_installed = match project_id {
-        Some(project_id) => ref_exists(&state.inner.pool, &project_ref_key(project_id)).await?,
-        None => false,
+    let ref_installed = installed_at.is_some();
+    let last_attempt_key =
+        commit_sync_meta_key(META_COMMIT_SYNC_LAST_ATTEMPT_AT, scoped_project_id);
+    let last_error_key = commit_sync_meta_key(META_COMMIT_SYNC_LAST_ERROR, scoped_project_id);
+    let last_attempt_at = load_meta_value(&state.inner.pool, &last_attempt_key).await?;
+    let last_success_at = match scoped_project_id {
+        Some(_) => installed_at,
+        None => load_meta_value(&state.inner.pool, META_COMMIT_SYNC_LAST_SUCCESS_AT).await?,
     };
-    let last_attempt_at =
-        load_meta_value(&state.inner.pool, META_COMMIT_SYNC_LAST_ATTEMPT_AT).await?;
-    let last_success_at =
-        load_meta_value(&state.inner.pool, META_COMMIT_SYNC_LAST_SUCCESS_AT).await?;
-    let last_error = load_meta_value(&state.inner.pool, META_COMMIT_SYNC_LAST_ERROR).await?;
+    let last_error = load_meta_value(&state.inner.pool, &last_error_key).await?;
 
     let config_error = (!readiness.ready && state.inner.config.sync.enabled).then(|| ApiError {
         code: "daemon_project_config_incomplete".to_owned(),
@@ -191,7 +351,14 @@ pub(super) async fn status(state: &DaemonState) -> Result<SyncChannelStatus, Dae
         request_id: "local".to_owned(),
         details: json!({ "missing_fields": readiness.missing_fields }),
     });
-    let state_value = if state.inner.commit_sync_running.load(Ordering::Acquire) {
+    let running_scope = state
+        .inner
+        .commit_sync_run_scope
+        .read()
+        .expect("commit sync scope rwlock poisoned")
+        .clone();
+    let running = running_scope.is_running_for(scoped_project_id);
+    let state_value = if running {
         SyncState::Syncing
     } else if config_error.is_some() {
         SyncState::Degraded
@@ -217,6 +384,53 @@ pub(super) async fn status(state: &DaemonState) -> Result<SyncChannelStatus, Dae
             })
         }),
     })
+}
+
+async fn load_project_ref_status(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> Result<(Option<String>, Option<String>), DaemonError> {
+    let row = sqlx::query(
+        "SELECT commit_id, installed_at
+         FROM cached_refs
+         WHERE ref_key = $1 AND scope = 'project'",
+    )
+    .bind(project_ref_key(project_id))
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some(row) => Ok((
+            row.try_get("commit_id")?,
+            Some(row.try_get("installed_at")?),
+        )),
+        None => Ok((None, None)),
+    }
+}
+
+fn commit_sync_meta_key(base: &str, project_id: Option<&str>) -> String {
+    match project_id {
+        Some(project_id) => format!("{base}:{project_id}"),
+        None => base.to_owned(),
+    }
+}
+
+async fn record_project_attempts(
+    pool: &SqlitePool,
+    project_ids: &BTreeSet<String>,
+) -> Result<(), DaemonError> {
+    if project_ids.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    let timestamp: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
+        .fetch_one(&mut *tx)
+        .await?;
+    for project_id in project_ids {
+        let key = commit_sync_meta_key(META_COMMIT_SYNC_LAST_ATTEMPT_AT, Some(project_id));
+        upsert_meta_value(&mut tx, &key, Some(&timestamp)).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 pub(super) async fn current_base_commit_id(
@@ -410,8 +624,8 @@ pub(super) async fn project_checkout(
     Ok(checkout)
 }
 
-async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
-    let project_ids = sync_project_ids(state).await?;
+async fn sync_refs(state: &DaemonState, project_ids: BTreeSet<String>) -> CommitSyncOutcome {
+    let attempted_project_ids = project_ids.clone();
     let mut errors = BTreeMap::new();
     let mut ready_project_ids = Vec::new();
     for project_id in project_ids {
@@ -448,9 +662,18 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
 
     let mut projects = BTreeMap::new();
     while let Some(result) = project_tasks.join_next().await {
-        let (project_id, result) = result.map_err(|error| {
-            DaemonError::Server(format!("Project Commit-state request task failed: {error}"))
-        })?;
+        let (project_id, result) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                return CommitSyncOutcome::from_shared_error(
+                    attempted_project_ids,
+                    errors,
+                    DaemonError::Server(format!(
+                        "Project Commit-state request task failed: {error}"
+                    )),
+                );
+            }
+        };
         match result {
             Ok(project) => {
                 projects.insert(project_id, project);
@@ -461,15 +684,17 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
         }
     }
     let Some((_, (first_project_state, _))) = projects.first_key_value() else {
-        return match errors.into_values().next() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        };
+        return CommitSyncOutcome::from_project_errors(attempted_project_ids, errors);
     };
 
     let expected_org_id = first_project_state.reference.org_id.clone();
     let local_org_commit =
-        load_ref_commit(&state.inner.pool, &org_ref_key(&expected_org_id)).await?;
+        match load_ref_commit(&state.inner.pool, &org_ref_key(&expected_org_id)).await {
+            Ok(commit_id) => commit_id,
+            Err(error) => {
+                return CommitSyncOutcome::from_shared_error(attempted_project_ids, errors, error);
+            }
+        };
     let org_result = async {
         let (org_state, org_etag) = fetch_commit_state(
             state,
@@ -489,19 +714,31 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
     .await;
     let (org_state, org_etag) = match org_result {
         Ok(org) => org,
-        Err(error) => return Err(errors.into_values().next().unwrap_or(error)),
+        Err(error) => {
+            return CommitSyncOutcome::from_shared_error_after_project_errors(
+                attempted_project_ids,
+                errors,
+                error,
+            );
+        }
     };
 
     if org_state.reference.org_id != expected_org_id {
-        return Err(errors.into_values().next().unwrap_or_else(|| {
+        return CommitSyncOutcome::from_shared_error_after_project_errors(
+            attempted_project_ids,
+            errors,
             DaemonError::Server(
                 "Project and organization commit states belong to different organizations"
                     .to_owned(),
-            )
-        }));
+            ),
+        );
     }
     if let Err(error) = install_ref(state, &org_state, &org_etag, None).await {
-        return Err(errors.into_values().next().unwrap_or(error));
+        return CommitSyncOutcome::from_shared_error_after_project_errors(
+            attempted_project_ids,
+            errors,
+            error,
+        );
     }
 
     for (project_id, (project_state, project_etag)) in projects {
@@ -517,10 +754,7 @@ async fn sync_refs(state: &DaemonState) -> Result<(), DaemonError> {
             errors.insert(project_id, error);
         }
     }
-    match errors.into_values().next() {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    CommitSyncOutcome::from_project_errors(attempted_project_ids, errors)
 }
 
 async fn sync_project_ids(state: &DaemonState) -> Result<BTreeSet<String>, DaemonError> {
@@ -1319,14 +1553,6 @@ async fn load_ref_commit(pool: &SqlitePool, key: &str) -> Result<Option<String>,
     .flatten())
 }
 
-async fn ref_exists(pool: &SqlitePool, key: &str) -> Result<bool, DaemonError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cached_refs WHERE ref_key = $1")
-        .bind(key)
-        .fetch_one(pool)
-        .await?;
-    Ok(count == 1)
-}
-
 async fn cached_commit_exists(pool: &SqlitePool, commit_id: &str) -> Result<bool, DaemonError> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cached_commits WHERE commit_id = $1")
         .bind(commit_id)
@@ -1847,6 +2073,38 @@ struct MaterializedManifestEntry<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_sync_running_scope_is_read_as_one_snapshot() {
+        let running = std::sync::RwLock::new(CommitSyncRunScope::Project("prj_a".to_owned()));
+        let snapshot = running.read().unwrap().clone();
+        *running.write().unwrap() = CommitSyncRunScope::Idle;
+
+        assert!(snapshot.is_running_for(None));
+        assert!(snapshot.is_running_for(Some("prj_a")));
+        assert!(!snapshot.is_running_for(Some("prj_b")));
+        assert!(!running.read().unwrap().is_running_for(Some("prj_a")));
+        assert!(CommitSyncRunScope::Global.is_running_for(Some("prj_b")));
+    }
+
+    #[test]
+    fn shared_infrastructure_error_remains_the_primary_error() {
+        let outcome = CommitSyncOutcome::from_shared_error(
+            BTreeSet::from(["prj_a".to_owned(), "prj_b".to_owned()]),
+            BTreeMap::from([(
+                "prj_a".to_owned(),
+                DaemonError::Server("project A failed".to_owned()),
+            )]),
+            DaemonError::Server("shared infrastructure failed".to_owned()),
+        );
+
+        assert_eq!(
+            outcome.error.unwrap().to_string(),
+            "server sync error: shared infrastructure failed"
+        );
+        assert!(outcome.project_errors["prj_a"].contains("project A failed"));
+        assert!(outcome.project_errors["prj_b"].contains("shared infrastructure failed"));
+    }
 
     #[test]
     fn content_address_verification_matches_server_blob_ids() {

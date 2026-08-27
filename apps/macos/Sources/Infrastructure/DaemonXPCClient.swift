@@ -134,8 +134,14 @@ struct DaemonXPCClient: Sendable {
         )
     }
 
-    func syncStatus() async throws -> DaemonSyncStatus {
-        try await call(method: "sync_status", payload: EmptyPayload())
+    func syncStatus(projectId: String? = nil) async throws -> DaemonSyncStatus {
+        guard let projectId else {
+            return try await call(method: "sync_status", payload: EmptyPayload())
+        }
+        return try await call(
+            method: "project_sync_status",
+            payload: DaemonProjectSyncStatusRequest(projectId: projectId)
+        )
     }
 
     func projectStorage(_ projectId: String) async throws -> DaemonProjectStorage {
@@ -167,8 +173,25 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "clear_project_cache", payload: request)
     }
 
-    func retrySync(channel: String = "all") async throws -> DaemonRetryResponse {
-        try await call(method: "retry_sync", payload: DaemonSyncRetryRequest(channel: channel))
+    func retrySync(
+        channel: String = "all",
+        projectId: String? = nil
+    ) async throws -> DaemonRetryResponse {
+        if let projectId {
+            return try await call(
+                method: "project_retry_sync",
+                payload: DaemonProjectSyncRetryRequest(
+                    projectId: projectId,
+                    channel: channel
+                ),
+                timeout: 300
+            )
+        }
+        return try await call(
+            method: "retry_sync",
+            payload: DaemonSyncRetryRequest(channel: channel),
+            timeout: 300
+        )
     }
 
     func mcpStatus() async throws -> DaemonMCPStatus {

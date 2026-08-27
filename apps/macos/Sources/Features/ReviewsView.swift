@@ -674,7 +674,10 @@ struct ReviewDetailPage: View {
                     try await store.applyReconciliation(
                         draftId: candidate.draftId,
                         candidate: candidate,
-                        resolvedState: resolvedState
+                        resolvedState: resolvedState,
+                        projectId: fileChanges.first {
+                            $0.detail.draft.draftId == candidate.draftId
+                        }?.detail.draft.projectId
                     )
                 }
             } else if loading {
