@@ -4,6 +4,11 @@ set -eu
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
+command -v rg >/dev/null 2>&1 || {
+  echo "ripgrep is required for the Agent runtime boundary check." >&2
+  exit 1
+}
+
 for retired_entry in build.zig build.zig.zon src install.sh dev/install-cli-macos.sh; do
   if [ -e "$retired_entry" ]; then
     echo "Archived Zig entry returned to the active repository: $retired_entry" >&2
