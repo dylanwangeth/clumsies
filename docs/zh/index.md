@@ -6,7 +6,7 @@ hero:
   text: 面向编码 Agent 的协作式外部记忆
   tagline: 分发项目上下文与约束，本地 Draft 自动同步，变更经 Review 后发布。
   image:
-    src: /logo.svg
+    src: /logo.png
     alt: clumsies
   actions:
     - theme: brand

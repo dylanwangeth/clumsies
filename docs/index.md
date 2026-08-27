@@ -6,7 +6,7 @@ hero:
   text: Collaborative external memory for coding agents
   tagline: Distribute project context and constraints, keep local drafts automatic, and publish changes through review.
   image:
-    src: /logo.svg
+    src: /logo.png
     alt: clumsies
   actions:
     - theme: brand
