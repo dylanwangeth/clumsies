@@ -11,7 +11,9 @@ just dev-macos
 The command starts a complete Dev Instance owned by the current worktree: a
 uniquely named App and daemon, private data and Keychain identity, local Server,
 PostgreSQL, fake OIDC, and isolated `CODEX_HOME`. It does not replace the
-resident Debug App or global Codex Plugin.
+resident Debug App or global Codex Plugin. Fresh local Server data is initialized
+through the normal Setup API and fake OIDC before the App opens; product login is
+not bypassed.
 
 ```sh
 just dev-macos-status
