@@ -67,7 +67,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 struct ServerReadyFile {
     path: Option<PathBuf>,
     owner_token: String,
-    published_identity: Option<ReadyFileIdentity>,
+    published_file: Option<std::fs::File>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +111,7 @@ impl ServerReadyFile {
         Ok(Self {
             path,
             owner_token: uuid::Uuid::new_v4().to_string(),
-            published_identity: None,
+            published_file: None,
         })
     }
 
@@ -147,13 +147,13 @@ impl ServerReadyFile {
             contents.push(b'\n');
             file.write_all(&contents)?;
             file.sync_all()?;
-            let identity = ready_file_identity(&file.metadata()?);
-            drop(file);
 
             // A hard link publishes atomically without ever replacing an
             // existing target. Both paths are in the same directory.
             std::fs::hard_link(&temporary, path)?;
-            self.published_identity = Some(identity);
+            // Keep the inode open so an unlinked replacement cannot reuse its
+            // identity before Drop decides whether to remove it.
+            self.published_file = Some(file);
             std::fs::remove_file(&temporary)?;
             Ok(())
         })();
@@ -166,9 +166,11 @@ impl ServerReadyFile {
 
 impl Drop for ServerReadyFile {
     fn drop(&mut self) {
-        if let (Some(path), Some(published_identity)) = (&self.path, self.published_identity)
-            && std::fs::symlink_metadata(path)
-                .is_ok_and(|metadata| ready_file_identity(&metadata) == published_identity)
+        if let (Some(path), Some(published_file)) = (&self.path, &self.published_file)
+            && let Ok(published_metadata) = published_file.metadata()
+            && std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+                ready_file_identity(&metadata) == ready_file_identity(&published_metadata)
+            })
             && ready_file_owner(path).as_deref() == Some(self.owner_token.as_str())
         {
             let _ = std::fs::remove_file(path);
