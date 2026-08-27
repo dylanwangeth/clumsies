@@ -749,6 +749,20 @@ impl DaemonState {
         agent_adapter::inspect_legacy(self, request).await
     }
 
+    pub async fn inspect_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        agent_adapter::inspect_codex_plugin(self, request).await
+    }
+
+    pub async fn reconcile_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        agent_adapter::reconcile_codex_plugin(self, request).await
+    }
+
     pub async fn install_project_agent_adapter(
         &self,
         request: DaemonProjectAgentAdapterInstallRequest,
@@ -2579,6 +2593,20 @@ impl DaemonIpcService {
         self.state.inspect_legacy_agent_adapters(request).await
     }
 
+    pub async fn inspect_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        self.state.inspect_codex_plugin(request).await
+    }
+
+    pub async fn reconcile_codex_plugin(
+        &self,
+        request: DaemonCodexPluginRequest,
+    ) -> Result<DaemonCodexPluginStatus, DaemonError> {
+        self.state.reconcile_codex_plugin(request).await
+    }
+
     pub async fn install_project_agent_adapter(
         &self,
         request: DaemonProjectAgentAdapterInstallRequest,
@@ -2899,6 +2927,12 @@ impl DaemonIpcService {
             }
             "inspect_legacy_agent_adapters" => {
                 dispatch_async!(self, request.payload, inspect_legacy_agent_adapters)
+            }
+            "inspect_codex_plugin" => {
+                dispatch_async!(self, request.payload, inspect_codex_plugin)
+            }
+            "reconcile_codex_plugin" => {
+                dispatch_async!(self, request.payload, reconcile_codex_plugin)
             }
             "install_project_agent_adapter" => {
                 dispatch_async!(self, request.payload, install_project_agent_adapter)

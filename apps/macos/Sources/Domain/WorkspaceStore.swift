@@ -273,7 +273,7 @@ enum ProjectSetupError: LocalizedError, Sendable {
         case .bundledAgentRuntimeMissing:
             "The clumsiesd Agent runtime is missing from this app build."
         case .codexHostMissing:
-            "Install or update the Codex app before enabling its Clumsies integration."
+            "Install or update the Codex app before repairing its Clumsies Plugin."
         case .bundleNotFound:
             "The selected Bundle is no longer available."
         case .bundleContainsUnavailableMemory:
@@ -1259,6 +1259,7 @@ final class WorkspaceStore: ObservableObject {
         adapters: Set<ProjectAgentAdapterKind>
     ) async throws {
         let repositoryPaths = normalizedRepositoryPaths(repositoryPaths)
+        let adapters = adapters.filter { $0 != .codex }
         guard !repositoryPaths.isEmpty else { throw ProjectSetupError.noRepositories }
         let created: ProjectRecord = try await server.send(
             method: "POST",
@@ -1301,9 +1302,6 @@ final class WorkspaceStore: ObservableObject {
         }
         if !adapters.isEmpty {
             let agentRuntimePath = try bundledAgentRuntimePath()
-            let codexHostPath = adapters.contains(.codex)
-                ? try WorkspaceLoader.installedCodexHostBinaryPath()
-                : nil
             for repositoryPath in repositoryPaths {
                 for adapter in adapters.sorted(by: { $0.rawValue < $1.rawValue }) {
                     _ = try await daemon.installProjectAgentAdapter(
@@ -1312,7 +1310,7 @@ final class WorkspaceStore: ObservableObject {
                             workspaceRoot: repositoryPath,
                             adapter: adapter,
                             runtimeBinaryPath: agentRuntimePath,
-                            hostBinaryPath: adapter == .codex ? codexHostPath : nil,
+                            hostBinaryPath: nil,
                             expectedRevision: nil
                         )
                     )
@@ -1486,6 +1484,25 @@ final class WorkspaceStore: ObservableObject {
         try await daemon.projectAgentAdapters(projectId)
     }
 
+    func codexPluginStatus() async throws -> DaemonCodexPluginStatus {
+        try await daemon.inspectCodexPlugin(
+            .init(
+                runtimeBinaryPath: try bundledAgentRuntimePath(),
+                hostBinaryPath: try? WorkspaceLoader.installedCodexHostBinaryPath()
+            )
+        )
+    }
+
+    func repairCodexPlugin() async throws -> DaemonCodexPluginStatus {
+        let hostBinaryPath = try WorkspaceLoader.installedCodexHostBinaryPath()
+        return try await daemon.reconcileCodexPlugin(
+            .init(
+                runtimeBinaryPath: try bundledAgentRuntimePath(),
+                hostBinaryPath: hostBinaryPath
+            )
+        )
+    }
+
     func setProjectAgentAdapter(
         _ adapter: ProjectAgentAdapterKind,
         enabled: Bool,
@@ -1493,6 +1510,7 @@ final class WorkspaceStore: ObservableObject {
         workspaceRoot: String,
         current: DaemonProjectAgentAdapter?
     ) async throws {
+        guard adapter != .codex else { return }
         if enabled {
             _ = try await daemon.installProjectAgentAdapter(
                 .init(
@@ -1500,9 +1518,7 @@ final class WorkspaceStore: ObservableObject {
                     workspaceRoot: workspaceRoot,
                     adapter: adapter,
                     runtimeBinaryPath: try bundledAgentRuntimePath(),
-                    hostBinaryPath: adapter == .codex
-                        ? try WorkspaceLoader.installedCodexHostBinaryPath()
-                        : nil,
+                    hostBinaryPath: nil,
                     expectedRevision: current?.revision
                 )
             )
@@ -4618,7 +4634,13 @@ final class WorkspaceStore: ObservableObject {
                   !Task.isCancelled else {
                 return
             }
-            self.applyLocalAgentAdapterResult(result)
+            self.applyLocalAgentAdapterResult(.init(
+                conflicts: result.conflicts,
+                inspectionWarning: Self.combinedAgentAdapterWarning(
+                    self.legacyAgentAdapterInspectionWarning,
+                    result.inspectionWarning
+                )
+            ))
         }
 
         draftInventoryLoadTask = Task { @MainActor [weak self] in
@@ -4844,6 +4866,14 @@ final class WorkspaceStore: ObservableObject {
             messages.append("\(result.conflicts.count - visible.count) more legacy integrations need review.")
         }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    nonisolated static func combinedAgentAdapterWarning(
+        _ managedWarning: String?,
+        _ legacyWarning: String?
+    ) -> String? {
+        let warnings = [managedWarning, legacyWarning].compactMap { $0 }
+        return warnings.isEmpty ? nil : warnings.joined(separator: "\n")
     }
 
     private func refreshDraft(_ draftId: String) async throws {
@@ -5581,23 +5611,32 @@ struct WorkspaceLoader: Sendable {
     private func reconcileManagedAgentAdapters() async throws
         -> LocalAgentAdapterReconciliationResult {
         let runtimePath = try Self.bundledAgentRuntimePath()
+        let codexHostPath = await MainActor.run { try? Self.installedCodexHostBinaryPath() }
+        var codexWarning: String?
+        if let codexHostPath {
+            let request = DaemonCodexPluginRequest(
+                runtimeBinaryPath: runtimePath,
+                hostBinaryPath: codexHostPath
+            )
+            do {
+                let status = try await daemon.inspectCodexPlugin(request)
+                if !status.ready {
+                    _ = try await daemon.reconcileCodexPlugin(request)
+                }
+            } catch {
+                codexWarning = "Clumsies could not repair the global Codex plugin. Open Settings > Agent to try again. \(error.localizedDescription)"
+            }
+        }
         let installed = try await daemon.allProjectAgentAdapters()
-        let codexHostPath = Self.hasReachableCodexAdapter(
-            installed: installed,
-            workspaceExists: { FileManager.default.fileExists(atPath: $0) }
-        )
-            ? try await MainActor.run { try Self.installedCodexHostBinaryPath() }
-            : nil
         let requests = Self.agentAdapterReconciliationPlan(
             installed: installed,
             runtimePath: runtimePath,
-            codexHostPath: codexHostPath,
             workspaceExists: { FileManager.default.fileExists(atPath: $0) }
         )
         for request in requests {
             _ = try await daemon.installProjectAgentAdapter(request)
         }
-        return .init(conflicts: [], inspectionWarning: nil)
+        return .init(conflicts: [], inspectionWarning: codexWarning)
     }
 
     func inspectLegacyAgentAdapters() async -> LocalAgentAdapterReconciliationResult {
@@ -5660,23 +5699,13 @@ struct WorkspaceLoader: Sendable {
         )
     }
 
-    static func hasReachableCodexAdapter(
-        installed: [DaemonProjectAgentAdapter],
-        workspaceExists: (String) -> Bool
-    ) -> Bool {
-        installed.contains {
-            $0.adapter == .codex && workspaceExists($0.workspaceRoot)
-        }
-    }
-
     static func agentAdapterReconciliationPlan(
         installed: [DaemonProjectAgentAdapter],
         runtimePath: String,
-        codexHostPath: String?,
         workspaceExists: (String) -> Bool
     ) -> [DaemonProjectAgentAdapterInstallRequest] {
         installed
-            .filter { workspaceExists($0.workspaceRoot) }
+            .filter { $0.adapter != .codex && workspaceExists($0.workspaceRoot) }
             .sorted {
                 if $0.workspaceRoot != $1.workspaceRoot {
                     return $0.workspaceRoot < $1.workspaceRoot
@@ -5689,7 +5718,7 @@ struct WorkspaceLoader: Sendable {
                     workspaceRoot: $0.workspaceRoot,
                     adapter: $0.adapter,
                     runtimeBinaryPath: runtimePath,
-                    hostBinaryPath: $0.adapter == .codex ? codexHostPath : nil,
+                    hostBinaryPath: nil,
                     expectedRevision: $0.revision
                 )
             }

@@ -10,7 +10,7 @@ Direct-file adapters register the App-bundled runtime as:
 /path/to/Clumsies.app/Contents/Resources/clumsiesd mcp serve
 ```
 
-Codex receives the same runtime through the Adapter-installed Clumsies plugin:
+Codex receives the same runtime through the App-managed global Clumsies plugin:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd \
@@ -27,7 +27,7 @@ direct-file Hook invokes the private lifecycle bridge as:
   _agent issue-run-event --host codex|claude-code|opencode
 ```
 
-The Codex plugin Hook instead invokes the exact gated form:
+The Codex plugin Hook invokes the host-plugin form:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd \
@@ -121,12 +121,12 @@ lifecycle outside the MCP memory contract and must not reimplement retrieval or
 inject a second bootstrap protocol.
 
 Codex plugin proxies identify both `host=codex` and `delivery=host-plugin`.
-After resolving the canonical Project, the resident daemon requires the exact
-enabled Adapter delivery at startup and before every `tools/call`. Removing the
-Adapter, changing its delivery, or rebinding the workspace makes an already
-running plugin proxy fail its next call closed. This makes a globally installed
-plugin harmless when the integration is disabled for a Project. Plugin
-installation does not grant Hook trust: the user must review the current
+The Plugin is installed and enabled globally, but it can operate only inside a
+repository with a canonical Project binding. The resident daemon resolves that
+binding at startup and before every `tools/call`; removing or changing the
+binding makes an already running plugin proxy fail its next call closed. There
+is no per-Project Codex enable/disable row. Plugin installation does not grant
+Hook trust: the user must review the current
 Clumsies Hook in `/hooks` before AgentRun injection and run-bound Kanban actions
 become available. Installation also does not hot-load the plugin into an
 existing Codex task; restart Codex after install or update, then start a new

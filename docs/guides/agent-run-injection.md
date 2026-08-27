@@ -41,7 +41,7 @@ unbound, and one active Issue cannot be claimed by a second active run.
 
 | Host | Observed events | Integration surface |
 | --- | --- | --- |
-| Codex | `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` | Adapter-installed Clumsies plugin Hook with exact `host_plugin` gate after the user trusts its current hash in `/hooks`; no project Hook files and no root `Stop` registration |
+| Codex | `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` | App-managed global Clumsies Plugin Hook after the user trusts its current hash in `/hooks`; repository binding supplies the Project, with no project Hook files or root `Stop` registration |
 | Claude Code | the Codex set plus `StopFailure` | `.claude/settings.json` → managed shell Hook; no root `Stop` registration |
 | Antigravity | `PreInvocation` | `.agents/hooks.json` → managed shell Hook; no root `Stop` registration |
 | opencode | user message, failed assistant message, deleted session | managed plugin maps them to `UserPromptSubmit`, `StopFailure`, and `SessionEnd`; successful completion emits no `Stop` |

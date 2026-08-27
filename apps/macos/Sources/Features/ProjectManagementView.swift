@@ -97,8 +97,8 @@ struct ProjectCreationSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Coding Agents") {
-                    ForEach(ProjectAgentAdapterKind.allCases) { adapter in
+                Section("Agent") {
+                    ForEach(ProjectAgentAdapterKind.projectScopedCases) { adapter in
                         Toggle(
                             adapter.title,
                             isOn: Binding(
@@ -600,9 +600,9 @@ private struct ProjectLocalSetupSettings: View {
             }
         }
 
-        Section("Coding Agents") {
+        Section("Agent") {
             if bindings.isEmpty {
-                Text("Add a repository before configuring a Coding Agent.")
+                Text("Add a repository before configuring an Agent.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(bindings) { binding in
@@ -611,19 +611,12 @@ private struct ProjectLocalSetupSettings: View {
                             Text(URL(fileURLWithPath: binding.workspaceRoot).lastPathComponent)
                                 .fontWeight(.medium)
                         }
-                        ForEach(ProjectAgentAdapterKind.allCases) { adapter in
+                        ForEach(ProjectAgentAdapterKind.projectScopedCases) { adapter in
                             Toggle(
                                 adapter.title,
                                 isOn: adapterBinding(adapter, repository: binding)
                             )
                             .disabled(workingKeys.contains(adapterKey(adapter, binding.workspaceRoot)))
-                            if adapter == .codex,
-                               currentAdapter(adapter, binding.workspaceRoot)?.delivery == .hostPlugin {
-                                Text("Restart Codex after enabling or updating this plugin, then start a new task. In that task, open /hooks and trust the current Clumsies Hook to enable AgentRun and run-bound Kanban actions.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
                         }
                     }
                     .padding(.vertical, 2)
@@ -650,7 +643,7 @@ private struct ProjectLocalSetupSettings: View {
                 bindingToRemove = nil
             }
         } message: {
-            Text("Clumsies will remove its Coding Agent configuration from this repository and stop resolving it to the Project.")
+            Text("Clumsies will remove its Agent configuration from this repository and stop resolving it to the Project.")
         }
     }
 

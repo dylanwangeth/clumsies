@@ -38,7 +38,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 - **Memory as a Team Asset (Git-Semantic Context)**: Rules, workflows, and project context live as first-class Markdown-backed Organization Memory. A Project selects the Organization resources it uses and carries private Draft overlays; reviewed changes merge atomically into immutable Organization Commit history.
 - **Hybrid Retrieval & Precise Activation**: Combines SQLite FTS5 BM25 text search, local dense vector embeddings, Reciprocal Rank Fusion (RRF), and Cross-Encoder reranking. Agents retrieve task-relevant fragments on demand without exhausting token budgets.
 - **Agent-Native Asynchronous Kanban**: Agents autonomously claim tasks (`begin_work`), build dependency DAGs, evaluate blocking predicates, and record structured verification steps. Human approval gates (`approve_closure`) ensure only verified work transitions to Done.
-- **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Codex is delivered as an Adapter-managed plugin; project-maintained skills remain in Memory Space and are loaded on demand. Restart Codex and start a new task after enabling or updating it, then complete the one-time `/hooks` review before its plugin Hook runs. Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.
+- **MCP & Non-Blocking Lifecycle Integration**: Out-of-the-box integration for Google Antigravity, Claude Code, OpenAI Codex, opencode, and DeepSeek Harness (dsh) via a single signed Rust daemon (`clumsiesd`). Codex is delivered as an automatically managed user-level plugin; project-maintained skills remain in Memory Space and are loaded on demand. Restart Codex and start a new task after plugin changes, then complete the one-time `/hooks` review before its plugin Hook runs. Managed adapters do not install normal root Stop hooks; Issue closure remains explicit in an opt-in skill or manually maintained workflow.
 - **Self-Hosted Authority**: Run the Rust Server and PostgreSQL in your own infrastructure with organization OIDC, while the local resident daemon owns fast local state and XPC transport.
 
 ---
@@ -62,7 +62,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 1. Download the latest release from [Releases](https://github.com/lilhammerfun/clumsies/releases).
 2. Move `Clumsies.app` to `/Applications` or `~/Applications`.
 3. Open `Clumsies.app`. It automatically provisions the resident launchd daemon (`ai.clumsies.daemon`) and connects to your organization server.
-4. Toggle your desired Coding Agent adapters in **Project Settings → Coding Agents**.
+4. Bind a repository to its Project. Codex uses the global Plugin automatically; configure optional repository-writing hosts in **Project Settings → Agent**.
 
 ### Development from Source
 

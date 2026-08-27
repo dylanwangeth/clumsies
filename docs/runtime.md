@@ -85,9 +85,10 @@ the proposal target. These are separate axes: the Project owns the pre-merge
 overlay; `org` describes the Ref an approved Review may eventually move. At
 process startup, MCP gives its current working directory to daemon; daemon
 canonicalizes the path and resolves the nearest bound ancestor in SQLite. A
-Codex host-plugin proxy repeats that resolution and its exact Adapter-delivery
-check before every `tools/call`. MCP never treats a legacy Workspace ID as a
-Project ID. The Rust MCP contract tests exercise the exact Agent-facing
+Codex host-plugin proxy repeats that resolution before every `tools/call` and
+requires it to remain the same Project; the global Plugin does not require a
+project Adapter row. MCP never treats a legacy Workspace ID as a Project ID.
+The Rust MCP contract tests exercise the exact Agent-facing
 envelopes before they are mapped to typed daemon requests.
 
 Agent-originated updates are exact text replacements, not complete-document

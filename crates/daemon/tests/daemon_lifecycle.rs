@@ -3950,7 +3950,7 @@ async fn opencode_project_agent_adapter_install_is_reversible_and_preserves_user
 }
 
 #[tokio::test]
-async fn host_plugin_runtime_requires_exact_adapter_delivery() {
+async fn codex_host_plugin_runtime_requires_only_a_project_binding() {
     let root = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let daemon_root = root.path().join("daemon");
@@ -3976,25 +3976,18 @@ async fn host_plugin_runtime_requires_exact_adapter_delivery() {
     .execute(&db)
     .await
     .unwrap();
-    let manifest = |delivery: &str| {
-        json!({
-            "runtime_binary_hash": "a".repeat(64),
-            "runtime_binary_path": "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
-            "delivery": delivery,
-            "managed_files": []
+    let install_error = state
+        .install_project_agent_adapter(DaemonProjectAgentAdapterInstallRequest {
+            project_id: "prj_plugin_gate".to_owned(),
+            workspace_root: workspace_root.clone(),
+            adapter: ProjectAgentAdapterKind::Codex,
+            runtime_binary_path: "/missing/clumsiesd".to_owned(),
+            host_binary_path: None,
+            expected_revision: None,
         })
-        .to_string()
-    };
-    sqlx::query(
-        "INSERT INTO project_agent_adapters
-             (server_url, workspace_root, project_id, adapter, revision, manifest_json)
-         VALUES ('https://app.clumsies.ai', $1, 'prj_plugin_gate', 'codex', 1, $2)",
-    )
-    .bind(&workspace_root)
-    .bind(manifest("legacy_files"))
-    .execute(&db)
-    .await
-    .unwrap();
+        .await
+        .unwrap_err();
+    assert!(matches!(install_error, DaemonError::InvalidRequest(_)));
     let request = || DaemonProjectBindingResolveRequest {
         workspace_path: workspace.path().display().to_string(),
         required_adapter: Some(ProjectAgentAdapterRuntimeRequirement {
@@ -4002,22 +3995,26 @@ async fn host_plugin_runtime_requires_exact_adapter_delivery() {
             delivery: ProjectAgentAdapterDelivery::HostPlugin,
         }),
     };
-    let rejected = state.resolve_project_binding(request()).await.unwrap_err();
+    let accepted = state.resolve_project_binding(request()).await.unwrap();
+    assert_eq!(accepted.project_id, "prj_plugin_gate");
+
+    let other_host = state
+        .resolve_project_binding(DaemonProjectBindingResolveRequest {
+            workspace_path: workspace.path().display().to_string(),
+            required_adapter: Some(ProjectAgentAdapterRuntimeRequirement {
+                adapter: ProjectAgentAdapterKind::ClaudeCode,
+                delivery: ProjectAgentAdapterDelivery::LegacyFiles,
+            }),
+        })
+        .await
+        .unwrap_err();
     assert!(matches!(
-        rejected,
+        other_host,
         DaemonError::State {
             code: "project_agent_adapter_not_enabled",
             ..
         }
     ));
-
-    sqlx::query("UPDATE project_agent_adapters SET manifest_json = $1 WHERE adapter = 'codex'")
-        .bind(manifest("host_plugin"))
-        .execute(&db)
-        .await
-        .unwrap();
-    let accepted = state.resolve_project_binding(request()).await.unwrap();
-    assert_eq!(accepted.project_id, "prj_plugin_gate");
 }
 
 #[tokio::test]
@@ -4031,7 +4028,10 @@ async fn resolving_an_unbound_workspace_reports_project_binding_not_found() {
     let error = state
         .resolve_project_binding(DaemonProjectBindingResolveRequest {
             workspace_path: workspace.display().to_string(),
-            required_adapter: None,
+            required_adapter: Some(ProjectAgentAdapterRuntimeRequirement {
+                adapter: ProjectAgentAdapterKind::Codex,
+                delivery: ProjectAgentAdapterDelivery::HostPlugin,
+            }),
         })
         .await
         .unwrap_err();

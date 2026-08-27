@@ -151,6 +151,24 @@ pub struct DaemonProjectAgentAdapterRemoveResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonCodexPluginRequest {
+    pub runtime_binary_path: String,
+    pub host_binary_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DaemonCodexPluginStatus {
+    pub host_installed: bool,
+    pub marketplace_installed: bool,
+    pub marketplace_conflict: bool,
+    pub plugin_installed: bool,
+    pub plugin_enabled: bool,
+    pub installed_version: Option<String>,
+    pub expected_version: String,
+    pub ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct AdapterManifest {
     runtime_binary_hash: String,
     runtime_binary_path: String,
@@ -1897,6 +1915,11 @@ pub(crate) async fn require_runtime_delivery(
     binding: &crate::DaemonProjectBinding,
     required: crate::ProjectAgentAdapterRuntimeRequirement,
 ) -> Result<(), DaemonError> {
+    if required.adapter == ProjectAgentAdapterKind::Codex
+        && required.delivery == ProjectAgentAdapterDelivery::HostPlugin
+    {
+        return Ok(());
+    }
     let raw_manifest: Option<String> = sqlx::query_scalar(
         "SELECT manifest_json
          FROM project_agent_adapters
@@ -1929,10 +1952,59 @@ pub(crate) async fn inspect_legacy(
     legacy::inspect(state, request).await
 }
 
+pub(crate) async fn inspect_codex_plugin(
+    state: &DaemonState,
+    request: DaemonCodexPluginRequest,
+) -> Result<DaemonCodexPluginStatus, DaemonError> {
+    let _guard = state.inner.local_setup_lock.lock().await;
+    let runtime_binary = canonical_agent_runtime_binary(&request.runtime_binary_path)?;
+    #[cfg(target_os = "macos")]
+    verify_code_signature(&runtime_binary)?;
+    let runtime_hash = sha256_file(&runtime_binary)?;
+    codex_plugin::inspect(
+        &state.inner.config.root_dir,
+        &runtime_binary,
+        &runtime_hash,
+        request.host_binary_path.as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn reconcile_codex_plugin(
+    state: &DaemonState,
+    request: DaemonCodexPluginRequest,
+) -> Result<DaemonCodexPluginStatus, DaemonError> {
+    let _guard = state.inner.local_setup_lock.lock().await;
+    let runtime_binary = canonical_agent_runtime_binary(&request.runtime_binary_path)?;
+    #[cfg(target_os = "macos")]
+    verify_code_signature(&runtime_binary)?;
+    let runtime_hash = sha256_file(&runtime_binary)?;
+    codex_plugin::ensure_installed(
+        &state.inner.config.root_dir,
+        &runtime_binary,
+        &runtime_hash,
+        request.host_binary_path.as_deref(),
+    )
+    .await?;
+    codex_plugin::inspect(
+        &state.inner.config.root_dir,
+        &runtime_binary,
+        &runtime_hash,
+        request.host_binary_path.as_deref(),
+    )
+    .await
+}
+
 pub(crate) async fn install(
     state: &DaemonState,
     request: DaemonProjectAgentAdapterInstallRequest,
 ) -> Result<DaemonProjectAgentAdapter, DaemonError> {
+    if request.adapter == ProjectAgentAdapterKind::Codex {
+        return Err(DaemonError::InvalidRequest(
+            "The Codex Plugin is managed globally; Project Agent settings cannot install it."
+                .to_owned(),
+        ));
+    }
     let _guard = state.inner.local_setup_lock.lock().await;
     let project_id = required_value("project_id", request.project_id)?;
     let workspace_root = canonical_workspace_directory(&request.workspace_root)?;
@@ -1979,51 +2051,22 @@ pub(crate) async fn install(
     verify_code_signature(&runtime_binary)?;
     let runtime_hash = sha256_file(&runtime_binary)?;
     let previous_manifest = existing.as_ref().map(|record| &record.manifest);
-    let (changes, manifest) = if request.adapter == ProjectAgentAdapterKind::Codex {
-        codex_plugin::ensure_installed(
-            &state.inner.config.root_dir,
-            &runtime_binary,
-            &runtime_hash,
-            request.host_binary_path.as_deref(),
-        )
-        .await?;
-        let changes = match previous_manifest {
-            Some(manifest) if manifest.delivery == ProjectAgentAdapterDelivery::LegacyFiles => {
-                remove_plan(manifest, &workspace_root)?
-            }
-            Some(manifest) if !manifest.managed_files.is_empty() => {
-                return Err(DaemonError::InvalidConfig(
-                    "a host-plugin Adapter manifest cannot own workspace files".to_owned(),
-                ));
-            }
-            _ => Vec::new(),
-        };
-        let manifest = AdapterManifest {
-            runtime_binary_hash: runtime_hash,
-            runtime_binary_path: runtime_binary.display().to_string(),
-            delivery: ProjectAgentAdapterDelivery::HostPlugin,
-            managed_files: Vec::new(),
-        };
-        (changes, manifest)
-    } else {
-        let mut changes = install_plan_with_project(
-            request.adapter,
-            &workspace_root,
-            &runtime_binary,
-            previous_manifest,
-            Some(&server_url),
-            Some(&project_id),
-        )?;
-        // Retire previously-managed files the new plan no longer includes
-        // instead of silently orphaning them on disk.
-        changes.extend(retire_stale_managed_changes(
-            &changes,
-            previous_manifest,
-            &workspace_root,
-        )?);
-        let manifest = manifest_for_changes(&changes, &runtime_binary, runtime_hash);
-        (changes, manifest)
-    };
+    let mut changes = install_plan_with_project(
+        request.adapter,
+        &workspace_root,
+        &runtime_binary,
+        previous_manifest,
+        Some(&server_url),
+        Some(&project_id),
+    )?;
+    // Retire previously-managed files the new plan no longer includes
+    // instead of silently orphaning them on disk.
+    changes.extend(retire_stale_managed_changes(
+        &changes,
+        previous_manifest,
+        &workspace_root,
+    )?);
+    let manifest = manifest_for_changes(&changes, &runtime_binary, runtime_hash);
     let files_changed = changes
         .iter()
         .map(change_is_needed)

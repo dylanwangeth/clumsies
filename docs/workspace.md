@@ -106,6 +106,6 @@ repository. At startup the proxy verifies the resident daemon release identity,
 resolves the current directory through the binding registry, and fixes that
 canonical `project_id` for the process. Agent input cannot select another
 Project or reuse Desktop's current selection. A Codex host-plugin proxy repeats
-the canonical binding and exact Adapter-delivery check before every
-`tools/call`, so a removal, delivery flip, or rebind revokes the running proxy
-on its next call.
+the canonical binding before every `tools/call`, so a missing binding or rebind
+revokes the running proxy on its next call. The global Plugin does not create or
+require a per-repository Codex Adapter row.

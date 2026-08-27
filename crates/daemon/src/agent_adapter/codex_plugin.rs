@@ -12,7 +12,7 @@ use crate::project_storage::{ensure_private_directory, write_private_file};
 
 #[cfg(target_os = "macos")]
 use super::code_signature_info;
-use super::{is_executable, shell_single_quote, state_error};
+use super::{DaemonCodexPluginStatus, is_executable, shell_single_quote, state_error};
 
 const MARKETPLACE_NAME: &str = "clumsies-local";
 const PLUGIN_ID: &str = "clumsies@clumsies-local";
@@ -90,6 +90,77 @@ pub(super) async fn ensure_installed(
     let plugin = materialize(daemon_root, runtime_binary, runtime_hash)?;
     ensure_marketplace(&codex, &plugin.marketplace_root).await?;
     ensure_plugin(&codex, &plugin.version).await
+}
+
+pub(super) async fn inspect(
+    daemon_root: &Path,
+    runtime_binary: &Path,
+    runtime_hash: &str,
+    host_binary_path: Option<&str>,
+) -> Result<DaemonCodexPluginStatus, DaemonError> {
+    let expected_version = plugin_version(
+        runtime_binary.to_str().ok_or_else(|| {
+            DaemonError::InvalidRequest("Codex plugin runtime path is not UTF-8".to_owned())
+        })?,
+        runtime_hash,
+    );
+    let Some(host_binary_path) = host_binary_path else {
+        return Ok(DaemonCodexPluginStatus {
+            host_installed: false,
+            marketplace_installed: false,
+            marketplace_conflict: false,
+            plugin_installed: false,
+            plugin_enabled: false,
+            installed_version: None,
+            expected_version,
+            ready: false,
+        });
+    };
+    let codex = canonical_codex_cli(host_binary_path)?;
+    verify_codex_cli(&codex)?;
+    let marketplace_root = daemon_root.join("agent-plugins/codex-marketplace");
+    inspect_verified(&codex, &marketplace_root, expected_version).await
+}
+
+async fn inspect_verified(
+    codex: &Path,
+    marketplace_root: &Path,
+    expected_version: String,
+) -> Result<DaemonCodexPluginStatus, DaemonError> {
+    let marketplaces = marketplace_list(codex).await?;
+    let marketplace = marketplaces
+        .marketplaces
+        .iter()
+        .find(|entry| entry.name == MARKETPLACE_NAME);
+    let marketplace_installed =
+        marketplace.is_some_and(|entry| marketplace_matches(entry, marketplace_root));
+    let marketplace_conflict = marketplace.is_some() && !marketplace_installed;
+    let plugin = if marketplace_installed {
+        plugin_list(codex)
+            .await?
+            .installed
+            .into_iter()
+            .find(|entry| entry.plugin_id == PLUGIN_ID)
+    } else {
+        None
+    };
+    let plugin_installed = plugin.as_ref().is_some_and(|entry| entry.installed);
+    let plugin_enabled = plugin.as_ref().is_some_and(|entry| entry.enabled);
+    let installed_version = plugin.map(|entry| entry.version);
+    let ready = marketplace_installed
+        && plugin_installed
+        && plugin_enabled
+        && installed_version.as_deref() == Some(expected_version.as_str());
+    Ok(DaemonCodexPluginStatus {
+        host_installed: true,
+        marketplace_installed,
+        marketplace_conflict,
+        plugin_installed,
+        plugin_enabled,
+        installed_version,
+        expected_version,
+        ready,
+    })
 }
 
 fn materialize(
@@ -203,7 +274,7 @@ async fn ensure_marketplace(codex: &Path, marketplace_root: &Path) -> Result<(),
         Some(entry) if marketplace_matches(entry, marketplace_root) => return Ok(()),
         Some(_) => {
             return Err(state_error(
-                "project_agent_adapter_plugin_conflict",
+                "codex_plugin_conflict",
                 "Codex already has a different marketplace named clumsies-local.",
             ));
         }
@@ -223,7 +294,7 @@ async fn ensure_marketplace(codex: &Path, marketplace_root: &Path) -> Result<(),
         Ok(())
     } else {
         Err(state_error(
-            "project_agent_adapter_plugin_install_failed",
+            "codex_plugin_install_failed",
             "Codex did not retain the Clumsies marketplace after installation.",
         ))
     }
@@ -243,7 +314,7 @@ async fn ensure_plugin(codex: &Path, version: &str) -> Result<(), DaemonError> {
         Ok(())
     } else {
         Err(state_error(
-            "project_agent_adapter_plugin_install_failed",
+            "codex_plugin_install_failed",
             "Codex did not enable the expected Clumsies plugin version.",
         ))
     }
@@ -285,25 +356,25 @@ async fn run_cli_json(codex: &Path, args: &[&str]) -> Result<Value, DaemonError>
         .await
         .map_err(|_| {
             state_error(
-                "project_agent_adapter_plugin_timeout",
+                "codex_plugin_timeout",
                 "Codex did not finish the plugin operation in time.",
             )
         })??;
     if output.stdout.len() > MAX_CLI_OUTPUT_BYTES || output.stderr.len() > MAX_CLI_OUTPUT_BYTES {
         return Err(state_error(
-            "project_agent_adapter_plugin_output_too_large",
+            "codex_plugin_output_too_large",
             "Codex returned an unexpectedly large plugin response.",
         ));
     }
     if !output.status.success() {
         return Err(state_error(
-            "project_agent_adapter_plugin_install_failed",
+            "codex_plugin_install_failed",
             "Codex could not install the Clumsies plugin. Open Codex once, then retry the integration.",
         ));
     }
     serde_json::from_slice(&output.stdout).map_err(|_| {
         state_error(
-            "project_agent_adapter_plugin_invalid_response",
+            "codex_plugin_invalid_response",
             "Codex returned an invalid plugin response.",
         )
     })
@@ -363,7 +434,7 @@ fn verify_codex_cli(path: &Path) -> Result<(), DaemonError> {
         || !info.hardened_runtime
     {
         return Err(state_error(
-            "project_agent_adapter_invalid_host",
+            "codex_plugin_invalid_host",
             "The selected Codex CLI does not have the required OpenAI signing identity.",
         ));
     }
@@ -431,6 +502,126 @@ mod tests {
         };
         assert!(plugin_installed_and_enabled(&ready, "0.1.0+codex.abc"));
         assert!(!plugin_installed_and_enabled(&ready, "0.1.0+codex.def"));
+    }
+
+    #[tokio::test]
+    async fn inspection_without_codex_is_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let status = inspect(
+            root.path(),
+            Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
+            &"a".repeat(64),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(!status.host_installed);
+        assert!(!status.ready);
+        assert!(root.path().read_dir().unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspection_with_codex_lists_state_without_materializing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let host = tempfile::tempdir().unwrap();
+        let codex = host.path().join("Codex.app/Contents/Resources/codex");
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::write(&codex, "#!/bin/sh\necho '{\"marketplaces\":[]}'\n").unwrap();
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+        let daemon = tempfile::tempdir().unwrap();
+        let marketplace = daemon.path().join("agent-plugins/codex-marketplace");
+
+        let status = inspect_verified(&codex, &marketplace, "0.1.0+codex.expected".to_owned())
+            .await
+            .unwrap();
+
+        assert!(status.host_installed);
+        assert!(!status.marketplace_installed);
+        assert!(!status.ready);
+        assert!(!marketplace.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconciliation_repairs_missing_stale_and_disabled_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let daemon = tempfile::tempdir().unwrap();
+        let plugin = materialize(
+            daemon.path(),
+            Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
+            &"a".repeat(64),
+        )
+        .unwrap();
+        let host = tempfile::tempdir().unwrap();
+        let state = host.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        let marketplace_marker = state.join("marketplace");
+        let plugin_marker = state.join("plugin");
+        let marketplace_ready = json!({
+            "marketplaces": [{
+                "name": MARKETPLACE_NAME,
+                "root": plugin.marketplace_root.display().to_string()
+            }]
+        })
+        .to_string();
+        let plugin_stale = json!({
+            "installed": [{
+                "pluginId": PLUGIN_ID,
+                "version": "0.1.0+codex.old",
+                "installed": true,
+                "enabled": false
+            }]
+        })
+        .to_string();
+        let plugin_ready = json!({
+            "installed": [{
+                "pluginId": PLUGIN_ID,
+                "version": plugin.version,
+                "installed": true,
+                "enabled": true
+            }]
+        })
+        .to_string();
+        let codex = host.path().join("Codex.app/Contents/Resources/codex");
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::write(
+            &codex,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = plugin ] && [ \"$2\" = marketplace ] && [ \"$3\" = list ]; then\n\
+                   if [ -f {marketplace_marker} ]; then printf '%s\\n' {marketplace_ready}; else printf '%s\\n' '{{\"marketplaces\":[]}}'; fi\n\
+                 elif [ \"$1\" = plugin ] && [ \"$2\" = marketplace ] && [ \"$3\" = add ]; then\n\
+                   touch {marketplace_marker}; printf '%s\\n' '{{}}'\n\
+                 elif [ \"$1\" = plugin ] && [ \"$2\" = list ]; then\n\
+                   if [ -f {plugin_marker} ]; then printf '%s\\n' {plugin_ready}; else printf '%s\\n' {plugin_stale}; fi\n\
+                 elif [ \"$1\" = plugin ] && [ \"$2\" = add ]; then\n\
+                   touch {plugin_marker}; printf '%s\\n' '{{}}'\n\
+                 else exit 1; fi\n",
+                marketplace_marker = shell_single_quote(&marketplace_marker.display().to_string()),
+                marketplace_ready = shell_single_quote(&marketplace_ready),
+                plugin_marker = shell_single_quote(&plugin_marker.display().to_string()),
+                plugin_ready = shell_single_quote(&plugin_ready),
+                plugin_stale = shell_single_quote(&plugin_stale),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+
+        ensure_marketplace(&codex, &plugin.marketplace_root)
+            .await
+            .unwrap();
+        ensure_plugin(&codex, &plugin.version).await.unwrap();
+        let status = inspect_verified(&codex, &plugin.marketplace_root, plugin.version)
+            .await
+            .unwrap();
+
+        assert!(marketplace_marker.exists());
+        assert!(plugin_marker.exists());
+        assert!(status.ready);
     }
 
     #[test]

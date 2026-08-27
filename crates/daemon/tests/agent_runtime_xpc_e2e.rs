@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const SERVER_URL: &str = "http://127.0.0.1:9";
 const PROJECT_ID: &str = "prj_agent_runtime_e2e";
+const REBOUND_PROJECT_ID: &str = "prj_agent_runtime_rebound";
 const TEST_SERVICE_ENV: &str = "CLUMSIES_AGENT_RUNTIME_TEST_MACH_SERVICE";
 const STALE_TOOL_BUILD_ENV: &str = "CLUMSIES_AGENT_RUNTIME_TEST_STALE_TOOL_BUILD_ID";
 
@@ -188,20 +189,20 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
         .unwrap();
     plugin_stdin.flush().unwrap();
     assert_eq!(read_proxy_json_line(&mut plugin_stdout)["id"], 20);
-    let before_remove = read_proxy_json_line(&mut plugin_stdout);
-    assert_eq!(before_remove["id"], 21);
-    assert_eq!(before_remove["result"]["isError"], false, "{before_remove}");
+    let before_rebind = read_proxy_json_line(&mut plugin_stdout);
+    assert_eq!(before_rebind["id"], 21);
+    assert_eq!(before_rebind["result"]["isError"], false, "{before_rebind}");
 
-    remove_codex_adapter(&daemon_root.join("local.db")).await;
+    rebind_project(&daemon_root.join("local.db")).await;
     plugin_stdin
         .write_all(
             b"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n",
         )
         .unwrap();
     plugin_stdin.flush().unwrap();
-    let after_remove = read_proxy_json_line(&mut plugin_stdout);
-    assert_eq!(after_remove["id"], 22);
-    assert_eq!(after_remove["result"]["isError"], true, "{after_remove}");
+    let after_rebind = read_proxy_json_line(&mut plugin_stdout);
+    assert_eq!(after_rebind["id"], 22);
+    assert_eq!(after_rebind["result"]["isError"], true, "{after_rebind}");
     drop(plugin_stdin);
     drop(plugin_stdout);
     let plugin_output = plugin_mcp.wait_with_output().unwrap();
@@ -360,35 +361,15 @@ async fn seed_project_fixture(local_db: &Path, workspace: &Path) {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO project_agent_adapters
-             (server_url, workspace_root, project_id, adapter, revision, manifest_json)
-         VALUES ($1, $2, $3, 'codex', 1, $4)",
-    )
-    .bind(SERVER_URL)
-    .bind(workspace.display().to_string())
-    .bind(PROJECT_ID)
-    .bind(
-        json!({
-            "runtime_binary_hash": "a".repeat(64),
-            "runtime_binary_path": "/Applications/Clumsies.app/Contents/Resources/clumsiesd",
-            "delivery": "host_plugin",
-            "managed_files": []
-        })
-        .to_string(),
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
     pool.close().await;
 }
 
-async fn remove_codex_adapter(local_db: &Path) {
+async fn rebind_project(local_db: &Path) {
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", local_db.display()))
         .await
         .unwrap();
-    sqlx::query("DELETE FROM project_agent_adapters WHERE project_id = $1 AND adapter = 'codex'")
-        .bind(PROJECT_ID)
+    sqlx::query("UPDATE project_bindings SET project_id = $1")
+        .bind(REBOUND_PROJECT_ID)
         .execute(&pool)
         .await
         .unwrap();
@@ -406,7 +387,7 @@ async fn assert_hook_fixture_persisted(local_db: &Path) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(run.get::<String, _>("project_id"), PROJECT_ID);
+    assert_eq!(run.get::<String, _>("project_id"), REBOUND_PROJECT_ID);
     assert_eq!(run.get::<String, _>("host"), "codex");
     assert_eq!(
         run.get::<String, _>("host_run_key"),

@@ -98,6 +98,10 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
 
     var id: String { rawValue }
 
+    static var projectScopedCases: [Self] {
+        allCases.filter { $0 != .codex }
+    }
+
     var title: String {
         switch self {
         case .codex: "Codex"
@@ -107,6 +111,22 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
         case .antigravity: "Antigravity"
         }
     }
+}
+
+struct DaemonCodexPluginRequest: Codable, Sendable {
+    let runtimeBinaryPath: String
+    let hostBinaryPath: String?
+}
+
+struct DaemonCodexPluginStatus: Codable, Equatable, Sendable {
+    let hostInstalled: Bool
+    let marketplaceInstalled: Bool
+    let marketplaceConflict: Bool
+    let pluginInstalled: Bool
+    let pluginEnabled: Bool
+    let installedVersion: String?
+    let expectedVersion: String
+    let ready: Bool
 }
 
 enum ProjectAgentAdapterDelivery: String, Codable, Sendable {
