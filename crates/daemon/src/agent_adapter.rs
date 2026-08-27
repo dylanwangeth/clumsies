@@ -1966,6 +1966,7 @@ pub(crate) async fn inspect_codex_plugin(
         &runtime_binary,
         &runtime_hash,
         request.host_binary_path.as_deref(),
+        state.inner.config.dev_instance_id.as_deref(),
     )
     .await
 }
@@ -1984,6 +1985,7 @@ pub(crate) async fn reconcile_codex_plugin(
         &runtime_binary,
         &runtime_hash,
         request.host_binary_path.as_deref(),
+        state.inner.config.dev_instance_id.as_deref(),
     )
     .await?;
     codex_plugin::inspect(
@@ -1991,6 +1993,7 @@ pub(crate) async fn reconcile_codex_plugin(
         &runtime_binary,
         &runtime_hash,
         request.host_binary_path.as_deref(),
+        state.inner.config.dev_instance_id.as_deref(),
     )
     .await
 }

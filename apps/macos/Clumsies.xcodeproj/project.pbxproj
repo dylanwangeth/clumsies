@@ -512,6 +512,16 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CLUMSIES_APP_BUNDLE_IDENTIFIER = ai.clumsies.desktop;
+				CLUMSIES_APP_DISPLAY_NAME = Clumsies;
+				CLUMSIES_APP_PRODUCT_NAME = Clumsies;
+				CLUMSIES_CODEX_HOME = "";
+				CLUMSIES_DAEMON_CACHE_DIR = "";
+				CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR = "";
+				CLUMSIES_DAEMON_LOG_DIR = "";
+				CLUMSIES_DAEMON_ROOT = "";
+				CLUMSIES_DEV_INSTANCE_ID = "";
+				CLUMSIES_SERVER_URL = "https://app.clumsies.ai";
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
@@ -552,7 +562,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.clumsies.desktop.tests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clumsies.app/Contents/MacOS/Clumsies";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/$(CLUMSIES_APP_PRODUCT_NAME).app/Contents/MacOS/$(CLUMSIES_APP_PRODUCT_NAME)";
 			};
 			name = Release;
 		};
@@ -571,8 +581,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = ai.clumsies.desktop;
-				PRODUCT_NAME = Clumsies;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CLUMSIES_APP_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = Clumsies;
+				PRODUCT_NAME = "$(CLUMSIES_APP_PRODUCT_NAME)";
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -590,7 +601,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ai.clumsies.desktop.tests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clumsies.app/Contents/MacOS/Clumsies";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/$(CLUMSIES_APP_PRODUCT_NAME).app/Contents/MacOS/$(CLUMSIES_APP_PRODUCT_NAME)";
 			};
 			name = Debug;
 		};
@@ -610,8 +621,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = ai.clumsies.desktop;
-				PRODUCT_NAME = Clumsies;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CLUMSIES_APP_BUNDLE_IDENTIFIER)";
+				PRODUCT_MODULE_NAME = Clumsies;
+				PRODUCT_NAME = "$(CLUMSIES_APP_PRODUCT_NAME)";
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -649,6 +661,16 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CLUMSIES_APP_BUNDLE_IDENTIFIER = ai.clumsies.desktop;
+				CLUMSIES_APP_DISPLAY_NAME = Clumsies;
+				CLUMSIES_APP_PRODUCT_NAME = Clumsies;
+				CLUMSIES_CODEX_HOME = "";
+				CLUMSIES_DAEMON_CACHE_DIR = "";
+				CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR = "";
+				CLUMSIES_DAEMON_LOG_DIR = "";
+				CLUMSIES_DAEMON_ROOT = "";
+				CLUMSIES_DEV_INSTANCE_ID = "";
+				CLUMSIES_SERVER_URL = "https://app.clumsies.ai";
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;

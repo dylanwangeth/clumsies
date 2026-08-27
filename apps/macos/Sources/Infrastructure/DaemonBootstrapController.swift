@@ -10,6 +10,7 @@ struct DaemonBootstrapState: Equatable, Sendable {
 enum DaemonBootstrapError: LocalizedError, Sendable {
     case daemonBinaryMissing
     case daemonCommand(String)
+    case invalidDevelopmentConfiguration([String])
     case invalidStatus
 
     var errorDescription: String? {
@@ -18,6 +19,8 @@ enum DaemonBootstrapError: LocalizedError, Sendable {
             return "The Clumsies daemon is missing from the application bundle."
         case .daemonCommand(let message):
             return message
+        case .invalidDevelopmentConfiguration(let missing):
+            return "The Clumsies Dev App is missing required instance settings: \(missing.joined(separator: ", "))."
         case .invalidStatus:
             return "The Clumsies daemon returned an invalid LaunchAgent status."
         }
@@ -92,10 +95,15 @@ struct DaemonBootstrapController: Sendable {
     }
 
     private func runDaemon(_ arguments: [String]) throws -> ProcessResult {
+        let missingSettings = ClumsiesIdentifiers.missingDevelopmentSettings
+        guard missingSettings.isEmpty else {
+            throw DaemonBootstrapError.invalidDevelopmentConfiguration(missingSettings)
+        }
         let process = Process()
         let pipe = Pipe()
         process.executableURL = try daemonBinaryURL()
         process.arguments = arguments
+        process.environment = ClumsiesIdentifiers.daemonEnvironment()
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
@@ -125,9 +133,7 @@ struct DaemonBootstrapController: Sendable {
     }
 
     private func launchAgentPlistExists() -> Bool {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/LaunchAgents", directoryHint: .isDirectory)
-            .appending(path: "\(Self.label).plist")
+        let url = ClumsiesIdentifiers.daemonLaunchAgentPlistURL
         return FileManager.default.fileExists(atPath: url.path)
     }
 }

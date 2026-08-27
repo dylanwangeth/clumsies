@@ -3,6 +3,7 @@
 # Best effort only: lifecycle observation must never block Codex.
 
 set -euo pipefail
+__CLUMSIES_DEV_INSTANCE_ENV_REQUIRED__
 
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 CLUMSIES=__CLUMSIESD_SHELL_LITERAL_REQUIRED__

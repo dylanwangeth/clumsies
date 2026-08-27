@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Clumsies</string>
+	<string>$(CLUMSIES_APP_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -13,13 +13,29 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Clumsies</string>
+	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CLUMSIES_APP_DISPLAY_NAME</key>
+	<string>$(CLUMSIES_APP_DISPLAY_NAME)</string>
+	<key>CLUMSIES_CODEX_HOME</key>
+	<string>$(CLUMSIES_CODEX_HOME)</string>
+	<key>CLUMSIES_DAEMON_CACHE_DIR</key>
+	<string>$(CLUMSIES_DAEMON_CACHE_DIR)</string>
+	<key>CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR</key>
+	<string>$(CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR)</string>
+	<key>CLUMSIES_DAEMON_LOG_DIR</key>
+	<string>$(CLUMSIES_DAEMON_LOG_DIR)</string>
+	<key>CLUMSIES_DAEMON_ROOT</key>
+	<string>$(CLUMSIES_DAEMON_ROOT)</string>
+	<key>CLUMSIES_DEV_INSTANCE_ID</key>
+	<string>$(CLUMSIES_DEV_INSTANCE_ID)</string>
+	<key>CLUMSIES_SERVER_URL</key>
+	<string>$(CLUMSIES_SERVER_URL)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>

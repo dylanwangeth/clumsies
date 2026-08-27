@@ -66,14 +66,15 @@ AI 编程智能体（Coding Agents）正在彻底重构软件开发的控制面�
 
 ### 源码构建与本地开发
 
+完整 Dev Instance 需要 Just、XcodeGen、Xcode、Rust、Bun 和 Docker Desktop。
+
 ```bash
 # 克隆代码仓库
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 
-# 安装依赖并一键构建拉起原生 macOS App
-bun install
-bun run dev:macos
+# 启动完整、按 worktree 隔离的 Dev Instance
+just dev-macos
 ```
 
 启动本地后端与测试鉴权环境：

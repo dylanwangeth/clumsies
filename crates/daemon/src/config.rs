@@ -1,5 +1,6 @@
 use std::env;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,10 @@ use crate::{
 pub const IDENTIFIER_NAMESPACE: &str = "ai.clumsies";
 pub const DAEMON_AGENT_LABEL: &str = "ai.clumsies.daemon";
 pub const DAEMON_MACH_SERVICE_NAME: &str = DAEMON_AGENT_LABEL;
+pub const DEV_INSTANCE_ID_ENV: &str = "CLUMSIES_DEV_INSTANCE_ID";
+const DEV_DAEMON_SERVICE_PREFIX: &str = "ai.clumsies.daemon.dev.";
+const DEV_KEYCHAIN_SERVICE_PREFIX: &str = "ai.clumsies.dev.";
+const MAX_DEV_INSTANCE_ID_BYTES: usize = 32;
 pub const CURRENT_LOCAL_SCHEMA_VERSION: i64 = 40;
 pub(crate) const META_DRAFT_EVENTS_CURSOR: &str = "draft_events_cursor";
 pub(crate) const META_MEMORY_CACHE_RESET_REQUIRED: &str = "memory_cache_reset_required";
@@ -22,10 +27,15 @@ pub(crate) const META_DRAFT_SYNC_LAST_SUCCESS_AT: &str = "draft_sync_last_succes
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
+    pub dev_instance_id: Option<String>,
+    pub launch_agent_label: String,
+    pub mach_service_name: String,
+    pub keychain_service: String,
     pub root_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub log_dir: PathBuf,
     pub launch_agents_dir: PathBuf,
+    pub codex_home: Option<PathBuf>,
     pub project: ProjectConfig,
     pub sync: SyncConfig,
 }
@@ -45,9 +55,10 @@ pub struct SyncConfig {
 
 impl DaemonConfig {
     pub fn from_env() -> Result<Self, DaemonError> {
+        let dev_instance_id = Self::dev_instance_id_from_env()?;
         let mut paths = match env::var_os("CLUMSIES_DAEMON_ROOT") {
             Some(value) => DaemonRuntimePaths::for_root(PathBuf::from(value)),
-            None => DaemonRuntimePaths::from_home(home_dir()?),
+            None => DaemonRuntimePaths::from_home(home_dir()?, dev_instance_id.as_deref()),
         };
         if let Some(value) = env::var_os("CLUMSIES_DAEMON_CACHE_DIR") {
             paths.cache_dir = PathBuf::from(value);
@@ -58,6 +69,16 @@ impl DaemonConfig {
         if let Some(value) = env::var_os("CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR") {
             paths.launch_agents_dir = PathBuf::from(value);
         }
+        let codex_home = dev_codex_home(
+            dev_instance_id.as_deref(),
+            env::var_os("CODEX_HOME").map(PathBuf::from),
+            &paths.root_dir,
+        );
+        if let Some(instance_id) = dev_instance_id.as_deref() {
+            validate_dev_runtime_paths(instance_id, &paths, codex_home.as_deref())?;
+        }
+        let (launch_agent_label, mach_service_name, keychain_service) =
+            daemon_runtime_names(dev_instance_id.as_deref());
         let project = ProjectConfig::from_env();
         let sync = SyncConfig {
             enabled: parse_bool_env("CLUMSIES_SYNC_ENABLED")?.unwrap_or(true),
@@ -68,22 +89,56 @@ impl DaemonConfig {
             ),
         };
         Ok(Self {
+            dev_instance_id,
+            launch_agent_label,
+            mach_service_name,
+            keychain_service,
             root_dir: paths.root_dir,
             cache_dir: paths.cache_dir,
             log_dir: paths.log_dir,
             launch_agents_dir: paths.launch_agents_dir,
+            codex_home,
             project,
             sync,
         })
     }
 
+    pub fn dev_instance_id_from_env() -> Result<Option<String>, DaemonError> {
+        let instance_id = match env::var(DEV_INSTANCE_ID_ENV) {
+            Ok(value) => value,
+            Err(env::VarError::NotPresent) => return Ok(None),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(DaemonError::InvalidConfig(format!(
+                    "{DEV_INSTANCE_ID_ENV} must be valid UTF-8"
+                )));
+            }
+        };
+        if !cfg!(debug_assertions) {
+            return Err(DaemonError::InvalidConfig(format!(
+                "{DEV_INSTANCE_ID_ENV} is unavailable in release builds"
+            )));
+        }
+        validate_dev_instance_id(&instance_id)?;
+        Ok(Some(instance_id))
+    }
+
+    pub fn dev_mach_service_name(instance_id: &str) -> Result<String, DaemonError> {
+        validate_dev_instance_id(instance_id)?;
+        Ok(format!("{DEV_DAEMON_SERVICE_PREFIX}{instance_id}"))
+    }
+
     pub fn for_root(root_dir: impl Into<PathBuf>) -> Self {
         let paths = DaemonRuntimePaths::for_root(root_dir.into());
         Self {
+            dev_instance_id: None,
+            launch_agent_label: DAEMON_AGENT_LABEL.to_owned(),
+            mach_service_name: DAEMON_MACH_SERVICE_NAME.to_owned(),
+            keychain_service: IDENTIFIER_NAMESPACE.to_owned(),
             root_dir: paths.root_dir,
             cache_dir: paths.cache_dir,
             log_dir: paths.log_dir,
             launch_agents_dir: paths.launch_agents_dir,
+            codex_home: None,
             project: ProjectConfig::default(),
             sync: SyncConfig {
                 enabled: false,
@@ -102,8 +157,106 @@ impl DaemonConfig {
 
     pub fn launch_agent_plist_path(&self) -> PathBuf {
         self.launch_agents_dir
-            .join(format!("{DAEMON_AGENT_LABEL}.plist"))
+            .join(format!("{}.plist", self.launch_agent_label))
     }
+}
+
+fn validate_dev_instance_id(instance_id: &str) -> Result<(), DaemonError> {
+    let bytes = instance_id.as_bytes();
+    let is_name_byte = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    let valid = !bytes.is_empty()
+        && bytes.len() <= MAX_DEV_INSTANCE_ID_BYTES
+        && bytes.first().is_some_and(is_name_byte)
+        && bytes.last().is_some_and(is_name_byte)
+        && bytes.iter().all(|byte| is_name_byte(byte) || *byte == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(DaemonError::InvalidConfig(format!(
+            "{DEV_INSTANCE_ID_ENV} must be 1-{MAX_DEV_INSTANCE_ID_BYTES} lowercase ASCII letters, digits, or interior hyphens"
+        )))
+    }
+}
+
+fn daemon_runtime_names(dev_instance_id: Option<&str>) -> (String, String, String) {
+    match dev_instance_id {
+        Some(instance_id) => {
+            let daemon_service = format!("{DEV_DAEMON_SERVICE_PREFIX}{instance_id}");
+            (
+                daemon_service.clone(),
+                daemon_service,
+                format!("{DEV_KEYCHAIN_SERVICE_PREFIX}{instance_id}"),
+            )
+        }
+        None => (
+            DAEMON_AGENT_LABEL.to_owned(),
+            DAEMON_MACH_SERVICE_NAME.to_owned(),
+            IDENTIFIER_NAMESPACE.to_owned(),
+        ),
+    }
+}
+
+fn dev_codex_home(
+    dev_instance_id: Option<&str>,
+    inherited: Option<PathBuf>,
+    root_dir: &Path,
+) -> Option<PathBuf> {
+    dev_instance_id.map(|_| inherited.unwrap_or_else(|| root_dir.join("codex-home")))
+}
+
+fn validate_dev_runtime_paths(
+    instance_id: &str,
+    paths: &DaemonRuntimePaths,
+    codex_home: Option<&Path>,
+) -> Result<(), DaemonError> {
+    let required = [
+        ("CLUMSIES_DAEMON_ROOT", paths.root_dir.as_path()),
+        ("CLUMSIES_DAEMON_CACHE_DIR", paths.cache_dir.as_path()),
+        ("CLUMSIES_DAEMON_LOG_DIR", paths.log_dir.as_path()),
+        (
+            "CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR",
+            paths.launch_agents_dir.as_path(),
+        ),
+        (
+            "CODEX_HOME",
+            codex_home.ok_or_else(|| {
+                DaemonError::InvalidConfig("Dev CODEX_HOME could not be derived".to_owned())
+            })?,
+        ),
+    ];
+    for (name, path) in required {
+        validate_dev_path(name, path, instance_id)?;
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                let canonical = std::fs::canonicalize(path)?;
+                validate_dev_path(name, &canonical, instance_id)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_dev_path(name: &str, path: &Path, instance_id: &str) -> Result<(), DaemonError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(DaemonError::InvalidConfig(format!(
+            "{name} must be an absolute normalized Dev path"
+        )));
+    }
+    if !path
+        .components()
+        .any(|component| component.as_os_str() == OsStr::new(instance_id))
+    {
+        return Err(DaemonError::InvalidConfig(format!(
+            "{name} must contain the exact Dev instance id as a path component"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,18 +277,44 @@ impl DaemonRuntimePaths {
         }
     }
 
-    fn from_home(home: PathBuf) -> Self {
-        Self {
-            root_dir: home
-                .join("Library")
-                .join("Application Support")
-                .join(IDENTIFIER_NAMESPACE),
-            cache_dir: home
-                .join("Library")
-                .join("Caches")
-                .join(IDENTIFIER_NAMESPACE),
-            log_dir: home.join("Library").join("Logs").join(IDENTIFIER_NAMESPACE),
-            launch_agents_dir: home.join("Library").join("LaunchAgents"),
+    fn from_home(home: PathBuf, dev_instance_id: Option<&str>) -> Self {
+        match dev_instance_id {
+            Some(instance_id) => {
+                let root_dir = home
+                    .join("Library")
+                    .join("Application Support")
+                    .join(IDENTIFIER_NAMESPACE)
+                    .join("dev")
+                    .join(instance_id);
+                Self {
+                    cache_dir: home
+                        .join("Library")
+                        .join("Caches")
+                        .join(IDENTIFIER_NAMESPACE)
+                        .join("dev")
+                        .join(instance_id),
+                    log_dir: home
+                        .join("Library")
+                        .join("Logs")
+                        .join(IDENTIFIER_NAMESPACE)
+                        .join("dev")
+                        .join(instance_id),
+                    launch_agents_dir: root_dir.join("LaunchAgents"),
+                    root_dir,
+                }
+            }
+            None => Self {
+                root_dir: home
+                    .join("Library")
+                    .join("Application Support")
+                    .join(IDENTIFIER_NAMESPACE),
+                cache_dir: home
+                    .join("Library")
+                    .join("Caches")
+                    .join(IDENTIFIER_NAMESPACE),
+                log_dir: home.join("Library").join("Logs").join(IDENTIFIER_NAMESPACE),
+                launch_agents_dir: home.join("Library").join("LaunchAgents"),
+            },
         }
     }
 }
@@ -149,6 +328,10 @@ pub struct LaunchAgentConfig {
     pub root_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub log_dir: PathBuf,
+    launch_agents_dir: PathBuf,
+    dev_instance_id: Option<String>,
+    server_url: String,
+    codex_home: Option<PathBuf>,
     binary_sha256: String,
 }
 
@@ -160,13 +343,17 @@ impl LaunchAgentConfig {
         let program_path = program_path.into();
         let binary_sha256 = hex::encode(Sha256::digest(std::fs::read(&program_path)?));
         Ok(Self {
-            label: DAEMON_AGENT_LABEL.to_owned(),
-            mach_service_name: DAEMON_MACH_SERVICE_NAME.to_owned(),
+            label: config.launch_agent_label.clone(),
+            mach_service_name: config.mach_service_name.clone(),
             program_path,
             plist_path: config.launch_agent_plist_path(),
             root_dir: config.root_dir.clone(),
             cache_dir: config.cache_dir.clone(),
             log_dir: config.log_dir.clone(),
+            launch_agents_dir: config.launch_agents_dir.clone(),
+            dev_instance_id: config.dev_instance_id.clone(),
+            server_url: config.project.server_url.clone(),
+            codex_home: config.codex_home.clone(),
             binary_sha256,
         })
     }
@@ -180,6 +367,25 @@ impl LaunchAgentConfig {
     }
 
     pub fn plist_contents(&self) -> String {
+        let mut dev_environment = String::new();
+        if let Some(instance_id) = self.dev_instance_id.as_deref() {
+            for (name, value) in [
+                (DEV_INSTANCE_ID_ENV, instance_id.to_owned()),
+                (
+                    "CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR",
+                    self.launch_agents_dir.display().to_string(),
+                ),
+                ("CLUMSIES_SERVER_URL", self.server_url.clone()),
+            ] {
+                dev_environment.push_str(&plist_environment_variable(name, &value));
+            }
+            if let Some(codex_home) = &self.codex_home {
+                dev_environment.push_str(&plist_environment_variable(
+                    "CODEX_HOME",
+                    &codex_home.display().to_string(),
+                ));
+            }
+        }
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -208,7 +414,7 @@ impl LaunchAgentConfig {
     <string>{cache_dir}</string>
     <key>CLUMSIES_DAEMON_LOG_DIR</key>
     <string>{log_dir}</string>
-    <key>CLUMSIES_DAEMON_BINARY_SHA256</key>
+{dev_environment}    <key>CLUMSIES_DAEMON_BINARY_SHA256</key>
     <string>{binary_sha256}</string>
     <key>RUST_LOG</key>
     <string>info</string>
@@ -226,6 +432,7 @@ impl LaunchAgentConfig {
             root_dir = escape_plist_value(self.root_dir.to_string_lossy().as_ref()),
             cache_dir = escape_plist_value(self.cache_dir.to_string_lossy().as_ref()),
             log_dir = escape_plist_value(self.log_dir.to_string_lossy().as_ref()),
+            dev_environment = dev_environment,
             binary_sha256 = escape_plist_value(&self.binary_sha256),
             stdout = escape_plist_value(self.standard_output_path().to_string_lossy().as_ref()),
             stderr = escape_plist_value(self.standard_error_path().to_string_lossy().as_ref()),
@@ -439,6 +646,196 @@ mod launch_agent_tests {
     use super::*;
 
     #[test]
+    fn dev_identity_is_bounded_and_derives_every_daemon_namespace() {
+        let instance_id = "a1b2c3d4e5f6";
+        let (label, mach_service, keychain_service) = daemon_runtime_names(Some(instance_id));
+
+        assert_eq!(label, "ai.clumsies.daemon.dev.a1b2c3d4e5f6");
+        assert_eq!(mach_service, label);
+        assert_eq!(keychain_service, "ai.clumsies.dev.a1b2c3d4e5f6");
+        assert_eq!(
+            DaemonConfig::dev_mach_service_name(instance_id).unwrap(),
+            mach_service
+        );
+        assert!(validate_dev_instance_id("worktree-1").is_ok());
+        for invalid in [
+            "",
+            "Worktree",
+            "-worktree",
+            "worktree-",
+            "worktree.name",
+            "worktree/name",
+            "012345678901234567890123456789012",
+        ] {
+            assert!(validate_dev_instance_id(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn dev_default_paths_are_isolated_while_stable_paths_are_unchanged() {
+        let home = PathBuf::from("/Users/tester");
+        let stable = DaemonRuntimePaths::from_home(home.clone(), None);
+        assert_eq!(
+            stable.root_dir,
+            home.join("Library/Application Support/ai.clumsies")
+        );
+        assert_eq!(stable.cache_dir, home.join("Library/Caches/ai.clumsies"));
+        assert_eq!(stable.log_dir, home.join("Library/Logs/ai.clumsies"));
+        assert_eq!(stable.launch_agents_dir, home.join("Library/LaunchAgents"));
+
+        let dev = DaemonRuntimePaths::from_home(home.clone(), Some("a1b2c3d4e5f6"));
+        assert_eq!(
+            dev.root_dir,
+            home.join("Library/Application Support/ai.clumsies/dev/a1b2c3d4e5f6")
+        );
+        assert_eq!(
+            dev.cache_dir,
+            home.join("Library/Caches/ai.clumsies/dev/a1b2c3d4e5f6")
+        );
+        assert_eq!(
+            dev.log_dir,
+            home.join("Library/Logs/ai.clumsies/dev/a1b2c3d4e5f6")
+        );
+        assert_eq!(dev.launch_agents_dir, dev.root_dir.join("LaunchAgents"));
+        assert_eq!(
+            dev_codex_home(
+                None,
+                Some(PathBuf::from("/tmp/inherited-codex-home")),
+                &stable.root_dir
+            ),
+            None
+        );
+        assert_eq!(
+            dev_codex_home(
+                Some("a1b2c3d4e5f6"),
+                Some(PathBuf::from("/tmp/dev-codex-home")),
+                &dev.root_dir
+            ),
+            Some(PathBuf::from("/tmp/dev-codex-home"))
+        );
+        assert_eq!(
+            dev_codex_home(Some("a1b2c3d4e5f6"), None, &dev.root_dir),
+            Some(dev.root_dir.join("codex-home"))
+        );
+        assert!(
+            validate_dev_runtime_paths(
+                "a1b2c3d4e5f6",
+                &dev,
+                Some(&dev.root_dir.join("codex-home"))
+            )
+            .is_ok()
+        );
+
+        let stable_paths = DaemonRuntimePaths::from_home(home, None);
+        let error = validate_dev_runtime_paths(
+            "a1b2c3d4e5f6",
+            &stable_paths,
+            Some(Path::new("/Users/tester/.codex")),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("CLUMSIES_DAEMON_ROOT"));
+
+        let mut escaping_paths = dev.clone();
+        escaping_paths.root_dir = PathBuf::from("/tmp/a1b2c3d4e5f6/../stable-ai.clumsies");
+        let error = validate_dev_runtime_paths(
+            "a1b2c3d4e5f6",
+            &escaping_paths,
+            Some(&dev.root_dir.join("codex-home")),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("absolute normalized Dev path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dev_paths_cannot_resolve_through_a_symlink_to_stable_storage() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let instance_id = "a1b2c3d4e5f6";
+        let stable = temp.path().join("stable");
+        std::fs::create_dir(&stable).unwrap();
+        let linked_root = temp.path().join(instance_id);
+        symlink(&stable, &linked_root).unwrap();
+        let paths = DaemonRuntimePaths::for_root(linked_root.clone());
+
+        let error =
+            validate_dev_runtime_paths(instance_id, &paths, Some(&linked_root.join("codex-home")))
+                .unwrap_err();
+        assert!(error.to_string().contains("CLUMSIES_DAEMON_ROOT"));
+        assert!(
+            error
+                .to_string()
+                .contains("exact Dev instance id as a path component")
+        );
+    }
+
+    #[test]
+    fn dev_launch_agent_carries_the_complete_cold_start_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let instance_id = "a1b2c3d4e5f6";
+        let paths = DaemonRuntimePaths::for_root(root.path().join("runtime"));
+        let (launch_agent_label, mach_service_name, keychain_service) =
+            daemon_runtime_names(Some(instance_id));
+        let config = DaemonConfig {
+            dev_instance_id: Some(instance_id.to_owned()),
+            launch_agent_label: launch_agent_label.clone(),
+            mach_service_name: mach_service_name.clone(),
+            keychain_service,
+            root_dir: paths.root_dir.clone(),
+            cache_dir: paths.cache_dir.clone(),
+            log_dir: paths.log_dir.clone(),
+            launch_agents_dir: paths.launch_agents_dir.clone(),
+            codex_home: Some(paths.root_dir.join("codex-home")),
+            project: ProjectConfig {
+                server_url: "http://127.0.0.1:43123/?a=1&b=2".to_owned(),
+                project_id: None,
+                memory_guidelines_path: None,
+            },
+            sync: SyncConfig {
+                enabled: true,
+                interval: Duration::from_secs(30),
+            },
+        };
+        let program_path = root
+            .path()
+            .join("Clumsies Dev.app/Contents/Resources/clumsiesd");
+        std::fs::create_dir_all(program_path.parent().unwrap()).unwrap();
+        std::fs::write(&program_path, "dev-daemon").unwrap();
+
+        let launch_agent = LaunchAgentConfig::from_daemon_config(&config, &program_path).unwrap();
+        let plist = launch_agent.plist_contents();
+
+        assert_eq!(launch_agent.label, launch_agent_label);
+        assert_eq!(launch_agent.mach_service_name, mach_service_name);
+        assert_eq!(config.keychain_service, "ai.clumsies.dev.a1b2c3d4e5f6");
+        assert_eq!(
+            launch_agent.plist_path,
+            paths
+                .launch_agents_dir
+                .join("ai.clumsies.daemon.dev.a1b2c3d4e5f6.plist")
+        );
+        for key in [
+            DEV_INSTANCE_ID_ENV,
+            "CLUMSIES_DAEMON_ROOT",
+            "CLUMSIES_DAEMON_CACHE_DIR",
+            "CLUMSIES_DAEMON_LOG_DIR",
+            "CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR",
+            "CLUMSIES_SERVER_URL",
+            "CODEX_HOME",
+        ] {
+            assert!(plist.contains(&format!("<key>{key}</key>")), "{key}");
+        }
+        assert!(plist.contains("http://127.0.0.1:43123/?a=1&amp;b=2"));
+        assert!(plist.contains(&escape_plist_value(
+            paths.launch_agents_dir.to_string_lossy().as_ref()
+        )));
+        assert!(plist.contains(&escape_plist_value(
+            paths.root_dir.join("codex-home").to_string_lossy().as_ref()
+        )));
+    }
+
+    #[test]
     fn plist_currency_tracks_the_installed_launch_agent_definition() {
         let root = tempfile::tempdir().unwrap();
         let daemon_config = DaemonConfig::for_root(root.path());
@@ -549,6 +946,14 @@ fn escape_plist_value(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+fn plist_environment_variable(name: &str, value: &str) -> String {
+    format!(
+        "    <key>{}</key>\n    <string>{}</string>\n",
+        escape_plist_value(name),
+        escape_plist_value(value)
+    )
 }
 
 #[cfg(unix)]

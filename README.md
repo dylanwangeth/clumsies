@@ -66,14 +66,16 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 
 ### Development from Source
 
+The complete Dev Instance requires Just, XcodeGen, Xcode, Rust, Bun, and Docker
+Desktop.
+
 ```bash
 # Clone repository
 git clone https://github.com/lilhammerfun/clumsies.git
 cd clumsies
 
-# Install dependencies and launch native macOS App
-bun install
-bun run dev:macos
+# Launch a complete worktree-scoped Dev Instance
+just dev-macos
 ```
 
 For local server development:

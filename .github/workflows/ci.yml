@@ -32,6 +32,15 @@ jobs:
           shellcheck dev/check-retired-terms.sh
           sh dev/check-retired-terms.sh
 
+      - name: Check worktree Dev scripts
+        run: |
+          for script in dev/dev-instance.sh dev/dev-instance-test.sh dev/dev-server.sh apps/macos/Scripts/promote-debug.sh apps/macos/Scripts/promote-debug-test.sh; do
+            sh -n "$script"
+          done
+          shellcheck dev/dev-instance.sh dev/dev-instance-test.sh dev/dev-server.sh apps/macos/Scripts/promote-debug.sh apps/macos/Scripts/promote-debug-test.sh
+          sh apps/macos/Scripts/promote-debug-test.sh
+          docker compose config -q
+
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -80,32 +89,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install XcodeGen
+      - name: Install native development tools
         run: |
           brew update
-          brew install xcodegen
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.5
+          brew install just xcodegen
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
+      - name: Check native task boundary
+        run: |
+          just --list
+          if grep -i bun justfile; then
+            echo "native macOS recipes must not invoke Bun" >&2
+            exit 1
+          fi
+          just --dry-run build-macos
+          just --dry-run test-macos
+          just --dry-run test-macos-live
+          just --dry-run test-macos-package
+          just --dry-run promote-debug-macos
+          just --dry-run dev-macos
+          just --dry-run dev-macos-status
+          just --dry-run dev-macos-logs
+          just --dry-run dev-macos-down
+          just --dry-run dev-macos-reset
+          just --dry-run dev-macos-preview preview.json
+          just --dry-run test-dev-macos
+
+      - name: Check worktree Dev lifecycle
+        run: just test-dev-macos
+
       - name: Lint (clippy, daemon)
         run: cargo clippy -p daemon -- -D warnings
 
       - name: Run native macOS tests
-        run: bun run test:macos
+        run: just test-macos
 
       - name: Run Agent runtime process and XPC integration
         run: cargo test -p daemon --test agent_runtime_xpc_e2e -- --nocapture
 
       - name: Build and verify the signed Agent runtime package
-        run: bun run test:macos:package
+        run: just test-macos-package
 
   # Aggregator so branch protection rules that require a single "build"
   # status check continue to resolve after the split. Also gives a

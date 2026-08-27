@@ -33,6 +33,7 @@ repository, one remote, and one set of git hooks.
    so the branch stays reviewable.
 7. **Clean up**:
    ```sh
+   just dev-macos-reset
    git worktree remove target/codex-worktrees/<wt-name>
    git branch -d <branch>
    ```
@@ -61,12 +62,16 @@ and runs in every worktree.
 
 ## Isolation and shared state
 
-- Each worktree has its own `target/` and frontend build output; builds do not
-  interfere.
-- Git hooks, remotes, and `~/.clumsies` state are shared by design.
-- The running daemon and macOS app are **not** part of the worktree: they run
-  from `~/Applications/Clumsies.app` and `~/Library/...`. Code changes take
-  effect only after the daemon/app is rebuilt and redeployed.
+- Each worktree can start a complete Dev Instance with `just dev-macos`. Its
+  canonical path determines the App identity,
+  daemon service, runtime directories, Keychain service, Compose project,
+  dynamic ports, and isolated `CODEX_HOME`.
+- `down` stops only that instance and preserves its data. `reset` removes its
+  data and test credentials and must run before deleting the worktree.
+- The resident Debug App, daemon, stable data, Keychain identity, and global
+  Codex Plugin remain shared and unchanged. Only
+  `just promote-debug-macos` may replace that installation.
+- Git hooks and remotes remain shared by design.
 - Safety snapshot branches (e.g. `codex/safety-*`) are kept until their
   content is confirmed present in `main`; deleting the worktree does not delete
   the branch.
@@ -76,7 +81,8 @@ and runs in every worktree.
 | Layer | Command |
 |---|---|
 | daemon (lib + integration) | `cargo test -p daemon --lib` and `cargo test -p daemon --test daemon_lifecycle` |
-| macOS app | `cd apps/macos && xcodebuild -project Clumsies.xcodeproj -scheme Clumsies -configuration Debug build` |
+| macOS app | `just test-macos` |
+| worktree Dev lifecycle | `just test-dev-macos` |
 | public docs | `bun run build` |
 
 Run at least the suites covering the changed layer before `kanban.request_closure`.

@@ -1895,6 +1895,10 @@ fn launch_agent_plist_uses_standard_identity_and_runtime_paths() {
     assert!(plist.contains("<key>MachServices</key>"));
     assert!(plist.contains("<key>CLUMSIES_DAEMON_ROOT</key>"));
     assert!(plist.contains(&format!("<string>{}</string>", root.path().display())));
+    assert!(!plist.contains("CLUMSIES_DEV_INSTANCE_ID"));
+    assert!(!plist.contains("CLUMSIES_DAEMON_LAUNCH_AGENTS_DIR"));
+    assert!(!plist.contains("CLUMSIES_SERVER_URL"));
+    assert!(!plist.contains("CODEX_HOME"));
     assert!(!plist.contains("127.0.0.1"));
     assert!(!plist.contains("daemon-endpoint.json"));
 

@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${CLUMSIES_DB_USER:-clumsies}
       POSTGRES_PASSWORD: ${CLUMSIES_DB_PASSWORD:-clumsies}
     ports:
-      - "${CLUMSIES_DB_PORT:-5432}:5432"
+      - "${CLUMSIES_HOST_BIND_ADDRESS:-0.0.0.0}:${CLUMSIES_DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 2s
@@ -25,7 +25,7 @@ services:
       LOG_LEVEL: WARN
       SERVER_PORT: 8080
     ports:
-      - "${CLUMSIES_OIDC_PORT:-18081}:8080"
+      - "${CLUMSIES_HOST_BIND_ADDRESS:-0.0.0.0}:${CLUMSIES_OIDC_PORT:-18081}:8080"
     volumes:
       - ./dev/oidc/config.json:/app/config.json:ro
     healthcheck:
@@ -48,15 +48,15 @@ services:
     environment:
       DATABASE_URL: postgres://${CLUMSIES_DB_USER:-clumsies}:${CLUMSIES_DB_PASSWORD:-clumsies}@postgres:5432/${CLUMSIES_DB_NAME:-clumsies}
       CLUMSIES_SERVER_ADDR: 0.0.0.0:8080
-      CLUMSIES_PUBLIC_ORIGIN: http://127.0.0.1:18080
+      CLUMSIES_PUBLIC_ORIGIN: ${CLUMSIES_PUBLIC_ORIGIN:-http://127.0.0.1:18080}
       CLUMSIES_SETUP_CODE: ${CLUMSIES_SETUP_CODE:-clumsies-local-setup-code-00000001}
       CLUMSIES_OIDC_CLIENT_ID: clumsies-local
       CLUMSIES_OIDC_CLIENT_SECRET: clumsies-local-secret
-      CLUMSIES_OIDC_ISSUER: http://host.docker.internal:18081/clumsies
+      CLUMSIES_OIDC_ISSUER: ${CLUMSIES_OIDC_ISSUER:-http://host.docker.internal:18081/clumsies}
       CLUMSIES_CLIENT_REDIRECT_URIS: http://127.0.0.1/callback,http://127.0.0.1/admin/setup/callback,http://127.0.0.1:1421/admin/
       CLUMSIES_CORS_ORIGINS: ${CLUMSIES_CORS_ORIGINS:-http://127.0.0.1:1421,http://localhost:1421}
     ports:
-      - "18080:8080"
+      - "${CLUMSIES_HOST_BIND_ADDRESS:-0.0.0.0}:${CLUMSIES_SERVER_PORT:-18080}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/v1/admin/health"]
       interval: 5s

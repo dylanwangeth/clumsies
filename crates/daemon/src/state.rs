@@ -233,8 +233,9 @@ impl Drop for ServerResponseCacheTransition<'_> {
 
 impl DaemonState {
     pub async fn initialize(config: DaemonConfig) -> Result<Self, DaemonError> {
-        Self::initialize_with_credential_store(config, Arc::new(SystemCredentialStore::default()))
-            .await
+        let credential_store =
+            SystemCredentialStore::new(config.keychain_service.clone(), KEYCHAIN_ACCOUNT);
+        Self::initialize_with_credential_store(config, Arc::new(credential_store)).await
     }
 
     pub async fn initialize_with_credential_store(

@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::DaemonError;
 use crate::project_storage::{ensure_private_directory, write_private_file};
+use crate::{DEV_INSTANCE_ID_ENV, DaemonError};
 
 #[cfg(target_os = "macos")]
 use super::code_signature_info;
@@ -29,6 +29,7 @@ const MCP_TEMPLATE: &str = include_str!("../../../../packages/clumsies/.mcp.json
 const HOOKS: &str = include_str!("../../../../packages/clumsies/hooks/hooks.json");
 const HOOK_SCRIPT_TEMPLATE: &str =
     include_str!("../../../../packages/clumsies/scripts/issue-run-event.sh.tpl");
+const HOOK_DEV_ENV_PLACEHOLDER: &str = "__CLUMSIES_DEV_INSTANCE_ENV_REQUIRED__";
 const BOOTSTRAP_SKILL: &str =
     include_str!("../../../../packages/clumsies/skills/clumsies/SKILL.md");
 
@@ -79,6 +80,7 @@ pub(super) async fn ensure_installed(
     runtime_binary: &Path,
     runtime_hash: &str,
     host_binary_path: Option<&str>,
+    dev_instance_id: Option<&str>,
 ) -> Result<(), DaemonError> {
     let host_binary_path = host_binary_path.ok_or_else(|| {
         DaemonError::InvalidRequest(
@@ -87,7 +89,7 @@ pub(super) async fn ensure_installed(
     })?;
     let codex = canonical_codex_cli(host_binary_path)?;
     verify_codex_cli(&codex)?;
-    let plugin = materialize(daemon_root, runtime_binary, runtime_hash)?;
+    let plugin = materialize(daemon_root, runtime_binary, runtime_hash, dev_instance_id)?;
     ensure_marketplace(&codex, &plugin.marketplace_root).await?;
     ensure_plugin(&codex, &plugin.version).await
 }
@@ -97,12 +99,14 @@ pub(super) async fn inspect(
     runtime_binary: &Path,
     runtime_hash: &str,
     host_binary_path: Option<&str>,
+    dev_instance_id: Option<&str>,
 ) -> Result<DaemonCodexPluginStatus, DaemonError> {
     let expected_version = plugin_version(
         runtime_binary.to_str().ok_or_else(|| {
             DaemonError::InvalidRequest("Codex plugin runtime path is not UTF-8".to_owned())
         })?,
         runtime_hash,
+        dev_instance_id,
     );
     let Some(host_binary_path) = host_binary_path else {
         return Ok(DaemonCodexPluginStatus {
@@ -167,6 +171,7 @@ fn materialize(
     daemon_root: &Path,
     runtime_binary: &Path,
     runtime_hash: &str,
+    dev_instance_id: Option<&str>,
 ) -> Result<MaterializedPlugin, DaemonError> {
     if runtime_hash.len() != 64 || !runtime_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(DaemonError::InvalidConfig(
@@ -188,7 +193,7 @@ fn materialize(
         ensure_private_directory(&directory)?;
     }
 
-    let version = plugin_version(runtime_path, runtime_hash);
+    let version = plugin_version(runtime_path, runtime_hash, dev_instance_id);
     let mut manifest: Value = serde_json::from_str(PLUGIN_MANIFEST)?;
     manifest["version"] = Value::String(version.clone());
     manifest["mcpServers"] = Value::String("./.mcp.json".to_owned());
@@ -196,13 +201,30 @@ fn materialize(
 
     let mut mcp: Value = serde_json::from_str(MCP_TEMPLATE)?;
     mcp["mcpServers"]["clumsies"]["command"] = Value::String(runtime_path.to_owned());
+    if let Some(instance_id) = dev_instance_id {
+        mcp["mcpServers"]["clumsies"]["env"] = json!({
+            DEV_INSTANCE_ID_ENV: instance_id
+        });
+    }
     write_json(&plugin_root.join(".mcp.json"), &mcp)?;
     write_private_file(&plugin_root.join("hooks/hooks.json"), HOOKS.as_bytes())?;
-    let hook_script = HOOK_SCRIPT_TEMPLATE.replace(
-        "__CLUMSIESD_SHELL_LITERAL_REQUIRED__",
-        &shell_single_quote(runtime_path),
-    );
-    if hook_script.contains("__CLUMSIESD_SHELL_LITERAL_REQUIRED__") {
+    let hook_dev_env = dev_instance_id
+        .map(|instance_id| {
+            format!(
+                "export {DEV_INSTANCE_ID_ENV}={}",
+                shell_single_quote(instance_id)
+            )
+        })
+        .unwrap_or_default();
+    let hook_script = HOOK_SCRIPT_TEMPLATE
+        .replace(
+            "__CLUMSIESD_SHELL_LITERAL_REQUIRED__",
+            &shell_single_quote(runtime_path),
+        )
+        .replace(HOOK_DEV_ENV_PLACEHOLDER, &hook_dev_env);
+    if hook_script.contains("__CLUMSIESD_SHELL_LITERAL_REQUIRED__")
+        || hook_script.contains(HOOK_DEV_ENV_PLACEHOLDER)
+    {
         return Err(DaemonError::InvalidConfig(
             "Codex plugin Hook template was not materialized".to_owned(),
         ));
@@ -239,7 +261,7 @@ fn materialize(
     })
 }
 
-fn plugin_version(runtime_path: &str, runtime_hash: &str) -> String {
+fn plugin_version(runtime_path: &str, runtime_hash: &str, dev_instance_id: Option<&str>) -> String {
     let mut digest = Sha256::new();
     for component in [
         b"clumsies-codex-plugin-v1".as_slice(),
@@ -253,6 +275,10 @@ fn plugin_version(runtime_path: &str, runtime_hash: &str) -> String {
     ] {
         digest.update((component.len() as u64).to_be_bytes());
         digest.update(component);
+    }
+    if let Some(instance_id) = dev_instance_id {
+        digest.update((instance_id.len() as u64).to_be_bytes());
+        digest.update(instance_id.as_bytes());
     }
     let identity = hex::encode(digest.finalize());
     format!("0.1.0+codex.{}", &identity[..16])
@@ -454,13 +480,14 @@ mod tests {
     fn materialized_plugin_pins_runtime_and_keeps_memory_skills_remote() {
         let root = tempfile::tempdir().unwrap();
         let runtime = Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd");
-        let plugin = materialize(root.path(), runtime, &"a".repeat(64)).unwrap();
+        let plugin = materialize(root.path(), runtime, &"a".repeat(64), None).unwrap();
         assert!(plugin.version.starts_with("0.1.0+codex."));
         let moved_root = tempfile::tempdir().unwrap();
         let moved = materialize(
             moved_root.path(),
             Path::new("/Users/test/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
             &"a".repeat(64),
+            None,
         )
         .unwrap();
         assert_ne!(plugin.version, moved.version);
@@ -483,11 +510,31 @@ mod tests {
                 "host-plugin"
             ])
         );
+        assert!(mcp["mcpServers"]["clumsies"].get("env").is_none());
         let skill = fs::read_to_string(plugin_root.join("skills/clumsies/SKILL.md")).unwrap();
         assert!(skill.contains("skill stored in Memory as ordinary Memory content"));
         assert!(!plugin_root.join("skills/coding").exists());
         let hooks = fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap();
         assert!(hooks.contains("${PLUGIN_ROOT}/scripts/issue-run-event.sh"));
+        let hook = fs::read_to_string(plugin_root.join("scripts/issue-run-event.sh")).unwrap();
+        assert!(!hook.contains(DEV_INSTANCE_ID_ENV));
+    }
+
+    #[test]
+    fn dev_plugin_routes_mcp_and_hooks_to_its_daemon_instance() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Path::new("/Applications/Clumsies Dev.app/Contents/Resources/clumsiesd");
+        let instance_id = "a1b2c3d4e5f6";
+        let plugin = materialize(root.path(), runtime, &"b".repeat(64), Some(instance_id)).unwrap();
+        let plugin_root = plugin.marketplace_root.join("plugins/clumsies");
+        let mcp: Value =
+            serde_json::from_slice(&fs::read(plugin_root.join(".mcp.json")).unwrap()).unwrap();
+        assert_eq!(
+            mcp["mcpServers"]["clumsies"]["env"],
+            json!({ DEV_INSTANCE_ID_ENV: instance_id })
+        );
+        let hook = fs::read_to_string(plugin_root.join("scripts/issue-run-event.sh")).unwrap();
+        assert!(hook.contains(&format!("export {DEV_INSTANCE_ID_ENV}='a1b2c3d4e5f6'")));
     }
 
     #[test]
@@ -511,6 +558,7 @@ mod tests {
             root.path(),
             Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
             &"a".repeat(64),
+            None,
             None,
         )
         .await
@@ -554,6 +602,7 @@ mod tests {
             daemon.path(),
             Path::new("/Applications/Clumsies.app/Contents/Resources/clumsiesd"),
             &"a".repeat(64),
+            None,
         )
         .unwrap();
         let host = tempfile::tempdir().unwrap();

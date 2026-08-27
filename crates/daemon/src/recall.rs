@@ -848,6 +848,12 @@ fn codex_recall_session(session: codex::CodexSession, workspace_root: String) ->
     }
 }
 
+fn codex_sessions_home(configured_codex_home: Option<&Path>, home: &Path) -> PathBuf {
+    configured_codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
 pub(super) async fn list_recalls(
     state: &DaemonState,
     request: ListRecallsRequest,
@@ -892,7 +898,8 @@ pub(super) async fn list_recalls(
         }
     }
 
-    match codex::load_sessions(&home.join(".codex"), limit, |cwd| {
+    let codex_home = codex_sessions_home(state.inner.config.codex_home.as_deref(), &home);
+    match codex::load_sessions(&codex_home, limit, |cwd| {
         binding_for_cwd(cwd, &roots).is_some()
     }) {
         Ok(codex_sessions) => {
@@ -935,6 +942,17 @@ mod tests {
         assert_eq!(
             encode_workspace_dir("/Users/weiwang/koal-agentos"),
             "--Users-weiwang-koal-agentos--"
+        );
+    }
+
+    #[test]
+    fn codex_sessions_use_dev_config_without_changing_the_stable_default() {
+        let home = Path::new("/Users/tester");
+        let dev_codex_home = Path::new("/tmp/clumsies-dev/a1b2c3d4e5f6/codex-home");
+        assert_eq!(codex_sessions_home(None, home), home.join(".codex"));
+        assert_eq!(
+            codex_sessions_home(Some(dev_codex_home), home),
+            PathBuf::from("/tmp/clumsies-dev/a1b2c3d4e5f6/codex-home")
         );
     }
 

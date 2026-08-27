@@ -33,8 +33,9 @@ pub use commit_sync::{
     DaemonProjectCheckout, DaemonProjectCheckoutRequest, DaemonProjectCheckoutResource,
 };
 pub use config::{
-    CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME, DaemonConfig,
-    IDENTIFIER_NAMESPACE, LaunchAgentConfig, LaunchAgentController, ProjectConfig, SyncConfig,
+    CURRENT_LOCAL_SCHEMA_VERSION, DAEMON_AGENT_LABEL, DAEMON_MACH_SERVICE_NAME,
+    DEV_INSTANCE_ID_ENV, DaemonConfig, IDENTIFIER_NAMESPACE, LaunchAgentConfig,
+    LaunchAgentController, ProjectConfig, SyncConfig,
 };
 pub(crate) use config::{
     META_DRAFT_SYNC_LAST_ATTEMPT_AT, META_DRAFT_SYNC_LAST_SUCCESS_AT, RuntimeProjectConfig,

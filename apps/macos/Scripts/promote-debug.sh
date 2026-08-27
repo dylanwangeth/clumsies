@@ -8,12 +8,31 @@ built_app="$derived_data/Build/Products/Debug/Clumsies.app"
 installed_app="$install_dir/Clumsies.app"
 staging_app="$install_dir/.Clumsies.$$.app"
 previous_app="$install_dir/.Clumsies.previous.$$.app"
+transaction_active=0
+had_installed_app=0
 
 cleanup() {
-  rm -rf "$staging_app" "$previous_app"
+  trap - EXIT HUP INT TERM
+
+  if [ "$transaction_active" -eq 1 ]; then
+    if [ -e "$previous_app" ]; then
+      if rm -rf -- "$installed_app" && mv "$previous_app" "$installed_app"; then
+        if ! "$installed_app/Contents/Resources/clumsiesd" \
+          --reconcile-launch-agent >/dev/null 2>&1; then
+          echo "Warning: failed to reconcile the restored Clumsies daemon." >&2
+        fi
+      else
+        echo "Failed to restore the previous Clumsies app." >&2
+      fi
+    elif [ "$had_installed_app" -eq 0 ]; then
+      rm -rf -- "$installed_app"
+    fi
+  fi
+  rm -rf -- "$staging_app"
 }
 
-trap cleanup 0 1 2 15
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 cd "$repo_root"
 xcodegen generate --spec apps/macos/project.yml
@@ -44,18 +63,20 @@ if pgrep -x Clumsies >/dev/null 2>&1; then
   done
 fi
 
+transaction_active=1
 if [ -e "$installed_app" ]; then
+  had_installed_app=1
   mv "$installed_app" "$previous_app"
 fi
 
-if ! mv "$staging_app" "$installed_app"; then
-  if [ -e "$previous_app" ]; then
-    mv "$previous_app" "$installed_app"
-  fi
-  exit 1
-fi
+mv "$staging_app" "$installed_app"
 
-rm -rf "$previous_app"
-trap - 0 1 2 15
-"$installed_app/Contents/Resources/clumsiesd" --reconcile-launch-agent >/dev/null
+if [ "$had_installed_app" -eq 1 ]; then
+  "$installed_app/Contents/Resources/clumsiesd" --reconcile-launch-agent >/dev/null
+fi
 open -n "$installed_app"
+transaction_active=0
+trap - EXIT HUP INT TERM
+rm -rf -- "$previous_app"
+printf '%s\n' \
+  'Clumsies Debug promoted. The App reconciles the global Plugin after launch; restart Codex and create a new task when it finishes.'
