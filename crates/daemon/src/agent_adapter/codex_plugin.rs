@@ -11,7 +11,7 @@ use crate::project_storage::{ensure_private_directory, write_private_file};
 use crate::{DEV_INSTANCE_ID_ENV, DaemonError};
 
 #[cfg(target_os = "macos")]
-use super::code_signature_info;
+use super::parse_code_signature_info;
 use super::{DaemonCodexPluginStatus, is_executable, shell_single_quote, state_error};
 
 const MARKETPLACE_NAME: &str = "clumsies-local";
@@ -88,7 +88,7 @@ pub(super) async fn ensure_installed(
         )
     })?;
     let codex = canonical_codex_cli(host_binary_path)?;
-    verify_codex_cli(&codex)?;
+    verify_codex_cli(&codex).await?;
     let plugin = materialize(daemon_root, runtime_binary, runtime_hash, dev_instance_id)?;
     ensure_marketplace(&codex, &plugin.marketplace_root).await?;
     ensure_plugin(&codex, &plugin.version).await
@@ -121,7 +121,7 @@ pub(super) async fn inspect(
         });
     };
     let codex = canonical_codex_cli(host_binary_path)?;
-    verify_codex_cli(&codex)?;
+    verify_codex_cli(&codex).await?;
     let marketplace_root = daemon_root.join("agent-plugins/codex-marketplace");
     inspect_verified(&codex, &marketplace_root, expected_version).await
 }
@@ -376,16 +376,14 @@ async fn run_cli_json(codex: &Path, args: &[&str]) -> Result<Value, DaemonError>
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(CLI_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            state_error(
-                "codex_plugin_timeout",
-                "Codex did not finish the plugin operation in time.",
-            )
-        })??;
+        .stderr(Stdio::piped());
+    let output = command_output(
+        command,
+        CLI_TIMEOUT,
+        "codex_plugin_timeout",
+        "Codex did not finish the plugin operation in time.",
+    )
+    .await?;
     if output.stdout.len() > MAX_CLI_OUTPUT_BYTES || output.stderr.len() > MAX_CLI_OUTPUT_BYTES {
         return Err(state_error(
             "codex_plugin_output_too_large",
@@ -404,6 +402,18 @@ async fn run_cli_json(codex: &Path, args: &[&str]) -> Result<Value, DaemonError>
             "Codex returned an invalid plugin response.",
         )
     })
+}
+
+async fn command_output(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+    timeout_code: &'static str,
+    timeout_message: &'static str,
+) -> Result<std::process::Output, DaemonError> {
+    command.kill_on_drop(true);
+    Ok(tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| state_error(timeout_code, timeout_message))??)
 }
 
 fn canonical_paths_match(left: &Path, right: &Path) -> bool {
@@ -446,18 +456,23 @@ fn canonical_codex_cli(path: &str) -> Result<PathBuf, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn verify_codex_cli(path: &Path) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("/usr/bin/codesign")
-        .arg("--verify")
-        .arg("--strict")
-        .arg(path)
-        .output()?;
-    let info = code_signature_info(path)?;
-    if !output.status.success()
-        || info.identifier != CODEX_SIGNING_IDENTIFIER
-        || info.team_identifier.as_deref() != Some(OPENAI_TEAM_IDENTIFIER)
-        || info.ad_hoc
-        || !info.hardened_runtime
+async fn verify_codex_cli(path: &Path) -> Result<(), DaemonError> {
+    let verification = codesign_output(path, &["--verify", "--strict"]).await?;
+    let metadata = codesign_output(path, &["--display", "--verbose=4"]).await?;
+    let details = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&metadata.stdout),
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let info = parse_code_signature_info(&details);
+    if !verification.status.success()
+        || !metadata.status.success()
+        || info.as_ref().is_none_or(|info| {
+            info.identifier != CODEX_SIGNING_IDENTIFIER
+                || info.team_identifier.as_deref() != Some(OPENAI_TEAM_IDENTIFIER)
+                || info.ad_hoc
+                || !info.hardened_runtime
+        })
     {
         return Err(state_error(
             "codex_plugin_invalid_host",
@@ -467,14 +482,59 @@ fn verify_codex_cli(path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+async fn codesign_output(path: &Path, args: &[&str]) -> Result<std::process::Output, DaemonError> {
+    let mut command = tokio::process::Command::new("/usr/bin/codesign");
+    command
+        .args(args)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command_output(
+        command,
+        CLI_TIMEOUT,
+        "codex_plugin_signature_timeout",
+        "Codex App signature verification did not finish in time.",
+    )
+    .await
+}
+
 #[cfg(not(target_os = "macos"))]
-fn verify_codex_cli(_path: &Path) -> Result<(), DaemonError> {
+async fn verify_codex_cli(_path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn command_timeout_does_not_block_the_runtime() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 60"]);
+        let started = std::time::Instant::now();
+        let waiting = tokio::spawn(command_output(
+            command,
+            Duration::from_millis(25),
+            "codex_plugin_signature_timeout",
+            "timed out",
+        ));
+        tokio::time::timeout(Duration::from_millis(100), tokio::task::yield_now())
+            .await
+            .unwrap();
+        let error = waiting.await.unwrap().unwrap_err();
+
+        assert!(matches!(
+            error,
+            DaemonError::State {
+                code: "codex_plugin_signature_timeout",
+                ..
+            }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn materialized_plugin_pins_runtime_and_keeps_memory_skills_remote() {

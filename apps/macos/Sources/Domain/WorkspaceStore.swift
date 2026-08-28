@@ -5160,6 +5160,14 @@ final class WorkspaceStore: ObservableObject {
         return warnings.isEmpty ? nil : warnings.joined(separator: "\n")
     }
 
+    nonisolated static func codexPluginInspectionWarning(for error: any Error) -> String {
+        "Clumsies could not inspect the global Codex plugin. Open Settings > Agent to try again. \(error.localizedDescription)"
+    }
+
+    nonisolated static func codexPluginRepairWarning(for error: any Error) -> String {
+        "Clumsies could not repair the global Codex plugin. Open Settings > Agent to try again. \(error.localizedDescription)"
+    }
+
     private func refreshDraft(_ draftId: String) async throws {
         let detail = try await daemon.draft(draftId)
         let mapped = WorkspaceLoader.mapDraft(detail, resources: resources)
@@ -5951,10 +5959,14 @@ struct WorkspaceLoader: Sendable {
             do {
                 let status = try await daemon.inspectCodexPlugin(request)
                 if !status.ready {
-                    _ = try await daemon.reconcileCodexPlugin(request)
+                    do {
+                        _ = try await daemon.reconcileCodexPlugin(request)
+                    } catch {
+                        codexWarning = WorkspaceStore.codexPluginRepairWarning(for: error)
+                    }
                 }
             } catch {
-                codexWarning = "Clumsies could not repair the global Codex plugin. Open Settings > Agent to try again. \(error.localizedDescription)"
+                codexWarning = WorkspaceStore.codexPluginInspectionWarning(for: error)
             }
         }
         let installed = try await daemon.allProjectAgentAdapters()

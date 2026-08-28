@@ -1956,7 +1956,6 @@ pub(crate) async fn inspect_codex_plugin(
     state: &DaemonState,
     request: DaemonCodexPluginRequest,
 ) -> Result<DaemonCodexPluginStatus, DaemonError> {
-    let _guard = state.inner.local_setup_lock.lock().await;
     let runtime_binary = canonical_agent_runtime_binary(&request.runtime_binary_path)?;
     #[cfg(target_os = "macos")]
     verify_code_signature(&runtime_binary)?;

@@ -793,6 +793,18 @@ final class DaemonContractTests: XCTestCase {
         )
     }
 
+    func testCodexPluginWarningsDistinguishInspectionFromRepair() {
+        let error = DaemonXPCError.requestTimedOut(timeout: 40)
+        let inspection = WorkspaceStore.codexPluginInspectionWarning(for: error)
+        let repair = WorkspaceStore.codexPluginRepairWarning(for: error)
+
+        XCTAssertTrue(inspection.contains("could not inspect"))
+        XCTAssertFalse(inspection.contains("could not repair"))
+        XCTAssertTrue(repair.contains("could not repair"))
+        XCTAssertTrue(inspection.contains("within 40.0s"))
+        XCTAssertTrue(repair.contains("within 40.0s"))
+    }
+
     func testLegacyInspectionDoesNotClearManagedPluginWarning() {
         XCTAssertEqual(
             WorkspaceStore.combinedAgentAdapterWarning("Codex repair failed", nil),
