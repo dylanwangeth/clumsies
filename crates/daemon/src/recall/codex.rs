@@ -137,6 +137,7 @@ pub(super) fn read_session_titles(index_path: &Path) -> io::Result<HashMap<Strin
 struct RolloutHeader {
     session_id: String,
     cwd: String,
+    is_subagent: bool,
 }
 
 #[derive(Debug)]
@@ -164,7 +165,7 @@ pub(super) fn load_sessions(
         let Ok(Some(header)) = read_rollout_header(&file.path) else {
             continue;
         };
-        if !workspace_matches(&header.cwd) {
+        if header.is_subagent || !workspace_matches(&header.cwd) {
             continue;
         }
 
@@ -251,6 +252,7 @@ where
     let mut tasks = Vec::<CodexTask>::new();
     let mut current_task = None;
     let mut activation_number = 0_usize;
+    let mut has_structured_user_messages = false;
 
     for line in lines {
         let line = line?;
@@ -273,6 +275,9 @@ where
                 };
                 match payload.get("type").and_then(Value::as_str) {
                     Some("user_message") => {
+                        if has_structured_user_messages {
+                            continue;
+                        }
                         let Some(message) = payload
                             .get("message")
                             .and_then(Value::as_str)
@@ -355,6 +360,26 @@ where
                     _ => {}
                 }
             }
+            Some("response_item") => {
+                let Some(payload) = record.get("payload") else {
+                    continue;
+                };
+                let Some((message_id, message)) = extract_user_prompt(payload) else {
+                    continue;
+                };
+                has_structured_user_messages = true;
+                if tasks.len() >= MAX_TASKS_PER_SESSION {
+                    current_task = None;
+                    continue;
+                }
+                tasks.push(CodexTask {
+                    message_id,
+                    text: message,
+                    timestamp: record_timestamp(&record),
+                    activations: Vec::new(),
+                });
+                current_task = Some(tasks.len() - 1);
+            }
             _ => {}
         }
     }
@@ -408,6 +433,10 @@ fn read_rollout_header(path: &Path) -> io::Result<Option<RolloutHeader>> {
         return Ok(Some(RolloutHeader {
             session_id: session_id.to_owned(),
             cwd: cwd.to_owned(),
+            is_subagent: payload
+                .get("source")
+                .and_then(|source| source.get("subagent"))
+                .is_some(),
         }));
     }
 
@@ -482,6 +511,35 @@ fn record_timestamp(record: &Value) -> Option<String> {
         .get("timestamp")
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+fn extract_user_prompt(payload: &Value) -> Option<(String, String)> {
+    if payload.get("type").and_then(Value::as_str) != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+    let content = payload.get("content").and_then(Value::as_array)?;
+    let kinds = payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("content_item_kinds"))
+        .and_then(Value::as_array)?;
+    let text = content
+        .iter()
+        .zip(kinds)
+        .filter(|(_, kind)| kind.as_str() == Some("user.text"))
+        .filter_map(|(item, _)| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.trim().is_empty() {
+        return None;
+    }
+    let message_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?
+        .to_owned();
+    Some((message_id, text))
 }
 
 fn extract_activation_arguments(tool: &str, value: &Value) -> Option<(String, Option<String>)> {
@@ -772,6 +830,49 @@ mod tests {
                 .map(|task| task.activations.len())
                 .sum::<usize>(),
             MAX_ACTIVATIONS_PER_TASK
+        );
+    }
+
+    #[test]
+    fn loads_only_direct_user_prompts_from_current_codex_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("sessions/2026/08/28/rollout-root.jsonl");
+        write_rollout(
+            &root,
+            &[
+                r#"{"type":"session_meta","payload":{"id":"root","cwd":"/repo","source":"vscode"}}"#,
+                r#"{"type":"response_item","payload":{"type":"message","id":"context","role":"user","content":[{"type":"input_text","text":"<environment_context>ambient</environment_context>"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}}"#,
+                r#"{"type":"response_item","payload":{"type":"message","id":"prompt-1","role":"user","content":[{"type":"input_text","text":"first prompt"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}"#,
+                r#"{"type":"response_item","payload":{"type":"message","id":"prompt-2","role":"user","content":[{"type":"input_text","text":"second prompt"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"The following is the Codex agent history..."}}"#,
+            ]
+            .join("\n"),
+        );
+        set_mtime(&root, 100);
+
+        let guardian = temp
+            .path()
+            .join("sessions/2026/08/28/rollout-guardian.jsonl");
+        write_rollout(
+            &guardian,
+            &[
+                r#"{"type":"session_meta","payload":{"id":"guardian","cwd":"/repo","source":{"subagent":{"other":"guardian"}}}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"The following is the Codex agent history..."}}"#,
+            ]
+            .join("\n"),
+        );
+        set_mtime(&guardian, 200);
+
+        let sessions = load_sessions(temp.path(), 1, |_| true).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "root");
+        assert_eq!(
+            sessions[0]
+                .tasks
+                .iter()
+                .map(|task| task.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first prompt", "second prompt"]
         );
     }
 
