@@ -48,15 +48,18 @@ struct UnifiedDiffBlockPresentation: Identifiable, Equatable, Sendable {
 struct UnifiedDiffPresentation: Equatable, Sendable {
     let blocks: [UnifiedDiffBlockPresentation]
     let showsRemoteLineNumbers: Bool
+    let maximumLineNumber: Int
 
     init(model: SplitDiffModel, anchoredLines: Set<Int> = []) {
         showsRemoteLineNumbers = false
         if model.blocks.isEmpty, !anchoredLines.isEmpty {
-            blocks = Self.anchoredContextBlocks(
+            let resolvedBlocks = Self.anchoredContextBlocks(
                 rows: model.rows,
                 anchoredLines: anchoredLines,
                 startingBlockId: 0
             )
+            blocks = resolvedBlocks
+            maximumLineNumber = Self.maximumLineNumber(in: resolvedBlocks)
             return
         }
 
@@ -83,12 +86,25 @@ struct UnifiedDiffPresentation: Equatable, Sendable {
             ))
         }
         blocks = presentations
+        maximumLineNumber = Self.maximumLineNumber(in: presentations)
     }
 
     var changedLineCount: Int {
         blocks.reduce(into: 0) { count, block in
             guard case .hunk = block.kind else { return }
             count += block.lines.count
+        }
+    }
+
+    private static func maximumLineNumber(
+        in blocks: [UnifiedDiffBlockPresentation]
+    ) -> Int {
+        blocks.reduce(into: 0) { result, block in
+            for line in block.lines {
+                result = max(result, line.oldLineNumber ?? 0)
+                result = max(result, line.newLineNumber ?? 0)
+                result = max(result, line.remoteLineNumber ?? 0)
+            }
         }
     }
 
@@ -568,6 +584,7 @@ extension UnifiedDiffPresentation {
         let changedIndices = lines.indices.filter { lines[$0].kind.isChanged }
         guard !changedIndices.isEmpty else {
             blocks = []
+            maximumLineNumber = 0
             return
         }
         let context = max(0, contextLineCount)
@@ -613,6 +630,7 @@ extension UnifiedDiffPresentation {
             ))
         }
         blocks = result
+        maximumLineNumber = Self.maximumLineNumber(in: result)
     }
 
     private static func threeWayHunkLabel(
@@ -649,11 +667,38 @@ extension UnifiedDiffPresentation {
     }
 }
 
-private enum UnifiedDiffMetrics {
-    static let oldLineGutterWidth: CGFloat = 42
-    static let newLineGutterWidth: CGFloat = 42
+enum UnifiedDiffMetrics {
+    static let minimumLineGutterWidth: CGFloat = 30
     static let markerWidth: CGFloat = 18
     static let commentButtonWidth: CGFloat = 26
+    static let minimumInlineCommentWidth: CGFloat = 320
+    static let inlineCommentWidthRatio: CGFloat = 0.75
+
+    static func lineGutterWidth(maximumLineNumber: Int) -> CGFloat {
+        let digits = String(max(1, maximumLineNumber)).count
+        return max(minimumLineGutterWidth, CGFloat(digits * 8 + 8))
+    }
+
+    static func contentLeadingInset(
+        lineGutterWidth: CGFloat,
+        showsRemoteLineNumbers: Bool
+    ) -> CGFloat {
+        lineGutterWidth * (showsRemoteLineNumbers ? 3 : 2)
+            + markerWidth
+            + commentButtonWidth
+    }
+
+    static func inlineCommentWidth(
+        viewportWidth: CGFloat,
+        leadingInset: CGFloat
+    ) -> CGFloat {
+        let availableWidth = max(viewportWidth - leadingInset - 12, 1)
+        let preferredWidth = max(
+            minimumInlineCommentWidth,
+            availableWidth * inlineCommentWidthRatio
+        )
+        return min(availableWidth, DocumentContentMetrics.maximumWidth, preferredWidth)
+    }
 }
 
 private struct UnifiedDiffViewportWidthKey: PreferenceKey {
@@ -733,7 +778,7 @@ struct UnifiedDiffView: View {
                     .frame(maxWidth: .infinity, minHeight: 96)
             } else {
                 ScrollView(.horizontal, showsIndicators: true) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         ForEach(presentation.blocks) { block in
                             blockView(block)
                         }
@@ -757,6 +802,26 @@ struct UnifiedDiffView: View {
 
     private var minimumContentWidth: CGFloat {
         max(viewportWidth, 1)
+    }
+
+    private var lineGutterWidth: CGFloat {
+        UnifiedDiffMetrics.lineGutterWidth(
+            maximumLineNumber: presentation.maximumLineNumber
+        )
+    }
+
+    private var contentLeadingInset: CGFloat {
+        UnifiedDiffMetrics.contentLeadingInset(
+            lineGutterWidth: lineGutterWidth,
+            showsRemoteLineNumbers: presentation.showsRemoteLineNumbers
+        )
+    }
+
+    private var inlineCommentWidth: CGFloat {
+        UnifiedDiffMetrics.inlineCommentWidth(
+            viewportWidth: minimumContentWidth,
+            leadingInset: contentLeadingInset
+        )
     }
 
     @ViewBuilder
@@ -848,10 +913,10 @@ struct UnifiedDiffView: View {
 
     private func diffRow(_ line: UnifiedDiffLine) -> some View {
         HStack(alignment: .top, spacing: 0) {
-            lineNumber(line.oldLineNumber, width: UnifiedDiffMetrics.oldLineGutterWidth)
-            lineNumber(line.newLineNumber, width: UnifiedDiffMetrics.newLineGutterWidth)
+            lineNumber(line.oldLineNumber, width: lineGutterWidth)
+            lineNumber(line.newLineNumber, width: lineGutterWidth)
             if presentation.showsRemoteLineNumbers {
-                lineNumber(line.remoteLineNumber, width: UnifiedDiffMetrics.newLineGutterWidth)
+                lineNumber(line.remoteLineNumber, width: lineGutterWidth)
             }
 
             Text(marker(for: line.kind))
@@ -884,8 +949,8 @@ struct UnifiedDiffView: View {
     private func lineNumber(_ value: Int?, width: CGFloat) -> some View {
         Text(value.map(String.init) ?? "")
             .foregroundStyle(.tertiary)
+            .padding(.trailing, 8)
             .frame(width: width, alignment: .trailing)
-            .padding(.trailing, 7)
             .frame(maxHeight: .infinity, alignment: .topTrailing)
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.48))
     }
@@ -919,14 +984,11 @@ struct UnifiedDiffView: View {
                 }
             }
         }
-        .padding(.leading, 112)
+        .frame(width: inlineCommentWidth, alignment: .leading)
+        .padding(.leading, contentLeadingInset)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
-        .frame(
-            minWidth: minimumContentWidth,
-            maxWidth: .infinity,
-            alignment: .leading
-        )
+        .frame(width: minimumContentWidth, alignment: .leading)
         .background(Color.accentColor.opacity(0.035))
     }
 
@@ -937,14 +999,11 @@ struct UnifiedDiffView: View {
             onCancel: onCancelComment,
             onSubmit: { onSubmitComment(line) }
         )
-        .padding(.leading, 112)
+        .frame(width: inlineCommentWidth, alignment: .leading)
+        .padding(.leading, contentLeadingInset)
         .padding(.trailing, 12)
         .padding(.vertical, 8)
-        .frame(
-            minWidth: minimumContentWidth,
-            maxWidth: .infinity,
-            alignment: .leading
-        )
+        .frame(width: minimumContentWidth, alignment: .leading)
         .background(Color.accentColor.opacity(0.035))
     }
 

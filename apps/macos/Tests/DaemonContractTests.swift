@@ -2243,6 +2243,41 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(mapped.currentCommitId, "commit-current")
     }
 
+    func testReviewChangeSourcesResolveIdOnlyResourcePathFromCommitTree() throws {
+        let resource = ServerDraftResourceReference(
+            scope: "org",
+            id: "memory-1",
+            path: nil
+        )
+        let detail = reviewDetail(
+            resource: resource,
+            operations: [
+                ServerDraftOperation(
+                    action: "update",
+                    resource: resource,
+                    content: .init(description: nil, content: "Draft body"),
+                    newPath: nil,
+                    operationId: "operation-1",
+                    createdAt: timestamp
+                )
+            ]
+        )
+
+        let sources = try WorkspaceLoader.mapReviewChangeSources(
+            detail: detail,
+            base: commit(
+                id: "commit-base",
+                resource: resource,
+                body: "Base body",
+                treePath: "context/guides/review.md"
+            ),
+            current: nil
+        )
+
+        XCTAssertEqual(sources.proposedPath, "context/guides/review.md")
+        XCTAssertEqual(sources.baseContent, "Base body")
+    }
+
     func testReviewChangeSourcesPreserveRenameAlongsideContentUpdate() throws {
         let resource = ServerDraftResourceReference(
             scope: "project",
@@ -2999,14 +3034,16 @@ final class DaemonContractTests: XCTestCase {
     private func commit(
         id: String,
         resource: ServerDraftResourceReference,
-        body: String
+        body: String,
+        treePath: String? = nil
     ) -> CommitPayload {
-        .init(
+        let isOrgResource = resource.scope == "org"
+        return .init(
             commit: .init(
                 commitId: id,
-                scope: "project",
+                scope: isOrgResource ? "org" : "project",
                 orgId: "org-1",
-                projectId: "project-1",
+                projectId: isOrgResource ? nil : "project-1",
                 treeId: "tree-\(id)",
                 parentCommitId: nil,
                 version: 1,
@@ -3019,10 +3056,10 @@ final class DaemonContractTests: XCTestCase {
                         id: resource.id ?? "context-1",
                         type: .memory,
                         scope: resource.scope,
-                        projectId: "project-1",
-                        path: resource.path,
+                        projectId: isOrgResource ? nil : "project-1",
+                        path: treePath ?? resource.path,
                         blobId: "blob-\(id)",
-                        source: "project",
+                        source: isOrgResource ? "org" : "project",
                         description: nil
                     )
                 ]
