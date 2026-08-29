@@ -62,7 +62,7 @@ Today, agent memory is trapped inside isolated model sessions or local markdown 
 1. Download the latest release from [Releases](https://github.com/lilhammerfun/clumsies/releases).
 2. Move `Clumsies.app` to `/Applications` or `~/Applications`.
 3. Open `Clumsies.app`. It automatically provisions the resident launchd daemon (`ai.clumsies.daemon`) and connects to your organization server.
-4. Bind a repository to its Project. Codex uses the global Plugin automatically; configure optional repository-writing hosts in **Project Settings → Agent**.
+4. Bind a repository to its Project. Codex uses the global Plugin automatically; configure optional repository-writing hosts in **Settings → Agent**.
 
 ### Development from Source
 

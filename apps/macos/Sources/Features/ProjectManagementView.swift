@@ -26,7 +26,6 @@ struct ProjectCreationSheet: View {
     @State private var description = ""
     @State private var repositories: [URL] = []
     @State private var selectedBundleId: String?
-    @State private var selectedAdapters: Set<ProjectAgentAdapterKind> = []
     @State private var isCreating = false
     @State private var errorMessage: String?
     @State private var idempotencyKey = UUID().uuidString.lowercased()
@@ -95,24 +94,6 @@ struct ProjectCreationSheet: View {
                     Text("A Bundle imports its Organization memory into the new Project.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-
-                Section("Agent") {
-                    ForEach(ProjectAgentAdapterKind.projectScopedCases) { adapter in
-                        Toggle(
-                            adapter.title,
-                            isOn: Binding(
-                                get: { selectedAdapters.contains(adapter) },
-                                set: { selected in
-                                    if selected {
-                                        selectedAdapters.insert(adapter)
-                                    } else {
-                                        selectedAdapters.remove(adapter)
-                                    }
-                                }
-                            )
-                        )
-                    }
                 }
 
                 if let errorMessage {
@@ -190,8 +171,7 @@ struct ProjectCreationSheet: View {
                     description: description,
                     idempotencyKey: idempotencyKey,
                     repositoryPaths: repositories.map(\.path),
-                    bundleId: selectedBundleId,
-                    adapters: selectedAdapters
+                    bundleId: selectedBundleId
                 )
                 dismiss()
             } catch {
@@ -538,9 +518,6 @@ private struct InviteProjectMemberSheet: View {
 private struct ProjectLocalSetupSettings: View {
     @ObservedObject var store: WorkspaceStore
     @State private var bindings: [DaemonProjectBinding] = []
-    @State private var adapters: [DaemonProjectAgentAdapter] = []
-    @State private var pendingAdapterValues: [String: Bool] = [:]
-    @State private var workingKeys: Set<String> = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var bindingToRemove: DaemonProjectBinding?
@@ -600,30 +577,7 @@ private struct ProjectLocalSetupSettings: View {
             }
         }
 
-        Section("Agent") {
-            if bindings.isEmpty {
-                Text("Add a repository before configuring an Agent.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(bindings) { binding in
-                    VStack(alignment: .leading, spacing: 8) {
-                        if bindings.count > 1 {
-                            Text(URL(fileURLWithPath: binding.workspaceRoot).lastPathComponent)
-                                .fontWeight(.medium)
-                        }
-                        ForEach(ProjectAgentAdapterKind.projectScopedCases) { adapter in
-                            Toggle(
-                                adapter.title,
-                                isOn: adapterBinding(adapter, repository: binding)
-                            )
-                            .disabled(workingKeys.contains(adapterKey(adapter, binding.workspaceRoot)))
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
-        .task(id: store.activeProjectId) {
+        .task(id: [store.activeProjectId ?? "", store.projectBindingsGeneration.uuidString]) {
             await load()
         }
         .confirmationDialog(
@@ -643,24 +597,20 @@ private struct ProjectLocalSetupSettings: View {
                 bindingToRemove = nil
             }
         } message: {
-            Text("Clumsies will remove its Agent configuration from this repository and stop resolving it to the Project.")
+            Text("Clumsies will remove the Agent integrations managed in Settings and stop resolving this repository to the Project.")
         }
     }
 
     private func load() async {
         guard let projectId = store.activeProjectId else {
             bindings = []
-            adapters = []
             return
         }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            async let loadedBindings = store.projectBindings(projectId)
-            async let loadedAdapters = store.projectAgentAdapters(projectId)
-            (bindings, adapters) = try await (loadedBindings, loadedAdapters)
-            pendingAdapterValues = [:]
+            bindings = try await store.projectBindings(projectId)
         } catch is CancellationError {
             return
         } catch {
@@ -699,65 +649,11 @@ private struct ProjectLocalSetupSettings: View {
         isLoading = true
         errorMessage = nil
         do {
-            try await store.removeProjectRepository(binding, adapters: adapters)
+            try await store.removeProjectRepository(binding)
             await load()
         } catch {
             errorMessage = error.localizedDescription
             isLoading = false
         }
-    }
-
-    private func adapterBinding(
-        _ adapter: ProjectAgentAdapterKind,
-        repository: DaemonProjectBinding
-    ) -> Binding<Bool> {
-        let key = adapterKey(adapter, repository.workspaceRoot)
-        return Binding(
-            get: {
-                pendingAdapterValues[key]
-                    ?? (currentAdapter(adapter, repository.workspaceRoot) != nil)
-            },
-            set: { enabled in
-                pendingAdapterValues[key] = enabled
-                workingKeys.insert(key)
-                let current = currentAdapter(adapter, repository.workspaceRoot)
-                Task {
-                    do {
-                        try await store.setProjectAgentAdapter(
-                            adapter,
-                            enabled: enabled,
-                            projectId: repository.projectId,
-                            workspaceRoot: repository.workspaceRoot,
-                            current: current
-                        )
-                        // Installing the first Adapter can normalize a historical
-                        // symlink-based binding to its canonical filesystem path.
-                        // Refresh both collections so the toggle compares the two
-                        // daemon-owned records using the same workspace identity.
-                        async let refreshedBindings = store.projectBindings(repository.projectId)
-                        async let refreshedAdapters = store.projectAgentAdapters(repository.projectId)
-                        (bindings, adapters) = try await (refreshedBindings, refreshedAdapters)
-                        errorMessage = nil
-                    } catch {
-                        errorMessage = error.localizedDescription
-                    }
-                    pendingAdapterValues.removeValue(forKey: key)
-                    workingKeys.remove(key)
-                }
-            }
-        )
-    }
-
-    private func currentAdapter(
-        _ adapter: ProjectAgentAdapterKind,
-        _ workspaceRoot: String
-    ) -> DaemonProjectAgentAdapter? {
-        adapters.first {
-            $0.adapter == adapter && $0.workspaceRoot == workspaceRoot
-        }
-    }
-
-    private func adapterKey(_ adapter: ProjectAgentAdapterKind, _ workspaceRoot: String) -> String {
-        "\(workspaceRoot):\(adapter.rawValue)"
     }
 }

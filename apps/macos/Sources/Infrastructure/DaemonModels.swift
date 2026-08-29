@@ -98,7 +98,7 @@ enum ProjectAgentAdapterKind: String, Codable, CaseIterable, Hashable, Identifia
 
     var id: String { rawValue }
 
-    static var projectScopedCases: [Self] {
+    static var repositoryIntegrationCases: [Self] {
         allCases.filter { $0 != .codex }
     }
 

@@ -41,7 +41,7 @@ release is detected and must be restarted.
 Codex is a global host integration managed from **Settings → Agent**. It is
 installed and enabled by default when the Codex App is available, and it never
 writes files into a repository. The other hosts are installed and removed from
-native Project Management; their direct-file integrations retain one revisioned
+**Settings → Agent**; their direct-file integrations retain one revisioned
 adapter record per Server authority, workspace root, and host.
 
 | Host | MCP registration | Lifecycle integration |
@@ -162,7 +162,8 @@ temporary quarantine UUID from entering LaunchAgent and host configuration.
   manifests are not accepted as native ownership proof.
 - Archived `repo`-scope generations are reported as unsupported. Remove their
   old Clumsies MCP/Hook entries; the App-owned global Codex Plugin replaces
-  repository-local Codex integration, while other hosts remain project-scoped.
+  repository-local Codex integration. Other hosts remain repository-scoped
+  integrations managed from **Settings → Agent**.
 - Reinstalling from the App is the explicit handoff: the native installer
   refuses foreign or drifted entries instead of silently adopting them.
 - Remove deletes only exact managed entries and files; drift becomes a conflict

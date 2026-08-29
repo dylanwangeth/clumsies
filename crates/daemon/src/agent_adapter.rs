@@ -2003,7 +2003,7 @@ pub(crate) async fn install(
 ) -> Result<DaemonProjectAgentAdapter, DaemonError> {
     if request.adapter == ProjectAgentAdapterKind::Codex {
         return Err(DaemonError::InvalidRequest(
-            "The Codex Plugin is managed globally; Project Agent settings cannot install it."
+            "The Codex Plugin is managed globally and cannot be installed as a repository integration."
                 .to_owned(),
         ));
     }
