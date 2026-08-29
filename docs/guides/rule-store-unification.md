@@ -1,5 +1,8 @@
 # Effective Memory storage boundary
 
+> **历史兼容页面。** 当前存储与读取边界统一由 [系统架构](/architecture) 和
+> [本地运行时](/runtime) 定义；本页仅记录从旧客户端缓存模型收口的背景。
+
 This page replaces the retired client-cache unification proposal. The active
 runtime has one read model owned by the resident Rust daemon; no CLI cache or
 Agent-host skill directory is an authority source.

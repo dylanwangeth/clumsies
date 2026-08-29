@@ -1,23 +1,22 @@
-# Adapter
+# Agent Adapter
 
-Adapter is the daemon-owned integration layer that makes the Clumsies Agent
-runtime usable inside Codex, Claude Code, opencode, dsh, and Antigravity. For
-Codex it automatically installs and reconciles one user-level Clumsies plugin; the other
-hosts retain their direct-file integrations. Both delivery forms provide the
-MCP registration and non-blocking lifecycle bridge without creating a second
-memory or runtime implementation.
+> 文档属性：详细设计型｜L3｜当前权威。
 
-## Runtime boundary
+Adapter 是 daemon 管理的宿主集成层，让 Codex、Claude Code、opencode、dsh 与
+Antigravity 使用同一套 Clumsies Agent runtime。Codex 使用全局 Clumsies Plugin；其余
+宿主保留仓库级 direct-file 集成。两种交付方式都只注册 MCP 与非阻塞生命周期桥，不
+创建第二套 Memory、Kanban 或运行时实现。
 
-The macOS App bundle contains one signed Rust executable:
+## 运行边界
+
+macOS App bundle 只包含一份签名的 Rust 可执行文件：
 
 ```text
 Clumsies.app/Contents/Resources/clumsiesd
 ```
 
-launchd runs that executable as the resident daemon. Adapter pins the same
-absolute App-bundled path into every managed MCP and Hook entry and starts it in
-one of two short-lived proxy modes:
+launchd 把它作为常驻 daemon 运行；Adapter 把同一绝对路径写入受管配置，并以短进程模式
+启动：
 
 ```text
 clumsiesd mcp serve
@@ -26,170 +25,136 @@ clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravi
 clumsiesd _agent issue-run-event --host codex --delivery host-plugin
 ```
 
-The installer requires an executable whose canonical path ends in
-`Contents/Resources/clumsiesd` and verifies its macOS code signature. It records
-the path and SHA-256 in the adapter manifest. There is no checkout build,
-`PATH`, environment-variable, or copied-helper fallback.
+安装器要求规范路径以 `Contents/Resources/clumsiesd` 结尾，校验 macOS code signature，
+并在 Adapter manifest 中记录路径与 SHA-256。它不搜索 checkout 构建、`PATH`、环境变量
+或复制的 helper。
 
-Each proxy verifies that its Agent runtime protocol revision and build identity
-match the resident daemon before forwarding traffic over XPC. Replacing the App
-therefore updates every newly started proxy, while a resident from an older
-release is detected and must be restarted.
+每个 proxy 在转发 XPC 前比较自身与常驻 daemon 的 Agent runtime protocol revision 和
+build identity。替换 App 会更新之后启动的 proxy；若 resident 仍是旧版本，请求会明确
+报错并要求重启，而不是混用协议。
 
-## Managed host surfaces
+## 宿主交付面
 
-Codex is a global host integration managed from **Settings → Agent**. It is
-installed and enabled by default when the Codex App is available, and it never
-writes files into a repository. The other hosts are installed and removed from
-**Settings → Agent**; their direct-file integrations retain one revisioned
-adapter record per Server authority, workspace root, and host.
-
-| Host | MCP registration | Lifecycle integration |
+| Host | MCP 注册 | 生命周期接入 |
 | --- | --- | --- |
-| Codex | `clumsies@clumsies-local` plugin → pinned MCP server | plugin Hooks; no project files |
-| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
-| opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
-| dsh | profile-managed MCP registration | `.dsh/clumsies.json` routes the separately installed client bridge |
-| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` |
+| Codex | `clumsies@clumsies-local` 全局 Plugin 注册 pinned MCP | Plugin Hook；仓库内不写文件 |
+| Claude Code | `.mcp.json` 的 `mcpServers.clumsies` | `.claude/settings.json` 与受管 shell Hook |
+| opencode | `opencode.json` 的 `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
+| dsh | profile 中单独注册 MCP | `.dsh/clumsies.json` 为已安装 client bridge 提供路由 |
+| Antigravity | `.mcp.json` 的 `mcpServers.clumsies` | `.agents/hooks.json` 与受管 shell Hook |
 
-Every host consumes the MCP tools directly. The Codex plugin carries one thin
-`clumsies` bootstrap Skill that tells the harness when to activate Memory and
-how to use Kanban. Project-maintained skills such as `coding` are ordinary
-resources in Memory Space: the bootstrap loads them through `memory.load` when
-relevant and never copies or installs them into a host skill directory.
+Codex 集成由 **Settings → Agent** 管理为用户级 Plugin，不创建 Project Adapter 行或仓库
+文件。其他宿主以 `(Server authority, workspace root, host)` 保存带 revision 的 Adapter
+记录，并只修改明确归属的配置段和文件。
 
-The unrelated host-native `activate` / `ntmd` skills installed by older Codex
-and Claude Code releases are retired. Historical Codex Adapter rows retain
-enough ownership metadata to remove exact legacy `.codex/config.toml`,
-`.codex/hooks.json`, and managed Hook fragments when that repository is
-removed. Direct-file update paths likewise delete previously managed retired
-skill files without touching user-owned content.
+所有宿主直接消费两个 MCP 工具：`memory` 与 `kanban`。Codex Plugin 只附带一个很薄的
+bootstrap Skill，用于说明何时 `memory.activate`、如何加载 Project skill、以及何时使用
+Kanban。`skills/**` 中的项目技能仍是普通 Memory，由 bootstrap 在相关时通过
+`memory.load` 读取；Adapter 不把它们复制到宿主 skill 目录，也不从 `workflow/` 路径
+自动生成可执行 skill。
 
-The Codex plugin executes the pinned binary as `mcp serve --host codex
---delivery host-plugin`. The marker identifies the global plugin delivery; it
-does not select or authorize a Project. At startup and again before every
-`tools/call`, daemon resolves the repository's canonical Project binding and
-requires it to remain the same Project. A missing or changed binding therefore
-fails closed without consulting a Codex project Adapter row. Claude Code and
-the remaining direct-file hosts retain their existing commands and Adapter
-delivery checks. The opencode plugin embeds the same pinned path for lifecycle
-events.
+旧版本安装的宿主原生 `activate` / `ntmd` skill 已退役。历史 Codex Adapter 行仅用于
+精确清理旧 `.codex/config.toml`、`.codex/hooks.json` 与受管 Hook 片段；当前 Plugin 安装、
+Project 解析和运行路由不依赖这些行。
 
-## Lifecycle bridge
+## Project 解析
 
-The Codex plugin and Claude Code direct-file adapter each register an
-`issue-run-event.sh` for prompt, subagent, and session lifecycle. Codex forwards
-the same `host-plugin` delivery marker used by MCP; the Hook resolves its
-repository binding rather than a project-level Codex switch.
-Codex treats plugin Hooks as non-managed code and skips a new or changed Hook
-until the user reviews and trusts its current hash in `/hooks`. Adapter never
-bypasses that trust boundary. Plugin changes do not hot-load into an already
-open Codex task: restart Codex after install or update, then start a new task.
-MCP and Memory are then available; AgentRun injection and run-bound Kanban
-actions begin after Hook trust.
-Claude Code additionally registers `StopFailure`. Antigravity registers
-`PreInvocation`. None of these adapters registers a normal root `Stop`. The
-opencode plugin forwards user messages, failed assistant completions, and
-session deletion, but does not turn a normal assistant completion into `Stop`.
-The dsh client bridge follows the same non-blocking boundary.
+Codex Plugin 使用：
+
+```text
+mcp serve --host codex --delivery host-plugin
+```
+
+`host-plugin` 只声明交付方式，不选择或授权 Project。proxy 启动时从当前目录解析 canonical
+binding，并在每次 `tools/call` 前重新解析；缺少绑定、绑定改变或 delivery 不匹配都会
+关闭式失败。全局 Plugin 不要求仓库级 Codex Adapter 行，也不回退 Desktop 当前选中项。
+
+direct-file 宿主继续使用各自 Adapter 记录和普通 `mcp serve` 命令。普通入口保留运行时
+兼容行为：目录没有绑定时可使用 daemon 当前选中的 Project；该行为不适用于
+host-plugin，调用方也不能在请求参数中指定任意 `project_id`。
+
+## 生命周期桥
+
+Codex Plugin、Claude Code 与其他受支持宿主把有限的生命周期事件交给 App 内 proxy：
 
 ```text
 host event
-  -> managed Hook or plugin
+  -> managed Hook / plugin
   -> clumsiesd _agent issue-run-event --host <host>
   -> typed XPC record_agent_run_event
   -> resident daemon AgentRun
 ```
 
-The proxy accepts at most 1 MiB, validates the host event, and reduces it to a
-bounded allowlist of lifecycle identifiers. Raw prompts, transcripts, assistant
-messages, tool payloads, and failure bodies never enter the daemon request.
-Lifecycle observation is fail-open: an unavailable runtime or daemon must not
-prevent the Agent host from continuing.
+Codex Plugin Hook 在用户通过 `/hooks` 审查并信任当前 hash 后才运行；Adapter 不绕过这个
+宿主信任边界。Plugin 更新不会热加载到已打开 task，更新后应重启 Codex 并新建 task。
 
-Successful root and subagent starts return bounded context containing the
-current `run_id`, revision, binding status, and the information needed for
-explicit Kanban work. Lifecycle integration never creates a stop-blocking
-closure prompt. Acceptance-criteria judgment and `kanban.request_closure`
-belong to an opt-in skill or a manually maintained Agent workflow.
+当前事件策略：
 
-The private bridge continues to accept a legacy or manually forwarded root
-`Stop` so older installations fail open while they are cleaned up. Such an
-event is only a non-blocking AgentRun observation: it cannot call `kanban`,
-block the host, or advance an Issue. `StopFailure`, `SubagentStop`, and
-`SessionEnd` remain available because they do not create a root completion
-decision point.
+- Codex 与 Claude Code 记录 root prompt、subagent 与 session 生命周期；Claude Code 还
+  记录 `StopFailure`；
+- Antigravity 使用 `PreInvocation`；
+- opencode 映射用户消息、失败 completion 与 session 删除；
+- dsh client bridge 非阻塞转发生命周期；
+- 纳管集成都不注册或合成正常 root `Stop`。
 
-See [AgentRun lifecycle](/guides/agent-run-injection) for the event mapping and
-authority boundary.
+proxy 最多读取 1 MiB，并只保留有界 session/turn/agent 标识、父子关系、工作目录、显示
+标签、事件类型与 outcome。prompt、transcript、assistant message、tool payload 和原始错误
+正文不跨 XPC。桥接失败必须 fail-open，不能阻止宿主继续工作。
 
-## Safe install, update, and remove
+root/subagent start 成功后，桥接返回包含当前 `run_id`、revision 与绑定状态的宿主原生
+上下文。Hook 只建立 AgentRun 身份，不调用 `kanban`、不自动创建 Issue，也不在正常完成
+时注入阻塞式关闭提醒。是否满足验收标准由 root Agent 或项目 skill 判断，并显式调用
+`kanban.request_closure`；用户仍掌握最终 Approve gate。
 
-Direct-file adapters merge shared host configuration while treating generated
-scripts and plugins as exclusive managed files. Their manifests record the
-installed hash of every managed file, and update retires managed files that the
-current plan no longer includes.
+为了清理旧安装，私有桥仍接受 legacy/手工 root `Stop`，但只记录终止遥测，不能阻塞宿主
+或推进 Issue。完整映射见 [AgentRun 生命周期](/guides/agent-run-injection)。
 
-Codex uses a distinct `host_plugin` delivery. Before authentication, the App
-inspects the Codex host, App-owned local marketplace, installed/enabled state,
-and expected plugin version. Missing or stale managed state is reconciled
-through the signed Codex CLI. Inspection is read-only; automatic reconciliation
-and the explicit **Repair** action in **Settings → Agent** materialize the
-marketplace and install or update the plugin. Neither operation writes a
-`project_agent_adapters` row or repository file.
+## 安装、更新与移除
 
-Installed and enabled describes plugin delivery, not Hook trust or AgentRun
-readiness. Settings therefore keeps the `/hooks` reminder and requires a Codex
-restart and a new task after plugin changes; an existing task is not a valid
-convergence probe for the new plugin snapshot and may still own a retired
-legacy proxy until it exits. Historical Codex Adapter rows remain readable only
-so repository removal and legacy-file cleanup can retire them safely; current
-installation and runtime routing ignore them.
+direct-file Adapter 只合并宿主共享配置中的 Clumsies 段，生成脚本/plugin 文件则由
+manifest 独占管理。manifest 记录每个文件的安装 hash；更新会删除当前计划中已退役且
+仍与记录一致的文件。
 
-The App refuses to bootstrap `clumsiesd` or persist an Agent runtime path while
-macOS is running it from an App Translocation mount. Move the released App to
-`/Applications` or `~/Applications` and reopen it first; this prevents a
-temporary quarantine UUID from entering LaunchAgent and host configuration.
+Codex `host_plugin` 使用独立流程：
 
-- Install refuses to replace an unrelated MCP entry or unmanaged file.
-- Update uses the adapter record revision as an optimistic concurrency guard.
-- A prior managed runtime path can be migrated to the current App-bundled path.
-- Installations created directly by the archived Zig CLI are discovered
-  read-only and left unchanged. Missing workspaces remain pending; reachable
-  installs report an actionable review-and-reinstall warning. Inspection is
-  best-effort, has a short App-side deadline, and never blocks reconciliation
-  of daemon-owned integrations, including while signed out or offline. Their external
-  manifests are not accepted as native ownership proof.
-- Archived `repo`-scope generations are reported as unsupported. Remove their
-  old Clumsies MCP/Hook entries; the App-owned global Codex Plugin replaces
-  repository-local Codex integration. Other hosts remain repository-scoped
-  integrations managed from **Settings → Agent**.
-- Reinstalling from the App is the explicit handoff: the native installer
-  refuses foreign or drifted entries instead of silently adopting them.
-- Remove deletes only exact managed entries and files; drift becomes a conflict
-  instead of an overwrite.
-- Filesystem and record changes are journaled so an interrupted install or
-  migration is recovered deterministically on the next reconciliation pass.
+1. App 只读检查 Codex host、App-owned local marketplace、安装/启用状态与期望版本；
+2. 缺失或过期时，通过签名 Codex CLI 物化 marketplace 并安装/更新 Plugin；
+3. **Repair** 执行同一 reconciliation；
+4. 不写 `project_agent_adapters` 或仓库文件。
 
-This keeps unrelated host configuration intact and prevents an old worktree or
-helper copy from silently taking over the Agent runtime.
+“已安装并启用”只证明 Plugin 交付，不证明 Hook 已受信任或当前 task 已加载新快照。因此
+Settings 仍需提示 `/hooks` 信任、Codex 重启和新 task。
 
-## Implementation map
+App Translocation 下的二进制不能被持久化为 runtime path。Release App 必须先移动到
+`/Applications` 或 `~/Applications` 并重新打开，避免临时 quarantine UUID 进入
+LaunchAgent 和宿主配置。
 
-| Concern | Active path |
+所有交付方式遵守以下安全规则：
+
+- 安装拒绝覆盖同名但不归 Clumsies 管理的 MCP entry 或文件；
+- 更新用 Adapter revision 做乐观并发保护；
+- 可以把已归属的旧 runtime path 迁移到当前 App 内路径；
+- 旧 Zig CLI 安装只做有界、只读 manifest 发现，不执行 archive 代码，也不把外部
+  manifest 当作原生 ownership；
+- archived `repo` scope 集成只报告为不支持，重新安装是显式 ownership handoff；
+- 移除只删除精确匹配的受管配置和文件，内容漂移会报告冲突；
+- 文件和记录变化写入 journal，中断后由下一次 reconciliation 确定性恢复。
+
+这些限制保证用户自有宿主配置不被静默覆盖，也防止旧 worktree 或 helper 抢占运行时。
+
+## 实现锚点
+
+| 关注点 | 当前路径 |
 | --- | --- |
-| Native installer, merge rules, and legacy discovery | `crates/daemon/src/agent_adapter.rs` |
-| Codex plugin materialization and CLI reconciliation | `crates/daemon/src/agent_adapter/codex_plugin.rs` |
-| Codex plugin source bundle | `packages/clumsies/` |
-| MCP and Hook proxy modes | `crates/daemon/src/main.rs` |
-| Typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
-| Hook normalization | `crates/daemon/src/agent_runtime/hook.rs` |
-| Codex plugin Hook template | `packages/clumsies/scripts/issue-run-event.sh.tpl` |
-| Direct-file Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
-| opencode lifecycle plugin | `assets/adapters/opencode/runtime/plugin.ts` |
+| direct-file 安装、合并与 legacy 发现 | `crates/daemon/src/agent_adapter.rs` |
+| Codex Plugin 物化和 CLI reconciliation | `crates/daemon/src/agent_adapter/codex_plugin.rs` |
+| Codex Plugin 源包 | `packages/clumsies/` |
+| MCP / Hook proxy | `crates/daemon/src/main.rs` |
+| typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
+| Hook 归一化 | `crates/daemon/src/agent_runtime/hook.rs` |
+| Codex Hook 模板 | `packages/clumsies/scripts/issue-run-event.sh.tpl` |
+| direct-file Hook 模板 | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| opencode plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
-The retired Zig adapter implementation is historical source under
-`archive/zig-cli/`; it is not executed as an installation or compatibility
-path. The native daemon contains only a bounded, read-only manifest discovery
-pass; it never runs code from the archive or treats archived manifests as an
-ownership database.
+退役 Zig Adapter 只作为历史源码保留在 `archive/zig-cli/`，不进入当前构建、安装或运行
+路径。

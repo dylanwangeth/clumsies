@@ -31,7 +31,7 @@ features:
     details: Agents claim, pause, and propose closure of native Issues through typed kanban operations; only the user's Approve gate makes an Issue Done.
   - icon: 🔌
     title: Host adapters
-    details: Codex, Claude Code, opencode, and the DeepSeek Harness share one App-bundled Rust runtime with release-identity checks.
+    details: Codex, Claude Code, opencode, DeepSeek Harness, and Antigravity share one App-bundled Rust runtime with release-identity checks.
   - icon: 🏠
     title: Self-hosted Server
     details: Run the Rust authority service and PostgreSQL in your own infrastructure with organization OIDC.

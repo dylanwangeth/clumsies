@@ -26,10 +26,11 @@ model in a single navigator:
 - **Project** contains that Project's selected Organization resources plus its
   private pre-merge Organization Draft overlays.
 
-There are no closed Context / Rule / Workflow types — a Memory's role is
-carried by its content and path. The navigator lists Memory by path; opening
-one shows its Markdown body and required semantic description in the workbench.
-Creating a Memory always collects a non-empty `description`.
+There are no closed Context / Rule / Workflow types in the current domain
+model — a Memory's role is carried by its content and path. The navigator lists
+Memory by path; opening one shows its Markdown body and semantic description in
+the workbench. A non-empty description is the intended authoring rule, but the
+current write and merge paths do not yet enforce or preserve it consistently.
 
 ## Edit and review
 
@@ -41,8 +42,8 @@ The collaboration flow is:
 1. create a proposal or edit selected Organization Memory inside a Project
 2. keep editing normally while newer shared Commits synchronize
 3. review and explicitly merge the latest shared version when prompted
-4. submit the coordinated draft for review
-5. an Organization owner/admin rejects it or approves and merges it atomically
+4. submit one or more coordinated Drafts as an ordered Review
+5. an Organization owner/admin rejects it or approves and merges the complete Draft set atomically
 6. receive the new authority Commit
 
 When the target Ref advances, Desktop continuously shows **共享版本已有更新**.
@@ -61,17 +62,16 @@ approved state. Historical Approved Reviews can still be merged.
 
 ## Agent workflow
 
-The MCP server exposes:
+The MCP server exposes exactly two tools:
 
-- `activate` to return task-relevant, directly usable memory fragments
-- `load` to read a known complete resource by stable ID or exact path
-- `store` to create or update a proposal Draft carried by the bound Project
+- `memory`, with `activate`, `load`, and `store` operations
+- `kanban`, for native Issue reads, semantic updates, and explicit transitions
 
-Each MCP process resolves its Project from the current directory through the
-always-on daemon. This binding is durable and does not follow the Project shown
-in Desktop, so Desktop may be closed or displaying another Project. An unbound
-directory fails with `project_binding_not_found`; it is never silently attached
-to a default Project.
+Managed host-plugin processes resolve their Project from the current directory
+through the always-on daemon and fail closed if that binding is missing or
+changes. A manually launched plain `mcp serve` keeps a compatibility fallback
+to the Project currently selected in Desktop when no directory binding exists;
+the caller still cannot pass an arbitrary Project ID.
 
 MCP `store` and Desktop editing use the same daemon queue, so a change created
 by an agent appears in Desktop for review. The Draft changes only the bound

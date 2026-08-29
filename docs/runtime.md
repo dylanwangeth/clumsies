@@ -1,196 +1,97 @@
-# Runtime
+# 本地运行时
 
-## Local daemon
+> 文档属性：详细设计型｜L3 具体规范｜面向工程实现、运营保障与质量审计。
 
-`clumsiesd` is an owner-scoped macOS launchd service. The macOS app installs and
-starts it. Desktop connects directly over XPC; Agent hosts start the same
-App-bundled executable as a short-lived MCP or Hook proxy, which then connects
-to the resident process over XPC. The daemon has one central SQLite database for
-durable client state and one derived search database inside each Project's
-active local storage.
+`clumsiesd` 是当前用户作用域的 macOS launchd 常驻服务。Desktop 负责原生交互；daemon 在 Desktop 关闭后继续持久化 Draft、同步 Commit、构建检索索引并服务 Agent。Agent Host 启动同一个 App 内签名二进制的短进程 `mcp serve` 或 `_agent issue-run-event` 代理，再通过 XPC 调用常驻 daemon。
 
-The database currently stores:
+## 本地状态所有权
 
-- installation identity and schema version
-- Server URL and selected project configuration
-- canonical local Project bindings from Server authority plus workspace root to `project_id`
-- local drafts and ordered operations
-- synchronization status, failures, and Server draft identity
-- immutable Blob, Tree, and Commit metadata
-- installed Organization authority and Project projection Refs
-- the active search head and storage-location revision for each Project
+daemon 使用一个中心 SQLite 数据库；当前 schema version 为 `40`。它保存：
 
-Each Project search database stores its derived search revisions, complete
-Effective Memory resources, Markdown units, FTS5 rows, and vectors. Embedding
-and reranking models remain in the shared daemon cache and are not copied per
-Project.
+- 安装身份、schema version、Server URL 和 Desktop 当前选中的 Project；
+- 规范化的工作目录到 `project_id` 绑定；
+- 本地 Draft、有序操作、同步状态和 Server Draft 身份；
+- Blob、Tree、Commit 元数据以及已安装的 Organization / Project Ref；
+- Project Local Storage 位置、revision 和 move 状态；
+- `native_issues` 本地看板副本、依赖/阻塞事实、AgentRun 与生命周期事件；
+- Retrieval Run、Evaluation Case 和相关诊断状态。
 
-File permissions are owner-only. Access and refresh tokens are stored as one
-Server-bound generic-password item in macOS Keychain. SQLite never persists
-either token, and daemon has no plaintext credential fallback.
+每个 Project 的派生检索数据库位于该 Project 的活动 Local Storage 中，保存 Effective Memory、Markdown unit、FTS5 行、vector 和 search revision。embedding/reranking 模型只保存在 daemon 共享缓存，不按 Project 复制。
 
-## Desktop request path
+本地文件权限为 owner-only。access/refresh token 只作为绑定 Server URL 的一个 generic-password 条目保存在 macOS Keychain；SQLite 和文件系统没有明文凭据兜底。
 
-The native Swift client serializes typed capability requests over XPC. Daemon
-executes local operations or sends authenticated HTTP requests to Server.
+## 请求路径
 
 ```text
-SwiftUI/AppKit -> XPC -> daemon -> HTTPS -> Server
+Desktop (Swift) -> typed XPC -> resident daemon -> HTTPS -> Server
+Agent Host -> stdio MCP / Hook -> signed short proxy -> typed XPC -> resident daemon
 ```
 
-This keeps credentials in daemon and macOS Keychain without a WebView or CORS
-dependency.
+短进程只负责有界 framing、两项 MCP tool（`memory`、`kanban`）、Project 选择与 XPC 转发。它不初始化 `DaemonState`，不打开 SQLite，不加载模型，也不启动后台 worker。启动时，代理必须验证自身协议 revision 和 build identity 与常驻 daemon 一致。
 
-## Draft synchronization
+## Project 绑定与两种 MCP 启动语义
 
-Every local operation is persisted before synchronization is attempted. The
-queue supports create, update, rename, delete, and discard for Memory
-resources in the unified model.
+daemon 以规范化工作目录查找当前 Server 下最具体的已绑定祖先；Git worktree 没有独立绑定时，还会尝试主 checkout 的仓库根。绑定只使用规范 `project_id`，不会把旧 `ws_id` 当作 Project ID。当前运行时不再读取或迁移 `~/.clumsies/config.toml`；目录绑定由 Desktop/daemon 明确维护。
 
-Deleting an authoritative resource keeps an open deletion Draft until Review
-merge. Deleting a resource created only by the current Draft cancels that
-creation instead: daemon records a discard, and the Draft leaves Effective
-Memory without creating a deletion proposal for a resource that never existed
-in the Ref.
+两种启动方式不能混为一谈：
 
-Each draft carries:
+| 启动方式 | Project 解析与失败语义 |
+| --- | --- |
+| managed host-plugin：`mcp serve --host <host> --delivery host-plugin` | 启动时必须解析目录绑定并满足对应 delivery；失败即拒绝启动。每次 `tools/call` 前重新解析并要求仍是同一 Project，否则返回 `project_binding_changed`。Codex 的全局 Plugin 不要求仓库级 Adapter 行，但仍要求目录已绑定。 |
+| 普通 `mcp serve` | 启动时先尝试目录绑定；解析失败时回退到 daemon 中 Desktop 当前选中的 Project。若两者都没有，代理没有有效 Project carrier，后续 Project 作用域调用不能正常完成。 |
 
-- `project_id`
-- authority `scope` (`org` for every new Draft; `project` is accepted only
-  while discarding historical local rows)
-- the unified Memory identity (id or path; no three-type kind)
-- `base_commit_id`
-- the currently installed target Ref Commit
-- derived freshness and Server reconciliation projection
-- local draft ID and optional Server draft ID
-- ordered operation history
+普通入口的兼容 fallback 不能削弱 managed host-plugin 的严格边界。Desktop 当前选择也不能重定向一个已经由目录绑定到其他 Project 的 managed Agent 进程。
 
-The sync worker starts automatically, wakes when a new operation arrives or
-configuration changes, and retries failed work. A local draft is reused across
-successive edits, so repeated writes do not create one Server draft per
-keystroke.
+## Draft 写入与 Effective Memory
 
-## MCP write path
+所有本地 Draft 操作先进入中心 SQLite，再尝试同步。队列支持 Memory 的 create、update、rename、delete 和 discard；连续编辑会复用同一 Draft，不会为每次按键创建一个 Server Draft。
 
-The adapter-managed MCP entrypoint is `clumsiesd mcp serve`. This process owns
-only bounded JSON-RPC framing, the typed two-tool contract (`memory` and
-`kanban`), Project binding, and XPC forwarding. Before accepting Agent traffic it
-verifies that its Agent runtime protocol revision and build identity match the
-resident daemon. It does not initialize `DaemonState`, open SQLite, load models,
-or start background workers.
+删除权威资源会留下待 Review 的 deletion Draft；删除只由当前 Draft 新建的资源则折叠为 discard，因为 Ref 中从未存在该资源。每个 Draft 记录 Project carrier、目标 authority scope、Memory 身份、Base Commit、当前目标 Ref、freshness/reconciliation、本地与可选 Server Draft ID，以及有序操作。
 
-MCP keeps the public `memory` (`op.store`) tool shape. Internally it adds the
-current bound Project as the Draft carrier and marks Organization authority as
-the proposal target. These are separate axes: the Project owns the pre-merge
-overlay; `org` describes the Ref an approved Review may eventually move. At
-process startup, MCP gives its current working directory to daemon; daemon
-canonicalizes the path and resolves the nearest bound ancestor in SQLite. A
-Codex host-plugin proxy repeats that resolution before every `tools/call` and
-requires it to remain the same Project; the global Plugin does not require a
-project Adapter row. MCP never treats a legacy Workspace ID as a Project ID.
-The Rust MCP contract tests exercise the exact Agent-facing
-envelopes before they are mapped to typed daemon requests.
+MCP 的 update 不是整篇覆盖。Agent 必须提交 `load` 返回的完整资源 hash 与一个或多个精确 `old_text/new_text` 替换。daemon 在排除 Draft/Commit sync 的临界区内验证 hash、唯一匹配与不重叠，整批原子应用，最终只持久化 materialized 完整结果。
 
-Agent-originated updates are exact text replacements, not complete-document
-writes. MCP forwards the resource ID, the complete-resource hash returned by
-`load`, and one or more `old_text`/`new_text` pairs. While draft and commit sync
-are excluded, daemon resolves the current Effective Memory resource, verifies
-the hash and unique non-overlapping matches, and applies the complete batch
-atomically. Only the materialized complete result is persisted as the ordinary
-Draft update operation, so Server synchronization and Commit storage remain
-independent of the agent-facing editing protocol.
+调用方未给 `base_commit_id` 时，daemon 从已安装 Organization Ref 读取；本地尚无 Ref 时保留空 Base，不伪造 Commit。`store` 只能创建 Project 承载、以 Organization 为发布目标的提案，不能选择 scope、决定 Review 或发布。
 
-An old `~/.clumsies/config.toml` entry is used only when no daemon binding
-exists. MCP matches its display name against the signed-in user's Server
-Projects, persists the unique canonical `project_id` in daemon, and removes the
-migrated path from the old file. Missing or duplicate matches fail explicitly;
-the legacy `ws_id` value is never sent to daemon.
+`activate` 与 `load` 使用同一 Effective Memory：
 
-When the caller omits `base_commit_id`, daemon reads it from the installed
-Organization Ref before creating the local Draft. A missing Ref produces a
-Draft with no base; daemon never invents a Commit ID.
+1. 读取最新安装的权威 generation；
+2. 对每个 `open`/`submitted` Draft，从其 Base Commit 恢复资源并顺序应用操作；
+3. 把完整 Draft 结果 overlay 到最新权威；
+4. 其他资源保持最新 Commit 内容。
 
-MCP does not expose a caller-selectable scope, Review decision, merge, or
-publish operation. `store` can only create a Project-carried proposal. Before
-merge it affects that Project's Effective Memory overlay; Organization
-authority changes only after an Org administrator approves and merges the
-Review. Organization is an authority namespace, not a synthetic Project.
+因此成功的本地 `store` 会改变下一次 Effective Memory hash，并触发相匹配的 search revision。Commit sync 可以更新 current Commit、freshness 和候选有效性，但不能改写 Draft Base、操作、正文或 lifecycle。
 
-The daemon combines the installed authority generation with current
-`open`/`submitted` Draft operations before both `activate` and `load`. For a
-resource with a Draft, it restores that resource from the Draft Base Commit,
-applies the ordered operations, and overlays the complete Draft result on the
-latest installed authority. All other resources come from the latest Commit.
-This applies equally to create, update, rename, and delete. A successful `store`
-therefore changes the next Effective Memory hash and causes the next activation
-to build or select a matching search revision.
+## Commit 同步与恢复
 
-## Synchronization and reconciliation
-
-Draft sync and Commit sync are independent. Commit sync may update the local Ref,
-`current_commit_id`, freshness, and candidate validity, but it never changes a
-Draft Base, operations, content, or lifecycle. A behind Draft remains editable,
-syncable, restart-safe, and visible to MCP.
-
-Server is the canonical reconciliation executor. A candidate binds Draft ID,
-Draft version, Base Commit, and current Commit, and is either `clean` or
-`conflicts`. Merely creating or viewing it does not mutate the Draft. Explicit
-rebase stores the previous Draft revision and rewrites the Draft as
-`base = Current` plus `operations = diff(Current, confirmed result)`. Any Draft
-edit or Ref advance invalidates the old candidate.
-
-## Commit synchronization
-
-The daemon synchronizes both the Organization authority Ref and each Project
-projection Ref on its background interval and through explicit retry. Its
-target set is the union of durable directory bindings, active Draft Projects,
-and the Project currently selected by Desktop. Desktop selection is UI state
-and cannot redirect an MCP process in another directory.
+后台同步目标是目录绑定、活动 Draft Project 和 Desktop 当前 Project 的并集。它分别同步 Organization authority Ref 与 Project projection Ref：
 
 ```text
 Server commit-state + ETag
-  -> validate Ref identity
-  -> download Commit payload
-  -> verify Blob addresses and Tree ownership
-  -> build an immutable project generation
-  -> move the local SQLite Ref
-  -> daemon combines that generation with local Drafts
-  -> MCP asks daemon to activate fragments or load complete resources
+  -> 校验 Ref
+  -> 下载完整 Commit payload
+  -> 校验 Blob address 与 Tree 所有权
+  -> 在 staging 构建不可变 generation
+  -> 原子 rename
+  -> SQLite Ref transaction
+  -> 叠加本地 Draft
+  -> 构建/选择 Project 搜索索引
 ```
 
-Before moving a local Ref, every sync also checks active `open` and `submitted`
-Drafts and fetches any missing Base Commit, Tree, and Blob payloads referenced by
-their `base_commit_id`. This preserves an old-Base overlay after a cache rebuild
-without pinning the rest of the project to that Base.
+移动本地 Ref 前，daemon 还会补齐活动 Draft Base 所引用的 Commit、Tree 和 Blob，使旧 Base overlay 在缓存重建后仍可恢复。下载失败、payload 无效或 generation 不完整时，旧 Ref 和 Agent 可见文件保持不变。
 
-The generation is built under a temporary directory and renamed before the Ref
-transaction commits. A failed download, invalid payload, or incomplete
-generation leaves the previous Ref and MCP-visible files unchanged. The
-`commit_sync.server_cursor` is the installed project Commit ID, not a fabricated
-timestamp or independent revision.
+Server 当前返回完整 Commit payload，不支持增量对象传输。不可变对象为重启和完整性校验保留；活动 Draft Base 是垃圾回收 root。错误码保持层次边界：Ref 未同步为 `project_ref_not_synced`，generation 缺失/损坏为 `commit_generation_missing`/`commit_generation_corrupt`，只有派生索引失败使用 search-index 错误。
 
-Server currently publishes full Commit payloads, so incremental object transfer
-is not implemented. Cached immutable objects are retained for restart and
-integrity checks. Active Draft Base references are retention roots and cannot be
-garbage-collected.
+Server 是 reconciliation 的规范执行者。候选绑定 Draft version、Base 和 Current；查看不修改 Draft，显式 rebase 才保存旧 revision 并重写操作。Draft 编辑或 Ref 前进会使旧候选失效。
 
-Cache diagnostics preserve layer boundaries: an unknown local Ref reports
-`project_ref_not_synced`; an absent or invalid materialized generation reports
-`commit_generation_missing` or `commit_generation_corrupt`; only derived search
-index preparation and build failures use search-index error codes.
+## Project Local Storage
 
-## Project local storage
+Project Local Storage 是由规范 Server authority 和 `project_id` 定位的本机缓存设置，不属于 Server Project 元数据，也不跨安装同步。未配置时使用：
 
-Project Local Storage is an installation-local cache setting keyed by normalized
-Server authority and canonical `project_id`. It is not part of Server Project
-metadata and is not synchronized to another installation. An absent setting
-resolves to
-`<daemon-cache>/projects/<authority-hash>/<project-id>`. A preexisting
-`projects/<project-id>` generation is adopted once into that authority-scoped
-layout with its permissions hardened; daemon does not maintain both layouts.
+```text
+<daemon-cache>/projects/<authority-hash>/<project-id>
+```
 
-For a custom location, the selected directory is only a parent. Daemon owns the
-following subtree and never treats it as an editable working directory:
+自定义目录只是父目录；daemon 只管理带 ownership marker 的子树：
 
 ```text
 <selected-root>/.clumsies/cache-v1/<authority-hash>/<project-id>/
@@ -200,56 +101,50 @@ following subtree and never treats it as an editable working directory:
   staging/
 ```
 
-Changing the location creates a persistent daemon move. Daemon materializes and
-verifies the generations and Project search index under destination staging,
-then switches the location with `expected_location_revision` CAS while holding
-the same synchronization boundary used by Commit installation. Readers retain
-the old location until the switch obtains its write gate. A restart resumes any
-nonterminal move; cleanup failure after a successful switch is diagnostic and
-does not roll back the new active location.
+更换位置会创建持久 move：在目标 staging 完成 generation 与索引构建和校验后，以 `expected_location_revision` CAS 切换。读取方在 write gate 成功前继续使用旧位置；重启会恢复未完成 move。切换后的清理失败只产生诊断，不回滚新位置。
 
-The macOS app uses `NSOpenPanel` to create a one-time ordinary bookmark for the
-selected directory. Daemon resolves that handoff while Desktop is running,
-creates a security-scoped bookmark under the daemon's own code-signing identity,
-and persists only that daemon-owned bookmark. This is required because an
-app-scoped bookmark created by Desktop cannot be resolved by a separately signed
-LaunchAgent. Daemon holds security-scoped access for each filesystem operation
-and refreshes stale persisted bookmark data. It refuses network filesystems,
-symbolic links, invalid ownership markers, unsafe nesting, and paths without
-capacity or write access. Managed directories and files use `0700` and `0600`.
+Desktop 通过 `NSOpenPanel` 交付普通 bookmark；daemon 在自身签名身份下生成并持久化 security-scoped bookmark。它拒绝网络文件系统、符号链接、不安全嵌套、无效 marker、容量不足或不可写路径，目录/文件权限分别为 `0700`/`0600`。
 
-An unavailable custom location never falls back to the default cache or advances
-the local Project Ref without a complete generation. Drafts, operation queues,
-and their synchronization continue in central SQLite. `activate`, `load`, and
-checkout return an explicit storage/search readiness error until the same
-location becomes available again.
+自定义位置不可用时，daemon 不回退默认缓存，也不在 generation 不完整时推进 Ref。Draft 和同步队列仍在中心 SQLite 运行，但 `activate`、`load` 和 checkout 返回明确的 storage/search readiness 错误。Clear Cache 只删除 marker 所属 generation、search 数据和 staging，不删除 Draft、设置、模型或管理子树外的文件。
 
-The daemon IPC methods are `project_storage`, `replace_project_storage`,
-`project_storage_move`, `reset_project_storage`, and `clear_project_cache`.
-Clear Cache removes only marker-owned generations, search data, and staging;
-Drafts, settings, models, and files outside the managed subtree are preserved.
+## Kanban 同步与 AgentRun
 
-## Diagnostics
+共享边界如下：
 
-Desktop can read daemon health, bootstrap state, project configuration, sync
-status, MCP status, draft lists, draft details, and operation results through
-typed XPC requests. It can request explicit retry without directly mutating queue
-rows.
+| 对象 | 权威与用途 |
+| --- | --- |
+| Kanban Issue、assignee、`content_revision` | Server `kanban_issues` 共享权威 |
+| Issue claim | Server `issue_claims` 短期 lease 权威 |
+| `native_issues` | daemon 本地副本、离线执行状态和 UI/MCP 投影输入 |
+| AgentRun / lifecycle event | daemon 本地遥测；不直接推进 Issue |
 
-The native Diagnostics window has separate Runtime and Retrieval pages.
-Retrieval lists the active Project's latest Runs and loads one complete trace on
-demand. Candidate columns show exact/BM25, vector, RRF, reranker, final rank,
-score, exclusion reason, and activation delta action. A successful Run can be
-added to the local Evaluation Set, graded from 0–3, supplemented with missed
-resource evidence, exported as a versioned fixture, or retained while unpinned
-history is cleared.
+第一次把本地看板接入共享 Server 时，daemon 只在 Server Issue 集合为空时导入本地 Issue；Server 已有数据时不反向覆盖。正常 list 先取 Server snapshot 并同步 `native_issues`，再叠加本机 AgentRun、latest run 和 stale 投影。没有 ready Server 配置时可使用本地副本；已配置 Server 但网络请求失败时，操作会显式失败，不能把旧副本伪装成已同步结果。
 
-The local methods are `list_retrieval_runs`, `get_retrieval_run`,
-`create_evaluation_case`, `replace_evaluation_judgments`,
-`clear_retrieval_runs`, and `export_evaluation_set`. Retrieval history is
-central daemon state and remains independent from Project Local Storage.
-Retention keeps the latest 500 unpinned Runs per Project; Evaluation Cases pin
-their source Runs and immutable corpora. See `docs/retrieval-evaluation.md`.
+Issue 内容更新使用 Server `content_revision` CAS。begin/resume 在 Server ready 时先取得 claim，再修改本地 workflow；本地步骤失败会尽力释放 claim。pause、unclaim 和 request-closure 在本地变化后发布 Issue，并释放相应 claim。AgentRun 始终由 Host lifecycle Hook 创建和续租，Server claim 只做跨安装互斥。
 
-Server diagnostics are available at `/api/v1/admin/health`. Database, schema,
-Commit service, and OIDC are reported as separate components.
+当前 Kanban 没有像 Draft 那样的持久 outbox。这意味着部分 mutation 会先成功写入 `native_issues`，随后因 Server PUT/DELETE 失败而向调用方报错；后续 list 会重新以 Server snapshot 投影本地状态，失败的本地变化不会自动补发。claim release 失败时，租约可能保留到 `lease_expires_at`。这是当前已知恢复限制，不应描述为强离线同步保证。
+
+## Activity / Recall 隐私边界
+
+Activity 是只读的本地诊断视图。daemon 只为已绑定工作目录读取：
+
+- `~/.dsh/sessions/<encoded-workspace>/<session>/session.jsonl.zstd`；
+- `~/.codex/sessions` 与 `~/.codex/archived_sessions` 下的 Codex rollout。
+
+投影会读取真实用户消息、`memory.activate` 的精确 query、tool result 和已返回 fragment，并可从本地 Retrieval Run 冻结快照打开当时的完整 fragment。它不导入通用聊天历史、assistant prose 或其他 tool，不修改日志、Memory、Issue 或 Retrieval Run。
+
+这些内容可能包含源代码、提示词和组织知识，因此只通过本机 XPC 暴露给 Desktop，不上传 Server，也不进入 Organization Memory。正常 App 列表从 binding 表枚举 workspace，完整历史片段读取也校验 Project；但底层 `ListRecallsRequest.workspace_root` 当前只规范化显式路径而未验证该路径已绑定，本机 XPC 调用方仍可读取对应日志投影。移除 binding 会让目录离开正常 Activity 列表，但在修复前不能视为所有底层列表调用都已撤销读取能力。完整格式、兼容解析和缺口见 [Activity](/recall)。
+
+## 诊断与验证
+
+Desktop 可通过 typed XPC 查看 daemon health、bootstrap、Project 配置、binding、Draft/Commit sync、MCP、Kanban、Retrieval Run 与 storage move 状态，并显式触发 retry；Desktop 不直接修改队列表。
+
+Server health 位于 `/api/v1/admin/health`。本地实现变更至少运行对应最小测试；覆盖本页主要边界的检查为：
+
+```bash
+cargo test -p daemon
+bun run api:check
+bun run build
+```
+
+其中文档构建只验证站点和链接，不能替代 XPC、Keychain、Commit 原子切换或 Kanban 并发测试。

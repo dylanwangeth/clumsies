@@ -1,98 +1,87 @@
-# Overview
+# 概览
 
-Clumsies is external memory infrastructure for coding agents. It keeps durable
-Memory outside one model conversation, makes the relevant subset available to
-an agent, and turns changes into reviewable drafts instead of invisible local
-edits.
+clumsies 是面向编码 Agent 的外部记忆与协作基础设施。它把可持久、可检索的 Memory 放在
+单次模型会话之外，并把 Agent 写入变成可审查的 Draft，而不是不可见的本地修改。
 
-## Memory model
+## 核心对象
 
-Memory is the single first-class content object. The former closed Context /
-Rule / Workflow types are unified into it: whether a Memory reads as a "rule",
-a "workflow", or project "context" is expressed by its content and path, not by
-a type discriminator.
-
-| Concept | Meaning |
+| 对象 | 当前语义 |
 | --- | --- |
-| Memory | Markdown-backed Organization authority with stable `id`, `title`, `path`, `description`, `content`, `revision`, and `status` |
-| Organization authority | the sole publication namespace, with its own Ref and immutable Commit history |
-| Project | repository binding that selects Organization Memory, owns a projection Ref, and carries private pre-merge Draft overlays |
-| Bundle | a personal selection of shared memory resources (`resource_ids`) |
-| Issue | a native agent-managed Kanban object, distinct from Memory |
+| Memory | Organization 权威中的 Markdown 内容对象，拥有稳定 ID、`name`、路径、`description`、正文、revision 与状态；展示标题从 Markdown 或路径派生 |
+| Organization authority | 唯一可发布 Memory 命名空间，拥有 Ref 与不可变 Commit 历史 |
+| Project | 仓库绑定、成员授权、Organization Memory 选择、投影 Ref 与合并前 Draft overlay 的 carrier |
+| Bundle | 某成员保存的共享 Memory ID 集合，不复制内容或建立新权威 |
+| Draft / Review | 提案、协调与授权发布边界；Review 可有序包含一个或多个 Draft |
+| Issue | Server 共享的原生 Kanban 对象，与 Memory 完全独立 |
+| AgentRun | daemon 本机的 Agent 生命周期遥测，可绑定 Issue，但不直接决定 Issue 状态 |
 
-New Memory objects receive `mem_`-prefixed IDs. Legacy `ctx_` / `rul_` / `wfl_`
-IDs remain stable and opaque; they are never rewritten. `description` is a
-required, agent-generated semantic summary on create and an explicit retrieval
-field, chunked and indexed separately from `content`.
+新 Memory 使用 `mem_` 前缀；历史 `ctx_`、`rul_`、`wfl_` ID 保持稳定且不因统一模型
+改写。规则、流程、项目背景等用途由正文和路径表达，不再由封闭的 Context、Rule、
+Workflow 类型决定。
 
-## Product surfaces
+`description` 是目标模型中的语义摘要和独立检索字段，但当前写入/merge 链仍可能让它
+为空或未被持久化；这属于已知实现缺口，详见[统一 Memory 数据模型](/unified-memory-model)。
 
-| Surface | Role |
+## 产品与运行面
+
+| Surface | 职责 |
 | --- | --- |
-| Desktop | primary human product for browsing Organization authority, each Project's selected/effective Memory, Drafts, Reviews, and merges |
-| resident `clumsiesd` | always-on Rust runtime for drafts, sync, retrieval, native transport, and client coordination |
-| Agent runtime | short-lived `clumsiesd mcp serve` and `_agent` proxies used by supported hosts |
-| Server | self-hosted authority service backed by PostgreSQL |
-| MCP | agent-facing `activate`, `load`, `store`, and `kanban` interface |
-| Web Admin | organization, member, project, token, audit, and health administration |
+| macOS Desktop | 浏览 Organization/Project/Effective Memory，编辑 Draft，Review/merge，查看 Issue、Activity 与诊断 |
+| 常驻 `clumsiesd` | Draft 与队列、Commit sync、Project storage、检索、Issue 本地副本、AgentRun 和 XPC |
+| Agent runtime | App 内 `clumsiesd mcp serve` 与 `_agent issue-run-event` 短进程代理 |
+| Server | PostgreSQL 上的共享身份、Organization Memory、Project 投影、Review/Commit、Issue/claim 权威 |
+| MCP | 两个 Agent 工具：`memory`（`activate` / `load` / `store`）与 `kanban` |
+| Web Admin | Organization、成员、Project、token、审计与健康管理 |
 
-Organization is the sole Memory authority. A Project view is a projection of
-selected Organization Memory plus Project-carried Organization Draft overlays;
-it is not a second authority scope. Historical Project-scoped rows remain
-parseable only so the authority cutover can archive or discard them safely.
+Organization 是唯一 Memory 发布权威。Project 视图由所选 Organization Memory 的
+投影和 Project 携带的 Draft overlay 组成，不是第二个 scope。遗留
+`/projects/{project_id}/memories` 接口只读取历史 Project-authority 数据，不是当前投影或
+Effective Memory API。
 
-## Memory lifecycle
+## Memory 生命周期
 
 ```text
-task cue
-  -> activate ranked fragments
-  -> optionally load a known complete resource
-  -> use it in working context
-  -> store a local draft
-  -> daemon synchronizes the draft
-  -> review and merge
-  -> new Commit advances the target Ref
+任务线索
+  -> memory.activate 返回相关片段
+  -> 必要时 memory.load 读取完整资源
+  -> Agent 在当前上下文中使用
+  -> 用户明确要求时 memory.store 创建/修改本地 Draft
+  -> daemon 自动同步 Draft
+  -> 有序 Draft 提交 Review
+  -> 授权决定与原子 merge
+  -> Organization Ref 前移并刷新受影响 Project 投影
 ```
 
-`store` never edits authoritative memory. Desktop and MCP both write to daemon,
-and daemon automatically sends queued operations to Server. Only an approved
-merge creates the next authority Commit.
+`memory.store` 从不直接修改权威。成功只表示操作已在 daemon 本地持久化并进入同步队列；
+只有授权 Review merge 才创建新的 Organization Commit。
 
-## Version model
+## 版本模型
 
-Clumsies uses Git terminology for Git-equivalent concepts:
+系统对等于 Git 的概念使用 Git 术语：
 
-- Blob: immutable resource content
-- Tree: the indexed resource set for a version
-- Commit: an immutable authority version with a parent
-- Ref: a movable head; the Organization Ref is authoritative and a Project Ref
-  identifies that Project's current selected-memory projection
+- Blob：内容寻址的不可变正文；
+- Tree：某个版本的资源集合；
+- Commit：带 parent 的不可变权威版本；
+- Ref：可前移的头指针；Organization Ref 是发布权威，Project Ref 标识选择投影。
 
-HTTP `ETag` and `If-Match` protect Ref updates. They do not replace Commit
-history. An Organization Draft records its Organization `base_commit_id`; a
-merge is rejected if the Organization Ref has moved.
+HTTP `ETag` / `If-Match` 和对象 revision 保护各自的并发边界，不能替代 Commit 历史，也
+不能跨对象混用。Draft 保留明确 `base_commit_id`；上游 Ref 前进时 Draft 不会被隐式
+改写。
 
-## Current implementation boundary
+## 当前实现边界
 
-The unified Memory model (Server, daemon, OpenAPI, MCP, macOS), the Organization
-authority and Project-view endpoints (`/api/v1/org/memories` and
-`/api/v1/projects/{project_id}/memories`), description-aware retrieval, the
-org-admin `memory-export` migration endpoint, generic organization OIDC,
-complete Public/Admin contracts, Desktop transport, local draft queue,
-refresh-token retry, macOS Keychain credential storage, reviewed Commit
-creation, daemon Commit synchronization, user-resolvable stale conflicts, and
-atomic MCP authority generations are implemented. Real PostgreSQL tests cover
-merge-to-Commit, two-daemon convergence, restart recovery, and failure without
-Ref advancement.
+当前主链已经覆盖 Organization authority、Project Org Selection/Ref、Project-carried
+Draft overlay、有序多 Draft Review、Commit 同步、Effective Memory、混合检索、
+Retrieval Run/Evaluation Case、原生 Issue/claim、macOS XPC、OIDC/Keychain，以及
+Codex、Claude Code、opencode、dsh、Antigravity 接入。
 
-The resident daemon composes the installed Commit generation with current local
-Draft operations into one Effective Memory view. It derives Markdown retrieval
-units, SQLite FTS5 BM25 rows, local dense vectors, RRF fusion, cross-encoder
-reranking, and activation delta state from that view. The App-bundled Rust
-`clumsiesd mcp serve` process is a thin stdio-to-XPC adapter for `activate`,
-`load`, `store`, and `kanban`; it owns no database, model, or background worker.
-The private `_agent issue-run-event` mode applies the same boundary to lifecycle
-Hooks.
+仍需如实保留的主要缺口：
 
-Automatic three-way conflict resolution, the versioned production retrieval
-query set, and the production installation lifecycle remain incomplete.
+- Public OpenAPI `TreeEntry` 仍声明旧 kind 且缺少 `description`，与 Rust/数据库不一致；
+- `description` 非空与 merge 持久化尚未端到端保证；
+- macOS 仍有 `MemoryKind` 驱动的创建、校验、预览和分组；
+- Kanban 本地 SQLite 与 Server 之间没有持久 outbox，部分 mutation 存在本地先提交窗口；
+- 自动三方冲突解决、代表性生产检索评测集和完整生产安装生命周期尚未闭环。
+
+系统边界与决策见[系统架构](/architecture)，各专题当前权威见
+[工程文档](/engineering-documents)。

@@ -1,5 +1,7 @@
 # Archived Zig CLI
 
+> **历史归档。** 本页不定义当前产品或运行架构。
+
 The standalone `clumsies` CLI is not an active product or runtime surface. Its
 source is preserved under `archive/zig-cli/` for historical reference and is
 not built, tested, packaged, installed, or released.
