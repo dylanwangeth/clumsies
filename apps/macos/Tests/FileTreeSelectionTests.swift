@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import Clumsies
 
@@ -20,6 +21,121 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertNotNil(PathTreeNode.node(withId: "review-file", in: roots)?.item)
     }
 
+    func testUnifiedDiffGutterFitsLineNumbersAndAlignsNestedContent() {
+        let short = UnifiedDiffMetrics.lineGutterWidth(maximumLineNumber: 99)
+        let long = UnifiedDiffMetrics.lineGutterWidth(maximumLineNumber: 99_999)
+
+        XCTAssertEqual(short, 30)
+        XCTAssertEqual(long, 48)
+        XCTAssertEqual(
+            UnifiedDiffMetrics.contentLeadingInset(
+                lineGutterWidth: short,
+                showsRemoteLineNumbers: false
+            ),
+            104
+        )
+        XCTAssertEqual(
+            UnifiedDiffMetrics.contentLeadingInset(
+                lineGutterWidth: short,
+                showsRemoteLineNumbers: true
+            ),
+            134
+        )
+
+        let lines = (1...1_500).map { lineNumber in
+            UnifiedDiffLine(
+                id: "line-\(lineNumber)",
+                kind: lineNumber == 750 ? .insertion : .context,
+                text: "line \(lineNumber)",
+                oldLineNumber: lineNumber,
+                newLineNumber: lineNumber
+            )
+        }
+        XCTAssertEqual(UnifiedDiffPresentation(lines: lines).maximumLineNumber, 1_500)
+    }
+
+    func testInlineDiffCommentsUseViewportWidthInsteadOfLongCodeWidth() {
+        XCTAssertEqual(
+            UnifiedDiffMetrics.inlineCommentWidth(
+                viewportWidth: 900,
+                leadingInset: 104
+            ),
+            588
+        )
+        XCTAssertEqual(
+            UnifiedDiffMetrics.inlineCommentWidth(
+                viewportWidth: 2_000,
+                leadingInset: 104
+            ),
+            760
+        )
+        XCTAssertEqual(
+            UnifiedDiffMetrics.inlineCommentWidth(
+                viewportWidth: 440,
+                leadingInset: 104
+            ),
+            320
+        )
+        XCTAssertEqual(
+            UnifiedDiffMetrics.inlineCommentWidth(
+                viewportWidth: 200,
+                leadingInset: 104
+            ),
+            84
+        )
+    }
+
+    @MainActor
+    func testLongUnifiedDiffLineCreatesHorizontalScrollRangeAfterHunkHeader() throws {
+        let presentation = UnifiedDiffPresentation(lines: [
+            .init(
+                id: "long-insertion",
+                kind: .insertion,
+                text: String(repeating: "x", count: 300),
+                oldLineNumber: nil,
+                newLineNumber: 1
+            )
+        ])
+        let root = HSplitView {
+            Color.clear
+                .frame(minWidth: 180, idealWidth: 220, maxWidth: 280, maxHeight: .infinity)
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Header")
+                    UnifiedDiffView(presentation: presentation)
+                }
+                .frame(maxWidth: 1180, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.horizontal, 24)
+            }
+            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 900, height: 500)
+
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        let window = NSWindow(
+            contentRect: host.frame,
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+
+        for _ in 0..<3 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        let inner = try XCTUnwrap(
+            descendantScrollViews(in: host).first {
+                $0.hasHorizontalScroller && !$0.hasVerticalScroller
+            }
+        )
+        let documentWidth = try XCTUnwrap(inner.documentView).frame.width
+        XCTAssertGreaterThan(documentWidth, inner.contentView.bounds.width + 1)
+    }
+
     func testPlainDirectoryClickSelectsAndTogglesDirectory() {
         let result = FileTreeSelectionInteraction.directoryClick(
             nodeId: "directory:design",
@@ -32,6 +148,12 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(result.selection, ["directory:design"])
         XCTAssertEqual(result.anchorId, "directory:design")
         XCTAssertTrue(result.togglesDirectory)
+    }
+
+    @MainActor
+    private func descendantScrollViews(in view: NSView) -> [NSScrollView] {
+        let current = (view as? NSScrollView).map { [$0] } ?? []
+        return current + view.subviews.flatMap(descendantScrollViews)
     }
 
     func testShiftClickDirectorySelectsRangeWithoutTogglingDirectory() {

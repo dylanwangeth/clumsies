@@ -6310,6 +6310,8 @@ struct WorkspaceLoader: Sendable {
         base: CommitPayload?,
         current: CommitPayload?
     ) throws -> ReviewChangeSources {
+        let baseEntry = commitResourceEntry(base, resource: draft.resource)
+        let currentEntry = commitResourceEntry(current, resource: draft.resource)
         let terminalOperation = operations.last
         let draftContent: String?
         let resolutionContent: String?
@@ -6323,7 +6325,10 @@ struct WorkspaceLoader: Sendable {
             draftContent = content?.renderedText
             resolutionContent = content?.primaryText
         }
-        let initialPath = operations.first?.resource.path ?? draft.resource.path
+        let initialPath = operations.first?.resource.path
+            ?? draft.resource.path
+            ?? baseEntry?.path
+            ?? currentEntry?.path
         let finalPath = operations.reduce(initialPath) { path, operation in
             if let newPath = operation.newPath { return newPath }
             if operation.action == "create", let createdPath = operation.resource.path { return createdPath }
@@ -6340,8 +6345,8 @@ struct WorkspaceLoader: Sendable {
             operationLabels = []
         }
         return try .init(
-            baseContent: commitResourceText(base, resource: draft.resource),
-            currentContent: commitResourceText(current, resource: draft.resource),
+            baseContent: commitResourceText(base, entry: baseEntry),
+            currentContent: commitResourceText(current, entry: currentEntry),
             draftContent: draftContent,
             resolutionContent: resolutionContent,
             proposedPath: finalPath,
@@ -6349,17 +6354,23 @@ struct WorkspaceLoader: Sendable {
         )
     }
 
-    private static func commitResourceText(
+    private static func commitResourceEntry(
         _ payload: CommitPayload?,
         resource: ServerDraftResourceReference
-    ) throws -> String? {
-        guard let payload else { return nil }
-        let entry = payload.tree.entries.first { candidate in
+    ) -> CommitTreeEntry? {
+        payload?.tree.entries.first { candidate in
             guard candidate.type == .memory else { return false }
             if let resourceId = resource.id { return candidate.id == resourceId }
             return candidate.path == resource.path
         }
-        guard let entry,
+    }
+
+    private static func commitResourceText(
+        _ payload: CommitPayload?,
+        entry: CommitTreeEntry?
+    ) throws -> String? {
+        guard let payload,
+              let entry,
               let blob = payload.blobs.first(where: { $0.blobId == entry.blobId }) else { return nil }
         return blob.content
     }
