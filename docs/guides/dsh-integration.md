@@ -4,7 +4,9 @@ The Clumsies daemon treats the DeepSeek Harness web app as a first-class
 Agent host ("dsh"). This guide covers both halves of the integration:
 
 1. **MCP access** — the dsh web profile connects to the Clumsies MCP server,
-   which gives the model `mcp__clumsies__activate / load / store / kanban`.
+   which gives the model `mcp__clumsies__memory` and
+   `mcp__clumsies__kanban`; `activate` / `load` / `store` are operations of
+   the `memory` tool.
 2. **AgentRun lifecycle** — a dsh-side client plugin forwards non-blocking
    session/turn events to the daemon's hook proxy, which issues `dsh`
    AgentRuns and records failure or session boundaries. With a live run the

@@ -1,5 +1,8 @@
 # Project Memory authority cutover
 
+> **历史迁移记录。** 本页只保留权威切换证据，不定义当前架构。现行边界见
+> [系统架构](/architecture) 与 [统一 Memory 模型](/unified-memory-model)。
+
 Date: 2026-08-26 · Migration format: version 1
 
 ## Target model

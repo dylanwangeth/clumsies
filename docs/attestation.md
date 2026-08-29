@@ -1,5 +1,7 @@
 # Archived attestation client
 
+> **历史归档。** 本页不定义当前产品或运行架构。
+
 The former Zig client attestation pipeline is not part of the current Agent
 runtime or MCP contract. Its historical implementation is preserved only under
 `archive/zig-cli/`; it is not built, installed, uploaded, or exposed as an

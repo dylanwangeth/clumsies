@@ -17,5 +17,3 @@ closure 提醒。是否满足验收条件、何时调用 `request_closure`，由
 AgentRun 遥测：不会返回 block、调用 `kanban`，也不会推进、批准或关闭
 Issue。Hook 输入会缩减为有限的 lifecycle 标识，prompt、transcript 和
 tool payload 不进入 daemon。
-
-（中文文档持续翻译中；英文为准。）

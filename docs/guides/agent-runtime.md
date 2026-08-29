@@ -77,35 +77,36 @@ retrieval path.
 
 ## Tool loop
 
-The current tool surface is:
+The current MCP surface contains exactly two tools:
 
-- `activate`: send a natural-language task cue and receive ranked fragments
+- `memory`: dispatches three Memory operations:
+  - `activate`: send a natural-language task cue and receive ranked fragments
   ready for the current reasoning context.
-- `load`: read complete resources by known stable ID or exact path.
-- `store`: persist an explicit user-requested Memory Draft.
+  - `load`: read complete resources by known stable ID or exact path.
+  - `store`: persist an explicit user-requested Memory Draft.
 - `kanban`: get a native Issue by global ID, create/update/list native Issues, explicitly start Issue work, or
   request Issue closure after semantic judgment.
 
 Typical use is:
 
 ```text
-activate(query, optional state)
+memory.activate(query, optional state)
   -> use returned fragments
-  -> optionally load known complete resources
-  -> store only for explicit memory maintenance
+  -> optionally memory.load known complete resources
+  -> memory.store only for explicit memory maintenance
   -> kanban.get when the user supplies a copied global Issue ID
   -> kanban.create for durable new or follow-up work
   -> explicitly kanban.begin_work when this is durable Local Issue work
   -> kanban.request_closure only when acceptance criteria are satisfied
 ```
 
-For an update, `load` is mandatory: use the returned complete-resource hash and
-exact source text in one or more atomic `store.update` replacements. The agent
+For an update, `memory.load` is mandatory: use the returned complete-resource hash and
+exact source text in one or more atomic `memory.store.update` replacements. The agent
 does not send a reconstructed complete document.
 
 There is no setup call, host-session binding, or `META_PROMPT.md` bootstrap.
 Protocol guidance comes from the MCP initialization instructions and tool
-descriptions. The `state` returned by `activate` is only a bounded fragment
+descriptions. The `state` returned by `memory.activate` is only a bounded fragment
 delta token; pass it again only while earlier fragments remain in model
 context.
 

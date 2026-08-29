@@ -31,7 +31,7 @@ features:
     details: Agent 通过 typed kanban 操作认领、暂停、释放并提议关闭 Issue；只有用户的 Approve 闸门能让 Issue 进入 Done。
   - icon: 🔌
     title: Host 适配器
-    details: Codex、Claude Code、opencode 与 DeepSeek Harness 共用同一个 App 内签名 Rust runtime，并做 release-identity 校验。
+    details: Codex、Claude Code、opencode、DeepSeek Harness 与 Antigravity 共用同一个 App 内签名 Rust runtime，并做 release-identity 校验。
   - icon: 🏠
     title: 自托管 Server
     details: 在自有基础设施中运行 Rust 权威服务与 PostgreSQL，接入组织 OIDC。
