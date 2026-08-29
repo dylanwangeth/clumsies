@@ -357,6 +357,7 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var organization: OrganizationReference?
     @Published private(set) var capabilities: Set<String> = []
     @Published private(set) var projects: [ProjectState] = []
+    @Published private(set) var projectBindingsGeneration = UUID()
     @Published private(set) var projectMetadata: [String: ProjectRecord] = [:]
     @Published private(set) var projectMembers: [ProjectMemberRecord] = []
     @Published private(set) var orgRefCommitId: String?
@@ -1409,11 +1410,9 @@ final class WorkspaceStore: ObservableObject {
         description: String,
         idempotencyKey: String,
         repositoryPaths: [String],
-        bundleId: String?,
-        adapters: Set<ProjectAgentAdapterKind>
+        bundleId: String?
     ) async throws {
         let repositoryPaths = normalizedRepositoryPaths(repositoryPaths)
-        let adapters = adapters.filter { $0 != .codex }
         guard !repositoryPaths.isEmpty else { throw ProjectSetupError.noRepositories }
         let created: ProjectRecord = try await server.send(
             method: "POST",
@@ -1453,23 +1452,7 @@ final class WorkspaceStore: ObservableObject {
                     expectedRevision: nil
                 )
             )
-        }
-        if !adapters.isEmpty {
-            let agentRuntimePath = try bundledAgentRuntimePath()
-            for repositoryPath in repositoryPaths {
-                for adapter in adapters.sorted(by: { $0.rawValue < $1.rawValue }) {
-                    _ = try await daemon.installProjectAgentAdapter(
-                        .init(
-                            projectId: created.id,
-                            workspaceRoot: repositoryPath,
-                            adapter: adapter,
-                            runtimeBinaryPath: agentRuntimePath,
-                            hostBinaryPath: nil,
-                            expectedRevision: nil
-                        )
-                    )
-                }
-            }
+            projectBindingsGeneration = UUID()
         }
         selectedSection = .memory
         showsProjectSettings = false
@@ -1609,14 +1592,19 @@ final class WorkspaceStore: ObservableObject {
                     expectedRevision: nil
                 )
             ))
+            projectBindingsGeneration = UUID()
         }
         return bindings
     }
 
-    func removeProjectRepository(
-        _ binding: DaemonProjectBinding,
-        adapters: [DaemonProjectAgentAdapter]
-    ) async throws {
+    func removeProjectRepository(_ binding: DaemonProjectBinding) async throws {
+        var didMutate = false
+        defer {
+            if didMutate {
+                projectBindingsGeneration = UUID()
+            }
+        }
+        let adapters = try await projectAgentAdapters(binding.projectId)
         for adapter in adapters where adapter.workspaceRoot == binding.workspaceRoot {
             _ = try await daemon.removeProjectAgentAdapter(
                 .init(
@@ -1625,6 +1613,7 @@ final class WorkspaceStore: ObservableObject {
                     expectedRevision: adapter.revision
                 )
             )
+            didMutate = true
         }
         _ = try await daemon.removeProjectBinding(
             .init(
@@ -1632,10 +1621,15 @@ final class WorkspaceStore: ObservableObject {
                 expectedRevision: binding.revision
             )
         )
+        didMutate = true
     }
 
     func projectAgentAdapters(_ projectId: String) async throws -> [DaemonProjectAgentAdapter] {
         try await daemon.projectAgentAdapters(projectId)
+    }
+
+    func allProjectAgentAdapters() async throws -> [DaemonProjectAgentAdapter] {
+        try await daemon.allProjectAgentAdapters()
     }
 
     func codexPluginStatus() async throws -> DaemonCodexPluginStatus {

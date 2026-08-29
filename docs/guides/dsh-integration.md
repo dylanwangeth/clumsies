@@ -35,12 +35,12 @@ Register the Clumsies MCP server in the dsh profile patch layer
 by the hook (see below) — the daemon never lets an agent mint its own
 identity.
 
-## Agent adapter (project settings)
+## Agent adapter (global settings)
 
-dsh is a first-class Agent adapter. In the macOS app, Project Settings
-→ Agent (and the New Project sheet) lists **DeepSeek Harness (dsh)**
-next to Claude Code, opencode, and Antigravity. Enabling the toggle installs a
-workspace marker the dsh side reads:
+dsh is a first-class Agent adapter. In the macOS app, **Settings → Agent**
+lists **DeepSeek Harness (dsh)** next to Claude Code, opencode, and Antigravity
+for every bound repository. Enabling the toggle installs a workspace marker the
+dsh side reads:
 
 ```json
 {
@@ -56,7 +56,7 @@ like the other adapters' files. Disabling the toggle removes it.
 
 The marker is per-machine state (the App-bundled clumsiesd path and the
 daemon's server URL), so repositories using the dsh adapter should ignore it
-in git, like the other project-scoped Agent files:
+in git, like the other repository-scoped Agent files:
 
 ```gitignore
 .dsh/

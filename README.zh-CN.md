@@ -62,7 +62,7 @@ AI 编程智能体（Coding Agents）正在彻底重构软件开发的控制面�
 1. 在 [Releases 发布页面](https://github.com/lilhammerfun/clumsies/releases) 下载最新的安装包。
 2. 将 `Clumsies.app` 拖入 `/Applications` 或 `~/Applications` 目录。
 3. 打开 `Clumsies.app`，系统将自动配置常驻后台守护进程（`ai.clumsies.daemon`）并连接至组织服务器。
-4. 将仓库绑定到对应 Project。Codex 会自动使用全局 Plugin；需要写入仓库的其他 Agent 可在 **Project Settings → Agent** 中配置。
+4. 将仓库绑定到对应 Project。Codex 会自动使用全局 Plugin；需要写入仓库的其他 Agent 可在 **Settings → Agent** 中统一配置。
 
 ### 源码构建与本地开发
 

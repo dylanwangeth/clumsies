@@ -142,11 +142,13 @@ private struct AgentsSettingsView: View {
                     .disabled(isWorking || status?.hostInstalled == false)
             }
 
-            Section("After Plugin Changes") {
+            Section("After Codex Plugin Changes") {
                 Text("Restart Codex and start a new task. In that task, open /hooks and review the current Clumsies Hook. Plugin Enabled does not mean Hook Trusted or AgentRun Ready.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            RepositoryAgentSettingsView(store: store)
         }
         .formStyle(.grouped)
         .padding(12)
@@ -167,6 +169,7 @@ private struct AgentsSettingsView: View {
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -182,8 +185,182 @@ private struct AgentsSettingsView: View {
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct AgentRepositoryProject: Identifiable {
+    let id: String
+    let name: String
+    let repositories: [DaemonProjectBinding]
+}
+
+private struct RepositoryAgentSettingsView: View {
+    @ObservedObject var store: WorkspaceStore
+    @State private var projects: [AgentRepositoryProject] = []
+    @State private var adapters: [DaemonProjectAgentAdapter] = []
+    @State private var pendingValues: [String: Bool] = [:]
+    @State private var workingKeys: Set<String> = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Group {
+            Section("Repository Integrations") {
+                if isLoading, projects.isEmpty {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if store.projects.isEmpty {
+                    Text("Create a Project and bind a repository before configuring these Agents.")
+                        .foregroundStyle(.secondary)
+                } else if projects.isEmpty {
+                    Text("Add a repository in Project Settings before configuring these Agents.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("These integrations write Clumsies-managed configuration into specific repositories. Manage every Project here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .textSelection(.enabled)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .task(id: [store.projectBindingsGeneration.uuidString]
+                + store.projects.map { "\($0.id):\($0.name)" }) {
+                await load()
+            }
+
+            ForEach(projects) { project in
+                Section(project.name) {
+                    ForEach(project.repositories) { repository in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(URL(fileURLWithPath: repository.workspaceRoot).lastPathComponent)
+                                .fontWeight(.medium)
+                            Text(repository.workspaceRoot)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(repository.workspaceRoot)
+
+                            ForEach(ProjectAgentAdapterKind.repositoryIntegrationCases) { adapter in
+                                Toggle(
+                                    adapter.title,
+                                    isOn: adapterBinding(adapter, repository: repository)
+                                )
+                                .disabled(!workingKeys.isEmpty)
+                                .accessibilityLabel(
+                                    "\(adapter.title) for \(URL(fileURLWithPath: repository.workspaceRoot).lastPathComponent) in \(project.name)"
+                                )
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        defer {
+            if !Task.isCancelled {
+                isLoading = false
+            }
+        }
+        do {
+            try await reload()
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reload() async throws {
+        var nextProjects: [AgentRepositoryProject] = []
+        async let nextAdapters = store.allProjectAgentAdapters()
+        for project in store.projects {
+            try Task.checkCancellation()
+            let repositories = try await store.projectBindings(project.id)
+            if !repositories.isEmpty {
+                nextProjects.append(.init(
+                    id: project.id,
+                    name: project.name,
+                    repositories: repositories
+                ))
+            }
+        }
+        let loadedAdapters = try await nextAdapters
+        try Task.checkCancellation()
+        projects = nextProjects
+        adapters = loadedAdapters
+    }
+
+    private func adapterBinding(
+        _ adapter: ProjectAgentAdapterKind,
+        repository: DaemonProjectBinding
+    ) -> Binding<Bool> {
+        let key = adapterKey(adapter, repository)
+        return Binding(
+            get: {
+                pendingValues[key]
+                    ?? (currentAdapter(adapter, repository) != nil)
+            },
+            set: { enabled in
+                guard workingKeys.isEmpty else { return }
+                pendingValues[key] = enabled
+                workingKeys.insert(key)
+                let current = currentAdapter(adapter, repository)
+                Task {
+                    do {
+                        try await store.setProjectAgentAdapter(
+                            adapter,
+                            enabled: enabled,
+                            projectId: repository.projectId,
+                            workspaceRoot: repository.workspaceRoot,
+                            current: current
+                        )
+                        try await reload()
+                        errorMessage = nil
+                    } catch {
+                        let message = error.localizedDescription
+                        try? await reload()
+                        errorMessage = message
+                    }
+                    pendingValues.removeValue(forKey: key)
+                    workingKeys.remove(key)
+                }
+            }
+        )
+    }
+
+    private func currentAdapter(
+        _ adapter: ProjectAgentAdapterKind,
+        _ repository: DaemonProjectBinding
+    ) -> DaemonProjectAgentAdapter? {
+        adapters.first {
+            $0.adapter == adapter
+                && $0.serverUrl == repository.serverUrl
+                && $0.projectId == repository.projectId
+                && $0.workspaceRoot == repository.workspaceRoot
+        }
+    }
+
+    private func adapterKey(
+        _ adapter: ProjectAgentAdapterKind,
+        _ repository: DaemonProjectBinding
+    ) -> String {
+        "\(repository.serverUrl):\(repository.workspaceRoot):\(adapter.rawValue)"
     }
 }
 
