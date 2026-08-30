@@ -1,14 +1,14 @@
 # Project
 
-> 文档属性：概念定义型 / 详细设计型｜L2–L3｜当前权威。
+`Project` is the repository binding, authorization boundary, Organization
+Memory selection, and Draft carrier. It is not a Memory authority namespace.
+This page keeps its historical `/workspace` URL so old links continue to
+resolve, but active APIs and runtime state use `project_id`.
 
-Project 是仓库绑定、授权边界、Organization Memory 选择和 Draft carrier，不是 Memory
-权威命名空间。本页保留历史路由 `/workspace` 以兼容旧链接；当前 API 与运行时只使用
-`project_id`。
+## Identity and local binding
 
-## 身份与本地绑定
-
-Server 签发规范 Project 身份。本机目录只是安装级绑定：
+Server issues the canonical Project identity. A local directory is only an
+installation-local binding to that identity:
 
 ```text
 normalized Server authority
@@ -16,87 +16,96 @@ normalized Server authority
   -> canonical project_id
 ```
 
-常驻 daemon 把绑定保存在中心 SQLite，规范化调用方当前目录并选择最长的已绑定祖先；
-Git worktree 没有独立绑定时，还可解析主 checkout 的仓库根。文件夹名称、旧 `ws_id` 和
-请求参数都不能充当 Project 身份。当前运行时不再读取或迁移
-`~/.clumsies/config.toml`。
+The resident daemon stores bindings in central SQLite. It canonicalizes a
+caller's current directory and chooses the longest bound ancestor, so nested
+worktrees resolve to the intended Project without treating the folder name as
+identity. An unbound directory returns an explicit binding error.
 
-两种 Agent 入口的兼容策略不同：
+The Desktop-selected Project is UI state and is deliberately separate. Two MCP
+proxies can resolve two different repositories concurrently while Desktop is
+closed or showing a third Project.
 
-- 纳管 host-plugin 必须由当前目录解析绑定，启动及每次 `tools/call` 都校验仍为同一
-  Project；绑定缺失或变化时关闭式失败。
-- 手工启动的普通 `mcp serve` 先解析目录；没有绑定时可兼容使用 daemon 中 Desktop
-  当前选中的 Project。该回退不是调用方可写的 `project_id`，也不适用于 host-plugin。
+Legacy `ws_id` configuration is only a one-time migration input. It is never
+sent to daemon as a Project identity and is not a runtime fallback.
 
-因此多个已绑定 MCP 进程可同时服务不同仓库，Desktop 选中项不会重定向纳管进程。
+## Memory authority and Project projection
 
-## Organization 权威与 Project 投影
+Organization is the only active Memory authority. A Project selects the
+Organization Memory used by its repository and stores that selection in a
+Project Commit and movable Project Ref. The Project Ref is a materialization
+projection, not another publication target: Review merge advances the
+Organization Ref, while selection changes advance the Project Ref.
 
-Organization 是唯一 active Memory 权威。Project 保存 Organization Memory ID 选择集合，
-并持有由“选择 + 当前 Organization Commit”生成的 Project Ref/Commit。Project Ref 是可
-同步、可安装的物化投影，不是第二个发布目标：Review merge 推进 Organization Ref，选择
-变化或上游权威变化刷新 Project Ref。
+Repository-specific knowledge starts as an Organization-scoped Draft carrying
+the Project's `project_id`. Before merge, its overlay is visible only in that
+Project's Effective Memory. After approval, it becomes Organization authority
+and is automatically selected for the carrying Project. A Memory's role — rule,
+workflow, or context — is carried by its content and path, not by a closed type.
 
-```text
-Organization Ref + Project Org Selection
-  -> Project Ref / Commit projection
-  -> installed generation
-  + Project-carried open/submitted Org Drafts
-  -> Effective Memory
-```
+Historical Project-scoped resources and Drafts are read-only compatibility
+inputs. The authority cutover archives/discards them after flattening their
+effective result into Organization-scoped Drafts.
 
-仓库专属知识也先作为由该 Project 携带的 Organization-scoped Draft。合并前 overlay 只在
-该 Project 可见；批准后成为 Organization 权威，并自动加入携带 Project 的选择集合。
+Bundles are personal selections of shared organization memory. They help a
+member reuse a curated set but do not become Project identity or replace the
+organization Ref. A Bundle holds a single `resource_ids` list; membership never
+changes resource identity.
 
-`GET /api/v1/projects/{project_id}/memories` 及详情路由只读取遗留的
-Project-scoped authority 数据，不返回 Project selection、投影或 Effective Memory。当前
-客户端不得用这两个接口构建 Project 视图。
+## Local state
 
-## 本机状态
+The resident daemon owns the Project's installation-local state:
 
-常驻 daemon 持有 Project 的安装级状态：
+- directory binding and selected Server authority;
+- installed Organization authority and Project projection Refs;
+- immutable Commit generations;
+- current local Drafts and their queued operations;
+- the derived search index for the current Effective Memory;
+- optional Project Local Storage location and move status;
+- adapter installation records for the repository.
 
-- 目录绑定和 Server authority；
-- 已安装的 Organization Ref 与 Project 投影 Ref；
-- 不可变 Commit generation；
-- 当前 Draft、操作队列和同步状态；
-- 与 Effective Memory hash 匹配的派生检索索引；
-- 可选 Project Local Storage 位置及 move 状态；
-- 仓库级 direct-file Adapter 记录；
-- Server Issue 的本地副本和本机 AgentRun 投影。
-
-Server 仍对 Project membership、Org Selection、Organization Memory、Review/merge、共享
-Kanban Issue/claim 有权威。本地绑定、缓存或 AgentRun 都不会创建远端权威。
+Server remains authoritative for Project membership and selection,
+Organization Memory history, Reviews, and merges. A local binding or cache
+never creates authority.
 
 ## Effective Memory
 
-Agent 读取的不是某个 HTTP Project-memory 列表，而是 daemon 合成的当前视图：
+For Agent reads, daemon composes the latest installed authority generations
+with the Project's current open/submitted Draft operations:
 
 ```text
-installed Project projection + current open/submitted Draft operations
+Project Commit (selected Organization Memory) + Project-carried Org Draft overlay
   -> Effective Memory hash
-  -> matching Index Revision
-  -> memory.activate / memory.load
+  -> matching derived Index Revision
+  -> activate / load
 ```
 
-`memory.store` 先在 daemon 中持久化一个由绑定 Project 携带、以 Organization 为发布目标
-的 Draft，并加入同步队列。成功只表示本地接受；它不会更新 Organization Ref、审批
-Review 或让其他 Project 立即看到提案。
+`store` writes a durable Organization-scoped proposal Draft carried by the
+bound Project through daemon. Its pre-merge overlay is visible only in that
+Project, and it does not update the Organization Ref. Desktop shows the same
+Draft for coordination and submission; an Org administrator must decide and
+merge its Review.
 
 ## Project Local Storage
 
-每个 Project 可为本机选择可重建 generation 与检索数据库的位置。设置以 Server
-authority 和 `project_id` 为键，只属于当前安装，不进入 Server Project 元数据。
+A Project may choose where this installation stores rebuildable generations
+and its search database. The setting is keyed by Server authority and
+`project_id`, remains local to the machine, and never enters Server Project
+metadata.
 
-用户选择的目录只是 daemon 托管子树的父目录。中心 Draft、操作队列、凭据、缓存权威
-对象和共享模型不会随之移动。自定义位置不可用时，daemon 明确返回错误，不会悄悄在默认
-位置创建第二份活动缓存。迁移、ownership marker、CAS 和恢复语义见
-[本地运行时](/runtime#project-local-storage)。
+The selected directory is only a parent for a marker-owned managed subtree.
+Central Drafts, operation queues, credentials, cached authority objects, and
+shared models do not move. If a custom location is unavailable, daemon reports
+the condition explicitly and does not create a second active cache elsewhere.
 
-## 相关文档
+See [Runtime](/runtime) for migration and recovery semantics.
 
-- [Organization Memory](/artifact)：唯一内容权威与 Bundle；
-- [统一 Memory 数据模型](/unified-memory-model)：字段、投影、Draft 与多 Draft Review；
-- [本地运行时](/runtime)：目录解析、存储、同步和失败行为；
-- [Adapter](/adapter)：各 Agent Host 的纳管方式；
-- [系统架构](/architecture)：跨组件不变量。
+## Agent runtime path
+
+The adapter starts the App-bundled `clumsiesd mcp serve` proxy from the
+repository. At startup the proxy verifies the resident daemon release identity,
+resolves the current directory through the binding registry, and fixes that
+canonical `project_id` for the process. Agent input cannot select another
+Project or reuse Desktop's current selection. A Codex host-plugin proxy repeats
+the canonical binding before every `tools/call`, so a missing binding or rebind
+revokes the running proxy on its next call. The global Plugin does not create or
+require a per-repository Codex Adapter row.

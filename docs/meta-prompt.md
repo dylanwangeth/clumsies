@@ -1,8 +1,5 @@
 # Metaprompt removal
 
-> **历史迁移记录。** 本页说明已删除协议的迁移事实，不属于现行运行合同。
-> 当前合同见 [MCP](/mcp) 与 [Agent 运行时](/guides/agent-runtime)。
-
 `META_PROMPT.md` is no longer part of the agent runtime contract or the search
 corpus. The MCP server delivers stable protocol guidance through
 `InitializeResult.instructions` and each tool description.
@@ -10,8 +7,8 @@ corpus. The MCP server delivers stable protocol guidance through
 The removed bootstrap path required a host session ID and a special
 `retrieve` call before any other memory operation. It duplicated protocol
 state across an adapter hook, an MCP session object, a retired client event
-log, and a special authority resource. The current `memory` tool operations
-(`activate`, `load`, and `store`) have no compatibility dispatch for that path.
+log, and a special authority resource. The current `activate`, `load`, and
+`store` tools have no compatibility dispatch for that path.
 
 The removal migration rewrites affected Commit chains with Trees that omit the
 obsolete resource, advances every dependent Ref and draft base to the rewritten

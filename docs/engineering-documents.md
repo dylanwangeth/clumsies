@@ -1,68 +1,22 @@
-# 工程文档
+# Engineering documentation
 
-> 文档属性：指南说明型（主）｜L2 公共程序与基线｜覆盖工程全生命周期｜面向工程实现、运营保障与质量审计。
+This site is the versioned source of truth for the current clumsies architecture and engineering decisions. Documentation describes the implementation in the same revision; plans and known gaps are labeled explicitly.
 
-本页定义 clumsies 工程文档的权威边界和维护方式。`docs/` 是现行设计、需求、契约与运行说明的唯一文档域；文档与代码在同一个 Git 历史中演进。
+## Authority boundary
 
-## 权威边界
+- `docs/` owns current product, architecture, runtime, data, and operational documentation.
+- Code, schemas, migrations, tests, and deployment configuration are the final evidence when prose and implementation disagree.
+- Memory stores reusable working rules and procedures, not a second copy of the system design.
+- Historical material is evidence, not the current contract.
 
-- 每个主题只维护一份当前权威文档，直接在原路径更新，不用日期、版本号或旧文件名复制当前正文。
-- 代码、数据库 migration、OpenAPI 和可执行测试是实现证据；工程文档负责解释这些事实的边界、原因与约束。两者冲突时，先把冲突记为实现缺口，不能把目标状态写成已实现。
-- Memory Space 保存工程规范、项目技能和适合按任务召回的知识，不复制系统设计正文。需要设计上下文时读取 `docs/` 中的当前文档。
-- 迁移记录、退役实现和历史评估不参与当前架构判断；需要引用时必须明确写成历史证据。
-- 外部研究只能作为形成决策的材料。当前系统的结论必须在仓库文档中自包含。
+## Documentation map
 
-## 当前文档主链
+- [Architecture](/architecture) explains boundaries and data flow.
+- [Unified Memory model](/unified-memory-model) defines authority, overlays, and publication.
+- [Runtime](/runtime), [Server](/server), and [MCP](/mcp) describe execution boundaries.
+- [Retrieval and evaluation](/retrieval-evaluation) defines search evidence.
+- [Performance and validation](/performance/) records methods, experiments, and dated results.
 
-### 内容放置规则
+## Update and publication
 
-| 内容 | 唯一落点 | 说明 |
-| --- | --- | --- |
-| 产品概念、需求、架构、详细设计、ADR、当前验证报告 | 仓库 `docs/` | 与代码一起版本化、公开审查；Memory 不复制正文 |
-| 工程规范、Agent skill、可执行工作流 | Memory Space | 按任务动态召回，不承担产品设计权威 |
-| 本机环境事实、故障复盘和可复用排障经验 | Memory Space | 适合动态召回；若演变成现行设计约束，应提炼进 `docs/` |
-| 未完成工作、缺口与跟进项 | 原生 Kanban Issue | 不用文档或 Memory 列表代替状态跟踪 |
-| 已退役原始资料 | 私有校验备份 / 明确的 History 页面 | 不进入当前 Effective Memory，也不与当前权威并列 |
-
-| 生命周期 | 主类型 | 质量层级 | 当前权威 | 回答的问题 |
-| --- | --- | --- | --- | --- |
-| 概念 | 概念定义型 | L1 | [Overview](/overview)、[术语表](/glossary) | 产品是什么，核心对象边界是什么 |
-| 需求 | 需求型 | L2 | [Issue 看板需求](/issue-board-requirements) | 原生协作看板必须满足什么 |
-| 架构 | 设计型 | L2 | [系统架构](/architecture) | 系统边界、组件、数据、运行、安全和决策如何统一 |
-| 详细设计 | 设计型 | L3 | [统一 Memory 模型](/unified-memory-model)、[macOS Memory 界面](/macos-memory-ui)、[本地运行时](/runtime)、[Server](/server)、[MCP](/mcp)、[Adapter](/adapter)、[Issue 看板设计](/issue-board-design) | 各子系统怎样实现架构约束 |
-| 验证 | 评估决策型 | L3 | [检索运行与评测](/retrieval-evaluation)、[性能与验证专题](/performance/) | 如何保存检索证据并评估质量；如何记录有截止日期的性能证据 |
-| 运行维护 | 指南说明型 / 契约规范型 | L2–L3 | [部署指南](/guides/deploy-for-an-org)、[认证与会话](/reference/auth)、[代码库地图](/repos) | 如何部署、保护和定位实现 |
-
-[本地 Agent 活动](/recall) 和 [macOS Reviews 设计](/reviews-ui-design) 是已实现产品面的详细设计，也属于当前文档。它们必须随对应 Swift、daemon 和 Server 合同一起更新。
-
-## 历史文档
-
-以下页面只记录迁移或退役事实，不定义当前系统：
-
-- [Project Memory 权威切换](/project-authority-migration)
-- [统一 Memory 存储边界迁移](/guides/rule-store-unification)
-- [Metaprompt 移除](/meta-prompt)
-- [已归档 Zig CLI](/guides/cli-commands)
-- [已归档 Zig TUI](/tui)
-- [已归档 attestation 客户端](/attestation)
-
-历史页面保留稳定链接，但必须在正文开头标明历史属性；现行文档可以引用其证据，不能把它们作为理解当前架构的前置条件。
-
-## 更新规则
-
-1. 先确定变化影响的主题和生命周期阶段，再找到表中的当前权威；能原位更新就不新建文件。
-2. 需求变化时检查架构、详细设计、契约和验收；架构变化时检查所有受影响的详细设计和运行指南。
-3. 文档中的“当前已实现”必须能指向代码、migration、OpenAPI 或测试证据；规划和缺口单独标识。
-4. 跨组件主流程必须写清持久化点、等待点、失败结果和恢复方式。身份必须从入口贯穿授权、执行和审计。
-5. 修改后至少运行 `bun run build`；涉及 API 时同时运行 `bun run api:check`，涉及实现事实时运行对应最小测试。
-6. Review 时检查重复权威、失效链接、历史内容混入当前事实，以及术语是否与代码一致。
-
-## 发布门槛
-
-一份当前工程文档只有同时满足以下条件，才算完成：
-
-- 范围、主类型、生命周期和目标读者明确；
-- 事实、决策、约束、已知失败模式与验证方式齐全；
-- 图、表、正文、API 名称和实现对象使用同一套术语；
-- 未实现能力被明确标记，没有用愿景替代现状；
-- VitePress 构建和相关最小检查通过。
+Material architecture changes update the affected document in the same pull request. State facts, decisions, constraints, failure modes, and a repeatable verification path. Before publication, build the site, check links, and verify English routes stay under `/` while Chinese routes stay under `/zh/`.
