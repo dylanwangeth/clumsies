@@ -1,70 +1,73 @@
-# MCP 工具契约
+# MCP
 
-Clumsies 只向 Coding Agent 暴露两个 MCP 工具：
+Clumsies exposes two agent-facing tools:
 
-| 工具 | 职责 |
+| Tool | Purpose |
 |---|---|
-| `memory` | 读取当前绑定 Project 的 Effective Memory，或创建由该 Project 携带的 Memory 提案 Draft |
-| `kanban` | 读取和维护当前 Project 的原生 Issue，并显式执行工作状态转换 |
+| `memory` | Read the bound Project's Effective Memory or persist Project-carried proposal Drafts (`store`). |
+| `kanban` | Create, update, list, or semantically transition native Issues. |
 
-`clumsiesd mcp serve` 是短生命周期的 stdio 协议代理。Effective Memory 构建、索引、检索、Draft 持久化、Issue 与 AgentRun 状态都由常驻 `clumsiesd` 管理，代理通过本地 XPC 调用它。代理只接受本文列出的强类型输入，不能把任意 JSON 转发给 daemon。
+The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
+Effective Memory construction, indexing, retrieval, exact loading, Draft
+persistence, and AgentRun projection belong to the resident `clumsiesd` and
+are reached over local XPC. The proxy exposes only the two typed MCP tools; it
+cannot pass arbitrary JSON through to daemon methods.
 
-启动时，代理会校验常驻 daemon 的 Agent runtime 协议修订和构建标识，再根据当前目录解析 Project binding。版本不一致、daemon 不可用或严格 host-plugin 模式下无法解析 binding 时都会显式失败。当前协议没有 setup 调用，也不兼容已移除的 `retrieve` 工具、host-session binding、`META_PROMPT.md` bootstrap 或 MCP attestation。
+The proxy verifies the resident's Agent runtime protocol revision and build
+identity before resolving the current directory's Project binding, and the
+resident revalidates that marker on every Agent-scoped dispatch. A missing or
+stale resident or proxy fails explicitly instead of mixing releases.
 
-## 通用输入规则
+There is no setup call. The removed `retrieve` tool, host-session binding,
+`META_PROMPT.md` bootstrap, and MCP attestation path have no compatibility
+dispatch. Runtime guidance is delivered by `InitializeResult.instructions` and
+the tool descriptions.
 
-两个工具都使用相同的 tagged operation 结构：
+## Memory
 
-```json
-{
-  "op": {
-    "operation_name": {}
-  }
-}
-```
+`memory` unifies all memory operations under a single tool with an `op` tagged enum: `activate`, `load`, and `store`.
 
-- `op` 必填，并且必须且只能包含一个 operation。
-- 输入不能包含 `null`；可选字段应直接省略。
-- operation 和字段名区分大小写，未知字段会被拒绝。
-- MCP 进程的 Project binding 决定 `memory` 的 Effective Memory 和 `kanban` 的 Project-local 操作范围；调用方不能在参数中改写 `project_id`。
+### Memory Guidelines (`CLUMSIES.md`)
 
-## `memory`
+Each project may define a memory guidelines document (conventionally `CLUMSIES.md` or `README.md` at the workspace root). This document establishes:
+1. **Taxonomy & Organization**: Standard directory layouts (e.g. `architecture/*`, `decisions/*`, `guides/*`).
+2. **Update Rules & Mutation Policy**: When the agent should propose drafts, what descriptions to write, and what not to persist.
+3. **Deprecation Policy**: How conflicting or obsolete memories should be superseded.
 
-`memory` 包含 `activate`、`load` 和 `store` 三个 operation。
+Agents can read this document via `memory` with `op: { load: { ids: ["CLUMSIES.md"] } }` before making substantial memory updates.
 
-### Project Memory 指南
+### Activate
 
-Project 可以约定一份 Memory 指南，默认路径为 `CLUMSIES.md`；受管集成也可以提供其他路径。它通常定义：
-
-- 目录与命名方式；
-- 何时允许提出 Memory 变更；
-- description、替代与弃用规则；
-- 不应持久化的内容。
-
-进行实质性 Memory 维护前，先通过 `load` 读取该指南。指南本身仍是普通 Memory，不是安装到 Agent 本地目录的特殊 skill。
-
-### `activate`
-
-每个实质任务开始时调用一次 `activate`，让 daemon 从当前 Effective Memory 中返回最相关的片段：
+Call `memory` with `op: { activate: ... }` once at the beginning of each substantive task:
 
 ```json
 {
   "op": {
     "activate": {
-      "query": "校正 MCP 工具契约和并发修订语义"
+      "query": "adjust the MCP hybrid retrieval interface",
+      "state": "optional-opaque-state"
     }
   }
 }
 ```
 
-| 字段 | 必填 | 语义 |
+| Field | Required | Meaning |
 |---|---:|---|
-| `query` | 是 | 非空的自然语言任务或检索线索 |
-| `state` | 否 | 上一次响应的 `next_state`；仅在上一次片段仍完整保留于模型上下文时传入 |
+| `query` | yes | A non-empty natural-language representation of the current task or cue. |
+| `state` | no | The preceding `next_state`, but only while its earlier fragments remain in the model context. |
 
-daemon 在一次调用内完成 BM25、向量召回、RRF 融合、Cross-Encoder 重排、资源多样性限制、token 预算和片段增量计算。模型名、候选数量和排序参数由 daemon 管理，不是 Agent 输入。
+The daemon performs BM25 and dense-vector recall, RRF fusion, Cross-Encoder
+reranking, resource diversity limits, token budgeting, and fragment delta
+calculation in one operation. `kind`, `group`, `limit`, model names, and ranking
+parameters are deliberately not agent-facing inputs.
 
-响应的主要结构为：
+The `agent_activation.v2` profile maps the BGE reranker logit through sigmoid
+and removes candidates below the daemon-owned relevance floor. It also keeps
+only the highest-ranked member of overlapping spans from the same resource.
+Token budgeting consumes the remaining relevance-ordered prefix instead of
+filling unused space with lower-ranked short fragments.
+
+The response contains:
 
 ```json
 {
@@ -74,13 +77,13 @@ daemon 在一次调用内完成 BM25、向量召回、RRF 融合、Cross-Encoder
   "fragments": [
     {
       "action": "add",
-      "unit_key": "mem_123/mcp/0/0",
+      "unit_key": "mem_123/memory-delta/0/0",
       "content_hash": "sha256:...",
       "resource_id": "mem_123",
       "scope": "org",
       "kind": "memory",
-      "path": "architecture/mcp.md",
-      "heading_path": ["MCP", "并发控制"],
+      "path": "architecture/retrieval.md",
+      "heading_path": ["MCP", "Memory Delta"],
       "content": "..."
     }
   ],
@@ -88,19 +91,29 @@ daemon 在一次调用内完成 BM25、向量召回、RRF 融合、Cross-Encoder
 }
 ```
 
-`add` 与 `replace` 携带正文；`reuse` 表示调用方上下文里已有同一片段，因此省略正文；`removed` 只撤销已删除、失去权限或重新解析后消失的单元，不会因为本次 query 不相关就撤销旧片段。
+`add` and `replace` include content. `reuse` identifies content already present
+in the caller's context and omits it. `removed` invalidates units that have been
+deleted, lost permission, or disappeared after reparsing. A unit that is merely
+irrelevant to the current query is not removed.
 
-上下文压缩、旧工具输出已丢弃或开始新任务时必须省略 `state`。无效状态返回 `invalid_activation_state`，不会静默按空状态处理。固定检索模型尚未就绪时返回 `search_model_preparing` 和下载进度，不会退化为另一套检索算法。
+Omit `state` after context compaction, after old tool output is dropped, or
+when starting fresh. Invalid or unsupported state returns
+`invalid_activation_state`; it is never silently treated as an empty state.
 
-### `load`
+The daemon prepares its pinned local models in the background. Until they are
+ready, activation returns `search_model_preparing` with current and total byte
+counts instead of holding the MCP request open. Model preparation retries in
+the background and has no lexical-only fallback.
 
-`load` 按稳定资源 ID 或精确路径加载完整资源，不做模糊检索和重排：
+### Load
+
+Use `memory` with `op: { load: ... }` for complete resources already identified by ID or exact path (including project guidelines like `CLUMSIES.md`):
 
 ```json
 {
   "op": {
     "load": {
-      "ids": ["mem_123", "CLUMSIES.md"],
+      "ids": ["mem_123", "CLUMSIES.md", "architecture/retrieval.md"],
       "knownHashes": {
         "mem_123": "sha256:..."
       }
@@ -109,30 +122,47 @@ daemon 在一次调用内完成 BM25、向量召回、RRF 融合、Cross-Encoder
 }
 ```
 
-| 字段 | 必填 | 语义 |
-|---|---:|---|
-| `ids` | 是 | 非空、无重复的 ID 或精确路径数组；每项都必须是非空字符串 |
-| `knownHashes` | 否 | 以请求 ID/路径为 key 的已知完整资源哈希 |
+`ids` is required, non-empty, unique, and contains strings. `knownHashes` is
+optional. When a known hash matches the current complete resource,
+`changed=false` and content is omitted. A missing requested resource returns
+`memory_resource_not_found` instead of being silently dropped.
 
-当 `knownHashes` 与当前资源一致时，结果返回 `changed = false` 并省略 `content`。任一请求目标不存在时返回 `memory_resource_not_found`，不会静默忽略。`load` 与 `activate` 读取同一份 Effective Memory，包括当前 Project 的 Draft overlay。
+`load` reads the same Effective Memory as `activate`, including current local
+Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 
-### `store`
+### Store
 
-只有用户明确要求维护 Memory 时才调用 `store`。Issue 必须由 `kanban` 管理，不能伪装成 Memory 文档。
+Call `memory` with `op: { store: ... }` only when the user explicitly asks to create, update, rename,
+delete, or discard managed memory. Issues are native objects managed by
+`kanban`; do not model them as Memory documents.
 
-每次 `store` 只能提供一个变更 operation：
+Every MCP Draft is carried by the Project resolved from the current directory.
+Its internal `org` scope is the authority target for a future Review, not Draft
+ownership and not a direct Organization write. Before merge, the Draft overlays
+only that Project's Effective Memory. MCP exposes no Review decision, merge, or
+publish operation; those Organization authority actions require an Org
+administrator in the Review workflow. Organization is not represented by a
+synthetic Project.
 
-| operation | 必填字段 | 可选字段 |
+Operations:
+
+| Operation | Required fields | Optional fields |
 |---|---|---|
-| `create` | `path`、`body` | `description` |
-| `update` | `id`、`expected_hash`、`replacements` | `description` |
-| `rename` | `id`、`new_path` | `description` |
-| `delete` | `id` | `description` |
-| `discard` | `id` | 无 |
+| `create` | `path`, `body` | `description`, `resource` |
+| `update` | `id`, `expected_hash`, `replacements` | `description`, `resource` |
+| `rename` | `id`, `new_path` | `description`, `resource` |
+| `delete` | `id` | `description`, `resource` |
+| `discard` | `id` | `resource` |
 
-`store` 本身还可带 `resource`，当前唯一允许值是 `memory`，省略时默认使用该值。description 在当前 MCP 契约中是可选字段；其 Server merge 持久化仍有已知缺口，参见[统一 Memory 数据模型](/unified-memory-model#当前实现缺口)。
+`resource` defaults to `memory`. IDs may be `mem_`-prefixed or legacy `ctx_` / `rul_` / `wfl_` values; legacy
+IDs stay stable and opaque and are never rewritten.
 
-Create 示例：
+`delete` removes the addressed item from Local Effective Memory. When the item
+is an unpublished Create Draft, daemon normalizes the operation to `discard`;
+only deletion of an authoritative resource remains an open deletion Draft that
+can be submitted for Review.
+
+Example Create:
 
 ```json
 {
@@ -140,15 +170,17 @@ Create 示例：
     "store": {
       "create": {
         "path": "release/RELEASE.md",
-        "description": "项目发布步骤和发布前验证要求",
-        "body": "# 发布\n\n发布前先完成验证。"
+        "description": "Release procedure for the project",
+        "body": "# Release\n\nRun verification before publishing."
       }
     }
   }
 }
 ```
 
-Update 不接受完整的新正文。先 `load` 资源，再把返回的完整资源 `content_hash` 作为 `expected_hash`，提交一个或多个精确替换：
+Before updating a resource, call `load` and pass its complete-resource
+`content_hash` as `expected_hash`. An update contains one or more exact text
+replacements:
 
 ```json
 {
@@ -159,8 +191,8 @@ Update 不接受完整的新正文。先 `load` 资源，再把返回的完整�
         "expected_hash": "sha256:...",
         "replacements": [
           {
-            "old_text": "发布前先完成验证。",
-            "new_text": "发布前先完成构建、测试和文档验证。"
+            "old_text": "The original exact text.",
+            "new_text": "The replacement text."
           }
         ]
       }
@@ -169,135 +201,174 @@ Update 不接受完整的新正文。先 `load` 资源，再把返回的完整�
 }
 ```
 
-每个 `old_text` 必须在当前完整资源中恰好出现一次；同一请求内的替换不能重叠，并基于同一份原文原子应用。哈希过期、匹配缺失、匹配不唯一或区间重叠都会拒绝整个 update，不创建部分 Draft operation。`new_text` 可以为空字符串，用于删除文本。
+Every `old_text` must occur exactly once in the current Effective Memory
+resource. Replacements in one update must not overlap and are applied
+atomically against the same original content. A stale hash, missing match,
+ambiguous match, or overlap rejects the complete update without creating a
+Draft operation. `new_text` may be empty to delete text.
 
-`delete` 的目标如果只是尚未发布的 Create Draft，daemon 会把它归一化为 `discard`；只有删除已发布资源时才会保留待 Review 的 Delete Draft。`discard` 取消 Draft，不发布删除。
+Paths are free-form within the managed Memory namespace. The create
+`body` is the complete resource content; updates never accept a complete body
+from the agent — daemon materializes the verified replacements into the
+complete Draft result. Memory bodies are Markdown; whether a resource reads as
+a rule, workflow, or context is expressed by its content and path, not by a
+wire type. `description` is an optional semantic summary on create/update and
+an explicit retrieval field. Metaprompt and `mpf` are not valid wire values.
 
-成功结果包含本地 operation ID、Draft ID、队列状态和同步状态。它只表示变更已在本机持久化并排队同步：
+A successful result contains the local operation ID, Draft ID, queue status,
+and sync status. It means the operation is durably stored locally and queued
+for automatic synchronization. It does not mean a Review was merged or an
+authority Ref moved. Ordinary Project members may propose and submit changes,
+but only an Org owner or administrator may approve, reject, or merge an Org
+publication Review.
 
-- Draft 由当前绑定 Project 携带；
-- Draft 的权威目标是 Organization；
-- merge 前只影响该 Project 的 Effective Memory；
-- `store` 不能审批 Review、merge 或前移 Organization Ref。
+## Issue
 
-## `kanban`
+`kanban` manages durable native Issues and connects them to installation-local
+AgentRun observations without deriving semantic state from execution telemetry. An
+AgentRun records one root turn or subagent execution; its Stop does not advance
+an Issue.
 
-`kanban` 管理 Clumsies 原生 Issue，不等同于 GitHub Issues 等外部工单。Issue 记录语义状态；AgentRun 记录一次 root 或 subagent 执行。生命周期 hook 只观察 AgentRun，不会根据 Start、Stop 或失败事件自动推进 Issue。
+The input contains exactly one tagged operation under `op`:
 
-### revision 的属主
-
-`expected_revision` 不是一个全局通用版本号，必须按 operation 选择来源：
-
-| operation | `expected_revision` 属主 | 正确来源 |
+| Operation | Fields | Result |
 |---|---|---|
-| `update` | Issue | `list` / `get` 返回的 Issue `revision`，或上一次内容 mutation 返回的 `revision` |
-| `begin_work` | AgentRun | lifecycle hook 注入的当前 run revision |
-| `request_closure` | AgentRun | `begin_work` 或后续 run-changing operation 返回的 `run.revision` |
-| `unclaim` | Issue | `list` / `get` 返回的 Issue `revision`，或工作流 mutation 返回的 `state_revision` |
+| `list` | none | The bound Project's native Issue board and recent unlinked runs. |
+| `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, `changed_by_run_id`, state, revision, event timeline, and owning `project_id`. |
+| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | A new Todo Issue with an atomically allocated key. |
+| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | Updated Issue content without a status transition. |
+| `begin_work` | `issue_key`, Hook-issued `run_id`, and `expected_revision` | In Progress state plus the linked AgentRun. Agents cannot mint a manual run, and one session holds at most one In Progress Issue. |
+| `pause_issue` | `run_id`, `issue_key` | Paused state; the pausing run may later resume. |
+| `resume_issue` | `run_id`, `issue_key`; optional `takeover` | Back to In Progress. Non-owner resume requires `takeover`. |
+| `request_closure` | `issue_key`, `run_id`, `expected_revision`; optional `summary` | In Review state plus the linked AgentRun. Rejected when the Issue requires human verification and `verification_steps` is empty. |
+| `unclaim` | `issue_key`, `expected_revision`; optional `run_id` | Releases an In Progress, Paused, or abandoned Issue back to Todo without an AgentRun binding. Refused while an active run is working the Issue (that run must pause or request closure first); a human release omits `run_id`. |
+| `export` | `issue_key` | A deterministic, portable Markdown snapshot of the Issue. |
 
-不得把 Issue revision 传给 `begin_work`/`request_closure`，也不得把 AgentRun revision 传给 `update`/`unclaim`。
+`issue_id` uses `issue_` followed by 32 lowercase hexadecimal characters and is
+globally unique. This is the value copied from Kanban and passed to `get`.
+`issue_key` uses the exact `ISSUE-NNN` form and is only Project-local: exactly three
+digits, with `ISSUE-000` reserved as invalid. Repeating the same start is
+idempotent; changing an existing run association to another Issue is a
+conflict. `expected_revision` is the exact positive run revision injected by
+the lifecycle hook.
 
-### operation 一览
+`verification_level` is `agent_self`, `human_required`, or `mixed`, with
+`verification_steps` listing the human verification protocol for closure.
+`request_closure` is rejected when the level is not `agent_self` and
+`verification_steps` is empty; the Agent must first add the protocol with
+`update`.
 
-| operation | 必填字段 | 可选字段 | 语义 |
-|---|---|---|---|
-| `list` | 无 | 无 | 返回绑定 Project 的 Issue board 和近期未关联 AgentRun |
-| `get` | `issue_id`、`issue_key` 二选一 | 无 | 按全局 ID 或 Project-local key 读取完整 Issue |
-| `create` | `title`、`description` | `acceptance_criteria`、`verification_level`、`verification_steps`、`external_references`、`dependencies`、`blocking_facts` | 创建 Todo Issue |
-| `update` | `issue_key`、Issue `expected_revision`，以及至少一个语义字段 | 其余可更新语义字段 | 更新内容，不改变 board state |
-| `begin_work` | `issue_key`、Hook 发放的 `run_id`、AgentRun `expected_revision` | 无 | 将当前 run 绑定到 Issue 并进入 In Progress |
-| `pause_issue` | `run_id`、`issue_key` | 无 | 持有该 Issue 的 run 将它暂停 |
-| `resume_issue` | `run_id`、`issue_key` | `takeover` | 恢复 Paused Issue；其他 run 接管时必须显式传 `takeover: true` |
-| `request_closure` | `run_id`、AgentRun `expected_revision` | `issue_key`、`summary` | root run 请求关闭；目标以 run 当前绑定的 Issue 为准，`issue_key` 可省略 |
-| `unclaim` | `issue_key`、Issue `expected_revision`、`run_id` | 无 | 当前绑定 run 释放 In Progress/Paused Issue并将其放回 Todo |
-| `export` | `issue_key` | 无 | 导出确定性的 Markdown 快照，不创建 Memory Draft |
+`external_references` is a bounded array of objects with `kind` (`issue` or
+`pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
+empty list; omitting it on update preserves the current list; passing `[]`
+clears it. `list` and `get` return the normalized list.
 
-`unclaim.run_id` 在 MCP 契约中必填。daemon 的 Desktop 人工释放接口允许省略它，但该能力不属于 Agent-facing MCP。
+`dependencies` is a bounded array of `ISSUE-NNN` keys in the same Project that
+must be Done before this Issue can start. `blocking_facts` is a bounded array of
+checkable predicates: `fact_id` (stable identifier), `kind`
+(`host_capability` or `external`), optional `value`, `description`, and
+`satisfied`. Both follow the same patch semantics as `external_references`:
+omission preserves, `[]` clears. Dependency cycles, self-references,
+duplicates, and missing targets are rejected. `list` and `get` return each
+Issue's resolved dependency states, blocking facts, `blocked`, and concrete
+`blocking_reasons`, so an Agent can judge whether a Todo is actionable now.
 
-`request_closure.issue_key` 在 MCP 中可选。daemon 根据 `run_id` 的现有绑定确定目标 Issue；即使传入该字段，也不能用它改变目标。`request_closure` 仅允许 root AgentRun，subagent 不能请求关闭。
+On a successful root or subagent start, the lifecycle hook adds a short context
+message containing that agent's current `run_id` and revision. Use those exact
+values after deciding semantically whether the prompt continues an Issue,
+creates a new native Issue, or should not create one. Use `create` for durable
+work and `begin_work` only when it is the active line of work. Before finishing,
+a root Agent uses `request_closure` only after judging the linked Issue
+acceptance criteria satisfied. Subagents cannot request closure. Do not choose
+a current run from `list` by recency: concurrent runs make that inference
+ambiguous.
 
-### 标识与字段约束
+The optional closure summary is limited to 1,000 UTF-8 bytes. In Review
+(formerly called Closure Requested) is an Agent proposal. Agents cannot approve
+it; only the user's desktop Approve gate makes the Issue Done. The board shows
+five columns — Todo, In Progress, In Review, Abandoned, Done — where Abandoned
+is a derived bucket of In Progress Issues whose AgentRun claim silently died
+(stale, no active run, 24h of inactivity); the daemon never stores an
+"abandoned" state. A Paused Issue keeps its place in In Progress with a paused
+badge, and its handling Agent may resume it or a new handler may take it over
+with `takeover`.
 
-- `issue_id` 为 `issue_` 加 32 个小写十六进制字符，全局唯一。按 `issue_id` 调用 `get` 时，结果会返回其真实 `project_id`。
-- `issue_key` 为 Project-local 的 `ISSUE-NNN`，必须恰好三位数字，`ISSUE-000` 无效。
-- `run_id` 必须来自受信任的 host lifecycle hook。Agent 不能自行编造，也不能从 `list` 的“最近 run”推断当前身份。
-- `verification_level` 为 `agent_self`、`human_required` 或 `mixed`；创建时省略则默认为 `agent_self`。
-- `request_closure.summary` 最多 1,000 个 UTF-8 bytes。
-- `external_references` 最多 16 项，每项包含 `kind = issue | pull_request` 和不含嵌入凭据的绝对 HTTP(S) `url`。
-- `dependencies` 最多 16 个同 Project `ISSUE-NNN`。自依赖、重复、缺失目标和依赖环都会被拒绝；所有依赖 Done 前，Issue 为 blocked。
-- `blocking_facts` 最多 16 项，包含稳定 `fact_id`、`kind = host_capability | external`、说明、可选 value 和 `satisfied`。未满足事实会使 Issue 为 blocked。
-
-对 `external_references`、`dependencies`、`blocking_facts` 和其他数组字段，Create 省略表示空数组；Update 省略表示保留当前值，显式传 `[]` 表示清空。
-
-### 工作流示例
-
-先读取 board，避免重复创建或重复认领：
-
-```json
-{
-  "op": {
-    "list": {}
-  }
-}
-```
-
-开始工作时，使用 hook 注入的 `run_id` 与 AgentRun revision：
-
-```json
-{
-  "op": {
-    "begin_work": {
-      "issue_key": "ISSUE-123",
-      "run_id": "arun_123",
-      "expected_revision": 1
-    }
-  }
-}
-```
-
-完成验收判断后，root Agent 使用 `begin_work` 响应中的最新 `run.revision` 请求关闭。假设该值为 `2`，这里省略可选的 `issue_key`：
+Example:
 
 ```json
 {
   "op": {
     "request_closure": {
-      "run_id": "arun_123",
-      "expected_revision": 2,
-      "summary": "验收标准已满足，构建与文档检查通过。"
-    }
-  }
-}
-```
-
-`request_closure` 只把 Issue 移到 In Review。Agent 无权批准；用户在 Desktop 的 Approve gate 通过后，Issue 才成为 Done。需要人工验证的 `human_required` 或 `mixed` Issue 如果没有 `verification_steps`，请求关闭会被拒绝。
-
-另一种分支是：Issue 仍处于 In Progress 或 Paused 时，当前 run 决定放弃认领。此时 `unclaim` 必须使用 Issue revision；工作流 mutation 在 `state_revision` 中返回它。假设 `begin_work` 返回的 `state_revision` 为 `7`：
-
-```json
-{
-  "op": {
-    "unclaim": {
       "issue_key": "ISSUE-123",
       "run_id": "arun_123",
-      "expected_revision": 7
+      "summary": "Acceptance criteria are satisfied.",
+      "expected_revision": 4
     }
   }
 }
 ```
 
-成功后，Issue 回到 Todo，run 与 Issue 的绑定解除。
+`get` resolves its global ID independently and returns the owning Project. List
+and mutations use the Project binding established for the MCP process. For
+`begin_work` and `request_closure`, the MCP proxy injects that Project ID into
+the private daemon request; a run from another Project is not visible or
+mutable even if its ID and revision are known. The resident daemon owns Issue
+discovery, AgentRun association, and board-state derivation; the proxy only
+validates the tagged input and forwards the operation.
 
-### AgentRun 与 Issue 的边界
+## Daemon operations
 
-- hook 在 root 或 subagent start 成功后注入当前 `run_id` 与 revision；这些值只属于该次执行。
-- 同一个 session 最多持有一个 In Progress Issue。开始另一个 Issue 前，先 pause、request closure 或 unclaim 当前 Issue。
-- `begin_work` 重试同一绑定是幂等的；把已有 run 改绑到另一个 Issue 会冲突。
-- Stop、StopFailure、SubagentStop 与 SessionEnd 是运行遥测，不自动把 Issue 移到 In Review、Done 或 Todo。
-- 私有 hook bridge 不保存原始 hook JSON、prompt、transcript、tool payload 或 assistant message。
-- board 中的 blocked、blocking reasons 和失联 run 状态是 daemon 投影；它们帮助 Agent 判断是否可开始工作，但不代替显式语义转换。
+| XPC method | Consumer |
+|---|---|
+| `activate_memory` | MCP `activate` |
+| `load_memory` | MCP `load` |
+| `store_draft_operation` | MCP `store`, Desktop, and other clients |
+| `list_issue_board` | MCP `kanban.list` and Desktop |
+| `get_issue_detail` | Native Issue detail lookup for local clients |
+| `get_issue` | MCP `kanban.get` (by `issue_id` or `issue_key`) |
+| `export_issue` | MCP `kanban.export` |
+| `start_issue_work` | MCP `kanban.begin_work` |
+| `pause_issue` | MCP `kanban.pause_issue` |
+| `resume_issue` | MCP `kanban.resume_issue` |
+| `request_issue_closure` | MCP `kanban.request_closure` |
+| `unclaim_issue` | MCP `kanban.unclaim`, Desktop Release |
+| `apply_issue_gate` | Desktop Approve / Request Changes / Reopen gates |
+| `remove_issue` | Desktop Archive / Delete cleanup |
+| `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
+| `search_index_status` | Desktop diagnostics and tests |
+| `rebuild_search_index` | Recovery, tests, and development tooling |
 
-## 私有 daemon 边界
+Lifecycle hooks do not call the agent-facing `kanban` tool. Adapter-managed
+scripts pipe the host event to the private command
+`clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity`. The
+short-lived Rust proxy resolves the repository's daemon Project binding,
+reduces the host payload to bounded identifiers and lifecycle fields, and
+calls `record_agent_run_event`. It emits a bounded current-run context
+containing `run_id`, revision, and binding state after a successful root or
+subagent start. Managed adapters neither install nor synthesize a normal root
+`Stop`, and the proxy never blocks a host to force a closure decision.
+`StopFailure`, `SubagentStop`, and `SessionEnd` remain non-blocking lifecycle
+observations. All parsing, binding, IPC, and daemon failures remain fail-open.
 
-MCP operation 会映射到 daemon 的 `activate_memory`、`load_memory`、`store_draft_operation` 以及 Issue 查询/转换方法。Desktop 还使用审批、人工释放、归档、删除、检索诊断等私有 XPC 方法；它们不是额外 MCP 工具。
+The private bridge does not persist raw hook JSON, prompts, transcripts, tool
+payloads, or assistant messages. `record_agent_run_event` is not exposed as an
+MCP tool; agents use `kanban.begin_work` and `kanban.request_closure` for explicit
+semantic updates. Closure judgment is supplied by an opt-in skill or a
+manually maintained workflow, not by a lifecycle callback. Prompt text is not
+matched to an Issue automatically. The bridge accepts a legacy or manually
+forwarded normal `Stop` for compatibility, but records only AgentRun telemetry
+and never blocks or mutates an Issue.
 
-每次有效 `activate` 会基于同一候选轨迹写入一条本地 Retrieval Run，但不会改变 MCP 响应 schema。Retrieval Run、Evaluation Case 和评测导出属于 daemon/Desktop 诊断能力，参见[检索运行与评测](/retrieval-evaluation)，不会发送给 Server。
+Every valid `activate_memory` call also writes one local Retrieval Run from the
+same ranked candidate trace used for the response. This does not add fields to
+the MCP `activate` schema. Retrieval history, Evaluation Cases, and B1–B4
+exports are daemon/Desktop diagnostic APIs described in
+`docs/retrieval-evaluation.md`; they are not additional MCP tools and are never
+sent to Server.
+
+The default retrieval profile has no silent BM25-only, old substring-search,
+or fallback to an incompatible index. While a compatible replacement index is
+building, the previous ready generation remains queryable; the scheduler
+atomically publishes the new generation when it is complete. Model, vector,
+generation, and state failures remain
+explicit protocol errors.

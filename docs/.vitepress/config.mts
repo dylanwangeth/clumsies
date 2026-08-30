@@ -13,10 +13,11 @@ export default withMermaid(
     cleanUrls: true,
     lastUpdated: true,
     locales: {
-      "/": { label: "English", lang: "en-US" },
-      "/zh/": {
+      root: { label: "English", lang: "en-US" },
+      zh: {
         label: "中文",
         lang: "zh-CN",
+        link: "/zh/",
         themeConfig: {
           outline: {
             level: [2, 3],
@@ -24,9 +25,9 @@ export default withMermaid(
           },
           nav: [
             { text: "概览", link: "/zh/" },
-            { text: "工程文档", link: "/engineering-documents" },
-            { text: "系统架构", link: "/architecture" },
-            { text: "性能与验证", link: "/performance/" },
+            { text: "工程文档", link: "/zh/engineering-documents" },
+            { text: "系统架构", link: "/zh/architecture" },
+            { text: "性能与验证", link: "/zh/performance/" },
             { text: "使用指南", link: "/zh/guides/" }
           ],
           sidebar: [
@@ -42,30 +43,54 @@ export default withMermaid(
             {
               text: "当前工程文档",
               items: [
-                { text: "文档治理", link: "/engineering-documents" },
-                { text: "系统架构", link: "/architecture" },
-                { text: "统一 Memory 模型", link: "/unified-memory-model" },
-                { text: "macOS Memory 界面", link: "/macos-memory-ui" },
-                { text: "本地运行时", link: "/runtime" },
-                { text: "Server", link: "/server" },
-                { text: "MCP", link: "/mcp" },
-                { text: "Issue 看板需求", link: "/issue-board-requirements" },
-                { text: "Issue 看板设计", link: "/issue-board-design" },
-                { text: "Memory 检索与评测", link: "/retrieval-evaluation" },
-                { text: "Activity", link: "/recall" },
-                { text: "Reviews UI", link: "/reviews-ui-design" }
+                { text: "文档治理", link: "/zh/engineering-documents" },
+                { text: "产品概览", link: "/zh/overview" },
+                { text: "系统架构", link: "/zh/architecture" },
+                { text: "组织记忆", link: "/zh/artifact" },
+                { text: "项目", link: "/zh/workspace" },
+                { text: "统一 Memory 模型", link: "/zh/unified-memory-model" },
+                { text: "macOS Memory 界面", link: "/zh/macos-memory-ui" },
+                { text: "本地运行时", link: "/zh/runtime" },
+                { text: "服务端", link: "/zh/server" },
+                { text: "MCP 接口", link: "/zh/mcp" },
+                { text: "宿主适配", link: "/zh/adapter" },
+                { text: "Issue 看板需求", link: "/zh/issue-board-requirements" },
+                { text: "Issue 看板设计", link: "/zh/issue-board-design" },
+                { text: "Memory 检索与评测", link: "/zh/retrieval-evaluation" },
+                { text: "活动记录", link: "/zh/recall" },
+                { text: "Review 界面", link: "/zh/reviews-ui-design" },
+                { text: "代码库地图", link: "/zh/repos" }
               ]
             },
             {
               text: "性能与验证",
               items: [
-                { text: "专题索引", link: "/performance/" },
-                { text: "Server 热路径", link: "/performance/server-hot-path" },
-                { text: "macOS first-ready", link: "/performance/macos-first-ready" },
-                { text: "延迟模型与诊断", link: "/performance/latency-model" },
-                { text: "gzip 因果实验", link: "/performance/gzip-experiment" },
-                { text: "签名边界", link: "/performance/signing-boundary" },
-                { text: "验证证据台账", link: "/performance/evidence-ledger" }
+                { text: "专题索引", link: "/zh/performance/" },
+                { text: "服务端热路径", link: "/zh/performance/server-hot-path" },
+                { text: "macOS 首次就绪", link: "/zh/performance/macos-first-ready" },
+                { text: "延迟模型与诊断", link: "/zh/performance/latency-model" },
+                { text: "gzip 因果实验", link: "/zh/performance/gzip-experiment" },
+                { text: "签名边界", link: "/zh/performance/signing-boundary" },
+                { text: "验证证据台账", link: "/zh/performance/evidence-ledger" }
+              ]
+            },
+            {
+              text: "历史记录",
+              items: [
+                { text: "Project 权威切换", link: "/zh/project-authority-migration" },
+                { text: "Memory 存储边界迁移", link: "/zh/guides/rule-store-unification" },
+                { text: "Metaprompt 移除", link: "/zh/meta-prompt" },
+                { text: "已归档 Zig CLI", link: "/zh/guides/cli-commands" },
+                { text: "已归档 Zig TUI", link: "/zh/tui" },
+                { text: "已归档 Attestation 客户端", link: "/zh/attestation" }
+              ]
+            },
+            {
+              text: "参考资料",
+              items: [
+                { text: "索引", link: "/zh/reference/" },
+                { text: "认证与会话", link: "/zh/reference/auth" },
+                { text: "术语表", link: "/zh/glossary" }
               ]
             }
           ],
@@ -75,7 +100,14 @@ export default withMermaid(
           },
           lastUpdated: {
             text: "最后更新"
-          }
+          },
+          darkModeSwitchLabel: "外观",
+          lightModeSwitchTitle: "切换到浅色模式",
+          darkModeSwitchTitle: "切换到深色模式",
+          sidebarMenuLabel: "菜单",
+          returnToTopLabel: "返回顶部",
+          langMenuLabel: "切换语言",
+          skipToContentLabel: "跳到正文"
         }
       },
     },
@@ -114,6 +146,33 @@ export default withMermaid(
     themeConfig: {
       search: {
         provider: "local",
+        options: {
+          locales: {
+            zh: {
+              translations: {
+                button: {
+                  buttonText: "搜索",
+                  buttonAriaLabel: "搜索文档"
+                },
+                modal: {
+                  displayDetails: "显示详情",
+                  resetButtonTitle: "清除搜索",
+                  backButtonTitle: "关闭搜索",
+                  noResultsText: "没有找到相关结果",
+                  footer: {
+                    selectText: "选择",
+                    selectKeyAriaLabel: "回车键",
+                    navigateText: "切换",
+                    navigateUpKeyAriaLabel: "向上箭头",
+                    navigateDownKeyAriaLabel: "向下箭头",
+                    closeText: "关闭",
+                    closeKeyAriaLabel: "退出键"
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       outline: {
         level: [2, 3],
@@ -122,7 +181,7 @@ export default withMermaid(
       nav: [
         { text: "Overview", link: "/overview" },
         { text: "Engineering docs", link: "/engineering-documents" },
-        { text: "性能与验证", link: "/performance/" },
+        { text: "Performance", link: "/performance/" },
         { text: "Guides", link: "/guides/" },
         { text: "Reference", link: "/reference/" }
       ],
@@ -172,15 +231,15 @@ export default withMermaid(
           ]
         },
         {
-          text: "性能与验证",
+          text: "Performance and validation",
           items: [
-            { text: "专题索引", link: "/performance/" },
-            { text: "Server 热路径", link: "/performance/server-hot-path" },
+            { text: "Topic index", link: "/performance/" },
+            { text: "Server hot path", link: "/performance/server-hot-path" },
             { text: "macOS first-ready", link: "/performance/macos-first-ready" },
-            { text: "延迟模型与诊断", link: "/performance/latency-model" },
-            { text: "gzip 因果实验", link: "/performance/gzip-experiment" },
-            { text: "签名边界", link: "/performance/signing-boundary" },
-            { text: "验证证据台账", link: "/performance/evidence-ledger" }
+            { text: "Latency model and diagnosis", link: "/performance/latency-model" },
+            { text: "gzip causal experiment", link: "/performance/gzip-experiment" },
+            { text: "Signing boundary", link: "/performance/signing-boundary" },
+            { text: "Evidence ledger", link: "/performance/evidence-ledger" }
           ]
         },
         {

@@ -46,8 +46,8 @@ The collaboration flow is:
 5. an Organization owner/admin rejects it or approves and merges the complete Draft set atomically
 6. receive the new authority Commit
 
-When the target Ref advances, Desktop continuously shows **共享版本已有更新**.
-Viewing the candidate does not change the Draft. **合并最新版本** shows the
+When the target Ref advances, Desktop continuously shows **A shared update is available**.
+Viewing the candidate does not change the Draft. **Merge latest version** shows the
 Base/Current/Draft comparison and requires confirmation even when the result is
 clean. Conflicts use the same screen for manual resolution. The Draft remains
 editable throughout, and its old revision is retained when the result is
