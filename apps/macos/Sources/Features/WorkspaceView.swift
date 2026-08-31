@@ -142,7 +142,7 @@ struct WorkspaceView: View {
     @State private var issueSearchFocusRequest = 0
     @State private var reviewSearchQuery = ""
     @State private var reviewSearchFocusRequest = 0
-    @State private var reviewStatusFilter: ReviewStatusFilter = .open
+    @State private var reviewFilters = ReviewListFilters()
     @State private var pendingReviewToolbarAction: ReviewMenuAction?
 
     init(
@@ -579,8 +579,12 @@ struct WorkspaceView: View {
                     store: store,
                     reviews: filteredReviews,
                     searchQuery: reviewSearchQuery,
-                    statusFilter: $reviewStatusFilter,
-                    toolbarOwnership: reviewToolbarOwnership
+                    filters: $reviewFilters,
+                    toolbarOwnership: reviewToolbarOwnership,
+                    onClearFilters: {
+                        reviewFilters = ReviewListFilters(status: .all)
+                        reviewSearchQuery = ""
+                    }
                 )
                 .navigationDestination(for: ReviewRoute.self) { route in
                     ReviewDetailPage(
@@ -694,10 +698,10 @@ struct WorkspaceView: View {
     }
 
     private var filteredReviews: [ReviewRecord] {
-        let byStatus = store.reviews.filter { reviewStatusFilter.matches($0) }
+        let byFilters = store.reviews.filter(reviewFilters.matches)
         let needle = reviewSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
-        guard !needle.isEmpty else { return byStatus }
-        return byStatus.filter {
+        guard !needle.isEmpty else { return byFilters }
+        return byFilters.filter {
             "\($0.title) \($0.description) \($0.author.email) \($0.status)"
                 .localizedLowercase.contains(needle)
         }
@@ -884,7 +888,7 @@ struct WorkspaceView: View {
 
     private func reviewToolbarActionLabel(systemImage: String, isPending: Bool) -> some View {
         ZStack {
-            Image(systemName: systemImage)
+            ReviewSymbolImage(systemName: systemImage)
                 .opacity(isPending ? 0 : 1)
             if isPending {
                 ProgressView()
@@ -1592,7 +1596,7 @@ private struct SidebarDestinationLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: section.symbol)
+            ReviewSymbolImage(systemName: section.symbol)
                 .frame(width: 16)
             Text(section.title)
             Spacer(minLength: 8)

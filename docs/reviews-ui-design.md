@@ -35,37 +35,38 @@ space, making nonexistent Reviews look like blank rows. Pin the separator's
 leading alignment to the row rather than allowing trailing metadata such as the
 relative update time to shorten it.
 
-The list is a review queue. Each row answers five scan questions: what changed,
-where it belongs, who submitted it, when its Review record last changed, and
-what the current viewer can do next:
+The list is a review queue. Each row answers four scan questions: what changed,
+where it belongs, who submitted it, and what needs attention next. Keep the row
+to two lines:
 
 ```
-review title                     symbol + one semantic workflow state
-description excerpt
-Submitted by author for project · updated relative time
+[lifecycle icon] review title                   optional queue signal
+Submitted by author for project                 updated relative time
 ```
 
-- Keep descriptions to a one-line excerpt; the complete description stays in
-  the detail page.
-- Express Project, author, and relative update time as one muted sentence in the
-  GitHub Issue metadata style. The author is the submitter, not necessarily the
-  person who last updated the Review record, so never label the update as theirs.
-  If a Project name or timestamp cannot be resolved, omit the value; never expose
-  an opaque Project ID or raw protocol timestamp.
-- Resolve one workflow state for the row. Precedence is `Merged`, `Conflicts`,
-  `Update Required`/`Out of Date`, then the viewer-aware lifecycle state:
-  `Needs Review`, legacy `Ready to Merge`/`Approved`, or
-  `Resubmit`/`Awaiting Author`.
+- Keep the complete description in the detail page; do not add a list excerpt.
+- Express Project and author as muted metadata on the left and the relative
+  Review record update time independently on the right. The author is the
+  submitter, not necessarily the person who last updated the record, so never
+  label the update as theirs. If a Project name or timestamp cannot be
+  resolved, omit the value; never expose an opaque Project ID or raw protocol
+  timestamp.
+- Put one lifecycle icon before the title. Open uses the pull-request icon,
+  Merged uses the merge icon, and Rejected uses a red pull-request icon. The
+  icon has an accessibility status name and semantic color, so color is never
+  the only signal. Do not repeat Open or Merged as row text.
+- Resolve an optional queue signal separately. Precedence is `Conflicts`,
+  `Update Required`/`Out of Date`, then legacy `Ready to Merge`, or
+  `Resubmit`/`Awaiting Author`. Stable lifecycle labels such as `Needs Review`,
+  `Approved`, and `Merged` are not repeated on the right.
   A merged Review never displays stale merely because the merge advanced the
   current Project ref. `Ready to Merge` applies only to historical two-step
   approvals and also requires a nonempty approved result hash; capability alone
   does not make a legacy approval mergeable.
-- The workflow state is a plain system `Label` with an SF Symbol and semantic
-  foreground color. It is neither a button nor a capsule. Never stack a status
-  icon and freshness icon that require hover to distinguish. Always show the
-  resolved state because it anchors the row's workflow meaning even inside a
-  filtered scope. At narrow widths, the label may reduce to its symbol so the
-  primary Review title retains priority.
+- A queue signal is a plain system label with semantic foreground color. It is
+  neither a button nor a capsule. At narrow widths, the label may reduce to its
+  symbol so the primary Review title retains priority. Lifecycle and queue
+  signals remain separate accessibility elements with explicit names.
 - Let macOS draw separators, focus, hover/press feedback, and inactive-window
   state. Do not draw an outer list border, per-row cards, or empty-space zebra
   stripes. `NavigationLink` and the stack path are the only navigation state;
@@ -73,13 +74,19 @@ Submitted by author for project · updated relative time
   twice during a programmatic deep-link.
 - The status Filter menu belongs to the list page's leading/navigation toolbar
   area. Its collapsed label communicates the selected scope; counts remain in
-  the menu, help, and accessibility value. The menu contains Open, Approved
-  (for historical records), Rejected, Merged, and All with counts.
+  the menu, help, and accessibility value. It defaults to Open and contains
+  Open, Rejected, Merged, and All with counts. Historical Approved records
+  remain available through All; they do not retain a dedicated filter.
+- The fixed list header provides native Author and Project menus. These filters
+  combine with status and search. Do not add a Label filter until Labels exist
+  in the Review domain model.
 - Search is an independent window-level action and remains the trailing-most
   Review tool. Sync and decision actions are not grouped with Filter.
 - Loading without cached Reviews uses a labeled `ProgressView`. Existing cached
   rows remain visible during refresh. Empty and filtered-empty states use
-  `ContentUnavailableView`; filtered-empty includes `Show All Reviews`.
+  `ContentUnavailableView`; a search miss uses the native search-empty state.
+  Other filtered-empty states include `Clear Filters`, which resets status,
+  author, Project, and search together.
 
 The GitHub pull-request list informs the information order — title first,
 scope/author/time second, and a small number of workflow signals — but not its

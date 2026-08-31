@@ -1,9 +1,7 @@
-import AppKit
 import SwiftUI
 
 enum ReviewStatusFilter: String, CaseIterable, Identifiable {
     case open
-    case approved
     case rejected
     case merged
     case all
@@ -13,7 +11,6 @@ enum ReviewStatusFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .open: "Open"
-        case .approved: "Approved"
         case .rejected: "Rejected"
         case .merged: "Merged"
         case .all: "All"
@@ -23,7 +20,6 @@ enum ReviewStatusFilter: String, CaseIterable, Identifiable {
     var symbolName: String {
         switch self {
         case .open: "clock"
-        case .approved: "checkmark.circle"
         case .rejected: "xmark.circle"
         case .merged: "arrow.triangle.merge"
         case .all: "tray.full"
@@ -36,6 +32,18 @@ enum ReviewStatusFilter: String, CaseIterable, Identifiable {
 
     func count(in reviews: [ReviewRecord]) -> Int {
         reviews.lazy.filter(matches).count
+    }
+}
+
+struct ReviewListFilters: Equatable {
+    var status: ReviewStatusFilter = .open
+    var authorId: String? = nil
+    var projectId: String? = nil
+
+    func matches(_ review: ReviewRecord) -> Bool {
+        status.matches(review)
+            && (authorId == nil || review.author.userId == authorId)
+            && (projectId == nil || review.projectId == projectId)
     }
 }
 
@@ -137,72 +145,77 @@ struct ReviewListPage: View {
     @ObservedObject var store: WorkspaceStore
     let reviews: [ReviewRecord]
     let searchQuery: String
-    @Binding var statusFilter: ReviewStatusFilter
+    @Binding var filters: ReviewListFilters
     let toolbarOwnership: ReviewToolbarOwnership
+    let onClearFilters: () -> Void
 
     var body: some View {
-        Group {
-            switch ReviewListContentState.resolve(
-                loadState: store.reviewLoadState,
-                totalCount: store.reviews.count,
-                visibleCount: reviews.count
-            ) {
-            case .loading:
-                ProgressView("Loading Reviews…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .failed:
-                ContentUnavailableView {
-                    Label("Reviews Unavailable", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(store.reviewLoadState.failureMessage ?? "Reviews could not be loaded.")
-                } actions: {
-                    Button("Try Again") { Task { await store.reload() } }
-                }
-            case .empty:
-                ContentUnavailableView(
-                    "No Reviews",
-                    systemImage: "checkmark.bubble",
-                    description: Text("Reviews created from synchronized drafts appear here.")
-                )
-            case .filteredEmpty:
-                if !trimmedSearchQuery.isEmpty {
-                    ContentUnavailableView.search(text: trimmedSearchQuery)
-                } else {
+        VStack(spacing: 0) {
+            if !store.reviews.isEmpty {
+                filterBar
+            }
+
+            Group {
+                switch ReviewListContentState.resolve(
+                    loadState: store.reviewLoadState,
+                    totalCount: store.reviews.count,
+                    visibleCount: reviews.count
+                ) {
+                case .loading:
+                    ProgressView("Loading Reviews…")
+                case .failed:
                     ContentUnavailableView {
-                        Label("No \(statusFilter.title) Reviews", systemImage: statusFilter.symbolName)
+                        Label("Reviews Unavailable", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text("No Reviews match the current status filter.")
+                        Text(store.reviewLoadState.failureMessage ?? "Reviews could not be loaded.")
                     } actions: {
-                        Button("Show All Reviews") {
-                            statusFilter = .all
+                        Button("Try Again") { Task { await store.reload() } }
+                    }
+                case .empty:
+                    ContentUnavailableView(
+                        "No Reviews",
+                        systemImage: "checkmark.bubble",
+                        description: Text("Reviews created from synchronized drafts appear here.")
+                    )
+                case .filteredEmpty:
+                    if !trimmedSearchQuery.isEmpty {
+                        ContentUnavailableView.search(text: trimmedSearchQuery)
+                    } else {
+                        ContentUnavailableView {
+                            Label("No Matching Reviews", systemImage: "line.3.horizontal.decrease.circle")
+                        } description: {
+                            Text("No Reviews match the current filters.")
+                        } actions: {
+                            Button("Clear Filters", action: onClearFilters)
                         }
                     }
-                }
-            case .content:
-                List {
-                    ForEach(reviews) { review in
-                        let route = ReviewRoute(reviewId: review.id)
-                        let state = ReviewQueueStatePresentation.resolve(
-                            review: review,
-                            isAuthor: store.isReviewAuthor(review),
-                            canMerge: store.canMergeReviews
-                        )
-                        NavigationLink(value: route) {
-                            ReviewRow(
+                case .content:
+                    List {
+                        ForEach(reviews) { review in
+                            let route = ReviewRoute(reviewId: review.id)
+                            let state = ReviewQueueStatePresentation.resolve(
                                 review: review,
-                                projectName: projectName(for: review),
-                                state: state
+                                isAuthor: store.isReviewAuthor(review),
+                                canMerge: store.canMergeReviews
                             )
+                            NavigationLink(value: route) {
+                                ReviewRow(
+                                    review: review,
+                                    projectName: projectName(for: review),
+                                    state: state
+                                )
+                            }
+                            .listRowSeparator(.visible)
+                            .accessibilityIdentifier("review-row-\(review.id)")
                         }
-                        .listRowSeparator(.visible)
-                        .accessibilityIdentifier("review-row-\(review.id)")
                     }
-                }
-                .listStyle(.inset)
-                .safeAreaInset(edge: .bottom) {
-                    ReviewCollectionStatusBanner(store: store)
+                    .listStyle(.inset)
+                    .safeAreaInset(edge: .bottom) {
+                        ReviewCollectionStatusBanner(store: store)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle("Reviews")
         .toolbar {
@@ -210,10 +223,127 @@ struct ReviewListPage: View {
                 ToolbarItem(id: "review.filter", placement: .navigation) {
                     ReviewStatusFilterControl(
                         reviews: store.reviews,
-                        selection: $statusFilter
+                        selection: $filters.status
                     )
                 }
             }
+        }
+    }
+
+    private var filterBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Spacer()
+
+                Menu(authorFilterTitle) {
+                    Button {
+                        filters.authorId = nil
+                    } label: {
+                        filterOption("All Authors", isSelected: filters.authorId == nil)
+                    }
+
+                    if authors.isEmpty {
+                        Button("No Authors") {}
+                            .disabled(true)
+                    } else {
+                        Divider()
+                        ForEach(authors, id: \.userId) { author in
+                            Button {
+                                filters.authorId = author.userId
+                            } label: {
+                                filterOption(
+                                    authorName(author),
+                                    isSelected: filters.authorId == author.userId
+                                )
+                            }
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Filter Reviews by Author")
+                .accessibilityLabel("Author Filter")
+                .accessibilityValue(authorFilterTitle)
+
+                Menu(projectFilterTitle) {
+                    Button {
+                        filters.projectId = nil
+                    } label: {
+                        filterOption("All Projects", isSelected: filters.projectId == nil)
+                    }
+
+                    if projects.isEmpty {
+                        Button("No Projects") {}
+                            .disabled(true)
+                    } else {
+                        Divider()
+                        ForEach(projects) { project in
+                            Button {
+                                filters.projectId = project.id
+                            } label: {
+                                filterOption(
+                                    project.name,
+                                    isSelected: filters.projectId == project.id
+                                )
+                            }
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Filter Reviews by Project")
+                .accessibilityLabel("Project Filter")
+                .accessibilityValue(projectFilterTitle)
+            }
+            .controlSize(.small)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+
+            Divider()
+        }
+        .background(.bar)
+    }
+
+    private var authors: [UserReference] {
+        Dictionary(
+            store.reviews.map { ($0.author.userId, $0.author) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        .values
+        .sorted {
+            authorName($0).localizedStandardCompare(authorName($1)) == .orderedAscending
+        }
+    }
+
+    private var projects: [ProjectState] {
+        let reviewProjectIds = Set(store.reviews.map(\.projectId))
+        return store.projects.filter { reviewProjectIds.contains($0.id) }
+    }
+
+    private var authorFilterTitle: String {
+        guard let author = authors.first(where: { $0.userId == filters.authorId }) else {
+            return "Author"
+        }
+        return "Author: \(authorName(author))"
+    }
+
+    private var projectFilterTitle: String {
+        guard let project = projects.first(where: { $0.id == filters.projectId }) else {
+            return "Projects"
+        }
+        return "Project: \(project.name)"
+    }
+
+    private func authorName(_ author: UserReference) -> String {
+        author.displayName ?? author.email
+    }
+
+    @ViewBuilder
+    private func filterOption(_ title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
         }
     }
 
@@ -283,6 +413,7 @@ struct ReviewQueueStatePresentation: Equatable {
     enum Tone: Equatable {
         case neutral
         case positive
+        case done
         case warning
         case negative
 
@@ -290,6 +421,7 @@ struct ReviewQueueStatePresentation: Equatable {
             switch self {
             case .neutral: .secondary
             case .positive: .green
+            case .done: .purple
             case .warning: .orange
             case .negative: .red
             }
@@ -310,7 +442,7 @@ struct ReviewQueueStatePresentation: Equatable {
             return .init(
                 title: "Merged",
                 symbolName: "arrow.triangle.merge",
-                tone: .neutral,
+                tone: .done,
                 isQueueSignal: false
             )
         }
@@ -386,7 +518,12 @@ struct ReviewRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
+                ReviewSymbolImage(systemName: lifecycleSymbolName)
+                    .foregroundStyle(lifecycleColor)
+                    .padding(.top, 2)
+                    .help(lifecycleTitle)
+
                 Text(review.title)
                     .font(.body.weight(.medium))
                     .lineLimit(2)
@@ -395,33 +532,43 @@ struct ReviewRow: View {
 
                 Spacer(minLength: 8)
 
-                ViewThatFits(in: .horizontal) {
-                    Label(state.title, systemImage: state.symbolName)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                if state.isQueueSignal {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 4) {
+                            ReviewSymbolImage(systemName: state.symbolName)
+                            Text(state.title)
+                        }
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
 
-                    Image(systemName: state.symbolName)
+                        ReviewSymbolImage(systemName: state.symbolName)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(state.tone.color)
+                    .help(state.title)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(state.title)
                 }
-                .font(.caption)
-                .foregroundStyle(state.tone.color)
-                .help(state.title)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(state.title)
             }
 
-            if !description.isEmpty {
-                Text(description)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                metadata
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .help(review.description)
-            }
+                    .help(metadataHelp)
 
-            metadata
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .help(metadataHelp)
+                Spacer(minLength: 8)
+
+                if let updatedAt = IssueTiming.date(from: review.updatedAt) {
+                    Text(updatedAt, style: .relative)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .help(metadataHelp)
+                }
+            }
         }
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -435,10 +582,6 @@ struct ReviewRow: View {
         review.author.displayName ?? review.author.email
     }
 
-    private var description: String {
-        review.description.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var context: String {
         guard let projectName, !projectName.isEmpty else { return author }
         return "\(projectName) · \(author)"
@@ -449,10 +592,32 @@ struct ReviewRow: View {
         if let projectName, !projectName.isEmpty {
             text = text + Text(" for \(projectName)")
         }
-        if let updatedAt = IssueTiming.date(from: review.updatedAt) {
-            text = text + Text(" · updated ") + Text(updatedAt, style: .relative)
-        }
         return text
+    }
+
+    private var lifecycleSymbolName: String {
+        switch review.status {
+        case "merged": "arrow.triangle.merge"
+        case "approved": "checkmark.circle"
+        default: "checkmark.bubble"
+        }
+    }
+
+    private var lifecycleColor: Color {
+        switch review.status {
+        case "merged": .purple
+        case "rejected": .red
+        default: .green
+        }
+    }
+
+    private var lifecycleTitle: String {
+        switch review.status {
+        case "merged": "Merged Review"
+        case "approved": "Approved Review"
+        case "rejected": "Rejected Review"
+        default: "Open Review"
+        }
     }
 
     private var metadataHelp: String {
@@ -464,7 +629,8 @@ struct ReviewRow: View {
     private var accessibilityText: String {
         let relative = IssueTiming.relativeText(review.updatedAt, relativeTo: .now)
         let time = relative.map { ", updated \($0)" } ?? ""
-        return "\(review.title), \(state.title), \(context)\(time)"
+        let queueState = state.isQueueSignal ? ", \(state.title)" : ""
+        return "\(review.title), \(lifecycleTitle)\(queueState), \(context)\(time)"
     }
 }
 
@@ -487,7 +653,7 @@ struct ReviewStatusIndicator: View {
             Text(status.capitalized)
                 .foregroundStyle(.secondary)
         } icon: {
-            Image(systemName: symbol)
+            ReviewSymbolImage(systemName: symbol)
                 .foregroundStyle(color)
         }
         .font(.caption)
@@ -497,7 +663,7 @@ struct ReviewStatusIndicator: View {
 
     private var symbol: String {
         switch status {
-        case "open": "clock"
+        case "open": "checkmark.bubble"
         case "approved": "checkmark.circle"
         case "rejected": "xmark.circle"
         case "merged": "arrow.triangle.merge"
@@ -507,10 +673,10 @@ struct ReviewStatusIndicator: View {
 
     private var color: Color {
         switch status {
-        case "open": .secondary
+        case "open": .green
         case "approved": .green
         case "rejected": .red
-        case "merged": .secondary
+        case "merged": .purple
         default: .secondary
         }
     }
@@ -802,7 +968,27 @@ struct ReviewDetailPage: View {
 
                 Spacer(minLength: 16)
 
-                ReviewStatusIndicator(status: review.status)
+                if review.status == "merged", let decider = review.decidedBy {
+                    HStack(spacing: 5) {
+                        ReviewStatusIndicator(status: review.status)
+                        Text("by")
+                            .foregroundStyle(.secondary)
+                        UserIdentityLabel(
+                            account: decider,
+                            displayName: decider.displayName ?? decider.email
+                        )
+                    }
+                    .font(.caption)
+                    .help(
+                        IssueTiming.absoluteText(review.decidedAt).map {
+                            "Merged by \(decider.displayName ?? decider.email) at \($0)"
+                        } ?? "Merged by \(decider.displayName ?? decider.email)"
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Merged by \(decider.displayName ?? decider.email)")
+                } else {
+                    ReviewStatusIndicator(status: review.status)
+                }
 
                 Button(action: toggleGeneralComments) {
                     Image(systemName: reviewWideCommentCount == 0 ? "bubble.badge.plus" : "bubble")
@@ -879,25 +1065,31 @@ struct ReviewDetailPage: View {
     }
 
     private func decisionSummary(_ review: ReviewRecord) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Image(systemName: decisionSymbol(review.status))
-                    .foregroundStyle(decisionColor(review.status))
-                Text(decisionTitle(review.status))
-                    .font(.callout.weight(.semibold))
-                if let decider = review.decidedBy {
-                    Text("· Decision by \(decider.displayName ?? decider.email)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let decidedAt = review.decidedAt,
-                   let relativeDecisionTime = IssueTiming.relativeText(decidedAt, relativeTo: .now) {
-                    Text("· \(relativeDecisionTime)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help(IssueTiming.absoluteText(decidedAt).map {
-                            "Decision recorded at \($0)"
-                        } ?? "Decision time")
+        let relativeDecisionTime = review.decidedAt.flatMap {
+            IssueTiming.relativeText($0, relativeTo: .now)
+        }
+        return VStack(alignment: .leading, spacing: 7) {
+            if review.status != "merged" {
+                HStack(spacing: 7) {
+                    Image(systemName: decisionSymbol(review.status))
+                        .foregroundStyle(decisionColor(review.status))
+                    Text(decisionTitle(review.status))
+                        .font(.callout.weight(.semibold))
+                    if let decider = review.decidedBy {
+                        let deciderName = decider.displayName ?? decider.email
+                        Text("· Decision by \(deciderName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let decidedAt = review.decidedAt,
+                       let relativeDecisionTime {
+                        Text("· \(relativeDecisionTime)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(IssueTiming.absoluteText(decidedAt).map {
+                                "Decision recorded at \($0)"
+                            } ?? "Decision time")
+                    }
                 }
             }
 
@@ -908,26 +1100,6 @@ struct ReviewDetailPage: View {
                     .textSelection(.enabled)
             }
 
-            if let hash = review.approvedResultHash, !hash.isEmpty {
-                HStack(spacing: 6) {
-                    Text("Result")
-                        .foregroundStyle(.secondary)
-                    Text(hash)
-                        .font(.caption.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Button {
-                        copy(hash)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Copy result hash")
-                    .accessibilityLabel("Copy result hash")
-                }
-                .font(.caption)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1233,11 +1405,6 @@ struct ReviewDetailPage: View {
             original: sources.baseContent ?? "",
             modified: proposed
         )
-    }
-
-    private func copy(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func decisionTitle(_ status: String) -> String {

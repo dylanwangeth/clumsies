@@ -107,13 +107,38 @@ final class WorkspaceNavigationTests: XCTestCase {
     func testReviewStatusFilterMatchesByStatus() {
         let all = ReviewStatusFilter.allCases
         let open = reviewRecord(status: "open")
+        let historicalApproved = reviewRecord(status: "approved")
         XCTAssertTrue(ReviewStatusFilter.open.matches(open))
-        XCTAssertFalse(ReviewStatusFilter.approved.matches(open))
         XCTAssertTrue(ReviewStatusFilter.all.matches(open))
         XCTAssertEqual(ReviewStatusFilter.open.count(in: [open]), 1)
-        XCTAssertEqual(ReviewStatusFilter.approved.count(in: [open]), 0)
         XCTAssertEqual(ReviewStatusFilter.all.count(in: [open]), 1)
-        XCTAssertEqual(all.count, 5)
+        XCTAssertNil(ReviewStatusFilter(rawValue: "approved"))
+        XCTAssertTrue(ReviewStatusFilter.all.matches(historicalApproved))
+        XCTAssertEqual(all.count, 4)
+    }
+
+    func testReviewListFiltersDefaultToOpenAndCombineAuthorAndProject() {
+        let reviews = [
+            reviewRecord(status: "open", id: "alice-p1", projectId: "p1", authorId: "alice"),
+            reviewRecord(status: "open", id: "alice-p2", projectId: "p2", authorId: "alice"),
+            reviewRecord(status: "open", id: "bob-p1", projectId: "p1", authorId: "bob"),
+            reviewRecord(status: "merged", id: "merged", projectId: "p1", authorId: "alice"),
+        ]
+        var filters = ReviewListFilters()
+
+        XCTAssertEqual(filters.status, .open)
+        XCTAssertNil(filters.authorId)
+        XCTAssertNil(filters.projectId)
+        XCTAssertEqual(reviews.filter(filters.matches).map(\.id), ["alice-p1", "alice-p2", "bob-p1"])
+
+        filters.authorId = "alice"
+        XCTAssertEqual(reviews.filter(filters.matches).map(\.id), ["alice-p1", "alice-p2"])
+
+        filters.projectId = "p1"
+        XCTAssertEqual(reviews.filter(filters.matches).map(\.id), ["alice-p1"])
+
+        filters.status = .merged
+        XCTAssertEqual(reviews.filter(filters.matches).map(\.id), ["merged"])
     }
 
     func testReviewQueueStatePrioritizesDecisionBlockersAndViewerAction() {
@@ -130,7 +155,7 @@ final class WorkspaceNavigationTests: XCTestCase {
             .init(
                 title: "Merged",
                 symbolName: "arrow.triangle.merge",
-                tone: .neutral,
+                tone: .done,
                 isQueueSignal: false
             )
         )
@@ -420,11 +445,11 @@ final class WorkspaceNavigationTests: XCTestCase {
     func testReviewStatusFiltersKeepServerStatusOrderAndTitles() {
         XCTAssertEqual(
             ReviewStatusFilter.allCases.map(\.rawValue),
-            ["open", "approved", "rejected", "merged", "all"]
+            ["open", "rejected", "merged", "all"]
         )
         XCTAssertEqual(
             ReviewStatusFilter.allCases.map(\.title),
-            ["Open", "Approved", "Rejected", "Merged", "All"]
+            ["Open", "Rejected", "Merged", "All"]
         )
     }
 
@@ -2067,18 +2092,20 @@ final class WorkspaceNavigationTests: XCTestCase {
         approvedResultHash: String? = nil,
         id: String = UUID().uuidString,
         version: Int = 1,
-        currentCommitId: String? = nil
+        currentCommitId: String? = nil,
+        projectId: String = "prj",
+        authorId: String = "u"
     ) -> ReviewRecord {
         ReviewRecord(
             id: id,
-            projectId: "prj",
+            projectId: projectId,
             draftId: "draft",
             title: "Review title",
             description: "",
             author: UserReference(
-                userId: "u",
-                email: "u@example.com",
-                displayName: "Reviewer",
+                userId: authorId,
+                email: "\(authorId)@example.com",
+                displayName: authorId == "u" ? "Reviewer" : authorId.capitalized,
                 avatarUrl: nil,
                 role: "member"
             ),
