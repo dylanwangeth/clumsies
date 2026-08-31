@@ -1942,22 +1942,19 @@ struct DraftReconciliationView: View {
 
     @ViewBuilder
     private var cleanDiff: some View {
-        if candidate.hasDraftResultChanges {
-            SplitDiffView(
-                original: text(in: candidate.draftState),
-                modified: text(in: resultState),
-                originalTitle: "Current Draft",
-                modifiedTitle: "Updated Draft",
-                originalPath: path(in: candidate.draftState),
-                modifiedPath: path(in: resultState)
+        let states = candidate.postSyncDiffStates
+        if states.base != states.draft {
+            reconciliationDiff(
+                from: states.base,
+                to: states.draft,
+                title: "Shared Version → Updated Draft"
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView(
-                "No Changes to This File",
+                "No Draft Changes",
                 systemImage: "doc.text",
                 description: Text(
-                    "The shared project changed elsewhere. Updating keeps this draft unchanged and moves it to the latest shared version."
+                    "Updating moves this draft to the latest shared version without leaving changes to this file."
                 )
             )
         }
@@ -1989,13 +1986,10 @@ struct DraftReconciliationView: View {
             Divider()
 
             VSplitView {
-                SplitDiffView(
-                    original: text(in: candidate.currentState),
-                    modified: text(in: resolvedState),
-                    originalTitle: "Shared Version",
-                    modifiedTitle: "Resolution Preview",
-                    originalPath: path(in: candidate.currentState),
-                    modifiedPath: path(in: resolvedState)
+                reconciliationDiff(
+                    from: candidate.currentState,
+                    to: resolvedState,
+                    title: "Shared Version → Resolution Preview"
                 )
                 .frame(minHeight: 220, maxHeight: .infinity)
 
@@ -2004,6 +1998,52 @@ struct DraftReconciliationView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func reconciliationDiff(
+        from originalState: ReconciliationResourceState,
+        to modifiedState: ReconciliationResourceState,
+        title: String
+    ) -> some View {
+        let originalPath = path(in: originalState)
+        let modifiedPath = path(in: modifiedState)
+        return GeometryReader { geometry in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.caption.weight(.medium))
+                        if originalPath != modifiedPath {
+                            Text("\(originalPath ?? "/dev/null") → \(modifiedPath ?? "/dev/null")")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: originalPath == modifiedPath ? 28 : 42,
+                        alignment: .leading
+                    )
+                    .background(Color.accentColor.opacity(0.06))
+
+                    UnifiedDiffView(
+                        presentation: UnifiedDiffPresentation(
+                            model: SplitDiffModel.make(
+                                original: text(in: originalState),
+                                modified: text(in: modifiedState)
+                            )
+                        )
+                    )
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: geometry.size.height,
+                    alignment: .topLeading
+                )
+            }
+        }
     }
 
     private var resolvedContentPane: some View {
@@ -2027,12 +2067,6 @@ struct DraftReconciliationView: View {
                 )
             }
         }
-    }
-
-    private var resultState: ReconciliationResourceState {
-        candidate.status == .conflicts
-            ? resolvedState
-            : candidate.proposedState ?? candidate.draftState
     }
 
     private var conflictSummary: String {

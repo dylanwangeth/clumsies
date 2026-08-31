@@ -136,6 +136,172 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertGreaterThan(documentWidth, inner.contentView.bounds.width + 1)
     }
 
+    @MainActor
+    func testUnifiedDiffRowsStayCompactInsideFullHeightContainer() throws {
+        let presentation = UnifiedDiffPresentation(lines: (1...3).map { (lineNumber: Int) in
+            .init(
+                id: "line-\(lineNumber)",
+                kind: .insertion,
+                text: "line \(lineNumber)",
+                oldLineNumber: nil,
+                newLineNumber: lineNumber
+            )
+        })
+        let root = GeometryReader { geometry in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    UnifiedDiffView(presentation: presentation)
+                }
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: geometry.size.height,
+                    alignment: .topLeading
+                )
+            }
+        }
+        .frame(width: 800, height: 500)
+
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
+        let window = NSWindow(
+            contentRect: host.frame,
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+
+        for _ in 0..<3 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        let inner = try XCTUnwrap(
+            descendantScrollViews(in: host).first {
+                $0.hasHorizontalScroller && !$0.hasVerticalScroller
+            }
+        )
+        XCTAssertEqual(inner.frame.height, 98, accuracy: 1)
+    }
+
+    @MainActor
+    func testReconciliationKeepsUnifiedDiffRenderer() throws {
+        let resource = ServerDraftResourceReference(
+            scope: "project",
+            id: "memory",
+            path: "workflow/SYNC_REAL.md"
+        )
+        let baseState = ReconciliationResourceState(
+            exists: true,
+            resource: resource,
+            content: .init(description: nil, content: "remote: base\nlocal: base")
+        )
+        let draftState = ReconciliationResourceState(
+            exists: true,
+            resource: resource,
+            content: .init(description: nil, content: "remote: base\nlocal: draft")
+        )
+        let currentState = ReconciliationResourceState(
+            exists: true,
+            resource: resource,
+            content: .init(description: nil, content: "remote: shared\nlocal: base")
+        )
+        func candidate(
+            status: DraftReconciliationStatus,
+            proposedState: ReconciliationResourceState?,
+            conflicts: [ReconciliationConflict]
+        ) -> DraftReconciliationCandidate {
+            .init(
+                candidateId: "candidate",
+                draftId: "draft",
+                draftVersion: 1,
+                baseCommitId: "base",
+                currentCommitId: "current",
+                status: status,
+                baseState: baseState,
+                currentState: currentState,
+                draftState: draftState,
+                proposedState: proposedState,
+                conflicts: conflicts,
+                resultHash: "result",
+                valid: true,
+                createdAt: "2026-08-31T00:00:00Z",
+                invalidatedAt: nil
+            )
+        }
+
+        let cleanCandidate = candidate(
+            status: .clean,
+            proposedState: .init(
+                exists: true,
+                resource: resource,
+                content: .init(
+                    description: nil,
+                    content: "remote: shared\nlocal: draft"
+                )
+            ),
+            conflicts: []
+        )
+        let states = cleanCandidate.postSyncDiffStates
+        let changedLines = UnifiedDiffPresentation(
+            model: SplitDiffModel.make(
+                original: states.base.content?.primaryText ?? "",
+                modified: states.draft.content?.primaryText ?? "",
+                contextLineCount: 0
+            )
+        ).blocks.flatMap(\.lines).filter { $0.kind.isChanged }
+        XCTAssertEqual(changedLines.map(\.kind), [.removal, .insertion])
+        XCTAssertEqual(changedLines.map(\.text), ["local: base", "local: draft"])
+
+        let candidates = [
+            cleanCandidate,
+            candidate(
+                status: .conflicts,
+                proposedState: nil,
+                conflicts: [
+                    .init(
+                        kind: "modify_modify",
+                        field: "content",
+                        base: "base",
+                        current: "shared",
+                        draft: "draft"
+                    )
+                ]
+            ),
+        ]
+
+        for candidate in candidates {
+            let root = DraftReconciliationView(
+                candidate: candidate,
+                usesContextualUpdateAction: true,
+                onCancel: {},
+                onApply: { _ in }
+            )
+            .frame(width: 800, height: 500)
+
+            let host = NSHostingView(rootView: root)
+            host.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
+            let window = NSWindow(
+                contentRect: host.frame,
+                styleMask: [.titled, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = host
+
+            for _ in 0..<3 {
+                host.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+
+            XCTAssertNotNil(
+                descendantScrollViews(in: host).first {
+                    $0.hasHorizontalScroller && !$0.hasVerticalScroller
+                }
+            )
+        }
+    }
+
     func testPlainDirectoryClickSelectsAndTogglesDirectory() {
         let result = FileTreeSelectionInteraction.directoryClick(
             nodeId: "directory:design",
@@ -262,20 +428,14 @@ final class FileTreeSelectionTests: XCTestCase {
         XCTAssertEqual(presentation.help, "The shared version of this file has changed")
     }
 
-    func testBehindDraftWithoutResourceChangesShowsBaseBehindAccessory() throws {
-        let presentation = try XCTUnwrap(
+    func testBehindDraftWithoutResourceChangesShowsNoSharedUpdateAccessory() {
+        XCTAssertNil(
             SharedUpdateStatusPresentation.resolve(
                 freshness: .behind,
                 hasUpstreamResourceChanges: false,
                 reconciliation: .clean
             )
         )
-
-        XCTAssertEqual(
-            presentation.symbolName,
-            "arrow.trianglehead.2.clockwise.rotate.90"
-        )
-        XCTAssertEqual(presentation.help, "Draft base is behind the shared version")
     }
 
     func testConflictedBehindDraftShowsConflictAccessory() throws {
@@ -319,8 +479,8 @@ final class FileTreeSelectionTests: XCTestCase {
         )
     }
 
-    func testBehindDraftTakesPrecedenceOverStaleResource() throws {
-        let presentation = try XCTUnwrap(
+    func testBehindDraftWithoutResourceChangesDoesNotInheritStaleAccessory() {
+        XCTAssertNil(
             SharedUpdateStatusPresentation.resolve(
                 freshness: .behind,
                 hasUpstreamResourceChanges: false,
@@ -328,8 +488,6 @@ final class FileTreeSelectionTests: XCTestCase {
                 isStale: true
             )
         )
-
-        XCTAssertEqual(presentation.help, "Draft base is behind the shared version")
     }
 
     func testNilItemUsesPrimaryTone() {

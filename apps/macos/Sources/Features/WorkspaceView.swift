@@ -1285,8 +1285,13 @@ struct WorkspaceView: View {
 
     private var documentNeedsSync: Bool {
         guard let item = store.currentItem else { return false }
-        if item.draft?.freshness == .behind { return true }
-        return item.resource.map { store.staleResourceIds.contains($0.id) } == true
+        return SharedUpdateStatusPresentation.resolve(
+            freshness: item.draft?.freshness,
+            hasUpstreamResourceChanges: item.draft?.hasUpstreamResourceChanges == true,
+            reconciliation: item.draft?.reconciliation,
+            isStale: item.draft == nil
+                && item.resource.map { store.staleResourceIds.contains($0.id) } == true
+        ) != nil
     }
 
     private var documentSyncReadiness: DocumentSyncReadiness {

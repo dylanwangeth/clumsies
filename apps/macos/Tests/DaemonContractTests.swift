@@ -1947,18 +1947,28 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertEqual(candidate.baseCommitId, "commit-base")
         XCTAssertEqual(candidate.currentCommitId, "commit-current")
         XCTAssertEqual(candidate.proposedState?.content?.primaryText, "Merged")
-        XCTAssertTrue(candidate.hasDraftResultChanges)
+        XCTAssertEqual(candidate.postSyncDiffStates.base.content?.primaryText, "Current")
+        XCTAssertEqual(candidate.postSyncDiffStates.draft.content?.primaryText, "Merged")
 
-        let unchangedCandidate = try JSONCoding.decoder().decode(
+        let noLocalChangesCandidate = try JSONCoding.decoder().decode(
             DraftReconciliationCandidate.self,
             from: Data(
-                json.replacingOccurrences(
-                    of: "\"content\":\"Merged\"",
-                    with: "\"content\":\"Draft\""
-                ).utf8
+                json
+                    .replacingOccurrences(
+                        of: "\"content\":\"Draft\"",
+                        with: "\"content\":\"Base\""
+                    )
+                    .replacingOccurrences(
+                        of: "\"content\":\"Merged\"",
+                        with: "\"content\":\"Current\""
+                    )
+                    .utf8
             )
         )
-        XCTAssertFalse(unchangedCandidate.hasDraftResultChanges)
+        XCTAssertEqual(
+            noLocalChangesCandidate.postSyncDiffStates.base,
+            noLocalChangesCandidate.postSyncDiffStates.draft
+        )
 
         let request = CreateDraftRebaseRequest(
             candidateId: candidate.candidateId,
