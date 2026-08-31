@@ -7,9 +7,11 @@ struct BundleNavigator: View {
         Group {
             if store.bundles.isEmpty {
                 BundleCollectionStatusView(store: store)
+            } else if !query.isEmpty, bundles.isEmpty {
+                ContentUnavailableView.search(text: query)
             } else {
                 List(selection: $store.selectedBundleId) {
-                    ForEach(store.bundles) { bundle in
+                    ForEach(bundles) { bundle in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(bundle.name)
                                 .lineLimit(1)
@@ -32,6 +34,14 @@ struct BundleNavigator: View {
             }
         }
         .task { await store.prepareWorkspaceIndex(includeContent: false) }
+    }
+
+    private var query: String {
+        store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var bundles: [PersonalBundle] {
+        WorkspaceStore.filterBundles(store.bundles, query: query)
     }
 }
 

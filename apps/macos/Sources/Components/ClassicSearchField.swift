@@ -16,15 +16,9 @@ struct ClassicSearchField: NSViewRepresentable {
     var accessibilityHelp: String?
     /// Increment to request first responder (e.g. the Cmd+K shortcut).
     var focusToken = 0
-    /// Called when the field gains or loses editing focus.
-    var onFocusChange: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            text: $text,
-            onFocusChange: onFocusChange,
-            focusToken: focusToken
-        )
+        Coordinator(text: $text, focusToken: focusToken)
     }
 
     func makeNSView(context: Context) -> NSSearchField {
@@ -44,7 +38,8 @@ struct ClassicSearchField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: NSSearchField, context: Context) {
-        if field.stringValue != text, field.currentEditor() == nil {
+        if field.stringValue != text,
+           field.currentEditor() == nil || text.isEmpty {
             field.stringValue = text
         }
         if field.placeholderString != prompt {
@@ -63,16 +58,10 @@ struct ClassicSearchField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         @Binding var text: String
-        private let onFocusChange: ((Bool) -> Void)?
         var lastFocusToken: Int
 
-        init(
-            text: Binding<String>,
-            onFocusChange: ((Bool) -> Void)?,
-            focusToken: Int
-        ) {
+        init(text: Binding<String>, focusToken: Int) {
             _text = text
-            self.onFocusChange = onFocusChange
             // Seed with the initial token so the first render never steals focus;
             // only explicit increments (e.g. Cmd+K) request first responder.
             lastFocusToken = focusToken
@@ -83,14 +72,6 @@ struct ClassicSearchField: NSViewRepresentable {
                   text != field.stringValue
             else { return }
             text = field.stringValue
-        }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            onFocusChange?(true)
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            onFocusChange?(false)
         }
     }
 }

@@ -138,6 +138,7 @@ struct WorkspaceView: View {
     @State private var showsIssueWorkflowHelp = false
     @State private var issueNavigationPath: [IssueBoardRoute] = []
     @State private var reviewNavigationPath: [ReviewRoute] = []
+    @State private var workspaceSearchFocusRequest = 0
     @State private var issueSearchFocusRequest = 0
     @State private var reviewSearchQuery = ""
     @State private var reviewSearchFocusRequest = 0
@@ -192,6 +193,9 @@ struct WorkspaceView: View {
                     store.dismissErrorMessage()
                 }
             }
+        }
+        .onChange(of: store.selectedSection) { _, _ in
+            store.searchQuery = ""
         }
     }
 
@@ -449,19 +453,8 @@ struct WorkspaceView: View {
                             prompt: workspaceSearchPrompt,
                             accessibilityIdentifier: "workspace-toolbar-search",
                             accessibilityHelp: "Search across the current workspace",
-                            onFocusChange: { focused in
-                                if focused {
-                                    store.showsGlobalSearch = true
-                                }
-                            }
+                            focusToken: workspaceSearchFocusRequest
                         )
-                        .popover(isPresented: $store.showsGlobalSearch, arrowEdge: .top) {
-                            WorkspaceSearchPopover(
-                                store: store,
-                                results: searchResults,
-                                onOpen: open
-                            )
-                        }
                     }
                 }
             }
@@ -471,8 +464,12 @@ struct WorkspaceView: View {
                 splitVisibility = target
             }
         }
+        .onChange(of: store.workspaceSearchFocusToken) { _, _ in
+            workspaceSearchFocusRequest += 1
+        }
         .onChange(of: store.searchQuery) { _, query in
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard store.selectedSection == .memory,
+                  !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             Task { await store.prepareWorkspaceIndex(includeContent: true) }
         }
         .onChange(of: store.selectedSection) { _, section in
@@ -581,6 +578,7 @@ struct WorkspaceView: View {
                 ReviewListPage(
                     store: store,
                     reviews: filteredReviews,
+                    searchQuery: reviewSearchQuery,
                     statusFilter: $reviewStatusFilter,
                     toolbarOwnership: reviewToolbarOwnership
                 )
@@ -649,7 +647,9 @@ struct WorkspaceView: View {
         }
         .onChange(of: store.reviewSearchFocusToken) { _, _ in
             reviewNavigationPath.removeAll()
-            reviewSearchFocusRequest += 1
+            DispatchQueue.main.async {
+                reviewSearchFocusRequest += 1
+            }
         }
         .onChange(of: store.selectedReviewId) { _, reviewId in
             guard store.selectedSection == .reviews else { return }
@@ -1097,7 +1097,10 @@ struct WorkspaceView: View {
             }
         }
         .onChange(of: store.issueSearchFocusToken) { _, _ in
-            issueSearchFocusRequest += 1
+            issueNavigationPath.removeAll()
+            DispatchQueue.main.async {
+                issueSearchFocusRequest += 1
+            }
         }
         .onChange(of: issueSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
@@ -1305,59 +1308,6 @@ struct WorkspaceView: View {
         }
     }
 
-    private var searchResults: [SearchEntry] {
-        let needle = store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
-        guard !needle.isEmpty else { return [] }
-        var entries: [SearchEntry] = []
-        switch store.selectedSection {
-        case .memory:
-            entries = memorySearchEntries(needle: needle)
-        case .bundles:
-            for bundle in store.bundles
-            where "\(bundle.name) \(bundle.description)".localizedLowercase.contains(needle) {
-                entries.append(.bundle(bundle))
-            }
-        case .reviews:
-            for review in store.reviews
-            where "\(review.title) \(review.description) \(review.author.email) \(review.status)"
-                .localizedLowercase.contains(needle) {
-                entries.append(.review(review))
-            }
-        case .issues:
-            break
-        case .sessions:
-            break
-        }
-        return Array(entries.prefix(30))
-    }
-
-    private func memorySearchEntries(needle: String) -> [SearchEntry] {
-        store.visibleMemoryItems
-            .compactMap { item in
-                let document = item.document
-                let haystack = "\(document.title) \(document.path) \(document.body) \(item.kind.title)"
-                    .localizedLowercase
-                guard haystack.contains(needle) else { return nil }
-                return .memory(item)
-            }
-    }
-
-    private func open(_ entry: SearchEntry) {
-        switch entry.destination {
-        case .memory(let item):
-            Task { await store.reveal(item) }
-        case .bundle(let bundle):
-            store.selectedSection = .bundles
-            store.selectedBundleId = bundle.id
-        case .review(let review):
-            store.selectedSection = .reviews
-            reviewStatusFilter = ReviewStatusFilter(rawValue: review.status) ?? .all
-            store.selectedReviewId = review.id
-        }
-        store.searchQuery = ""
-        store.showsGlobalSearch = false
-    }
-
     private var syncToolbarPresentation: SyncToolbarPresentation? {
         guard store.activeProjectId != nil else { return nil }
         return SyncToolbarPresentation.resolve(
@@ -1551,91 +1501,6 @@ private struct SyncIssuePopover: View {
     }
 }
 
-private struct WorkspaceSearchPopover: View {
-    @ObservedObject var store: WorkspaceStore
-    let results: [SearchEntry]
-    let onOpen: (SearchEntry) -> Void
-    @FocusState private var searchFocused: Bool
-
-    private var searchPrompt: String {
-        switch store.selectedSection {
-        case .memory: "Search Memory"
-        case .bundles: "Search Bundles"
-        case .reviews: "Search Reviews"
-        case .issues: "Search Issues"
-        case .sessions: "Search Activity"
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            TextField(searchPrompt, text: $store.searchQuery)
-                .textFieldStyle(.roundedBorder)
-                .focused($searchFocused)
-                .padding(12)
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if store.isPreparingWorkspaceIndex {
-                        Label("Preparing search", systemImage: "arrow.triangle.2.circlepath")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    }
-
-                    if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(searchPrompt)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    } else if results.isEmpty && !store.isPreparingWorkspaceIndex {
-                        Text("No Results")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    } else {
-                        ForEach(results) { entry in
-                            Button {
-                                onOpen(entry)
-                            } label: {
-                                Label {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.title)
-                                            .lineLimit(1)
-                                        Text(entry.detail)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                } icon: {
-                                    Image(systemName: entry.symbol)
-                                        .frame(width: 18)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 7)
-                            }
-                            .buttonStyle(.plain)
-                            .focusEffectDisabled()
-                        }
-                    }
-                }
-                .padding(6)
-            }
-            .frame(minHeight: 88, maxHeight: 300)
-        }
-        .frame(width: 380)
-        .onAppear {
-            DispatchQueue.main.async {
-                searchFocused = true
-            }
-        }
-    }
-}
-
 private struct GlobalSidebar: View {
     @ObservedObject var store: WorkspaceStore
     let onOpenSettings: () -> Void
@@ -1733,49 +1598,6 @@ private struct SidebarDestinationLabel: View {
 
 private enum GlobalSidebarDestination: Hashable {
     case section(WorkspaceSection)
-}
-
-private struct SearchEntry: Identifiable {
-    enum Destination {
-        case memory(MemoryListItem)
-        case bundle(PersonalBundle)
-        case review(ReviewRecord)
-    }
-
-    let id: String
-    let title: String
-    let detail: String
-    let symbol: String
-    let destination: Destination
-
-    static func memory(_ item: MemoryListItem) -> Self {
-        .init(
-            id: "memory:\(item.id)",
-            title: item.document.title,
-            detail: "\(item.scope == .org ? "Organization" : "Project") · \(item.kind.title) · \(item.document.path)",
-            symbol: item.kind.symbol,
-            destination: .memory(item)
-        )
-    }
-    static func bundle(_ bundle: PersonalBundle) -> Self {
-        .init(
-            id: "bundle:\(bundle.id)",
-            title: bundle.name,
-            detail: "Bundle · \(bundle.resourceIds.count) resources",
-            symbol: "shippingbox",
-            destination: .bundle(bundle)
-        )
-    }
-
-    static func review(_ review: ReviewRecord) -> Self {
-        .init(
-            id: "review:\(review.id)",
-            title: review.title,
-            detail: "Review · \(review.status.capitalized)",
-            symbol: "checkmark.bubble",
-            destination: .review(review)
-        )
-    }
 }
 
 struct AvatarView: View {

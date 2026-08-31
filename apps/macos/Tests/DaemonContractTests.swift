@@ -1185,7 +1185,7 @@ final class DaemonContractTests: XCTestCase {
             source.range(of: "func selectProject(_ projectId: String) async")
         )
         let selectEnd = try XCTUnwrap(
-            source[selectStart.lowerBound...].range(of: "\n    func focusIssueSearch")
+            source[selectStart.lowerBound...].range(of: "\n    func focusWorkspaceSearch")
         )
         XCTAssertTrue(
             source[selectStart.lowerBound..<selectEnd.lowerBound]

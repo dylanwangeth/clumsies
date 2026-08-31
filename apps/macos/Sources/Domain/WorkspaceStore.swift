@@ -388,7 +388,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedBundleId: String?
     @Published var selectedReviewId: String?
     @Published var searchQuery = ""
-    @Published var showsGlobalSearch = false
+    @Published var workspaceSearchFocusToken = UUID()
     @Published var issueSearchFocusToken = UUID()
     @Published var reviewSearchFocusToken = UUID()
     @Published var showsProjectCreation = false
@@ -1105,6 +1105,30 @@ final class WorkspaceStore: ObservableObject {
         return items.sorted { $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending }
     }
 
+    nonisolated static func filterMemoryItems(
+        _ items: [MemoryListItem],
+        query: String
+    ) -> [MemoryListItem] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        guard !needle.isEmpty else { return items }
+        return items.filter { item in
+            let document = item.document
+            return "\(document.title) \(document.path) \(document.body) \(item.kind.title)"
+                .localizedLowercase.contains(needle)
+        }
+    }
+
+    nonisolated static func filterBundles(
+        _ bundles: [PersonalBundle],
+        query: String
+    ) -> [PersonalBundle] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        guard !needle.isEmpty else { return bundles }
+        return bundles.filter {
+            "\($0.name) \($0.description)".localizedLowercase.contains(needle)
+        }
+    }
+
     /// The Project tree is the Project's effective Memory surface: selected
     /// Org authority plus its local Draft overlay. Existing project-scope
     /// authority remains visible as a compatibility layer until that legacy
@@ -1804,6 +1828,10 @@ final class WorkspaceStore: ObservableObject {
             guard projectSelectionGeneration == generation else { return }
             errorMessage = error.localizedDescription
         }
+    }
+
+    func focusWorkspaceSearch() {
+        workspaceSearchFocusToken = UUID()
     }
 
     func focusIssueSearch() {

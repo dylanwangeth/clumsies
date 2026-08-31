@@ -5,13 +5,33 @@ struct MemoryNavigator: View {
     @ObservedObject var store: WorkspaceStore
 
     var body: some View {
-        FileTreeView(store: store, items: store.visibleMemoryItems)
+        content
             .safeAreaInset(edge: .bottom) {
                 DraftInventoryStatusBanner(store: store)
             }
             .onChange(of: store.selectedKind) { _, _ in
                 store.selectedItemId = nil
             }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if !query.isEmpty, items.isEmpty, store.isPreparingWorkspaceIndex {
+            ProgressView("Preparing Search…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !store.visibleMemoryItems.isEmpty, !query.isEmpty, items.isEmpty {
+            ContentUnavailableView.search(text: query)
+        } else {
+            FileTreeView(store: store, items: items)
+        }
+    }
+
+    private var query: String {
+        store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var items: [MemoryListItem] {
+        WorkspaceStore.filterMemoryItems(store.visibleMemoryItems, query: query)
     }
 }
 

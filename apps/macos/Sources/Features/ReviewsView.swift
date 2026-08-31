@@ -136,6 +136,7 @@ struct ReviewStatusFilterControl: View {
 struct ReviewListPage: View {
     @ObservedObject var store: WorkspaceStore
     let reviews: [ReviewRecord]
+    let searchQuery: String
     @Binding var statusFilter: ReviewStatusFilter
     let toolbarOwnership: ReviewToolbarOwnership
 
@@ -164,13 +165,17 @@ struct ReviewListPage: View {
                     description: Text("Reviews created from synchronized drafts appear here.")
                 )
             case .filteredEmpty:
-                ContentUnavailableView {
-                    Label("No \(statusFilter.title) Reviews", systemImage: statusFilter.symbolName)
-                } description: {
-                    Text("No Reviews match the current status filter.")
-                } actions: {
-                    Button("Show All Reviews") {
-                        statusFilter = .all
+                if !trimmedSearchQuery.isEmpty {
+                    ContentUnavailableView.search(text: trimmedSearchQuery)
+                } else {
+                    ContentUnavailableView {
+                        Label("No \(statusFilter.title) Reviews", systemImage: statusFilter.symbolName)
+                    } description: {
+                        Text("No Reviews match the current status filter.")
+                    } actions: {
+                        Button("Show All Reviews") {
+                            statusFilter = .all
+                        }
                     }
                 }
             case .content:
@@ -214,6 +219,10 @@ struct ReviewListPage: View {
 
     private func projectName(for review: ReviewRecord) -> String? {
         store.projects.first { $0.id == review.projectId }?.name
+    }
+
+    private var trimmedSearchQuery: String {
+        searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

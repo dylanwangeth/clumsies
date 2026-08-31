@@ -338,6 +338,68 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+    func testWorkspaceSearchCommandRequestsToolbarFocus() {
+        let store = WorkspaceStore()
+        let initialFocusToken = store.workspaceSearchFocusToken
+
+        store.focusWorkspaceSearch()
+        let firstFocusToken = store.workspaceSearchFocusToken
+
+        XCTAssertNotEqual(firstFocusToken, initialFocusToken)
+
+        store.focusWorkspaceSearch()
+
+        XCTAssertNotEqual(store.workspaceSearchFocusToken, firstFocusToken)
+    }
+
+    func testWorkspaceSearchFiltersMemoryContent() {
+        let architecture = item(
+            path: "guides/architecture.md",
+            body: "Recall pipeline",
+            kind: .workflows
+        )
+        let notes = item(path: "notes.md")
+        let items = [architecture, notes]
+
+        XCTAssertEqual(WorkspaceStore.filterMemoryItems(items, query: "  "), items)
+        XCTAssertEqual(
+            WorkspaceStore.filterMemoryItems(items, query: "RECALL").map(\.id),
+            [architecture.id]
+        )
+        XCTAssertEqual(
+            WorkspaceStore.filterMemoryItems(items, query: "workflow").map(\.id),
+            [architecture.id]
+        )
+        XCTAssertTrue(WorkspaceStore.filterMemoryItems(items, query: "missing").isEmpty)
+    }
+
+    func testWorkspaceSearchFiltersBundles() {
+        let release = PersonalBundle(
+            id: "release",
+            name: "Release",
+            description: "Production checklist",
+            resourceIds: [],
+            revision: 1,
+            updatedAt: "2026-08-31T00:00:00Z"
+        )
+        let onboarding = PersonalBundle(
+            id: "onboarding",
+            name: "Onboarding",
+            description: "Starter context",
+            resourceIds: [],
+            revision: 1,
+            updatedAt: "2026-08-31T00:00:00Z"
+        )
+        let bundles = [release, onboarding]
+
+        XCTAssertEqual(WorkspaceStore.filterBundles(bundles, query: "  "), bundles)
+        XCTAssertEqual(
+            WorkspaceStore.filterBundles(bundles, query: "PRODUCTION").map(\.id),
+            [release.id]
+        )
+        XCTAssertTrue(WorkspaceStore.filterBundles(bundles, query: "missing").isEmpty)
+    }
+
     func testReviewDetailRouteCarriesOnlyTheStableReviewId() {
         let route = ReviewRoute(reviewId: "review-0123456789abcdef")
 
@@ -1861,18 +1923,26 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
-    private func item(path: String) -> MemoryListItem {
+    private func item(
+        path: String,
+        body: String = "",
+        kind: MemoryKind = .context
+    ) -> MemoryListItem {
         let resource = MemoryResource(
             id: path,
             scope: .org,
             projectId: nil,
             projectName: nil,
-            kind: .context,
+            kind: kind,
             contentHash: "hash",
             updatedAt: "2026-08-05T00:00:00Z",
             refCommitId: nil,
             contentLoaded: true,
-            document: .init(title: URL(fileURLWithPath: path).lastPathComponent, path: path, body: "")
+            document: .init(
+                title: URL(fileURLWithPath: path).lastPathComponent,
+                path: path,
+                body: body
+            )
         )
         return MemoryListItem(id: resource.id, resource: resource, draft: nil, inherited: false)
     }
