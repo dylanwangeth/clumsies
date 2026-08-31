@@ -669,8 +669,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             store.focusIssueSearch()
         case .reviews:
             store.focusReviewSearch()
-        default:
-            store.showsGlobalSearch = true
+        case .memory, .bundles:
+            store.focusWorkspaceSearch()
+        case .sessions:
+            break
         }
     }
 
