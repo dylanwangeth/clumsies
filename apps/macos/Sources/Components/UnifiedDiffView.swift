@@ -931,6 +931,7 @@ struct UnifiedDiffView: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .padding(.trailing, 12)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .font(.system(size: 12, design: .monospaced))
         .padding(.vertical, 3)
         .frame(

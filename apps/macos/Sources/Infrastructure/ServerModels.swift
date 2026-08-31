@@ -359,8 +359,8 @@ struct DraftReconciliationCandidate: Codable, Identifiable, Hashable, Sendable {
     let createdAt: String
     let invalidatedAt: String?
 
-    var hasDraftResultChanges: Bool {
-        draftState != (proposedState ?? draftState)
+    var postSyncDiffStates: (base: ReconciliationResourceState, draft: ReconciliationResourceState) {
+        (currentState, proposedState ?? draftState)
     }
 }
 

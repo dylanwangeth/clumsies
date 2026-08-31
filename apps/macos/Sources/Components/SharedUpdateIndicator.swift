@@ -12,6 +12,7 @@ struct SharedUpdateStatusPresentation {
         isStale: Bool = false
     ) -> Self? {
         if freshness == .behind {
+            guard hasUpstreamResourceChanges else { return nil }
             if reconciliation == .conflicts {
                 return .init(
                     symbolName: "exclamationmark.triangle",
@@ -19,17 +20,10 @@ struct SharedUpdateStatusPresentation {
                     help: "Shared update has conflicts"
                 )
             }
-            if hasUpstreamResourceChanges {
-                return .init(
-                    symbolName: "arrow.trianglehead.2.clockwise.rotate.90",
-                    tint: .secondary,
-                    help: "The shared version of this file has changed"
-                )
-            }
             return .init(
                 symbolName: "arrow.trianglehead.2.clockwise.rotate.90",
                 tint: .secondary,
-                help: "Draft base is behind the shared version"
+                help: "The shared version of this file has changed"
             )
         }
         if isStale {
