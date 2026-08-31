@@ -6,7 +6,7 @@ mod postgres;
 mod service;
 
 pub use error::AuthError;
-pub use model::{AuthPrincipal, CredentialKind, OidcIdentity, OidcLoginCompletion};
+pub use model::{AuthPrincipal, OidcIdentity};
 pub use service::{AuthService, DiscoveredOidcProvider, OidcIdentityProvider};
 
 pub(crate) use model::user_capabilities;

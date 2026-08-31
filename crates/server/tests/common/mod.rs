@@ -70,7 +70,7 @@ pub fn setup_router(pool: PgPool, owner_email: &str, owner_subject: &str) -> Rou
             subject: owner_subject.to_owned(),
             display_name: "Owner".to_owned(),
         }),
-        vec![Url::parse("http://127.0.0.1/admin/setup/callback").unwrap()],
+        vec![Url::parse("http://127.0.0.1/callback").unwrap()],
     );
     let installation =
         InstallationService::new(pool.clone(), Some(TEST_SETUP_CODE), false).unwrap();
@@ -188,7 +188,16 @@ pub async fn authenticated_router_as(
         )
         .await
         .unwrap();
-    assert_eq!(callback_response.status(), StatusCode::FOUND);
+    if callback_response.status() != StatusCode::FOUND {
+        let status = callback_response.status();
+        let body = to_bytes(callback_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        panic!(
+            "OIDC callback returned {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
     let client_url = Url::parse(
         callback_response
             .headers()

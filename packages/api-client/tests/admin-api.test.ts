@@ -9,6 +9,7 @@ describe("Clumsies Admin API", () => {
     const requests: string[] = [];
     const ifMatch = new Map<string, string | null>();
     const csrf = new Map<string, string | null>();
+    const authorization = new Map<string, string | null>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);
@@ -16,6 +17,7 @@ describe("Clumsies Admin API", () => {
       requests.push(operation);
       ifMatch.set(operation, request.headers.get("if-match"));
       csrf.set(operation, request.headers.get("x-csrf-token"));
+      authorization.set(operation, request.headers.get("authorization"));
       return new Response("{}", {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -24,7 +26,7 @@ describe("Clumsies Admin API", () => {
     const api = new ClumsiesAdminApi(
       createAdminApiClient({
         baseUrl: "http://server.test",
-        csrfToken: "admin-csrf",
+        accessToken: "admin-token",
         fetch,
       }),
     );
@@ -38,9 +40,13 @@ describe("Clumsies Admin API", () => {
     });
     await api.createSetupOidcAuthorization(
       "csrf-token",
-      "http://127.0.0.1:1421/admin/setup/callback",
+      {
+        redirect_uri: "http://127.0.0.1:1421/callback",
+        state: "client-state",
+        code_challenge: "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789",
+        code_challenge_method: "S256",
+      },
     );
-    await api.session();
     await api.identityProvider();
     await api.org();
     await api.updateOrg(1, { name: "Clumsies Lab" });
@@ -64,14 +70,12 @@ describe("Clumsies Admin API", () => {
     await api.deleteToken("token");
     await api.listAuditEvents();
     await api.health();
-    await api.deleteSession();
 
     expect(requests).toEqual([
       "GET /api/v1/setup",
       "POST /api/v1/setup/sessions",
       "PUT /api/v1/setup/configuration",
       "POST /api/v1/setup/oidc-authorizations",
-      "GET /api/v1/admin/session",
       "GET /api/v1/admin/identity-provider",
       "GET /api/v1/admin/org",
       "PATCH /api/v1/admin/org",
@@ -92,7 +96,6 @@ describe("Clumsies Admin API", () => {
       "DELETE /api/v1/admin/tokens/token",
       "GET /api/v1/admin/audit-events",
       "GET /api/v1/admin/health",
-      "DELETE /api/v1/admin/session",
     ]);
     expect(ifMatch.get("PATCH /api/v1/admin/org")).toBe("1");
     expect(ifMatch.get("PATCH /api/v1/admin/members/user")).toBe("2");
@@ -103,8 +106,8 @@ describe("Clumsies Admin API", () => {
     expect(csrf.get("POST /api/v1/setup/oidc-authorizations")).toBe(
       "csrf-token",
     );
-    expect(csrf.get("PATCH /api/v1/admin/org")).toBe("admin-csrf");
-    expect(csrf.get("POST /api/v1/admin/projects")).toBe("admin-csrf");
-    expect(csrf.get("DELETE /api/v1/admin/session")).toBe("admin-csrf");
+    expect(authorization.get("PATCH /api/v1/admin/org")).toBe(
+      "Bearer admin-token",
+    );
   });
 });

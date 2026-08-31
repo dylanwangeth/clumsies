@@ -9,7 +9,6 @@ target/
 
 # Build artifacts
 dist/
-apps/web-admin/test-results/
 *.o
 *.a
 *.so

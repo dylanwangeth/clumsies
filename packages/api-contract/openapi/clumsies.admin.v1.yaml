@@ -2,12 +2,11 @@ openapi: 3.1.0
 info:
   title: clumsies Admin API
   version: 1.0.0
-  summary: Admin Server API for Web Admin.
+  summary: Admin Server API for native organization administration.
 servers:
   - url: https://server.clumsies.local
 security:
   - bearerAuth: []
-  - adminSession: []
 paths:
   /api/v1/setup:
     get:
@@ -16,7 +15,7 @@ paths:
       security: []
       responses:
         "200":
-          description: Current setup state and any active browser setup session.
+          description: Current setup state and any active setup session.
           content:
             application/json:
               schema:
@@ -26,7 +25,7 @@ paths:
   /api/v1/setup/sessions:
     post:
       operationId: createSetupSession
-      summary: Exchange the deployment Setup Code for a short browser session.
+      summary: Exchange the deployment Setup Code for a short setup session.
       security: []
       requestBody:
         required: true
@@ -93,41 +92,6 @@ paths:
                 $ref: "#/components/schemas/SetupOidcAuthorization"
         default:
           $ref: "#/components/responses/Error"
-  /api/v1/admin/session:
-    get:
-      operationId: getAdminSession
-      summary: Read the current Web Admin browser session.
-      security:
-        - adminSession: []
-      responses:
-        "200":
-          description: Current Web Admin session.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WebAdminSession"
-        default:
-          $ref: "#/components/responses/Error"
-    delete:
-      operationId: deleteAdminSession
-      summary: Revoke the current Web Admin browser session.
-      security:
-        - adminSession: []
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
-      responses:
-        "200":
-          description: Session revocation result. The session cookie is cleared.
-          headers:
-            Set-Cookie:
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionRevoked"
-        default:
-          $ref: "#/components/responses/Error"
   /api/v1/admin/identity-provider:
     get:
       operationId: getAdminIdentityProvider
@@ -159,7 +123,6 @@ paths:
       summary: Update organization settings.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -194,8 +157,6 @@ paths:
     post:
       operationId: createAdminMember
       summary: Create an organization member admission record.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -219,7 +180,6 @@ paths:
       summary: Update organization member role or status.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -240,7 +200,6 @@ paths:
       summary: Remove or disable an organization member.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -269,8 +228,6 @@ paths:
     post:
       operationId: createAdminProject
       summary: Create a project and grant the current administrator project admin access.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -306,7 +263,6 @@ paths:
       summary: Update project metadata.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -327,7 +283,6 @@ paths:
       summary: Delete a project and its governed content.
       parameters:
         - $ref: "#/components/parameters/IfMatch"
-        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -362,8 +317,6 @@ paths:
     post:
       operationId: createAdminProjectMember
       summary: Add an organization member to a project.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -386,8 +339,6 @@ paths:
     patch:
       operationId: updateAdminProjectMember
       summary: Update a project member role.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       requestBody:
         required: true
         content:
@@ -406,8 +357,6 @@ paths:
     delete:
       operationId: deleteAdminProjectMember
       summary: Remove a member from a project.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -443,8 +392,6 @@ paths:
     delete:
       operationId: deleteAdminToken
       summary: Revoke an access token.
-      parameters:
-        - $ref: "#/components/parameters/AdminCsrfToken"
       responses:
         "200":
           description: Delete result.
@@ -514,13 +461,6 @@ components:
         HttpOnly one-time setup session cookie. Local plain-HTTP development
         uses the unprefixed clumsies_setup_session name because __Host-
         cookies require HTTPS.
-    adminSession:
-      type: apiKey
-      in: cookie
-      name: __Host-clumsies_admin_session
-      description: >-
-        HttpOnly Web Admin session cookie. Local plain-HTTP development uses
-        clumsies_admin_session because __Host- cookies require HTTPS.
   parameters:
     Limit:
       name: limit
@@ -557,13 +497,6 @@ components:
       name: X-CSRF-Token
       in: header
       required: true
-      schema:
-        type: string
-    AdminCsrfToken:
-      name: X-CSRF-Token
-      in: header
-      required: false
-      description: Required for state-changing requests authenticated by adminSession.
       schema:
         type: string
   responses:
@@ -640,11 +573,21 @@ components:
         - $ref: "#/components/schemas/SetupConfiguration"
     SetupOidcAuthorizationRequest:
       type: object
-      required: [redirect_uri]
+      required: [redirect_uri, state, code_challenge, code_challenge_method]
       properties:
         redirect_uri:
           type: string
           format: uri
+        state:
+          type: string
+          minLength: 1
+        code_challenge:
+          type: string
+          minLength: 43
+          maxLength: 43
+        code_challenge_method:
+          type: string
+          enum: [S256]
     SetupOidcAuthorization:
       type: object
       required: [authorization_url]
@@ -652,31 +595,6 @@ components:
         authorization_url:
           type: string
           format: uri
-    WebAdminSession:
-      type: object
-      required: [user, org, capabilities, token_id, csrf_token, expires_at]
-      properties:
-        user:
-          $ref: "#/components/schemas/UserRef"
-        org:
-          $ref: "#/components/schemas/OrgRef"
-        capabilities:
-          type: array
-          items:
-            type: string
-        token_id:
-          type: string
-        csrf_token:
-          type: string
-        expires_at:
-          type: string
-          format: date-time
-    SessionRevoked:
-      type: object
-      required: [revoked]
-      properties:
-        revoked:
-          type: boolean
     OidcProviderStatus:
       type: object
       required: [protocol, configured, issuer, callback_url, admission_mode, secret_source]

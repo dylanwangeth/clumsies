@@ -5,16 +5,21 @@ separate command-line client or manual draft synchronization.
 
 ## Sign in
 
-Open Desktop and continue with SSO. The current development distribution
-connects to `https://app.clumsies.ai`; it does not expose a local/production
-profile selector. The system browser handles authentication, and your email
-must already be admitted by an organization owner or admin.
+Open the macOS App and enter your organization's Server origin. Remote Servers
+must use HTTPS; HTTP is accepted only for loopback development, and the App
+rejects addresses containing credentials, a path, query, or fragment. It saves
+the normalized origin and checks the Server's installation state before
+starting the local daemon.
 
-Local Server and OIDC environments are test infrastructure for backend and E2E
-development. They are not a second interactive Desktop mode. A future
-self-hosted distribution will receive its organization Server authority from
-the installation or deployment channel instead of asking users to switch
-profiles in the app.
+For an initialized Server, continue with SSO in the system browser. Desktop
+owns the ephemeral loopback callback, state, and `S256` PKCE verifier. Your
+email must already be admitted by an organization owner or admin.
+
+For a new Server, the same screen expands into native setup. Enter the
+deployment Setup Code, organization name, default Project, and optional allowed
+email domains, then continue in the browser. The first verified identity
+becomes Owner, the installation is locked, and the resulting token pair is
+installed in daemon without creating a browser session.
 
 ## Browse memory
 
@@ -108,8 +113,18 @@ and MCP retrieval resume after the configured location is accessible again.
 
 ## Administration
 
-Web Admin is reserved for organization settings, member admission, projects,
-tokens, audit events, and health. It is not a second memory editor.
+After signing in as an organization owner or administrator, open
+**Administration** in the macOS App to manage organization settings, member
+admission, Projects, Project membership, tokens, audit events, identity-provider
+status, and Server health. It is not a second memory editor. Cached data is
+clearly marked, and changes remain disabled until a live Server refresh
+succeeds.
+
+If the local daemon cannot start, choose **Administrator Recovery** from the
+failure screen. The App signs in directly to the trusted Server and holds the
+recovery session only in memory so an administrator can inspect health, repair
+member access, or revoke tokens. Retry normal startup after recovery; ordinary
+product work still requires daemon.
 
 See [Deployment](/guides/deploy-for-an-org) for Server configuration and
 [Architecture](/architecture) for component boundaries.

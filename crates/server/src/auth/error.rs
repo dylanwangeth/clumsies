@@ -26,8 +26,6 @@ pub enum AuthError {
     EmailNotVerified,
     #[error("member is not admitted to this Server")]
     MemberNotAllowed,
-    #[error("organization administrator access is required")]
-    AdminAccessRequired,
     #[error("email domain is not allowed")]
     DomainNotAllowed,
     #[error("OIDC identity conflicts with the admitted member")]
@@ -36,8 +34,6 @@ pub enum AuthError {
     InvalidGrant,
     #[error("authentication is required")]
     Unauthorized,
-    #[error("stored Web Admin session is corrupt")]
-    CorruptWebSession,
     #[error(transparent)]
     Installation(#[from] InstallationError),
     #[error(transparent)]
@@ -58,12 +54,10 @@ impl AuthError {
             Self::CorruptLoginTransaction => "login_transaction_corrupt",
             Self::EmailNotVerified => "email_not_verified",
             Self::MemberNotAllowed => "member_not_allowed",
-            Self::AdminAccessRequired => "admin_access_required",
             Self::DomainNotAllowed => "domain_not_allowed",
             Self::ProviderIdentityConflict => "oidc_identity_conflict",
             Self::InvalidGrant => "invalid_grant",
             Self::Unauthorized => "unauthorized",
-            Self::CorruptWebSession => "web_session_corrupt",
             Self::Installation(error) => error.code(),
             Self::Sqlx(_) => "internal_error",
         }

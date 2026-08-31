@@ -6,7 +6,7 @@ use axum::http::header::LOCATION;
 use axum::http::{Request, StatusCode};
 use serde::Serialize;
 use server::api::{CreateProjectRequest, Project};
-use server::auth::{AuthPrincipal, CredentialKind};
+use server::auth::AuthPrincipal;
 use server::repository::ServerRepository;
 use tower::ServiceExt;
 
@@ -127,8 +127,6 @@ async fn failed_creator_membership_rolls_back_the_entire_project() {
                 session_id: "session".to_owned(),
                 token_id: "token".to_owned(),
                 role: "admin".to_owned(),
-                credential_kind: CredentialKind::Bearer,
-                csrf_token: None,
             },
             CreateProjectRequest {
                 name: "Must Roll Back".to_owned(),

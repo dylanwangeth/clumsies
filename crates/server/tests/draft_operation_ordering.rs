@@ -7,7 +7,7 @@ use server::api::{
     DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationInput,
     DraftResourceContent, DraftResourceRef, ResourceScope, ReviewDecision, ReviewDraftRequest,
 };
-use server::auth::{AuthPrincipal, CredentialKind};
+use server::auth::AuthPrincipal;
 use server::repository::ServerRepository;
 
 fn memory_content(content: &str) -> Option<DraftResourceContent> {
@@ -144,8 +144,6 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
         session_id: "session_review_list".to_owned(),
         token_id: "token_review_list".to_owned(),
         role: "owner".to_owned(),
-        credential_kind: CredentialKind::Bearer,
-        csrf_token: None,
     };
     let mut blob_lock = postgres.pool.begin().await.unwrap();
     sqlx::query("LOCK TABLE blobs IN ACCESS EXCLUSIVE MODE")
@@ -461,8 +459,6 @@ async fn batch_preserves_multiple_operations_and_their_event_versions() {
                 session_id: "session_batch_ordering".to_owned(),
                 token_id: "token_batch_ordering".to_owned(),
                 role: "owner".to_owned(),
-                credential_kind: CredentialKind::Bearer,
-                csrf_token: None,
             },
             DraftOperationBatchRequest {
                 daemon_installation_id: "daemon_batch_ordering".to_owned(),

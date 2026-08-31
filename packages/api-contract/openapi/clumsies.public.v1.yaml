@@ -21,18 +21,18 @@ paths:
             $ref: "#/components/schemas/ClientKind"
         - name: redirect_uri
           in: query
-          description: Required for desktop and CLI clients; omitted for Web Admin.
+          required: true
           schema:
             type: string
             format: uri
         - name: code_challenge
           in: query
-          description: Required for desktop and CLI clients; omitted for Web Admin.
+          required: true
           schema:
             type: string
         - name: code_challenge_method
           in: query
-          description: Required for desktop and CLI clients; omitted for Web Admin.
+          required: true
           schema:
             type: string
             enum: [S256]
@@ -45,11 +45,6 @@ paths:
           schema:
             type: string
             format: email
-        - name: return_to
-          in: query
-          description: For Web Admin, a validated internal path under /admin.
-          schema:
-            type: string
       responses:
         "302":
           description: Redirect to the configured OIDC authorization endpoint.
@@ -89,11 +84,6 @@ paths:
           headers:
             Location:
               required: true
-              schema:
-                type: string
-            Set-Cookie:
-              required: false
-              description: Web Admin login returns an HttpOnly browser session cookie.
               schema:
                 type: string
         default:
@@ -2344,7 +2334,7 @@ components:
           type: string
     ClientKind:
       type: string
-      enum: [desktop, cli, web_admin]
+      enum: [desktop, cli]
     OrgRef:
       type: object
       required: [org_id, name]

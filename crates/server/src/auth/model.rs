@@ -4,7 +4,6 @@ use super::error::AuthError;
 
 pub(super) const ACCESS_TOKEN_TTL: Duration = Duration::minutes(15);
 pub(super) const REFRESH_TOKEN_TTL: Duration = Duration::days(30);
-pub(super) const WEB_SESSION_TTL: Duration = Duration::hours(12);
 pub(super) const LOGIN_TRANSACTION_TTL: Duration = Duration::minutes(10);
 pub(super) const AUTHORIZATION_CODE_TTL: Duration = Duration::minutes(2);
 
@@ -15,14 +14,6 @@ pub struct AuthPrincipal {
     pub session_id: String,
     pub token_id: String,
     pub role: String,
-    pub credential_kind: CredentialKind,
-    pub csrf_token: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CredentialKind {
-    Bearer,
-    WebSession,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,12 +24,6 @@ pub struct OidcIdentity {
     pub email_verified: bool,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OidcLoginCompletion {
-    pub redirect_uri: String,
-    pub web_session_token: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,7 +40,6 @@ pub(super) struct LoginTransaction {
     pub(super) client_redirect_uri: String,
     pub(super) client_state: Option<String>,
     pub(super) client_code_challenge: Option<String>,
-    pub(super) return_to: Option<String>,
     pub(super) flow: LoginFlow,
     pub(super) setup_session_id: Option<String>,
 }
@@ -64,12 +48,6 @@ pub(super) struct LoginTransaction {
 pub(super) enum LoginFlow {
     ProductLogin,
     InstallationSetup,
-    WebAdminLogin,
-}
-
-#[derive(Debug)]
-pub(super) struct WebSessionCredential {
-    pub(super) token: String,
 }
 
 pub(super) struct OrganizationAdmission {
@@ -81,7 +59,6 @@ pub(super) fn login_flow(value: &str) -> Result<LoginFlow, AuthError> {
     match value {
         "product_login" => Ok(LoginFlow::ProductLogin),
         "installation_setup" => Ok(LoginFlow::InstallationSetup),
-        "web_admin_login" => Ok(LoginFlow::WebAdminLogin),
         _ => Err(AuthError::CorruptLoginTransaction),
     }
 }
@@ -125,10 +102,6 @@ pub(crate) fn user_capabilities(role: &str) -> Vec<String> {
         capabilities.push("admin:write".to_owned());
     }
     capabilities
-}
-
-pub(super) fn admin_capabilities() -> Vec<String> {
-    vec!["admin:read".to_owned(), "admin:write".to_owned()]
 }
 
 #[cfg(test)]

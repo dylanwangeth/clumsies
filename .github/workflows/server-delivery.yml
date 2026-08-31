@@ -108,7 +108,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: ${{ vars.SERVER_PUBLIC_URL }}/admin/
+      url: ${{ vars.SERVER_PUBLIC_URL }}
     steps:
       - name: Deploy immutable image
         env:

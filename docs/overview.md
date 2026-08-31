@@ -29,12 +29,11 @@ field, chunked and indexed separately from `content`.
 
 | Surface | Role |
 | --- | --- |
-| Desktop | primary human product for browsing Organization authority, each Project's selected/effective Memory, Drafts, Reviews, and merges |
+| Desktop | primary human product for setup, sign-in, administration, Organization authority, each Project's selected/effective Memory, Drafts, Reviews, and merges |
 | resident `clumsiesd` | always-on Rust runtime for drafts, sync, retrieval, native transport, and client coordination |
 | Agent runtime | short-lived `clumsiesd mcp serve` and `_agent` proxies used by supported hosts |
 | Server | self-hosted authority service backed by PostgreSQL |
 | MCP | agent-facing `activate`, `load`, `store`, and `kanban` interface |
-| Web Admin | organization, member, project, token, audit, and health administration |
 
 Organization is the sole Memory authority. A Project view is a projection of
 selected Organization Memory plus Project-carried Organization Draft overlays;
@@ -78,12 +77,13 @@ The unified Memory model (Server, daemon, OpenAPI, MCP, macOS), the Organization
 authority and Project-view endpoints (`/api/v1/org/memories` and
 `/api/v1/projects/{project_id}/memories`), description-aware retrieval, the
 org-admin `memory-export` migration endpoint, generic organization OIDC,
-complete Public/Admin contracts, Desktop transport, local draft queue,
-refresh-token retry, macOS Keychain credential storage, reviewed Commit
-creation, daemon Commit synchronization, user-resolvable stale conflicts, and
-atomic MCP authority generations are implemented. Real PostgreSQL tests cover
-merge-to-Commit, two-daemon convergence, restart recovery, and failure without
-Ref advancement.
+complete Public/Admin contracts, native Server-origin validation and
+first-installation setup, in-App Administration, daemon-down administrator
+recovery, Desktop transport, local draft queue, refresh-token retry, macOS
+Keychain credential storage, reviewed Commit creation, daemon Commit
+synchronization, user-resolvable stale conflicts, and atomic MCP authority
+generations are implemented. Real PostgreSQL tests cover merge-to-Commit,
+two-daemon convergence, restart recovery, and failure without Ref advancement.
 
 The resident daemon composes the installed Commit generation with current local
 Draft operations into one Effective Memory view. It derives Markdown retrieval
@@ -94,5 +94,5 @@ reranking, and activation delta state from that view. The App-bundled Rust
 The private `_agent issue-run-event` mode applies the same boundary to lifecycle
 Hooks.
 
-Automatic three-way conflict resolution, the versioned production retrieval
-query set, and the production installation lifecycle remain incomplete.
+Automatic three-way conflict resolution and the versioned production retrieval
+query set remain incomplete.

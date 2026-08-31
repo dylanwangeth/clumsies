@@ -6,6 +6,7 @@ import Foundation
 enum AuthenticationError: LocalizedError, Sendable {
     case callbackServer(String)
     case invalidAuthorizationURL
+    case invalidRequestPath
     case browserLaunchFailed
     case callbackTimedOut
     case invalidCallback
@@ -17,6 +18,7 @@ enum AuthenticationError: LocalizedError, Sendable {
         switch self {
         case .callbackServer(let message): message
         case .invalidAuthorizationURL: "Could not create the organization sign-in URL."
+        case .invalidRequestPath: "The authenticated Server request path is invalid."
         case .browserLaunchFailed: "Could not open the system browser."
         case .callbackTimedOut: "Organization sign-in timed out."
         case .invalidCallback: "The organization sign-in callback is invalid."
@@ -27,90 +29,51 @@ enum AuthenticationError: LocalizedError, Sendable {
     }
 }
 
-struct AuthenticationClient: Sendable {
-    static let serverURL = ClumsiesIdentifiers.serverURL
+struct NativeAuthorizationParameters: Equatable, Encodable, Sendable {
+    let redirectUri: String
+    let state: String
+    let codeChallenge: String
+    let codeChallengeMethod = "S256"
+}
 
-    let daemon: DaemonXPCClient
+struct NativeAuthorizationGrant: Sendable {
+    let code: String
+    let redirectURI: String
+    let verifier: String
+}
 
-    func signIn() async throws -> DaemonProjectConfig {
+struct NativeBrowserAuthorizationFlow: @unchecked Sendable {
+    let parameters: NativeAuthorizationParameters
+
+    private let verifier: String
+    private let callback: LoopbackCallbackServer
+
+    static func start() throws -> Self {
         let callback = try LoopbackCallbackServer.open()
-        let redirectURI = "http://127.0.0.1:\(callback.port)/callback"
-        let verifier = Self.randomSecret()
-        let state = Self.randomSecret()
-        let challenge = Self.base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
-        let authorizationURL = try Self.authorizationURL(
-            redirectURI: redirectURI,
-            challenge: challenge,
-            state: state
+        let verifier = randomSecret()
+        return .init(
+            parameters: .init(
+                redirectUri: "http://127.0.0.1:\(callback.port)/callback",
+                state: randomSecret(),
+                codeChallenge: base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
+            ),
+            verifier: verifier,
+            callback: callback
         )
+    }
 
+    func authorize(at authorizationURL: URL) async throws -> NativeAuthorizationGrant {
         let didOpen = await MainActor.run { NSWorkspace.shared.open(authorizationURL) }
         guard didOpen else {
             callback.close()
             throw AuthenticationError.browserLaunchFailed
         }
-
-        let code = try await callback.waitForCode(expectedState: state)
-        let tokens = try await exchangeCode(code, redirectURI: redirectURI, verifier: verifier)
-        let currentUser = try await loadCurrentUser(accessToken: tokens.accessToken)
-        return try await daemon.replaceProjectConfig(
-            .init(
-                serverUrl: Self.serverURL.absoluteString,
-                projectId: currentUser.defaultProjectId ?? currentUser.projects.first?.projectId,
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken
-            )
-        )
+        let code = try await callback.waitForCode(expectedState: parameters.state)
+        return .init(code: code, redirectURI: parameters.redirectUri, verifier: verifier)
     }
 
-    private func exchangeCode(_ code: String, redirectURI: String, verifier: String) async throws -> TokenResponse {
-        var request = URLRequest(url: Self.serverURL.appending(path: "/api/v1/auth/token"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONCoding.encoder().encode(
-            TokenExchangeRequest(code: code, redirectUri: redirectURI, codeVerifier: verifier)
-        )
-        return try await send(request)
-    }
-
-    private func loadCurrentUser(accessToken: String) async throws -> CurrentUserResponse {
-        var request = URLRequest(url: Self.serverURL.appending(path: "/api/v1/me"))
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "authorization")
-        return try await send(request)
-    }
-
-    private func send<Response: Decodable & Sendable>(_ request: URLRequest) async throws -> Response {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AuthenticationError.server(status: 0, message: "No HTTP response was returned.")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = String(decoding: data, as: UTF8.self)
-            throw AuthenticationError.server(status: http.statusCode, message: message)
-        }
-        return try JSONCoding.decoder().decode(Response.self, from: data)
-    }
-
-    private static func authorizationURL(
-        redirectURI: String,
-        challenge: String,
-        state: String
-    ) throws -> URL {
-        var components = URLComponents(
-            url: serverURL.appending(path: "/oauth2/authorization/oidc"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [
-            .init(name: "client_kind", value: "desktop"),
-            .init(name: "redirect_uri", value: redirectURI),
-            .init(name: "code_challenge", value: challenge),
-            .init(name: "code_challenge_method", value: "S256"),
-            .init(name: "state", value: state),
-        ]
-        guard let url = components?.url else {
-            throw AuthenticationError.invalidAuthorizationURL
-        }
-        return url
+    func cancel() {
+        callback.close()
     }
 
     private static func randomSecret() -> String {
@@ -126,11 +89,217 @@ struct AuthenticationClient: Sendable {
     }
 }
 
-private struct LoopbackCallbackServer: Sendable {
+/// A short-lived, App-memory-only Server session for setup and daemon-down recovery.
+/// Tokens are never exposed as properties or persisted by this type.
+struct NativeAuthenticatedSession: @unchecked Sendable {
+    let serverURL: URL
+    let currentUser: CurrentUserResponse
+
+    private let accessToken: String
+    private let refreshToken: String
+    private let transport: URLSession
+
+    init(
+        serverURL: URL,
+        currentUser: CurrentUserResponse,
+        accessToken: String,
+        refreshToken: String,
+        transport: URLSession
+    ) {
+        self.serverURL = serverURL
+        self.currentUser = currentUser
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.transport = transport
+    }
+
+    func install(on daemon: DaemonXPCClient) async throws -> DaemonProjectConfig {
+        try await daemon.replaceProjectConfig(
+            .init(
+                serverUrl: serverURL.absoluteString,
+                projectId: currentUser.defaultProjectId ?? currentUser.projects.first?.projectId,
+                accessToken: accessToken,
+                refreshToken: refreshToken
+            )
+        )
+    }
+
+    func authorizedRequest(
+        path: String,
+        method: String = "GET",
+        headers: [String: String] = [:],
+        body: Data? = nil
+    ) throws -> URLRequest {
+        guard path.hasPrefix("/api/v1/"),
+              let route = URLComponents(string: path),
+              route.scheme == nil,
+              route.host == nil,
+              var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false) else {
+            throw AuthenticationError.invalidRequestPath
+        }
+        components.percentEncodedPath = route.percentEncodedPath
+        components.percentEncodedQuery = route.percentEncodedQuery
+        guard let url = components.url else { throw AuthenticationError.invalidRequestPath }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "authorization")
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+        }
+        return request
+    }
+
+    func data(
+        path: String,
+        method: String = "GET",
+        headers: [String: String] = [:],
+        body: Data? = nil
+    ) async throws -> Data {
+        let request = try authorizedRequest(
+            path: path,
+            method: method,
+            headers: headers,
+            body: body
+        )
+        let (data, response) = try await transport.data(for: request)
+        try AuthenticationClient.validate(response: response, data: data)
+        return data
+    }
+
+    func decode<Response: Decodable & Sendable>(
+        _ type: Response.Type,
+        path: String,
+        method: String = "GET",
+        headers: [String: String] = [:],
+        body: Data? = nil
+    ) async throws -> Response {
+        let data = try await data(path: path, method: method, headers: headers, body: body)
+        return try JSONCoding.decoder().decode(type, from: data)
+    }
+}
+
+struct AuthenticationClient: @unchecked Sendable {
+    private let origin: URL
+    private let transport: URLSession
+
+    init(
+        serverURL: URL = ClumsiesIdentifiers.serverURL,
+        transport: URLSession? = nil
+    ) {
+        origin = serverURL
+        self.transport = transport ?? Self.makeEphemeralTransport()
+    }
+
+    func authenticate() async throws -> NativeAuthenticatedSession {
+        let flow = try NativeBrowserAuthorizationFlow.start()
+        defer { flow.cancel() }
+        let authorizationURL = try Self.authorizationURL(
+            serverURL: origin,
+            parameters: flow.parameters
+        )
+        return try await authenticate(using: flow.authorize(at: authorizationURL))
+    }
+
+    func authenticate(using grant: NativeAuthorizationGrant) async throws
+        -> NativeAuthenticatedSession {
+        let tokens = try await exchangeCode(grant)
+        let currentUser = try await loadCurrentUser(accessToken: tokens.accessToken)
+        return .init(
+            serverURL: origin,
+            currentUser: currentUser,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            transport: transport
+        )
+    }
+
+    static func authorizationURL(
+        serverURL: URL,
+        parameters: NativeAuthorizationParameters
+    ) throws -> URL {
+        var components = URLComponents(
+            url: serverURL.appending(path: "/oauth2/authorization/oidc"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            .init(name: "client_kind", value: "desktop"),
+            .init(name: "redirect_uri", value: parameters.redirectUri),
+            .init(name: "code_challenge", value: parameters.codeChallenge),
+            .init(name: "code_challenge_method", value: parameters.codeChallengeMethod),
+            .init(name: "state", value: parameters.state),
+        ]
+        guard let url = components?.url else {
+            throw AuthenticationError.invalidAuthorizationURL
+        }
+        return url
+    }
+
+    private func exchangeCode(_ grant: NativeAuthorizationGrant) async throws -> TokenResponse {
+        var request = URLRequest(url: origin.appending(path: "/api/v1/auth/token"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONCoding.encoder().encode(
+            TokenExchangeRequest(
+                code: grant.code,
+                redirectUri: grant.redirectURI,
+                codeVerifier: grant.verifier
+            )
+        )
+        return try await send(request)
+    }
+
+    private func loadCurrentUser(accessToken: String) async throws -> CurrentUserResponse {
+        var request = URLRequest(url: origin.appending(path: "/api/v1/me"))
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "authorization")
+        return try await send(request)
+    }
+
+    private func send<Response: Decodable & Sendable>(_ request: URLRequest) async throws -> Response {
+        let (data, response) = try await transport.data(for: request)
+        try Self.validate(response: response, data: data)
+        return try JSONCoding.decoder().decode(Response.self, from: data)
+    }
+
+    static func validate(response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw AuthenticationError.server(status: 0, message: "No HTTP response was returned.")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let apiError = try? JSONCoding.decoder().decode(APIErrorPayload.self, from: data)
+            let message = apiError.map { "\($0.code): \($0.message)" }
+                ?? String(decoding: data, as: UTF8.self)
+            throw AuthenticationError.server(status: http.statusCode, message: message)
+        }
+    }
+
+    static func makeEphemeralTransport() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = true
+        configuration.httpCookieAcceptPolicy = .always
+        return URLSession(configuration: configuration)
+    }
+}
+
+private final class LoopbackCallbackServer: @unchecked Sendable {
     let descriptor: Int32
     let port: UInt16
 
-    static func open() throws -> Self {
+    private let closeLock = NSLock()
+    private var isClosed = false
+
+    private init(descriptor: Int32, port: UInt16) {
+        self.descriptor = descriptor
+        self.port = port
+    }
+
+    static func open() throws -> LoopbackCallbackServer {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw AuthenticationError.callbackServer("Could not create the local callback socket.")
@@ -168,12 +337,16 @@ private struct LoopbackCallbackServer: Sendable {
     }
 
     func close() {
-        Darwin.close(descriptor)
+        closeLock.withLock {
+            guard !isClosed else { return }
+            isClosed = true
+            Darwin.close(descriptor)
+        }
     }
 
     func waitForCode(expectedState: String) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            defer { Darwin.close(descriptor) }
+        try await Task.detached(priority: .userInitiated) { [self] in
+            defer { close() }
             var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
             guard poll(&pollDescriptor, 1, 300_000) > 0 else {
                 throw AuthenticationError.callbackTimedOut

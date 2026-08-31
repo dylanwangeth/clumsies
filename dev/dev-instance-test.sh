@@ -12,19 +12,14 @@ fake_docker_state=$test_root/docker.running
 fake_app_state=$test_root/app.running
 fake_daemon_state=$test_root/daemon.running
 fake_server_registry=$test_root/server.registry
-fake_setup_state=$test_root/setup.state
 compose_descriptor_marker=$test_root/compose-descriptor.checked
 test_home=$test_root/home
 dev_root=$test_root/dev-root
-web_admin_dist=$repo_root/apps/web-admin/dist
-web_admin_dist_existed=0
-[ -d "$web_admin_dist" ] && web_admin_dist_existed=1
 mkdir -p "$fake_bin" "$test_home/Applications/Clumsies.app" \
   "$test_home/Library/Application Support/ai.clumsies" "$test_home/.codex"
 printf 'stable-app\n' > "$test_home/Applications/Clumsies.app/sentinel"
 printf 'stable-daemon\n' > "$test_home/Library/Application Support/ai.clumsies/sentinel"
 printf 'stable-codex\n' > "$test_home/.codex/sentinel"
-printf 'setup_required\n' > "$fake_setup_state"
 
 cleanup() {
   if [ -n "${reset_pid:-}" ]; then
@@ -44,9 +39,6 @@ cleanup() {
   fi
   if [ -d "$dev_root" ]; then
     run down >/dev/null 2>&1 || true
-  fi
-  if [ "$web_admin_dist_existed" = 0 ]; then
-    rmdir "$web_admin_dist" 2>/dev/null || true
   fi
   rm -rf -- "$test_root"
 }
@@ -115,7 +107,7 @@ PY
     if [ "$#" -eq 2 ] && [ "$2" = --remove-orphans ]; then
       :
     elif [ "$#" -eq 3 ] && [ "$2" = -v ] && [ "$3" = --remove-orphans ]; then
-      printf 'setup_required\n' > "$FAKE_SETUP_STATE"
+      :
     else
       reject "$@"
     fi
@@ -138,28 +130,6 @@ reject() {
   exit 97
 }
 
-arg_after() {
-  wanted=$1
-  shift
-  while [ "$#" -gt 1 ]; do
-    if [ "$1" = "$wanted" ]; then
-      printf '%s\n' "$2"
-      return 0
-    fi
-    shift
-  done
-  return 1
-}
-
-has_arg() {
-  wanted=$1
-  shift
-  for argument do
-    [ "$argument" = "$wanted" ] && return 0
-  done
-  return 1
-}
-
 for argument do url=$argument; done
 case "${url:-}" in http://*|https://*) ;; *) reject "$@" ;; esac
 [ "${FAKE_CURL_FAIL:-0}" = 0 ] || exit 22
@@ -168,63 +138,8 @@ case "$url" in
   http://127.0.0.1:*/api/v1/admin/health|https://pr-*.example.test/api/v1/admin/health)
     printf '{"status":"ok"}\n'
     ;;
-  "$FAKE_OPEN_SERVER_URL/api/v1/setup")
-    printf '{"state":"%s"}\n' "$(cat "$FAKE_SETUP_STATE")"
-    ;;
-  "$FAKE_OPEN_SERVER_URL/api/v1/setup/sessions")
-    output=$(arg_after --output "$@") || reject "$@"
-    cookie_jar=$(arg_after --cookie-jar "$@") || reject "$@"
-    body=$(cat)
-    expected_setup_code=$(awk -F= '$1 == "CLUMSIES_SETUP_CODE" { print substr($0, index($0, "=") + 1) }' "$FAKE_COMPOSE_ENV")
-    printf '%s' "$body" | FAKE_EXPECTED_SETUP_CODE="$expected_setup_code" /usr/bin/python3 -c \
-      'import json,os,sys; assert json.load(sys.stdin) == {"setup_code": os.environ["FAKE_EXPECTED_SETUP_CODE"]}' \
-      || reject
-    : > "$cookie_jar"
-    printf '%s\n' '{"csrf_token":"fake-csrf-token","expires_at":"2099-01-01T00:00:00Z"}' > "$output"
-    ;;
-  "$FAKE_OPEN_SERVER_URL/api/v1/setup/configuration")
-    cookie_file=$(arg_after --cookie "$@") || reject "$@"
-    csrf_header=$(printf '%s\n' "$@" | sed -n 's#^@\(/.*\)#\1#p')
-    [ -f "$cookie_file" ] && [ -f "$csrf_header" ] || reject "$@"
-    grep -Fx 'x-csrf-token: fake-csrf-token' "$csrf_header" >/dev/null || reject
-    /usr/bin/python3 -c \
-      'import json,sys; assert json.load(sys.stdin) == {"org_name":"Clumsies Dev","default_project_name":"Default","allowed_email_domains":[]}' \
-      || reject
-    ;;
-  "$FAKE_OPEN_SERVER_URL/api/v1/setup/oidc-authorizations")
-    output=$(arg_after --output "$@") || reject "$@"
-    cookie_file=$(arg_after --cookie "$@") || reject "$@"
-    csrf_header=$(printf '%s\n' "$@" | sed -n 's#^@\(/.*\)#\1#p')
-    [ -f "$cookie_file" ] && [ -f "$csrf_header" ] || reject "$@"
-    grep -Fx 'x-csrf-token: fake-csrf-token' "$csrf_header" >/dev/null || reject
-    FAKE_EXPECTED_REDIRECT="$FAKE_OPEN_SERVER_URL/admin/setup/callback" \
-      /usr/bin/python3 -c \
-      'import json,os,sys; assert json.load(sys.stdin) == {"redirect_uri": os.environ["FAKE_EXPECTED_REDIRECT"]}' \
-      || reject
-    printf '%s\n' \
-      '{"authorization_url":"http://127.0.0.1:18091/clumsies/authorize?state=fake"}' \
-      > "$output"
-    ;;
-  http://127.0.0.1:18091/clumsies/authorize\?state=fake)
-    has_arg --location "$@" || reject "$@"
-    printf 'initialized\n' > "$FAKE_SETUP_STATE"
-    ;;
   *) reject ;;
 esac
-EOF
-
-cat > "$fake_bin/bun" <<'EOF'
-#!/bin/sh
-set -eu
-printf 'bun %s\n' "$*" >> "$FAKE_COMMAND_LOG"
-[ "$#" -eq 2 ] && [ "$1" = install ] && [ "$2" = --frozen-lockfile ] \
-  && [ "$PWD" = "$FAKE_REPO_ROOT" ] && exit 0
-[ "$#" -eq 2 ] && [ "$1" = run ] && [ "$2" = build:web-admin ] \
-  && [ "$PWD" = "$FAKE_REPO_ROOT" ] || {
-  printf 'bun %s\n' "$*" >> "$FAKE_REJECT_LOG"
-  exit 97
-}
-mkdir -p "$PWD/apps/web-admin/dist"
 EOF
 
 cat > "$fake_bin/xcodegen" <<'EOF'
@@ -350,8 +265,7 @@ printf 'open %s\n' "$*" >> "$FAKE_COMMAND_LOG"
   exit 97
 }
 case "$FAKE_OPEN_SERVER_URL" in
-  http://127.0.0.1:*) [ "$(cat "$FAKE_SETUP_STATE")" = initialized ] || exit 97 ;;
-  https://*) ;;
+  http://127.0.0.1:*|https://*) ;;
   *) exit 97 ;;
 esac
 : > "$FAKE_APP_STATE"
@@ -386,21 +300,21 @@ case "${1:-}" in
     server_address=$(/usr/bin/python3 - \
       "$FAKE_SERVER_PLIST" "$FAKE_SERVER_LABEL" "$FAKE_SERVER_LAUNCHER" \
       "$FAKE_COMPOSE_ENV" "$FAKE_EXPECTED_SERVER_BIN" \
-      "$FAKE_INSTANCE_ROOT/server-ready.json" "$FAKE_REPO_ROOT/apps/web-admin/dist" \
+      "$FAKE_INSTANCE_ROOT/server-ready.json" \
       "$FAKE_INSTANCE_ROOT/logs/server.log" "$FAKE_SERVER_PORT" <<'PY'
 import os, plistlib, stat, sys
 
 (
     path, label, launcher, compose_env, server_binary, ready_file,
-    web_admin_dir, server_log, server_port,
+    server_log, server_port,
 ) = sys.argv[1:]
 with open(path, "rb") as handle:
     value = plistlib.load(handle)
 arguments = value.get("ProgramArguments")
-assert isinstance(arguments, list) and len(arguments) == 6
+assert isinstance(arguments, list) and len(arguments) == 5
 assert arguments[:3] == [launcher, compose_env, server_binary]
 assert arguments[3] in {"127.0.0.1:0", f"127.0.0.1:{server_port}"}
-assert arguments[4:] == [ready_file, web_admin_dir]
+assert arguments[4] == ready_file
 assert value == {
     "Label": label,
     "ProgramArguments": arguments,
@@ -415,7 +329,6 @@ PY
     ) || reject "$@"
     "$FAKE_SERVER_LAUNCHER" "$FAKE_COMPOSE_ENV" "$FAKE_EXPECTED_SERVER_BIN" \
       "$server_address" "$FAKE_INSTANCE_ROOT/server-ready.json" \
-      "$FAKE_REPO_ROOT/apps/web-admin/dist" \
       >> "$FAKE_INSTANCE_ROOT/logs/server.log" 2>&1 &
     ;;
   print|bootout)
@@ -554,7 +467,7 @@ EOF
 cat > "$test_root/fake-server" <<'EOF'
 #!/bin/sh
 set -eu
-printf 'server web-admin %s\n' "${CLUMSIES_WEB_ADMIN_DIR:-}" >> "$FAKE_COMMAND_LOG"
+printf 'server started\n' >> "$FAKE_COMMAND_LOG"
 port=${FAKE_SERVER_PORT:-49152}
 delay_attempts=${FAKE_SERVER_READY_DELAY_ATTEMPTS:-0}
 start_identity=fake-start-$$
@@ -629,7 +542,6 @@ runner_environment() {
     FAKE_APP_STATE="$fake_app_state" \
     FAKE_DAEMON_STATE="$fake_daemon_state" \
     FAKE_SERVER_REGISTRY="$fake_server_registry" \
-    FAKE_SETUP_STATE="$fake_setup_state" \
     FAKE_COMPOSE_DESCRIPTOR_MARKER="$compose_descriptor_marker" \
     FAKE_RUNTIME_FILE="$runtime" \
     FAKE_INSTANCE_ROOT="$instance_root" \
@@ -726,15 +638,6 @@ wait "$launcher_pid" 2>/dev/null || true
 run up > "$test_root/recovered-up.out"
 [ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$runtime")" = running ]
 [ -f "$compose_descriptor_marker" ]
-setup_sequence=$(awk '
-  /\/api\/v1\/setup\/sessions$/ { print "session"; next }
-  /\/api\/v1\/setup\/configuration$/ { print "configuration"; next }
-  /\/api\/v1\/setup\/oidc-authorizations$/ { print "authorization"; next }
-  /\/clumsies\/authorize[?]state=fake$/ { print "oidc"; next }
-  /\/api\/v1\/setup$/ { print "state"; next }
-' "$fake_log")
-[ "$setup_sequence" = "$(printf '%s\n' state session configuration authorization oidc state)" ]
-setup_sessions_before_reset=$(grep -c '/api/v1/setup/sessions' "$fake_log")
 run reset
 
 FAKE_XCODEBUILD_FAIL=1
@@ -744,18 +647,12 @@ if run up > "$test_root/failed-up.out" 2> "$test_root/failed-up.err"; then
   exit 1
 fi
 unset FAKE_XCODEBUILD_FAIL
-setup_sessions_after_reset=$(grep -c '/api/v1/setup/sessions' "$fake_log")
-[ "$setup_sessions_after_reset" -eq $((setup_sessions_before_reset + 1)) ]
 [ -f "$runtime" ]
 [ "$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$runtime")" = stopped ]
 [ ! -f "$fake_server_registry" ]
 grep -F -- "--env-file $instance_root/compose.env" "$fake_log" >/dev/null
 grep -F -- "-p $compose_project" "$fake_log" >/dev/null
-grep -F -- "bun run build:web-admin" "$fake_log" >/dev/null
-if [ ! -x "$repo_root/node_modules/.bin/tsc" ]; then
-  grep -F -- "bun install --frozen-lockfile" "$fake_log" >/dev/null
-fi
-grep -F -- "server web-admin $repo_root/apps/web-admin/dist" "$fake_log" >/dev/null
+grep -F -- "server started" "$fake_log" >/dev/null
 grep -F -- "CLUMSIES_APP_BUNDLE_IDENTIFIER=ai.clumsies.desktop.dev.$instance_id" "$fake_log" >/dev/null
 grep -F -- "CLUMSIES_APP_PRODUCT_NAME=ClumsiesDev-$instance_id" "$fake_log" >/dev/null
 if grep -E '(^| )PRODUCT_(BUNDLE_IDENTIFIER|NAME)=' "$fake_log" >/dev/null; then
@@ -810,12 +707,9 @@ xcodebuild_after=$(grep -c '^xcodebuild ' "$fake_log" || true)
 [ ! -e "$instance_lock" ]
 
 xcodebuild_before=$(grep -c '^xcodebuild ' "$fake_log" || true)
-setup_sessions_before=$(grep -c '/api/v1/setup/sessions' "$fake_log" || true)
 run up > "$test_root/repeated-up.out"
 xcodebuild_after=$(grep -c '^xcodebuild ' "$fake_log" || true)
-setup_sessions_after=$(grep -c '/api/v1/setup/sessions' "$fake_log" || true)
 [ "$xcodebuild_after" -eq $((xcodebuild_before + 1)) ]
-[ "$setup_sessions_after" -eq "$setup_sessions_before" ]
 
 cp "$runtime" "$test_root/runtime.saved"
 /usr/bin/python3 - "$runtime" <<'PY'
@@ -986,7 +880,6 @@ preview_b=$test_root/preview-b.json
 printf '%s\n' '{"schema_version":1,"mode":"preview","environment_id":"pr-73","server_url":"https://pr-73.example.test","oidc_issuer":"https://oidc.example.test","expires_at":"2099-01-01T00:00:00Z"}' > "$preview_a"
 printf '%s\n' '{"schema_version":1,"mode":"preview","environment_id":"pr-74","server_url":"https://pr-73.example.test","oidc_issuer":"https://oidc.example.test","expires_at":"2099-01-01T00:00:00Z"}' > "$preview_b"
 docker_before=$(grep -c '^docker ' "$fake_log" || true)
-bun_before=$(grep -c '^bun ' "$fake_log" || true)
 FAKE_CURL_FAIL=1
 export FAKE_CURL_FAIL
 if run up --preview "$preview_a" > "$test_root/unhealthy-preview.out" 2> "$test_root/unhealthy-preview.err"; then
@@ -1003,12 +896,9 @@ grep -F 'Preview Server is not healthy' "$test_root/unhealthy-preview.err" >/dev
 FAKE_OPEN_SERVER_URL=https://pr-73.example.test
 export FAKE_OPEN_SERVER_URL
 preview_curl_before=$(grep -c '^curl ' "$fake_log" || true)
-preview_setup_before=$(grep -c '/api/v1/setup' "$fake_log" || true)
 run up --preview "$preview_a" >/dev/null
 preview_curl_after=$(grep -c '^curl ' "$fake_log" || true)
-preview_setup_after=$(grep -c '/api/v1/setup' "$fake_log" || true)
 [ "$preview_curl_after" -ge $((preview_curl_before + 2)) ]
-[ "$preview_setup_after" -eq "$preview_setup_before" ]
 if run up --preview "$preview_b" > "$test_root/changed-preview.out" 2> "$test_root/changed-preview.err"; then
   echo "expected a changed Preview identity to require reset" >&2
   exit 1
@@ -1029,8 +919,6 @@ run reset
 unset FAKE_OPEN_SERVER_URL
 docker_after=$(grep -c '^docker ' "$fake_log" || true)
 [ "$docker_before" -eq "$docker_after" ]
-bun_after=$(grep -c '^bun ' "$fake_log" || true)
-[ "$bun_before" -eq "$bun_after" ]
 
 grep -F 'stable-app' "$test_home/Applications/Clumsies.app/sentinel" >/dev/null
 grep -F 'stable-daemon' "$test_home/Library/Application Support/ai.clumsies/sentinel" >/dev/null

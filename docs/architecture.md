@@ -17,7 +17,6 @@ flowchart LR
     subgraph Deployment["Self-hosted deployment"]
         Server["Rust Server"]
         Postgres[("PostgreSQL")]
-        Admin["Web Admin"]
     end
 
     Browser["System browser / organization OIDC"]
@@ -29,10 +28,10 @@ flowchart LR
     Daemon -->|"resolve + atomic materialization"| ProjectStorage
     Daemon --> Models
     Daemon -->|"authenticated HTTPS"| Server
+    Desktop -->|"native setup + recovery HTTPS"| Server
     Desktop --> Browser
     Browser --> Server
     Server --> Postgres
-    Admin -->|"Admin API"| Server
 ```
 
 ## Why Desktop and daemon both exist
@@ -53,9 +52,8 @@ because it was not stored in renderer state.
 | --- | --- | --- |
 | Server | authority resources, identity, authorization, review state, Commit graph, audit | local files and client process lifecycle |
 | daemon | local Project bindings, Project storage registry, local drafts, queued operations, cached Blob/Tree/Commit objects, installed Refs, immutable generations, derived search indexes, refresh handling, native Server proxy | authority decisions and merge policy |
-| Desktop | interaction state, editors, navigation, review workflows | bearer tokens and durable authority |
+| Desktop | trusted Server-origin selection, native setup and sign-in, administration interaction state, editors, navigation, and review workflows | durable bearer-token storage and durable authority |
 | Agent runtime proxy | bounded MCP decoding, Hook normalization, Project binding lookup, and typed XPC forwarding | databases, models, background workers, or a second retrieval implementation |
-| Web Admin | administrative operations | memory editing and review workflows |
 
 ## Write path
 
@@ -214,12 +212,28 @@ it is not part of the runtime identity model.
 
 ## Authentication boundary
 
-The native macOS app owns the browser loopback listener and PKCE verifier. After
-the code exchange and `/api/v1/me` lookup succeed, the app sends the token pair
-directly to daemon over XPC.
+The native macOS App accepts one origin-only Server address, requires HTTPS for
+remote hosts, and persists the normalized authority. It checks setup state
+directly before daemon startup. A new installation uses a short-lived setup
+cookie plus CSRF token to save configuration, then uses the same App-owned
+loopback listener, state, and PKCE verifier for the first Owner's OIDC flow.
+Initialization and issuance of the PKCE-bound client authorization code happen
+in one Server transaction.
+
+After code exchange and `/api/v1/me` succeed, the App sends the token pair
+directly to daemon over XPC. Organization owners and administrators then use
+the native Administration surface; its Server requests carry bearer
+credentials through daemon. Cached administrative reads are marked stale, and
+mutations remain disabled until a live refresh succeeds.
 
 Daemon injects bearer tokens into Server requests. On `401`, it rotates the
 refresh token and retries exactly once.
+
+If daemon startup fails, the App's **Administrator Recovery** path runs OIDC
+directly against the same trusted origin. Recovery credentials remain only in
+App memory and are limited to direct health inspection, member access repair,
+and token revocation; they are neither written to disk nor converted into a
+browser session.
 
 ## Platform boundary
 

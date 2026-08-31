@@ -12,7 +12,6 @@ root cause when applicable, and the chosen solution. -->
 - [ ] Rust daemon/runtime
 - [ ] Server/API
 - [ ] macOS app
-- [ ] Web Admin
 - [ ] MCP, CLI, or agent protocol
 - [ ] Storage, configuration, or schema
 - [ ] Documentation

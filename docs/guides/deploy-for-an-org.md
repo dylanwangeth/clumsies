@@ -1,8 +1,9 @@
 # Deploy for an organization
 
 This guide deploys one self-hosted Clumsies organization. The Rust Server image
-contains Web Admin; organization memory is the Memory section's organization
-scope in Desktop and is not a deployed process.
+contains only APIs and OIDC endpoints; setup and administration live in the
+macOS App. Organization memory is the Memory section's organization scope in
+Desktop and is not a deployed process.
 
 ## Runtime boundary
 
@@ -10,7 +11,8 @@ Production runs three containers:
 
 - PostgreSQL stores every authority, draft, review, identity, audit, Blob,
   Tree, Commit, and Ref;
-- Server runs migrations, the Public/Admin APIs, OIDC, and Web Admin;
+- Server runs migrations, the Public API, bearer Admin API, public health,
+  memory export, and OIDC;
 - Caddy terminates public HTTPS and proxies Server.
 
 Only Caddy publishes host ports. Server and PostgreSQL stay on the Compose
@@ -48,10 +50,9 @@ CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback
 
 `CLUMSIES_CLIENT_REDIRECT_URIS` is the post-provider allowlist for Clumsies
 clients. The loopback template accepts Desktop's dynamic port only at the exact
-callback path. Server derives both the IdP callback and same-origin Web Admin
-setup callback from `CLUMSIES_PUBLIC_ORIGIN`. `CLUMSIES_CORS_ORIGINS` is only
-for additional browser origins; same-origin Web Admin and native Desktop
-traffic do not require it.
+callback path. Server derives the IdP callback from
+`CLUMSIES_PUBLIC_ORIGIN`. The native App calls Server directly and no browser UI
+is served, so the deployment needs no CORS origin configuration.
 
 When the host requires an outbound proxy, configure Docker Engine and the
 standard proxy variables in `.env`. Deployment-specific proxy or mirror
@@ -64,13 +65,26 @@ docker compose --project-name clumsies -f compose.production.yml up -d --wait
 curl --fail --silent https://memory.example.com/api/v1/admin/health
 ```
 
-Open `https://memory.example.com/admin/setup`. Web Setup consumes the one-time
-Setup Code, creates the organization, first Owner, default Project, external
-identity, and initial Refs in one transaction, then permanently locks the
-installation. Remove `CLUMSIES_SETUP_CODE` from the active `.env` after Setup.
+Open the macOS App and enter `https://memory.example.com` as the Server address.
+The App accepts a remote address only as an HTTPS origin and detects that setup
+is required. Enter the one-time Setup Code, organization name, default Project,
+and optional email domains, then finish OIDC in the system browser. The App and
+Server use state plus `S256` PKCE; Server creates the organization, first Owner,
+default Project, external identity, and initial Refs in one transaction before
+returning a client authorization code. The App exchanges it for bearer tokens,
+installs them in daemon, and the installation permanently locks. Remove
+`CLUMSIES_SETUP_CODE` from the active `.env` after setup.
 
-Later organization configuration and membership are managed at `/admin/` with
-the configured enterprise identity provider.
+Later organization configuration, membership, Projects, tokens, audit, and
+health are managed in the App's **Administration** section. The Server keeps
+the Admin API bearer-only; `/api/v1/admin/health` remains available for
+deployment diagnostics and `/api/v1/admin/memory-export` remains the
+authenticated migration export.
+
+If daemon startup fails, choose **Administrator Recovery** in the App. It signs
+in directly to the same trusted Server origin and keeps the temporary session
+in App memory only so an administrator can inspect health, repair member
+access, or revoke tokens before retrying normal startup.
 
 ## GitHub delivery
 

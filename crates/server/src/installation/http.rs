@@ -79,7 +79,13 @@ pub(crate) async fn create_setup_oidc_authorization(
         .await?;
     let authorization_url = state
         .auth
-        .begin_setup_login(&setup_session_id, &request.redirect_uri)
+        .begin_setup_login(
+            &setup_session_id,
+            &request.redirect_uri,
+            &request.state,
+            &request.code_challenge,
+            &request.code_challenge_method,
+        )
         .await?;
     Ok((
         StatusCode::CREATED,

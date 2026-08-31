@@ -9,7 +9,7 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertFalse(ClumsiesIdentifiers.developmentConfigurationDetected)
         XCTAssertEqual(DaemonBootstrapController.label, "ai.clumsies.daemon")
         XCTAssertEqual(DaemonXPCClient.serviceName, "ai.clumsies.daemon")
-        XCTAssertEqual(AuthenticationClient.serverURL, URL(string: "https://app.clumsies.ai"))
+        XCTAssertEqual(ClumsiesIdentifiers.serverURL, URL(string: "https://app.clumsies.ai"))
     }
 
     func testDevInstanceDerivesItsOwnDaemonService() {
@@ -1161,7 +1161,7 @@ final class DaemonContractTests: XCTestCase {
             source.range(of: "func reload(allowsDuringDocumentReconciliation:")
         )
         let reloadEnd = try XCTUnwrap(
-            source[reloadStart.lowerBound...].range(of: "\n    func signIn()")
+            source[reloadStart.lowerBound...].range(of: "\n    func presentProjectCreation()")
         )
         let reload = source[reloadStart.lowerBound..<reloadEnd.lowerBound]
         let selectionGuard =

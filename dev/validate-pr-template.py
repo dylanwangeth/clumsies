@@ -31,7 +31,6 @@ AFFECTED_AREAS = (
     "Rust daemon/runtime",
     "Server/API",
     "macOS app",
-    "Web Admin",
     "MCP, CLI, or agent protocol",
     "Storage, configuration, or schema",
     "Documentation",
@@ -138,7 +137,6 @@ Explain the problem and the smallest complete change.
 - [x] Rust daemon/runtime
 - [ ] Server/API
 - [ ] macOS app
-- [ ] Web Admin
 - [ ] MCP, CLI, or agent protocol
 - [ ] Storage, configuration, or schema
 - [ ] Documentation

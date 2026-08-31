@@ -1,17 +1,16 @@
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use sqlx::PgPool;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{AuthError, AuthPrincipal, AuthService};
 pub use crate::health::{AdminHealth, HealthCheck, HealthStatus};
 use crate::installation::{InstallationError, InstallationService};
 pub(crate) use crate::middleware::cookie_value;
-use crate::middleware::{cors_layer, require_admin_auth, require_auth, security_headers};
+use crate::middleware::{require_admin_auth, require_auth, security_headers};
 use crate::repository::{ServerError, ServerRepository};
 
 #[derive(Clone)]
@@ -75,7 +74,6 @@ define_routes!(public_routes, PUBLIC_OPERATIONS, {
 });
 
 define_routes!(admin_routes, ADMIN_OPERATIONS, {
-    "/api/v1/admin/session" => { get: crate::auth::http::get_admin_session, delete: crate::auth::http::delete_admin_session };
     "/api/v1/admin/identity-provider" => { get: crate::auth::http::get_admin_identity_provider };
     "/api/v1/admin/org" => { get: crate::organization::http::get_admin_org, patch: crate::organization::http::update_admin_org };
     "/api/v1/admin/members" => {
@@ -211,31 +209,12 @@ pub fn router_with_services(
     ));
     let protected_routes =
         protected_routes().route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
-    let mut router = Router::new()
+    Router::new()
         .merge(public_routes)
         .merge(admin_routes)
         .merge(protected_routes)
-        .route("/setup", get(redirect_to_setup));
-    if let Some(directory) = optional_env("CLUMSIES_WEB_ADMIN_DIR") {
-        let index = std::path::Path::new(&directory).join("index.html");
-        let service = ServeDir::new(directory).fallback(ServeFile::new(index));
-        router = router.nest_service("/admin", service);
-    }
-    router
         .with_state(state)
         .layer(middleware::from_fn(security_headers))
-        .layer(cors_layer())
-}
-
-async fn redirect_to_setup() -> Redirect {
-    Redirect::temporary("/admin/setup")
-}
-
-fn optional_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn require_org_admin(principal: &AuthPrincipal) -> Result<(), HttpError> {
@@ -312,10 +291,6 @@ impl HttpError {
 
     pub(crate) fn internal(message: &str) -> Self {
         Self::Internal(message.to_owned())
-    }
-
-    pub(crate) fn forbidden(message: &str) -> Self {
-        Self::Server(ServerError::Forbidden(message.to_owned()))
     }
 }
 
@@ -406,15 +381,14 @@ impl IntoResponse for HttpError {
                 let status = match &error {
                     AuthError::Unauthorized => StatusCode::UNAUTHORIZED,
                     AuthError::MemberNotAllowed
-                    | AuthError::AdminAccessRequired
                     | AuthError::DomainNotAllowed
                     | AuthError::ProviderIdentityConflict => StatusCode::FORBIDDEN,
                     AuthError::NotConfigured | AuthError::ProviderUnavailable(_) => {
                         StatusCode::SERVICE_UNAVAILABLE
                     }
-                    AuthError::Configuration(_)
-                    | AuthError::CorruptWebSession
-                    | AuthError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                    AuthError::Configuration(_) | AuthError::Sqlx(_) => {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
                     AuthError::Installation(error) => installation_error_status(error),
                     _ => StatusCode::BAD_REQUEST,
                 };

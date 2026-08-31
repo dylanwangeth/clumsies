@@ -4,16 +4,21 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{Request, StatusCode};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use server::api::{
-    CreateSetupSessionRequest, CreateSetupSessionResponse, InstallationState,
+    AdminOrg, CreateSetupSessionRequest, CreateSetupSessionResponse, InstallationState,
     ReplaceSetupConfigurationRequest, SetupConfiguration, SetupOidcAuthorization,
-    SetupOidcAuthorizationRequest, SetupStatus, WebAdminSession,
+    SetupOidcAuthorizationRequest, SetupStatus, TokenGrantType, TokenRequest, TokenResponse,
 };
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use url::Url;
 
-const SETUP_CALLBACK: &str = "http://127.0.0.1:1421/admin/setup/callback";
+const SETUP_CALLBACK: &str = "http://127.0.0.1:49152/callback";
+const SETUP_STATE: &str = "native-setup-state";
+const SETUP_VERIFIER: &str = "setup-verifier-abcdefghijklmnopqrstuvwxyz-0123456789";
 
 #[tokio::test]
 async fn setup_claim_creates_one_oidc_bound_installation_and_locks_it() {
@@ -94,28 +99,36 @@ async fn setup_claim_creates_one_oidc_bound_installation_and_locks_it() {
         begin_setup_oidc(app.clone(), &cookie, &session.csrf_token, SETUP_CALLBACK).await;
     let callback = complete_provider_login(app.clone(), &provider_state).await;
     assert_eq!(callback.status(), StatusCode::FOUND);
-    assert_eq!(callback.headers().get(LOCATION).unwrap(), SETUP_CALLBACK);
-    let admin_cookie = callback
-        .headers()
-        .get(SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
-    assert!(admin_cookie.starts_with("clumsies_admin_session="));
+    assert!(callback.headers().get(SET_COOKIE).is_none());
+    let client_callback =
+        Url::parse(callback.headers().get(LOCATION).unwrap().to_str().unwrap()).unwrap();
+    assert_eq!(client_callback.path(), "/callback");
+    assert_eq!(query_value(&client_callback, "state"), SETUP_STATE);
+    let authorization_code = query_value(&client_callback, "code");
 
-    let admin_session: WebAdminSession =
-        get_json(app.clone(), "/api/v1/admin/session", Some(&admin_cookie)).await;
-    assert_eq!(admin_session.user.email, "owner@example.com");
-    assert_eq!(admin_session.user.role, "owner");
-    assert_eq!(admin_session.org.name, "Clumsies Lab");
-    assert_eq!(
-        admin_session.capabilities,
-        vec!["admin:read", "admin:write"]
-    );
+    let invalid_grant =
+        exchange_setup_token(app.clone(), &authorization_code, "wrong-verifier").await;
+    assert_eq!(invalid_grant.status(), StatusCode::BAD_REQUEST);
+    let token: TokenResponse =
+        decode_json(exchange_setup_token(app.clone(), &authorization_code, SETUP_VERIFIER).await)
+            .await;
+    assert_eq!(token.user.email, "owner@example.com");
+    assert_eq!(token.user.role, "owner");
+
+    let admin_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/org")
+                .header("authorization", format!("Bearer {}", token.access_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_response.status(), StatusCode::OK);
+    let admin_org: AdminOrg = decode_json(admin_response).await;
+    assert_eq!(admin_org.name, "Clumsies Lab");
 
     let completed: SetupStatus = get_json(app.clone(), "/api/v1/setup", Some(&cookie)).await;
     assert_eq!(completed.state, InstallationState::Initialized);
@@ -174,13 +187,6 @@ async fn setup_claim_creates_one_oidc_bound_installation_and_locks_it() {
         .await;
     assert!(second_org.is_err());
 
-    let (_, token) = common::authenticated_router_as(
-        postgres.pool.clone(),
-        "owner@example.com",
-        "setup-owner-subject",
-        "Owner",
-    )
-    .await;
     assert_eq!(token.org.org_id, org_id);
 }
 
@@ -242,10 +248,13 @@ async fn disallowed_setup_owner_can_correct_configuration_and_retry() {
         begin_setup_oidc(app.clone(), &cookie, &session.csrf_token, SETUP_CALLBACK).await;
     let denied = complete_provider_login(app.clone(), &denied_state).await;
     assert_eq!(denied.status(), StatusCode::FOUND);
+    let denied_callback =
+        Url::parse(denied.headers().get(LOCATION).unwrap().to_str().unwrap()).unwrap();
     assert_eq!(
-        denied.headers().get(LOCATION).unwrap(),
-        &format!("{SETUP_CALLBACK}?error=setup_owner_domain_not_allowed")
+        query_value(&denied_callback, "error"),
+        "setup_owner_domain_not_allowed"
     );
+    assert_eq!(query_value(&denied_callback, "state"), SETUP_STATE);
 
     let status: SetupStatus = get_json(app.clone(), "/api/v1/setup", Some(&cookie)).await;
     assert_eq!(status.state, InstallationState::SetupRequired);
@@ -326,6 +335,9 @@ async fn begin_setup_oidc(
         "/api/v1/setup/oidc-authorizations",
         &SetupOidcAuthorizationRequest {
             redirect_uri: redirect_uri.to_owned(),
+            state: SETUP_STATE.to_owned(),
+            code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(SETUP_VERIFIER.as_bytes())),
+            code_challenge_method: "S256".to_owned(),
         },
         Some(cookie),
         Some(csrf_token),
@@ -339,6 +351,23 @@ async fn begin_setup_oidc(
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.into_owned())
         .unwrap()
+}
+
+async fn exchange_setup_token(app: Router, code: &str, verifier: &str) -> axum::response::Response {
+    post_json(
+        app,
+        "/api/v1/auth/token",
+        &TokenRequest {
+            grant_type: TokenGrantType::AuthorizationCode,
+            code: Some(code.to_owned()),
+            redirect_uri: Some(SETUP_CALLBACK.to_owned()),
+            code_verifier: Some(verifier.to_owned()),
+            refresh_token: None,
+        },
+        None,
+        None,
+    )
+    .await
 }
 
 async fn complete_provider_login(app: Router, provider_state: &str) -> axum::response::Response {
@@ -432,4 +461,11 @@ fn product_login_uri() -> String {
         .append_pair("code_challenge", &"a".repeat(43))
         .append_pair("code_challenge_method", "S256");
     format!("{}?{}", url.path(), url.query().unwrap())
+}
+
+fn query_value(url: &Url, name: &str) -> String {
+    url.query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+        .unwrap()
 }
