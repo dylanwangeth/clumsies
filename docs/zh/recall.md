@@ -84,25 +84,23 @@ Codex rollout 从以下目录递归发现：
 当前结构化 activation 记录为：
 
 ```text
-event_msg.payload.type = "mcp_tool_call_end"
-payload.call_id
-payload.invocation = {
+event_msg.payload.type = "item_completed"
+payload.item = {
+  type: "McpToolCall",
+  id: "...",
   server: "clumsies",
   tool: "memory",
-  arguments: { op: { activate: { query: "...", state?: "..." } } }
-}
-payload.result = {
-  Ok: { structuredContent: { run_id?, fragments, ... }, isError? }
-} | {
-  Err: "..."
+  arguments: { op: { activate: { query: "...", state?: "..." } } },
+  result?: { structuredContent: { run_id?, fragments, ... }, isError? },
+  error?: { message: "..." }
 }
 ```
 
-用户请求优先读取结构化 `response_item` 中标记为 `user.text` 的内容，并兼容旧 `event_msg.payload.type = "user_message"`。旧工具名 `memory/activate`、`activate` 及 JSON 字符串参数继续作为只读兼容输入；其他 MCP Server 和 `memory` 的其他 operation 被忽略。
+用户请求优先读取结构化 `response_item` 中标记为 `user.text` 的内容，并兼容旧 `event_msg.payload.type = "user_message"`。旧 `mcp_tool_call_end` 事件、工具名 `memory/activate`、`activate` 及 JSON 字符串参数继续作为只读兼容输入；其他 MCP Server 和 `memory` 的其他 operation 被忽略。
 
 ## 请求、activation 与 Retrieval Run 的关联
 
-每条真实人类消息开始一个请求；之后的 Clumsies activation 归入该请求，直到下一条人类消息。DSH 用 `callId` 配对调用和结果；Codex 的 `mcp_tool_call_end` 已同时包含两端。
+每条真实人类消息开始一个请求；之后的 Clumsies activation 归入该请求，直到下一条人类消息。DSH 用 `callId` 配对调用和结果；Codex 的 `McpToolCall` 完成事件已同时包含两端。
 
 新日志中，`structuredContent.run_id` 是关联本地 `retrieval_runs` 的权威身份。daemon 还会校验该 run 属于工作区绑定的 Project；查询文本只用于展示，不是身份键。
 

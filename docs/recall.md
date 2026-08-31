@@ -75,30 +75,33 @@ Codex rollouts are discovered under `~/.codex/sessions` and
 `~/.codex/archived_sessions`. `session_meta.payload.cwd` binds a rollout to a
 workspace; active and archived copies are de-duplicated by session id.
 
-The projection consumes human `user_message` events and completed MCP calls. A
-current activation is recorded atomically as:
+The projection consumes structured human `response_item` records, legacy
+`user_message` events, and completed MCP calls. A current activation is
+recorded atomically as:
 
 ```text
-event_msg.payload.type = "mcp_tool_call_end"
-payload.call_id
-payload.invocation = {
+event_msg.payload.type = "item_completed"
+payload.item = {
+  type: "McpToolCall",
+  id: "...",
   server: "clumsies",
   tool: "memory",
-  arguments: { op: { activate: { query: "...", state?: "..." } } }
+  arguments: { op: { activate: { query: "...", state?: "..." } } },
+  result?: { structuredContent: { run_id?, fragments, ... }, isError? },
+  error?: { message: "..." }
 }
-payload.result = { Ok: { structuredContent: { run_id?, fragments, ... }, isError? } }
-               | { Err: "..." }
 ```
 
-The earlier dedicated tool names `memory/activate` and `activate`, including
-JSON-encoded arguments, are accepted as compatibility input. Other MCP servers
-and other `memory` operations are ignored.
+Legacy `mcp_tool_call_end` events and the earlier dedicated tool names
+`memory/activate` and `activate`, including JSON-encoded arguments, are
+accepted as compatibility input. Other MCP servers and other `memory`
+operations are ignored.
 
 ## Projection and retrieval-run identity
 
 Each genuine human message starts a task. Subsequent clumsies activations belong
 to that task until the next human message. DSH call/result records are paired by
-`callId`; Codex `mcp_tool_call_end` already contains both sides.
+`callId`; a Codex `McpToolCall` completion already contains both sides.
 
 For new logs, `structuredContent.run_id` is the authoritative link to
 `retrieval_runs`; selected candidates from that exact run supply stable chunk
