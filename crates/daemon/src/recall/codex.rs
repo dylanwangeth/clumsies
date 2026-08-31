@@ -297,9 +297,27 @@ where
                         });
                         current_task = Some(tasks.len() - 1);
                     }
-                    Some("mcp_tool_call_end") => {
-                        let Some(invocation) = payload.get("invocation") else {
-                            continue;
+                    Some(event @ ("mcp_tool_call_end" | "item_completed")) => {
+                        let (invocation, call_id, result, error) = match event {
+                            "mcp_tool_call_end" => {
+                                let Some(invocation) = payload.get("invocation") else {
+                                    continue;
+                                };
+                                (
+                                    invocation,
+                                    payload.get("call_id"),
+                                    payload.get("result"),
+                                    None,
+                                )
+                            }
+                            _ => {
+                                let Some(item) = payload.get("item").filter(|item| {
+                                    item.get("type").and_then(Value::as_str) == Some("McpToolCall")
+                                }) else {
+                                    continue;
+                                };
+                                (item, item.get("id"), item.get("result"), item.get("error"))
+                            }
                         };
                         let server = invocation
                             .get("server")
@@ -320,8 +338,7 @@ where
                         };
 
                         activation_number += 1;
-                        let call_id = payload
-                            .get("call_id")
+                        let call_id = call_id
                             .and_then(Value::as_str)
                             .filter(|id| !id.is_empty())
                             .map(str::to_owned)
@@ -342,7 +359,7 @@ where
                             continue;
                         }
 
-                        let result = payload.get("result").unwrap_or(&Value::Null);
+                        let result = result.unwrap_or(&Value::Null);
                         let activation = CodexActivation {
                             tool_name: tool.to_owned(),
                             call_id,
@@ -351,7 +368,8 @@ where
                             timestamp: record_timestamp(&record),
                             run_id: extract_run_id(result),
                             fragments: extract_fragments(result),
-                            result_error: extract_result_error(result),
+                            result_error: extract_result_error(result)
+                                .or_else(|| error.map(|error| truncate(&display_json(error), 240))),
                         };
                         if let Some(task) = tasks.get_mut(task_index) {
                             task.activations.push(activation);
@@ -577,7 +595,8 @@ fn extract_activation_arguments(tool: &str, value: &Value) -> Option<(String, Op
 fn extract_run_id(result: &Value) -> Option<String> {
     result
         .get("Ok")
-        .and_then(|ok| ok.get("structuredContent"))
+        .unwrap_or(result)
+        .get("structuredContent")
         .and_then(|content| content.get("run_id").or_else(|| content.get("runId")))
         .and_then(Value::as_str)
         .filter(|run_id| !run_id.is_empty())
@@ -587,7 +606,8 @@ fn extract_run_id(result: &Value) -> Option<String> {
 fn extract_fragments(result: &Value) -> Vec<CodexFragment> {
     let Some(fragments) = result
         .get("Ok")
-        .and_then(|ok| ok.get("structuredContent"))
+        .unwrap_or(result)
+        .get("structuredContent")
         .and_then(|content| content.get("fragments"))
         .and_then(Value::as_array)
     else {
@@ -660,7 +680,7 @@ fn extract_result_error(result: &Value) -> Option<String> {
     if let Some(error) = result.get("Err") {
         return Some(truncate(&display_json(error), 240));
     }
-    let ok = result.get("Ok")?;
+    let ok = result.get("Ok").unwrap_or(result);
     if !ok.get("isError").and_then(Value::as_bool).unwrap_or(false) {
         return None;
     }
@@ -713,8 +733,10 @@ mod tests {
         let rollout = [
             r#"{"timestamp":"2026-08-19T08:00:00.000Z","type":"session_meta","payload":{"id":"session-1","timestamp":"2026-08-19T07:59:00.000Z","cwd":"/repo","originator":"codex_desktop"}}"#,
             "not json",
-            r#"{"timestamp":"2026-08-19T08:01:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Show the recalled memory"}}"#,
-            r#"{"timestamp":"2026-08-19T08:01:01.000Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"call-1","invocation":{"server":"clumsies","tool":"memory","arguments":{"op":{"activate":{"query":"recall parser","state":"opaque"}}}},"result":{"Ok":{"structuredContent":{"run_id":"run-1","fragments":[{"action":"add","resource_id":"rule-1","path":"rules/parser.md","content":"Keep only recall data."}]},"isError":false}}}}"#,
+            r#"{"timestamp":"2026-08-19T08:01:00.000Z","type":"response_item","payload":{"type":"message","id":"prompt-1","role":"user","content":[{"type":"input_text","text":"Show the recalled memory"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["user.text"]}}}"#,
+            r#"{"timestamp":"2026-08-19T08:01:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"call-1","server":"clumsies","tool":"memory","arguments":{"op":{"activate":{"query":"recall parser","state":"opaque"}}},"status":"completed","result":{"structuredContent":{"run_id":"run-1","fragments":[{"action":"add","resource_id":"rule-1","path":"rules/parser.md","content":"Keep only recall data."}]},"isError":false}}}}"#,
+            r#"{"timestamp":"2026-08-19T08:01:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"load-1","server":"clumsies","tool":"memory","arguments":{"op":{"load":{"ids":["rule-1"]}}},"status":"completed","result":{"structuredContent":{},"isError":false}}}}"#,
+            r#"{"timestamp":"2026-08-19T08:01:03.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"call-2","server":"clumsies","tool":"memory","arguments":{"op":{"activate":{"query":"retry parser"}}},"status":"failed","error":{"message":"connection closed"}}}}"#,
         ]
         .join("\n");
 
@@ -730,7 +752,7 @@ mod tests {
         assert_eq!(session.created_at, Some(1234));
         assert_eq!(session.tasks.len(), 1);
         assert_eq!(session.tasks[0].text, "Show the recalled memory");
-        assert_eq!(session.tasks[0].activations.len(), 1);
+        assert_eq!(session.tasks[0].activations.len(), 2);
 
         let activation = &session.tasks[0].activations[0];
         assert_eq!(activation.call_id, "call-1");
@@ -742,6 +764,10 @@ mod tests {
         assert_eq!(activation.fragments[0].resource_id, "rule-1");
         assert_eq!(activation.fragments[0].path, "rules/parser.md");
         assert_eq!(activation.fragments[0].content, "Keep only recall data.");
+        assert_eq!(
+            session.tasks[0].activations[1].result_error.as_deref(),
+            Some("connection closed")
+        );
     }
 
     #[test]
