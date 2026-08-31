@@ -19,7 +19,6 @@ node_modules
 target
 zig-out
 zig-pkg
-apps/web-admin/dist
 ._*
 **/._*
 __MACOSX

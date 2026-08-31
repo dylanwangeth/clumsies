@@ -112,7 +112,9 @@ enum DiagnosticsWindowLayout {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let store = WorkspaceStore()
     private let softwareUpdateController = SoftwareUpdateController()
+    let administratorRecoveryState = NativeAdministratorRecoveryState()
     private var phaseObservation: AnyCancellable?
+    private var startupTask: Task<Void, Never>?
     private var mainWindow: NSWindow?
     private var authenticationWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -128,7 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         installStatusItem()
         observePhase()
         NSApp.activate(ignoringOtherApps: true)
-        store.start()
+        startupTask = Task { [weak self] in
+            await self?.startAfterNativeSetupCheck()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -212,7 +216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         case .authenticationRequired:
             mainWindow?.orderOut(nil)
-            presentAuthenticationContent(AuthenticationView(store: store))
+            presentNativeServerAccess(
+                purpose: .appSignIn,
+                destination: .daemon(store.daemon, launchIfNeeded: false)
+            ) { [weak self] in
+                guard let self else { return }
+                Task { await self.store.reload() }
+            }
         case .ready:
             authenticationWindow?.orderOut(nil)
             authenticationWindow = nil
@@ -224,6 +234,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 Task { await store?.reload() }
             }
         }
+    }
+
+    private func startAfterNativeSetupCheck() async {
+        defer { startupTask = nil }
+        guard let origin = try? ServerOrigin(validating: ClumsiesIdentifiers.serverURL) else {
+            store.start()
+            return
+        }
+        do {
+            let status = try await NativeServerSetupClient(origin: origin).status()
+            if status.state == .setupRequired {
+                presentNativeServerAccess(
+                    purpose: .appSignIn,
+                    destination: .daemon(store.daemon, launchIfNeeded: true),
+                    initialSetupStatus: status
+                ) { [weak self] in
+                    self?.authenticationWindow?.orderOut(nil)
+                    self?.authenticationWindow = nil
+                    self?.store.start()
+                }
+                return
+            }
+        } catch {
+            // Setup detection is deliberately independent of the daemon. If the
+            // Server is offline, the daemon still gets a chance to load cached data.
+        }
+        store.start()
+    }
+
+    private func presentNativeServerAccess(
+        purpose: NativeServerAccessModel.Purpose,
+        destination: NativeServerAccessModel.Destination,
+        initialSetupStatus: NativeSetupStatus? = nil,
+        onCompleted: @escaping @MainActor () -> Void = {}
+    ) {
+        let model = NativeServerAccessModel(
+            purpose: purpose,
+            destination: destination,
+            recoveryState: administratorRecoveryState,
+            initialSetupStatus: initialSetupStatus,
+            onCompleted: onCompleted
+        )
+        presentAuthenticationContent(NativeServerAccessView(model: model))
+    }
+
+    private func presentAdministratorRecovery() {
+        presentNativeServerAccess(
+            purpose: .administratorRecovery,
+            destination: .memoryOnly
+        )
     }
 
     private func presentMainWindow() {
@@ -254,6 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             FailureView(
                 message: message,
                 retry: retry,
+                onAdministratorRecovery: { [weak self] in
+                    self?.presentAdministratorRecovery()
+                },
                 onShowLogs: { [weak self] in self?.showLogsInFinder() }
             ),
             surface: .failure,
@@ -302,7 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func presentAuthenticationContent<Content: View>(_ content: Content) {
-        let size = NSSize(width: 460, height: 480)
+        let size = NSSize(width: 540, height: 690)
         let controller = NSHostingController(
             rootView: content.frame(width: size.width, height: size.height)
         )
@@ -466,7 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func restorePrimaryWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        if let authenticationWindow, authenticationWindow.isVisible {
+        if let authenticationWindow {
             authenticationWindow.deminiaturize(nil)
             authenticationWindow.makeKeyAndOrderFront(nil)
             return
@@ -671,7 +734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             store.focusReviewSearch()
         case .memory, .bundles:
             store.focusWorkspaceSearch()
-        case .sessions:
+        case .sessions, .administration:
             break
         }
     }
@@ -750,51 +813,10 @@ private struct LaunchView: View {
     }
 }
 
-private struct AuthenticationView: View {
-    @ObservedObject var store: WorkspaceStore
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            BrandLogoView(size: 76, isBreathing: false)
-            VStack(spacing: 8) {
-                Text("Sign in to Clumsies")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .tracking(0.3)
-                Text("Continue with your organization's identity provider.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            Button {
-                Task { await store.signIn() }
-            } label: {
-                Text("Continue in Browser")
-                    .fontWeight(.medium)
-                    .frame(minWidth: 190)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(Color(red: 0.78, green: 0.24, blue: 0.52))
-            if let message = store.errorMessage {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 340)
-            }
-            Spacer()
-        }
-        .padding(38)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.ultraThinMaterial)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
-    }
-}
-
 private struct FailureView: View {
     let message: String
     let retry: () -> Void
+    var onAdministratorRecovery: (() -> Void)?
     var onShowLogs: (() -> Void)?
     @State private var copied = false
 
@@ -825,6 +847,11 @@ private struct FailureView: View {
             HStack(spacing: 12) {
                 Button("Try Again", action: retry)
                     .buttonStyle(.borderedProminent)
+
+                if let onAdministratorRecovery {
+                    Button("Administrator Recovery", action: onAdministratorRecovery)
+                        .buttonStyle(.bordered)
+                }
 
                 Button("Reveal Logs in Finder") {
                     if let onShowLogs {

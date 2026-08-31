@@ -144,6 +144,7 @@ struct WorkspaceView: View {
     @State private var reviewSearchFocusRequest = 0
     @State private var reviewFilters = ReviewListFilters()
     @State private var pendingReviewToolbarAction: ReviewMenuAction?
+    @State private var selectedAdministrationSection: AdministrationSection? = .overview
 
     init(
         store: WorkspaceStore,
@@ -447,14 +448,16 @@ struct WorkspaceView: View {
                         ToolbarSpacer(.fixed, placement: .automatic)
                     }
 
-                    ToolbarItem(id: "workspace.search", placement: .trailingPinned) {
-                        ClassicSearchField(
-                            text: $store.searchQuery,
-                            prompt: workspaceSearchPrompt,
-                            accessibilityIdentifier: "workspace-toolbar-search",
-                            accessibilityHelp: "Search across the current workspace",
-                            focusToken: workspaceSearchFocusRequest
-                        )
+                    if store.selectedSection != .administration {
+                        ToolbarItem(id: "workspace.search", placement: .trailingPinned) {
+                            ClassicSearchField(
+                                text: $store.searchQuery,
+                                prompt: workspaceSearchPrompt,
+                                accessibilityIdentifier: "workspace-toolbar-search",
+                                accessibilityHelp: "Search across the current workspace",
+                                focusToken: workspaceSearchFocusRequest
+                            )
+                        }
                     }
                 }
             }
@@ -694,6 +697,7 @@ struct WorkspaceView: View {
         case .reviews: "Search Reviews"
         case .issues: "Search Issues"
         case .sessions: "Search Activity"
+        case .administration: "Search Administration"
         }
     }
 
@@ -1198,6 +1202,10 @@ struct WorkspaceView: View {
             ToolbarItem {
                 EmptyView()
             }
+        case .administration:
+            ToolbarItem {
+                EmptyView()
+            }
         }
     }
 
@@ -1214,6 +1222,8 @@ struct WorkspaceView: View {
             EmptyView()
         case .sessions:
             EmptyView()
+        case .administration:
+            AdministrationNavigator(selection: $selectedAdministrationSection)
         }
     }
 
@@ -1240,6 +1250,11 @@ struct WorkspaceView: View {
             EmptyView()
         case .sessions:
             EmptyView()
+        case .administration:
+            AdministrationView(
+                store: store,
+                section: selectedAdministrationSection ?? .overview
+            )
         }
     }
 
@@ -1318,7 +1333,8 @@ struct WorkspaceView: View {
     }
 
     private var syncToolbarPresentation: SyncToolbarPresentation? {
-        guard store.activeProjectId != nil else { return nil }
+        guard store.selectedSection != .administration,
+              store.activeProjectId != nil else { return nil }
         return SyncToolbarPresentation.resolve(
             status: store.runtime?.sync,
             isAvailable: store.syncStatusAvailable,
@@ -1519,19 +1535,12 @@ private struct GlobalSidebar: View {
     var body: some View {
         List(selection: selection) {
             Section {
-                SidebarDestinationLabel(section: .memory)
-                    .tag(GlobalSidebarDestination.section(.memory))
-
-                SidebarDestinationLabel(section: .issues)
-                    .tag(GlobalSidebarDestination.section(.issues))
-
-                SidebarDestinationLabel(section: .bundles)
-                    .tag(GlobalSidebarDestination.section(.bundles))
-                SidebarDestinationLabel(section: .reviews)
-                    .tag(GlobalSidebarDestination.section(.reviews))
-
-                SidebarDestinationLabel(section: .sessions)
-                    .tag(GlobalSidebarDestination.section(.sessions))
+                ForEach(WorkspaceSection.sidebarSections(
+                    canAdminister: store.canAdministerOrganization
+                )) { section in
+                    SidebarDestinationLabel(section: section)
+                        .tag(GlobalSidebarDestination.section(section))
+                }
             } header: {
                 HStack(spacing: 7) {
                     Image("BrandMark", bundle: .main)

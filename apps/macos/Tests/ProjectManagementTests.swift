@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import Clumsies
 
@@ -78,5 +79,20 @@ final class ProjectManagementTests: XCTestCase {
                 repositoryCount: 2
             )
         )
+    }
+
+    func testAdministrationProjectCreationHasNoRepositoryRequirement() throws {
+        let request = WorkspaceStore.adminProjectCreationRequest(
+            name: "Server-only Project",
+            description: ""
+        )
+        let data = try JSONCoding.encoder().encode(request)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(json["name"] as? String, "Server-only Project")
+        XCTAssertEqual(Set(json.keys), ["name"])
+        XCTAssertNil(json["repository_paths"])
     }
 }

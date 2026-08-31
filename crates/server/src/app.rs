@@ -12,6 +12,8 @@ pub fn build_app(pool: PgPool, auth: AuthService, installation: InstallationServ
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
     use serde_json::Value;
@@ -23,6 +25,7 @@ mod tests {
     #[tokio::test]
     async fn every_response_has_one_request_id() {
         let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(100))
             .connect_lazy("postgres://clumsies:clumsies@127.0.0.1:1/clumsies")
             .unwrap();
         let auth = AuthService::unconfigured(pool.clone());
@@ -33,14 +36,14 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/setup")
+                    .uri("/api/v1/admin/health")
                     .header("x-request-id", "proxy-123")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(success.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(success.status(), StatusCode::OK);
         assert_eq!(success.headers()["x-request-id"], "proxy-123");
 
         let error = app

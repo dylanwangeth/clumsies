@@ -2,14 +2,13 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
-use crate::api::{OrgRef, SessionRevoked, TokenResponse, UserRef, WebAdminSession};
+use crate::api::{OrgRef, SessionRevoked, TokenResponse, UserRef};
 use crate::shared::{prefixed_id, random_token, secret_hash_hex};
 
 use super::OidcIdentity;
 use super::error::AuthError;
 use super::model::{
-    ACCESS_TOKEN_TTL, AuthPrincipal, CredentialKind, LoginTransaction, OrganizationAdmission,
-    REFRESH_TOKEN_TTL, WEB_SESSION_TTL, WebSessionCredential, admin_capabilities,
+    ACCESS_TOKEN_TTL, AuthPrincipal, LoginTransaction, OrganizationAdmission, REFRESH_TOKEN_TTL,
     ensure_member_enabled, login_flow, user_capabilities,
 };
 
@@ -21,8 +20,18 @@ pub(super) struct ProductLoginTransaction<'a> {
     pub(super) client_redirect_uri: &'a str,
     pub(super) client_state: Option<&'a str>,
     pub(super) client_code_challenge: &'a str,
-    pub(super) return_to: Option<&'a str>,
     pub(super) expires_at: OffsetDateTime,
+}
+
+pub(super) struct SetupLoginTransaction<'a> {
+    pub(super) provider_state: &'a str,
+    pub(super) nonce: &'a str,
+    pub(super) provider_pkce_verifier: &'a str,
+    pub(super) client_redirect_uri: &'a str,
+    pub(super) client_state: &'a str,
+    pub(super) client_code_challenge: &'a str,
+    pub(super) expires_at: OffsetDateTime,
+    pub(super) setup_session_id: &'a str,
 }
 
 pub(super) async fn insert_product_login_transaction(
@@ -34,7 +43,7 @@ pub(super) async fn insert_product_login_transaction(
             transaction_id, provider_state_hash, nonce, provider_pkce_verifier,
             client_kind, client_redirect_uri, client_state, client_code_challenge,
             return_to, expires_at, flow
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'product_login')",
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, 'product_login')",
     )
     .bind(prefixed_id("login"))
     .bind(secret_hash_hex(transaction.provider_state))
@@ -44,37 +53,7 @@ pub(super) async fn insert_product_login_transaction(
     .bind(transaction.client_redirect_uri)
     .bind(transaction.client_state)
     .bind(transaction.client_code_challenge)
-    .bind(transaction.return_to)
     .bind(transaction.expires_at)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub(super) async fn insert_web_admin_login_transaction(
-    pool: &PgPool,
-    provider_state: &str,
-    nonce: &str,
-    provider_pkce_verifier: &str,
-    return_to: &str,
-    expires_at: OffsetDateTime,
-) -> Result<(), AuthError> {
-    sqlx::query(
-        "INSERT INTO oidc_login_transactions (
-            transaction_id, provider_state_hash, nonce, provider_pkce_verifier,
-            client_kind, client_redirect_uri, client_state, client_code_challenge,
-            return_to, expires_at, flow
-         ) VALUES (
-            $1, $2, $3, $4, 'web_admin', $5, NULL, NULL,
-            $5, $6, 'web_admin_login'
-         )",
-    )
-    .bind(prefixed_id("login"))
-    .bind(secret_hash_hex(provider_state))
-    .bind(nonce)
-    .bind(provider_pkce_verifier)
-    .bind(return_to)
-    .bind(expires_at)
     .execute(pool)
     .await?;
     Ok(())
@@ -82,12 +61,7 @@ pub(super) async fn insert_web_admin_login_transaction(
 
 pub(super) async fn insert_setup_login_transaction(
     pool: &PgPool,
-    provider_state: &str,
-    nonce: &str,
-    provider_pkce_verifier: &str,
-    client_redirect_uri: &str,
-    expires_at: OffsetDateTime,
-    setup_session_id: &str,
+    transaction: SetupLoginTransaction<'_>,
 ) -> Result<(), AuthError> {
     sqlx::query(
         "INSERT INTO oidc_login_transactions (
@@ -95,17 +69,19 @@ pub(super) async fn insert_setup_login_transaction(
             client_kind, client_redirect_uri, client_state, client_code_challenge,
             return_to, expires_at, flow, setup_session_id
          ) VALUES (
-            $1, $2, $3, $4, 'web_admin', $5, NULL, NULL,
-            NULL, $6, 'installation_setup', $7
+            $1, $2, $3, $4, 'desktop', $5, $6, $7,
+            NULL, $8, 'installation_setup', $9
          )",
     )
     .bind(prefixed_id("login"))
-    .bind(secret_hash_hex(provider_state))
-    .bind(nonce)
-    .bind(provider_pkce_verifier)
-    .bind(client_redirect_uri)
-    .bind(expires_at)
-    .bind(setup_session_id)
+    .bind(secret_hash_hex(transaction.provider_state))
+    .bind(transaction.nonce)
+    .bind(transaction.provider_pkce_verifier)
+    .bind(transaction.client_redirect_uri)
+    .bind(transaction.client_state)
+    .bind(transaction.client_code_challenge)
+    .bind(transaction.expires_at)
+    .bind(transaction.setup_session_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -117,7 +93,7 @@ pub(super) async fn login_transaction(
 ) -> Result<LoginTransaction, AuthError> {
     let row = sqlx::query(
         "SELECT transaction_id, nonce, provider_pkce_verifier, client_redirect_uri,
-                client_state, client_code_challenge, return_to, flow, setup_session_id
+                client_state, client_code_challenge, flow, setup_session_id
          FROM oidc_login_transactions
          WHERE provider_state_hash = $1 AND consumed_at IS NULL AND expires_at > now()",
     )
@@ -132,7 +108,6 @@ pub(super) async fn login_transaction(
         client_redirect_uri: row.try_get("client_redirect_uri")?,
         client_state: row.try_get("client_state")?,
         client_code_challenge: row.try_get("client_code_challenge")?,
-        return_to: row.try_get("return_to")?,
         flow: login_flow(row.try_get::<String, _>("flow")?.as_str())?,
         setup_session_id: row.try_get("setup_session_id")?,
     })
@@ -183,18 +158,6 @@ pub(super) async fn organization_admission(
         org_id: row.try_get("org_id")?,
         allowed_email_domains: row.try_get("allowed_email_domains")?,
     })
-}
-
-pub(super) async fn active_user_role(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: &str,
-) -> Result<String, AuthError> {
-    Ok(sqlx::query_scalar::<_, String>(
-        "SELECT role FROM users WHERE user_id = $1 AND status = 'active'",
-    )
-    .bind(user_id)
-    .fetch_one(&mut **tx)
-    .await?)
 }
 
 pub(super) async fn insert_authorization_code(
@@ -249,80 +212,6 @@ pub(super) async fn authenticate_bearer(
         user_id: row.try_get("user_id")?,
         org_id: row.try_get("org_id")?,
         role: row.try_get("role")?,
-        credential_kind: CredentialKind::Bearer,
-        csrf_token: None,
-    })
-}
-
-pub(super) async fn authenticate_web_session(
-    pool: &PgPool,
-    session_token: &str,
-) -> Result<AuthPrincipal, AuthError> {
-    let row = sqlx::query(
-        "SELECT t.token_id, t.session_id, t.user_id, s.org_id, s.csrf_token, u.role
-         FROM access_tokens t
-         JOIN auth_sessions s ON s.session_id = t.session_id
-         JOIN users u ON u.user_id = t.user_id
-         WHERE t.token_hash = $1
-           AND t.kind = 'web_session'
-           AND t.revoked_at IS NULL
-           AND t.expires_at > now()
-           AND s.revoked_at IS NULL
-           AND u.status = 'active'
-           AND u.role IN ('owner', 'admin')",
-    )
-    .bind(secret_hash_hex(session_token))
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AuthError::Unauthorized)?;
-    Ok(AuthPrincipal {
-        token_id: row.try_get("token_id")?,
-        session_id: row.try_get("session_id")?,
-        user_id: row.try_get("user_id")?,
-        org_id: row.try_get("org_id")?,
-        role: row.try_get("role")?,
-        credential_kind: CredentialKind::WebSession,
-        csrf_token: row.try_get("csrf_token")?,
-    })
-}
-
-pub(super) async fn web_admin_session(
-    pool: &PgPool,
-    principal: &AuthPrincipal,
-) -> Result<WebAdminSession, AuthError> {
-    let row = sqlx::query(
-        "SELECT u.user_id, u.email, u.display_name, u.avatar_url, u.role,
-                o.org_id, o.name, t.expires_at
-         FROM users u
-         JOIN auth_sessions s ON s.user_id = u.user_id
-         JOIN orgs o ON o.org_id = s.org_id
-         JOIN access_tokens t ON t.session_id = s.session_id
-         WHERE s.session_id = $1 AND t.token_id = $2",
-    )
-    .bind(&principal.session_id)
-    .bind(&principal.token_id)
-    .fetch_one(pool)
-    .await?;
-    let role: String = row.try_get("role")?;
-    Ok(WebAdminSession {
-        user: UserRef {
-            user_id: row.try_get("user_id")?,
-            email: row.try_get("email")?,
-            display_name: row.try_get("display_name")?,
-            avatar_url: row.try_get("avatar_url")?,
-            role,
-        },
-        org: OrgRef {
-            org_id: row.try_get("org_id")?,
-            name: row.try_get("name")?,
-        },
-        capabilities: admin_capabilities(),
-        token_id: principal.token_id.clone(),
-        csrf_token: principal
-            .csrf_token
-            .clone()
-            .ok_or(AuthError::CorruptWebSession)?,
-        expires_at: row.try_get("expires_at")?,
     })
 }
 
@@ -440,49 +329,6 @@ pub(super) async fn rotate_refresh_token(
         .execute(&mut **tx)
         .await?;
     issue_token_pair(tx, &session_id, &user_id, &org_id).await
-}
-
-pub(super) async fn issue_web_session(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: &str,
-    org_id: &str,
-) -> Result<WebSessionCredential, AuthError> {
-    let session_id = prefixed_id("ses");
-    let token = random_token();
-    let csrf_token = random_token();
-    let expires_at = OffsetDateTime::now_utc() + WEB_SESSION_TTL;
-    sqlx::query(
-        "INSERT INTO auth_sessions (session_id, user_id, org_id, csrf_token)
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .bind(org_id)
-    .bind(csrf_token)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO access_tokens (
-            token_id, session_id, user_id, kind, token_hash, expires_at
-         ) VALUES ($1, $2, $3, 'web_session', $4, $5)",
-    )
-    .bind(prefixed_id("tok"))
-    .bind(&session_id)
-    .bind(user_id)
-    .bind(secret_hash_hex(&token))
-    .bind(expires_at)
-    .execute(&mut **tx)
-    .await?;
-    insert_audit_event(
-        tx,
-        org_id,
-        Some(user_id),
-        "auth.web_admin_session_created",
-        "session",
-        Some(&session_id),
-    )
-    .await?;
-    Ok(WebSessionCredential { token })
 }
 
 async fn issue_token_pair(

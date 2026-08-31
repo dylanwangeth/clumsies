@@ -1270,7 +1270,7 @@ export interface components {
             role: string;
         };
         /** @enum {string} */
-        ClientKind: "desktop" | "cli" | "web_admin";
+        ClientKind: "desktop" | "cli";
         OrgRef: {
             org_id: string;
             name: string;
@@ -1339,16 +1339,11 @@ export interface operations {
         parameters: {
             query: {
                 client_kind: components["schemas"]["ClientKind"];
-                /** @description Required for desktop and CLI clients; omitted for Web Admin. */
-                redirect_uri?: string;
-                /** @description Required for desktop and CLI clients; omitted for Web Admin. */
-                code_challenge?: string;
-                /** @description Required for desktop and CLI clients; omitted for Web Admin. */
-                code_challenge_method?: "S256";
+                redirect_uri: string;
+                code_challenge: string;
+                code_challenge_method: "S256";
                 state?: string;
                 login_hint?: string;
-                /** @description For Web Admin, a validated internal path under /admin. */
-                return_to?: string;
             };
             header?: never;
             path?: never;
@@ -1385,8 +1380,6 @@ export interface operations {
             302: {
                 headers: {
                     Location: string;
-                    /** @description Web Admin login returns an HttpOnly browser session cookie. */
-                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;

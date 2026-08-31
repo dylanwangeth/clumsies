@@ -1,7 +1,5 @@
-use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
-
 use crate::organization::api::{OrgRef, ProjectRef, UserRef};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MeResponse {
@@ -17,7 +15,6 @@ pub struct MeResponse {
 pub enum ClientKind {
     Desktop,
     Cli,
-    WebAdmin,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -28,7 +25,6 @@ pub struct OidcAuthorizationRequest {
     pub code_challenge_method: Option<String>,
     pub state: Option<String>,
     pub login_hint: Option<String>,
-    pub return_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -69,17 +65,6 @@ pub struct TokenResponse {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRevoked {
     pub revoked: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WebAdminSession {
-    pub user: UserRef,
-    pub org: OrgRef,
-    pub capabilities: Vec<String>,
-    pub token_id: String,
-    pub csrf_token: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub expires_at: OffsetDateTime,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -30,7 +30,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Exchange the deployment Setup Code for a short browser session. */
+        /** Exchange the deployment Setup Code for a short setup session. */
         post: operations["createSetupSession"];
         delete?: never;
         options?: never;
@@ -67,24 +67,6 @@ export interface paths {
         /** Create the OIDC authorization used to bind the first Owner. */
         post: operations["createSetupOidcAuthorization"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read the current Web Admin browser session. */
-        get: operations["getAdminSession"];
-        put?: never;
-        post?: never;
-        /** Revoke the current Web Admin browser session. */
-        delete: operations["deleteAdminSession"];
         options?: never;
         head?: never;
         patch?: never;
@@ -364,22 +346,14 @@ export interface components {
         SetupOidcAuthorizationRequest: {
             /** Format: uri */
             redirect_uri: string;
+            state: string;
+            code_challenge: string;
+            /** @enum {string} */
+            code_challenge_method: "S256";
         };
         SetupOidcAuthorization: {
             /** Format: uri */
             authorization_url: string;
-        };
-        WebAdminSession: {
-            user: components["schemas"]["UserRef"];
-            org: components["schemas"]["OrgRef"];
-            capabilities: string[];
-            token_id: string;
-            csrf_token: string;
-            /** Format: date-time */
-            expires_at: string;
-        };
-        SessionRevoked: {
-            revoked: boolean;
         };
         OidcProviderStatus: {
             /** @enum {string} */
@@ -624,8 +598,6 @@ export interface components {
         UserId: string;
         ProjectId: string;
         XCsrfToken: string;
-        /** @description Required for state-changing requests authenticated by adminSession. */
-        AdminCsrfToken: string;
     };
     requestBodies: never;
     headers: never;
@@ -642,7 +614,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current setup state and any active browser setup session. */
+            /** @description Current setup state and any active setup session. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -734,52 +706,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getAdminSession: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current Web Admin session. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WebAdminSession"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    deleteAdminSession: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session revocation result. The session cookie is cleared. */
-            200: {
-                headers: {
-                    "Set-Cookie"?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionRevoked"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     getAdminIdentityProvider: {
         parameters: {
             query?: never;
@@ -827,8 +753,6 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path?: never;
             cookie?: never;
@@ -878,10 +802,7 @@ export interface operations {
     createAdminMember: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -908,8 +829,6 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 user_id: components["parameters"]["UserId"];
@@ -935,8 +854,6 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 user_id: components["parameters"]["UserId"];
@@ -988,10 +905,7 @@ export interface operations {
     createAdminProject: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -1041,8 +955,6 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 project_id: components["parameters"]["ProjectId"];
@@ -1068,8 +980,6 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": components["parameters"]["IfMatch"];
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
             };
             path: {
                 project_id: components["parameters"]["ProjectId"];
@@ -1124,10 +1034,7 @@ export interface operations {
     createAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path: {
                 project_id: components["parameters"]["ProjectId"];
             };
@@ -1154,10 +1061,7 @@ export interface operations {
     deleteAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path: {
                 project_id: components["parameters"]["ProjectId"];
                 user_id: components["parameters"]["UserId"];
@@ -1181,10 +1085,7 @@ export interface operations {
     updateAdminProjectMember: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path: {
                 project_id: components["parameters"]["ProjectId"];
                 user_id: components["parameters"]["UserId"];
@@ -1236,10 +1137,7 @@ export interface operations {
     deleteAdminToken: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for state-changing requests authenticated by adminSession. */
-                "X-CSRF-Token"?: components["parameters"]["AdminCsrfToken"];
-            };
+            header?: never;
             path: {
                 token_id: string;
             };

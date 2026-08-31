@@ -121,6 +121,26 @@ enum ProjectMemberError: LocalizedError, Sendable {
     }
 }
 
+enum AdministrationError: LocalizedError, Sendable {
+    case forbidden
+    case unavailable
+    case stale
+    case busy
+
+    var errorDescription: String? {
+        switch self {
+        case .forbidden:
+            "Organization administrator access is required."
+        case .unavailable:
+            "Load Administration before making changes."
+        case .stale:
+            "Administration is showing cached data. Refresh with a live Server connection before making changes."
+        case .busy:
+            "Another Administration operation is still in progress."
+        }
+    }
+}
+
 enum MemoryValidationError: LocalizedError, Sendable {
     case invalidPath(String)
     case emptyRule
@@ -360,6 +380,14 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var projectBindingsGeneration = UUID()
     @Published private(set) var projectMetadata: [String: ProjectRecord] = [:]
     @Published private(set) var projectMembers: [ProjectMemberRecord] = []
+    @Published private(set) var administrationSnapshot: AdministrationSnapshot?
+    @Published private(set) var administrationProjectMembers: [String: [ProjectMemberRecord]] = [:]
+    @Published private(set) var administrationIsStale = true
+    @Published private(set) var administrationRefreshGeneration = UUID()
+    @Published private(set) var isLoadingAdministration = false
+    @Published private(set) var loadingAdministrationProjectIds: Set<String> = []
+    @Published private(set) var isMutatingAdministration = false
+    @Published private(set) var administrationErrorMessage: String?
     @Published private(set) var orgRefCommitId: String?
     @Published private(set) var orgRefEtag = ""
     @Published private(set) var resources: [MemoryResource] = []
@@ -423,9 +451,11 @@ final class WorkspaceStore: ObservableObject {
 
     let daemon = DaemonXPCClient()
     private let bootstrap = DaemonBootstrapController()
-    private lazy var authentication = AuthenticationClient(daemon: daemon)
     private lazy var server = ServerClient(daemon: daemon)
     private var workspaceReloadGeneration = UUID()
+    private var administrationLoadGeneration = UUID()
+    private var administrationProjectMemberLoadGenerations: [String: UUID] = [:]
+    private var administrationMutationGeneration = UUID()
     private var draftInventoryLoadTask: Task<Void, Never>?
     private var bundleLoadTask: Task<Void, Never>?
     private var reviewLoadTask: Task<Void, Never>?
@@ -584,6 +614,26 @@ final class WorkspaceStore: ObservableObject {
 
     var canManageProjects: Bool {
         capabilities.contains("admin:write")
+    }
+
+    var canAdministerOrganization: Bool {
+        capabilities.contains("admin:write")
+    }
+
+    var canMutateAdministration: Bool {
+        Self.administrationMutationAllowed(
+            capabilities: capabilities,
+            hasSnapshot: administrationSnapshot != nil,
+            isStale: administrationIsStale
+        ) && !isLoadingAdministration && !isMutatingAdministration
+    }
+
+    nonisolated static func administrationMutationAllowed(
+        capabilities: Set<String>,
+        hasSnapshot: Bool,
+        isStale: Bool
+    ) -> Bool {
+        capabilities.contains("admin:write") && hasSnapshot && !isStale
     }
 
     var canMergeReviews: Bool {
@@ -1060,7 +1110,7 @@ final class WorkspaceStore: ObservableObject {
         switch selectedSection {
         case .memory:
             break
-        case .issues, .bundles, .reviews, .sessions:
+        case .issues, .bundles, .reviews, .sessions, .administration:
             return []
         }
 
@@ -1412,18 +1462,6 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
-    func signIn() async {
-        phase = .loading
-        errorMessage = nil
-        do {
-            _ = try await authentication.signIn()
-            await reload()
-        } catch {
-            errorMessage = error.localizedDescription
-            phase = .authenticationRequired
-        }
-    }
-
     func presentProjectCreation() {
         guard canManageProjects else { return }
         showsProjectCreation = true
@@ -1558,6 +1596,445 @@ final class WorkspaceStore: ObservableObject {
             query: [URLQueryItem(name: "limit", value: "200")]
         )
         return response.items
+    }
+
+    func loadAdministration() async {
+        guard canAdministerOrganization else {
+            clearAdministration()
+            return
+        }
+        guard !isLoadingAdministration else { return }
+
+        let generation = UUID()
+        administrationLoadGeneration = generation
+        isLoadingAdministration = true
+        administrationIsStale = true
+        administrationErrorMessage = nil
+        defer {
+            if administrationLoadGeneration == generation {
+                isLoadingAdministration = false
+            }
+        }
+
+        do {
+            let organization: (
+                value: AdminOrganizationRecord,
+                response: DaemonServerResponse
+            ) = try await server.getWithMetadata("/api/v1/admin/org")
+            let members: (
+                items: [AdminOrganizationMemberRecord],
+                hasStaleServerResponse: Bool
+            ) = try await loadAllAdministrationItems("/api/v1/admin/members")
+            let projects: (
+                items: [AdminProjectRecord],
+                hasStaleServerResponse: Bool
+            ) = try await loadAllAdministrationItems("/api/v1/admin/projects")
+            let tokens: (
+                items: [AdminAccessTokenRecord],
+                hasStaleServerResponse: Bool
+            ) = try await loadAllAdministrationItems("/api/v1/admin/tokens")
+            let auditEvents: (
+                items: [AdminAuditEventRecord],
+                hasStaleServerResponse: Bool
+            ) = try await loadAllAdministrationItems("/api/v1/admin/audit-events")
+            let identityProvider: (
+                value: AdminIdentityProviderStatus,
+                response: DaemonServerResponse
+            ) = try await server.getWithMetadata("/api/v1/admin/identity-provider")
+            let health: (
+                value: AdminHealthRecord,
+                response: DaemonServerResponse
+            ) = try await server.getWithMetadata("/api/v1/admin/health")
+            try Task.checkCancellation()
+            guard administrationLoadGeneration == generation,
+                  canAdministerOrganization else { return }
+
+            administrationSnapshot = AdministrationSnapshot(
+                organization: organization.value,
+                members: members.items,
+                projects: projects.items,
+                tokens: tokens.items,
+                auditEvents: auditEvents.items,
+                identityProvider: identityProvider.value,
+                health: health.value
+            )
+            administrationProjectMemberLoadGenerations.removeAll()
+            administrationProjectMembers.removeAll()
+            loadingAdministrationProjectIds.removeAll()
+            administrationRefreshGeneration = UUID()
+            administrationIsStale = organization.response.isStaleCache
+                || members.hasStaleServerResponse
+                || projects.hasStaleServerResponse
+                || tokens.hasStaleServerResponse
+                || auditEvents.hasStaleServerResponse
+                || identityProvider.response.isStaleCache
+                || health.response.isStaleCache
+        } catch is CancellationError {
+            return
+        } catch {
+            guard administrationLoadGeneration == generation else { return }
+            administrationIsStale = true
+            administrationErrorMessage = error.localizedDescription
+        }
+    }
+
+    func loadAdministrationProjectMembers(projectId: String) async {
+        guard canAdministerOrganization,
+              administrationSnapshot?.projects.contains(where: { $0.id == projectId }) == true else {
+            administrationProjectMembers[projectId] = nil
+            return
+        }
+        guard !loadingAdministrationProjectIds.contains(projectId) else { return }
+
+        let generation = UUID()
+        let refreshGeneration = administrationRefreshGeneration
+        administrationProjectMemberLoadGenerations[projectId] = generation
+        loadingAdministrationProjectIds.insert(projectId)
+        defer {
+            if administrationProjectMemberLoadGenerations[projectId] == generation {
+                administrationProjectMemberLoadGenerations[projectId] = nil
+                loadingAdministrationProjectIds.remove(projectId)
+            }
+        }
+        do {
+            let members: (
+                items: [ProjectMemberRecord],
+                hasStaleServerResponse: Bool
+            ) = try await loadAllAdministrationItems(
+                "/api/v1/admin/projects/\(projectId)/members"
+            )
+            try Task.checkCancellation()
+            guard administrationProjectMemberLoadGenerations[projectId] == generation,
+                  administrationRefreshGeneration == refreshGeneration,
+                  canAdministerOrganization else { return }
+            administrationProjectMembers[projectId] = members.items
+            if members.hasStaleServerResponse {
+                administrationIsStale = true
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard administrationProjectMemberLoadGenerations[projectId] == generation,
+                  administrationRefreshGeneration == refreshGeneration else { return }
+            administrationProjectMembers[projectId] = nil
+            administrationIsStale = true
+            administrationErrorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func updateAdminOrganization(
+        name: String,
+        allowedEmailDomains: [String],
+        expectedRevision: Int
+    ) async throws -> AdminOrganizationRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let updated: AdminOrganizationRecord = try await server.send(
+            method: "PATCH",
+            path: "/api/v1/admin/org",
+            headers: ["If-Match": String(expectedRevision)],
+            body: UpdateAdminOrganizationRequest(
+                name: name,
+                allowedEmailDomains: allowedEmailDomains
+            )
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        organization = OrganizationReference(orgId: updated.orgId, name: updated.name)
+        try await refreshAfterAdministrationMutation(generation: generation)
+        return updated
+    }
+
+    @discardableResult
+    func inviteAdminOrganizationMember(
+        email: String,
+        role: AdminOrganizationRole
+    ) async throws -> AdminOrganizationMemberRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let member: AdminOrganizationMemberRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/admin/members",
+            body: CreateAdminOrganizationMemberRequest(email: email, role: role)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(generation: generation)
+        return member
+    }
+
+    @discardableResult
+    func updateAdminOrganizationMember(
+        _ member: AdminOrganizationMemberRecord,
+        role: AdminOrganizationRole? = nil,
+        status: AdminMemberStatus? = nil
+    ) async throws -> AdminOrganizationMemberRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let updated: AdminOrganizationMemberRecord = try await server.send(
+            method: "PATCH",
+            path: "/api/v1/admin/members/\(member.id)",
+            headers: ["If-Match": String(member.revision)],
+            body: UpdateAdminOrganizationMemberRequest(role: role, status: status)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(generation: generation)
+        return updated
+    }
+
+    func disableAdminOrganizationMember(_ member: AdminOrganizationMemberRecord) async throws {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let _: DeleteResult = try await server.send(
+            method: "DELETE",
+            path: "/api/v1/admin/members/\(member.id)",
+            headers: ["If-Match": String(member.revision)],
+            body: EmptyPayload()
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(generation: generation)
+    }
+
+    @discardableResult
+    func createAdminProject(name: String, description: String) async throws -> AdminProjectRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let project: AdminProjectRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/admin/projects",
+            body: Self.adminProjectCreationRequest(name: name, description: description)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        projectMetadata[project.id] = ProjectRecord(
+            projectId: project.id,
+            name: project.name,
+            description: project.description,
+            revision: project.revision,
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt
+        )
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+        return project
+    }
+
+    nonisolated static func adminProjectCreationRequest(
+        name: String,
+        description: String
+    ) -> CreateProjectRequest {
+        let trimmedDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return CreateProjectRequest(
+            name: name,
+            description: trimmedDescription.isEmpty ? nil : trimmedDescription
+        )
+    }
+
+    @discardableResult
+    func updateAdminProject(
+        _ project: AdminProjectRecord,
+        name: String,
+        description: String
+    ) async throws -> AdminProjectRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let updated: AdminProjectRecord = try await server.send(
+            method: "PATCH",
+            path: "/api/v1/admin/projects/\(project.id)",
+            headers: ["If-Match": String(project.revision)],
+            body: UpdateProjectRequest(name: name, description: description)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        projectMetadata[updated.id] = ProjectRecord(
+            projectId: updated.id,
+            name: updated.name,
+            description: updated.description,
+            revision: updated.revision,
+            createdAt: updated.createdAt,
+            updatedAt: updated.updatedAt
+        )
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+        return updated
+    }
+
+    func deleteAdminProject(_ project: AdminProjectRecord) async throws {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let _: DeleteResult = try await server.send(
+            method: "DELETE",
+            path: "/api/v1/admin/projects/\(project.id)",
+            headers: ["If-Match": String(project.revision)],
+            body: EmptyPayload()
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        projectMetadata[project.id] = nil
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+    }
+
+    @discardableResult
+    func addAdminProjectMember(
+        projectId: String,
+        userId: String,
+        role: ProjectMemberRole
+    ) async throws -> ProjectMemberRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let member: ProjectMemberRecord = try await server.send(
+            method: "POST",
+            path: "/api/v1/admin/projects/\(projectId)/members",
+            body: CreateProjectMemberRequest(userId: userId, role: role)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+        return member
+    }
+
+    @discardableResult
+    func updateAdminProjectMember(
+        projectId: String,
+        userId: String,
+        role: ProjectMemberRole
+    ) async throws -> ProjectMemberRecord {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let member: ProjectMemberRecord = try await server.send(
+            method: "PATCH",
+            path: "/api/v1/admin/projects/\(projectId)/members/\(userId)",
+            body: UpdateAdminProjectMemberRequest(role: role)
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+        return member
+    }
+
+    func deleteAdminProjectMember(projectId: String, userId: String) async throws {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let _: DeleteResult = try await server.send(
+            method: "DELETE",
+            path: "/api/v1/admin/projects/\(projectId)/members/\(userId)",
+            body: EmptyPayload()
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+    }
+
+    func revokeAdminAccessToken(_ token: AdminAccessTokenRecord) async throws {
+        let generation = try beginAdministrationMutation()
+        defer { finishAdministrationMutation(generation) }
+        let _: DeleteResult = try await server.send(
+            method: "DELETE",
+            path: "/api/v1/admin/tokens/\(token.id)",
+            body: EmptyPayload()
+        )
+        try ensureCurrentAdministrationMutation(generation)
+        try await refreshAfterAdministrationMutation(
+            generation: generation,
+            refreshesWorkspace: true
+        )
+    }
+
+    private func beginAdministrationMutation() throws -> UUID {
+        guard canAdministerOrganization else { throw AdministrationError.forbidden }
+        guard administrationSnapshot != nil else { throw AdministrationError.unavailable }
+        guard !administrationIsStale else { throw AdministrationError.stale }
+        guard !isLoadingAdministration, !isMutatingAdministration else {
+            throw AdministrationError.busy
+        }
+        administrationErrorMessage = nil
+        let generation = UUID()
+        administrationMutationGeneration = generation
+        isMutatingAdministration = true
+        return generation
+    }
+
+    private func ensureCurrentAdministrationMutation(_ generation: UUID) throws {
+        guard administrationMutationGeneration == generation,
+              canAdministerOrganization else {
+            throw CancellationError()
+        }
+    }
+
+    private func finishAdministrationMutation(_ generation: UUID) {
+        guard administrationMutationGeneration == generation else { return }
+        isMutatingAdministration = false
+    }
+
+    private func refreshAfterAdministrationMutation(
+        generation: UUID,
+        refreshesWorkspace: Bool = false
+    ) async throws {
+        try ensureCurrentAdministrationMutation(generation)
+        if refreshesWorkspace {
+            await reload()
+            try ensureCurrentAdministrationMutation(generation)
+        }
+        await loadAdministration()
+        try ensureCurrentAdministrationMutation(generation)
+    }
+
+    private func loadAllAdministrationItems<Item: Decodable & Sendable>(
+        _ path: String
+    ) async throws -> (items: [Item], hasStaleServerResponse: Bool) {
+        var items: [Item] = []
+        var cursor: String?
+        var seenCursors: Set<String> = []
+        var hasStaleServerResponse = false
+        repeat {
+            var query = [URLQueryItem(name: "limit", value: "200")]
+            if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+            let page: (value: ListResponse<Item>, response: DaemonServerResponse) =
+                try await server.getWithMetadata(path, query: query)
+            try Task.checkCancellation()
+            items += page.value.items
+            hasStaleServerResponse = hasStaleServerResponse || page.response.isStaleCache
+            if page.value.pageInfo.hasMore {
+                guard let nextCursor = page.value.pageInfo.nextCursor,
+                      !nextCursor.isEmpty,
+                      nextCursor != cursor,
+                      seenCursors.insert(nextCursor).inserted else {
+                    throw ServerClientError.invalidResponse(
+                        "Administration pagination returned an invalid next cursor."
+                    )
+                }
+                cursor = nextCursor
+            } else {
+                cursor = nil
+            }
+        } while cursor != nil
+        return (items, hasStaleServerResponse)
+    }
+
+    private func clearAdministration() {
+        administrationLoadGeneration = UUID()
+        administrationProjectMemberLoadGenerations.removeAll()
+        administrationMutationGeneration = UUID()
+        administrationSnapshot = nil
+        administrationProjectMembers.removeAll()
+        administrationIsStale = true
+        administrationRefreshGeneration = UUID()
+        isLoadingAdministration = false
+        loadingAdministrationProjectIds.removeAll()
+        isMutatingAdministration = false
+        administrationErrorMessage = nil
+        if selectedSection == .administration {
+            selectedSection = .memory
+        }
     }
 
     @discardableResult
@@ -2260,7 +2737,7 @@ final class WorkspaceStore: ObservableObject {
             _ = try await projectSelectionSideEffectGate.run {
                 try await daemon.replaceProjectConfig(
                     .init(
-                        serverUrl: AuthenticationClient.serverURL.absoluteString,
+                        serverUrl: ClumsiesIdentifiers.serverURL.absoluteString,
                         projectId: nil,
                         accessToken: nil,
                         refreshToken: nil
@@ -4768,6 +5245,7 @@ final class WorkspaceStore: ObservableObject {
         projects.removeAll()
         projectMetadata.removeAll()
         projectMembers.removeAll()
+        clearAdministration()
         orgRefCommitId = nil
         orgRefEtag = ""
         activeProjectId = nil
@@ -4843,6 +5321,9 @@ final class WorkspaceStore: ObservableObject {
         account = snapshot.account
         organization = snapshot.organization
         capabilities = snapshot.capabilities
+        if !canAdministerOrganization {
+            clearAdministration()
+        }
         projects = snapshot.projects
         projectMetadata = projectMetadata.filter { projectId, _ in
             projects.contains { $0.id == projectId }

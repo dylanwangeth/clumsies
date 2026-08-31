@@ -97,6 +97,168 @@ struct CreateProjectMemberRequest: Codable, Sendable {
     let role: ProjectMemberRole
 }
 
+enum AdminOrganizationRole: String, Codable, CaseIterable, Identifiable, Sendable {
+    case owner
+    case admin
+    case member
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .owner: "Owner"
+        case .admin: "Admin"
+        case .member: "Member"
+        }
+    }
+}
+
+enum AdminMemberStatus: String, Codable, CaseIterable, Identifiable, Sendable {
+    case invited
+    case active
+    case disabled
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .invited: "Invited"
+        case .active: "Active"
+        case .disabled: "Disabled"
+        }
+    }
+}
+
+struct AdminOrganizationRecord: Codable, Hashable, Sendable {
+    let orgId: String
+    let name: String
+    let allowedEmailDomains: [String]
+    let revision: Int
+    let updatedAt: String
+}
+
+struct AdminOrganizationMemberRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { userId }
+
+    let userId: String
+    let email: String
+    let displayName: String?
+    let role: AdminOrganizationRole
+    let status: AdminMemberStatus
+    let externalIdentityBound: Bool
+    let revision: Int
+}
+
+struct AdminProjectRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { projectId }
+
+    let projectId: String
+    let name: String
+    let description: String
+    let memberCount: Int
+    let revision: Int
+    let createdAt: String
+    let updatedAt: String
+}
+
+enum AdminAccessTokenKind: String, Codable, CaseIterable, Sendable {
+    case access
+    case refresh
+    case integration
+    case webSession = "web_session"
+
+    var title: String {
+        switch self {
+        case .access: "Access"
+        case .refresh: "Refresh"
+        case .integration: "Integration"
+        case .webSession: "Web session"
+        }
+    }
+}
+
+struct AdminAccessTokenRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { tokenId }
+
+    let tokenId: String
+    let userId: String
+    let kind: AdminAccessTokenKind
+    let revoked: Bool
+    let expiresAt: String?
+    let createdAt: String
+}
+
+struct AdminAuditEventRecord: Codable, Identifiable, Hashable, Sendable {
+    var id: String { eventId }
+
+    let eventId: String
+    let actorUserId: String?
+    let action: String
+    let targetType: String
+    let targetId: String?
+    let createdAt: String
+}
+
+struct AdminIdentityProviderStatus: Codable, Hashable, Sendable {
+    let `protocol`: String
+    let configured: Bool
+    let issuer: String?
+    let callbackUrl: String?
+    let admissionMode: String
+    let secretSource: String
+}
+
+enum AdminHealthStatus: String, Codable, Sendable {
+    case ok
+    case degraded
+    case down
+
+    var title: String { rawValue.capitalized }
+}
+
+struct AdminHealthCheck: Codable, Hashable, Sendable {
+    let status: AdminHealthStatus
+    let message: String
+}
+
+struct AdminHealthRecord: Codable, Hashable, Sendable {
+    let status: AdminHealthStatus
+    let version: String
+    let database: AdminHealthCheck
+    let schema: AdminHealthCheck
+    let commitService: AdminHealthCheck
+    let oidc: AdminHealthCheck
+}
+
+struct AdministrationSnapshot: Hashable, Sendable {
+    let organization: AdminOrganizationRecord
+    let members: [AdminOrganizationMemberRecord]
+    let projects: [AdminProjectRecord]
+    let tokens: [AdminAccessTokenRecord]
+    let auditEvents: [AdminAuditEventRecord]
+    let identityProvider: AdminIdentityProviderStatus
+    let health: AdminHealthRecord
+}
+
+struct UpdateAdminOrganizationRequest: Codable, Sendable {
+    let name: String?
+    let allowedEmailDomains: [String]?
+}
+
+struct CreateAdminOrganizationMemberRequest: Codable, Sendable {
+    let email: String
+    let role: AdminOrganizationRole
+}
+
+struct UpdateAdminOrganizationMemberRequest: Codable, Sendable {
+    let role: AdminOrganizationRole?
+    let status: AdminMemberStatus?
+}
+
+struct UpdateAdminProjectMemberRequest: Codable, Sendable {
+    let role: ProjectMemberRole
+}
+
 struct AssignKanbanIssueRequest: Codable, Sendable {
     let assigneeUserId: String
 }

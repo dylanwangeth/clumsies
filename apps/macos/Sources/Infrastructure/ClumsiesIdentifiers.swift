@@ -11,22 +11,32 @@ enum ClumsiesIdentifiers {
     static let appDisplayName = bundleSetting("CLUMSIES_APP_DISPLAY_NAME")
         ?? stableAppDisplayName
 
-    static let serverURL: URL = {
+    private static let configuredServerOrigin: ServerOrigin = {
         let value = bundleSetting("CLUMSIES_SERVER_URL") ?? stableServerURL.absoluteString
-        guard let url = URL(string: value),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil else {
-            preconditionFailure("CLUMSIES_SERVER_URL must be an absolute HTTP(S) URL.")
+        guard let origin = try? ServerOrigin(validating: value) else {
+            preconditionFailure(
+                "CLUMSIES_SERVER_URL must be an HTTPS origin or a loopback HTTP origin."
+            )
         }
-        return url
+        return origin
     }()
+
+    static var serverURL: URL {
+        ServerOriginStore(fallback: configuredServerOrigin).load().url
+    }
+
+    @discardableResult
+    static func persistServerOrigin(_ input: String) throws -> URL {
+        let origin = try ServerOrigin(validating: input)
+        ServerOriginStore(fallback: configuredServerOrigin).save(origin)
+        return origin.url
+    }
 
     static let developmentConfigurationDetected = detectsDevelopmentConfiguration(
         bundleIdentifier: Bundle.main.bundleIdentifier,
         appDisplayName: appDisplayName,
         developmentInstanceID: developmentInstanceID,
-        serverURL: serverURL,
+        serverURL: configuredServerOrigin.url,
         devOnlySettingValues: [
             "CLUMSIES_DAEMON_ROOT",
             "CLUMSIES_DAEMON_CACHE_DIR",
@@ -72,7 +82,8 @@ enum ClumsiesIdentifiers {
         if developmentInstanceID == nil {
             missing.insert("CLUMSIES_DEV_INSTANCE_ID", at: 0)
         }
-        if bundleSetting("CLUMSIES_SERVER_URL") == nil || isStableServerURL(serverURL) {
+        if bundleSetting("CLUMSIES_SERVER_URL") == nil
+            || isStableServerURL(configuredServerOrigin.url) {
             missing.append("CLUMSIES_SERVER_URL")
         }
         return missing

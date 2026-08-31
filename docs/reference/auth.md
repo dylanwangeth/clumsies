@@ -6,7 +6,12 @@ Clumsies uses the organization's OpenID Connect provider. Desktop starts the
 flow in the system browser and listens on an ephemeral `127.0.0.1` port for the
 final authorization code.
 Client and provider exchanges both use PKCE with `S256`; state and OIDC nonce
-are validated before a session is issued.
+are validated before Server returns a short-lived client authorization code.
+
+Before starting setup or login, the native App validates and persists one
+normalized Server origin. Remote origins must use HTTPS; HTTP is accepted only
+for loopback development. Credentials, paths, queries, and fragments are
+rejected so authentication and API requests cannot drift to another authority.
 
 ```text
 Desktop native
@@ -18,9 +23,26 @@ Desktop native
   -> daemon credential store
 ```
 
-The WebView renderer never receives the access token or refresh token. All
-authenticated product requests are sent through daemon, which injects the
-bearer token outside renderer JavaScript.
+SwiftUI views never receive the access token or refresh token. All authenticated
+product requests are sent through daemon, which injects the bearer token outside
+the App's presentation state.
+
+## First installation
+
+When `GET /api/v1/setup` reports `setup_required`, the App presents native
+setup instead of opening a Server-hosted UI. It exchanges the deployment Setup
+Code for an HttpOnly setup cookie, keeps the returned CSRF token in native
+memory, and submits the organization name, default Project, and optional email
+domain allowlist.
+
+The App then starts its normal loopback authorization flow and sends the same
+`redirect_uri`, state, and `S256` challenge to
+`POST /api/v1/setup/oidc-authorizations`. After provider verification, Server
+creates the organization, first Owner, default Project, identity binding, and
+initial Refs in one transaction. It returns a client authorization code to the
+loopback callback; the App exchanges that code with its verifier and installs
+the token pair in daemon. Setup never creates a browser admin session, and a
+completed installation cannot be claimed again.
 
 ## Provider verification
 
@@ -43,8 +65,8 @@ resolve the external identity directly, so an email claim change cannot move
 the identity to another user. Unknown, disabled, unverified, or
 disallowed-domain identities are rejected.
 
-The bootstrap owner environment variables create the first organization owner
-for a new self-hosted database. They do not create a password login path.
+Only native first-installation setup creates the initial Owner. Every later
+member must be admitted by an existing organization owner or administrator.
 
 ## Token lifecycle
 
@@ -55,6 +77,12 @@ new access/refresh pair is returned.
 Daemon handles a `401 Unauthorized` by attempting one refresh and one request
 retry. It does not expose secrets through health, project config, IPC response,
 or renderer state.
+
+The in-App Administration surface uses the same bearer credentials through
+daemon. If daemon cannot start, **Administrator Recovery** performs the native
+OIDC flow directly against the trusted Server origin and keeps its short-lived
+credentials in App memory only; it can inspect health, repair member access,
+and revoke tokens without creating a cookie session.
 
 Sign-out calls `DELETE /api/v1/auth/session`, revokes the active session, and
 clears local credentials.
@@ -69,10 +97,10 @@ clears local credentials.
 | `CLUMSIES_OIDC_CLIENT_SECRET` | OIDC confidential client secret |
 | `CLUMSIES_CLIENT_REDIRECT_URIS` | comma-separated additional trusted client callbacks |
 
-Server derives the provider callback at `/login/oauth2/code/oidc` and the
-same-origin Web Admin setup callback from `CLUMSIES_PUBLIC_ORIGIN`. This keeps
-TLS, OIDC, and Admin on one authority and prevents independently configured
-hostnames from drifting apart.
+Server derives the provider callback at `/login/oauth2/code/oidc` from
+`CLUMSIES_PUBLIC_ORIGIN`. Native client callbacks remain independently
+allowlisted so Server never redirects an authorization code to an untrusted
+origin.
 
 For Desktop dynamic loopback ports, configure
 `CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback`. The missing port is a

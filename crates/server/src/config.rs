@@ -112,12 +112,6 @@ impl PublicOrigin {
             .to_string()
     }
 
-    pub fn admin_setup_callback_url(&self) -> Url {
-        self.url
-            .join("/admin/setup/callback")
-            .expect("Admin setup callback path is valid")
-    }
-
     pub fn secure_cookies(&self) -> bool {
         self.url.scheme() == "https"
     }
@@ -163,10 +157,6 @@ mod tests {
         assert_eq!(
             origin.oidc_callback_url(),
             "https://app.clumsies.ai/login/oauth2/code/oidc"
-        );
-        assert_eq!(
-            origin.admin_setup_callback_url().as_str(),
-            "https://app.clumsies.ai/admin/setup/callback"
         );
         assert!(origin.secure_cookies());
     }

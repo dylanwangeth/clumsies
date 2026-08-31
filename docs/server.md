@@ -76,14 +76,19 @@ The OpenAPI sources are the canonical wire contracts:
 | Contract | Scope |
 | --- | --- |
 | `packages/api-contract/openapi/clumsies.public.v1.yaml` | Desktop and daemon product API |
-| `packages/api-contract/openapi/clumsies.admin.v1.yaml` | Web Admin API |
+| `packages/api-contract/openapi/clumsies.admin.v1.yaml` | bearer-authenticated organization Administration API, public health, and setup bootstrap |
 | `packages/api-contract/openapi/clumsies.daemon.v1.yaml` | local daemon IPC capability map |
 
-Authentication uses the organization's OIDC provider in the system browser. Desktop uses an
-ephemeral loopback callback and PKCE, then sends the issued token pair directly
-from native Rust to daemon. The renderer never receives bearer or refresh
-tokens. Daemon performs authenticated Server requests, rotates the refresh
-token after a `401`, persists the replacement pair, and retries once.
+Authentication uses the organization's OIDC provider in the system browser.
+The native macOS App validates the Server origin and owns the ephemeral loopback
+callback, state, and PKCE verifier. First-installation setup uses native
+URLSession requests with an HttpOnly setup cookie and CSRF token, then finishes
+through the same authorization-code and PKCE path as ordinary sign-in. The App
+sends the issued token pair directly to daemon; SwiftUI presentation state never
+receives bearer or refresh tokens. Daemon performs authenticated Server
+requests, rotates the refresh token after a `401`, persists the replacement
+pair, and retries once. Authenticated Admin routes accept bearer credentials
+only; Server serves no administrative HTML or JavaScript.
 
 ## Run locally
 
@@ -107,9 +112,9 @@ The default endpoints are:
 The stack uses
 [NAV's mock OAuth2 server](https://github.com/navikt/mock-oauth2-server), pinned
 to `4.0.0`. It automatically authenticates `owner@clumsies.local`, matching the
-default bootstrap owner. It still exercises discovery, authorization code and
-PKCE handling, signed ID tokens, JWKS verification, and nonce validation. The
-fake provider is never part of `compose.production.yml`.
+native setup and login fixtures. It still exercises discovery, authorization
+code and PKCE handling, signed ID tokens, JWKS verification, and nonce
+validation. The fake provider is never part of `compose.production.yml`.
 
 Stop the local services with:
 
@@ -122,8 +127,9 @@ bun run dev:infra:down
 Copy `.env.example` to `.env`, configure the enterprise OIDC values, and start
 `compose.production.yml`. Set `CLUMSIES_PUBLIC_ORIGIN` to the Server's canonical
 HTTPS origin and register its derived `/login/oauth2/code/oidc` URL with the
-organization's IdP. The same origin serves Public API, Admin API, Web Admin, and
-OIDC callbacks.
+organization's IdP. The same origin serves the Public API, bearer Admin API,
+public health endpoint, memory export, and OIDC callbacks; it does not serve an
+administrative UI.
 
 When OIDC variables are intentionally empty, Server still starts so health and
 database diagnostics remain available. Health reports the OIDC component as

@@ -51,21 +51,16 @@ export class ClumsiesAdminApi {
     );
   }
 
-  createSetupOidcAuthorization(csrfToken: string, redirectUri: string) {
+  createSetupOidcAuthorization(
+    csrfToken: string,
+    request: Schema<"SetupOidcAuthorizationRequest">,
+  ) {
     return unwrap(
       this.raw.POST("/api/v1/setup/oidc-authorizations", {
         params: { header: { "X-CSRF-Token": csrfToken } },
-        body: { redirect_uri: redirectUri },
+        body: request,
       }),
     );
-  }
-
-  session() {
-    return unwrap(this.raw.GET("/api/v1/admin/session"));
-  }
-
-  deleteSession() {
-    return unwrap(this.raw.DELETE("/api/v1/admin/session"));
   }
 
   identityProvider() {

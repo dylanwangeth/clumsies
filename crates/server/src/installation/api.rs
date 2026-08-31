@@ -52,6 +52,9 @@ pub struct ReplaceSetupConfigurationRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SetupOidcAuthorizationRequest {
     pub redirect_uri: String,
+    pub state: String,
+    pub code_challenge: String,
+    pub code_challenge_method: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

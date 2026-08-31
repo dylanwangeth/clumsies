@@ -1,15 +1,14 @@
 #!/bin/sh
 set -eu
 
-[ "$#" -eq 5 ] || exit 64
+[ "$#" -eq 4 ] || exit 64
 compose_env=$1
 server_binary=$2
 server_address=$3
 ready_file=$4
-web_admin_dir=$5
 
 [ -f "$compose_env" ] && [ ! -L "$compose_env" ] \
-  && [ -x "$server_binary" ] && [ -d "$web_admin_dir" ] || exit 66
+  && [ -x "$server_binary" ] || exit 66
 case "$ready_file" in /*) ;; *) exit 64 ;; esac
 case "$server_address" in 127.0.0.1:*) ;; *) exit 64 ;; esac
 
@@ -38,11 +37,9 @@ exec env \
   CLUMSIES_SERVER_ADDR="$server_address" \
   CLUMSIES_PUBLIC_ORIGIN=auto \
   CLUMSIES_SERVER_READY_FILE="$ready_file" \
-  CLUMSIES_WEB_ADMIN_DIR="$web_admin_dir" \
   CLUMSIES_SETUP_CODE="$setup_code" \
   CLUMSIES_OIDC_CLIENT_ID=clumsies-local \
   CLUMSIES_OIDC_CLIENT_SECRET=clumsies-local-secret \
   CLUMSIES_OIDC_ISSUER="http://127.0.0.1:$oidc_port/clumsies" \
   CLUMSIES_CLIENT_REDIRECT_URIS=http://127.0.0.1/callback \
-  CLUMSIES_CORS_ORIGINS=http://127.0.0.1:1421,http://localhost:1421 \
   "$server_binary"

@@ -16,6 +16,39 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertEqual(WorkspaceSection.sessions.title, "Activity")
     }
 
+    func testAdministrationSidebarRequiresAdministratorCapability() {
+        XCTAssertFalse(
+            WorkspaceSection.sidebarSections(canAdminister: false).contains(.administration)
+        )
+        XCTAssertEqual(
+            WorkspaceSection.sidebarSections(canAdminister: true).last,
+            .administration
+        )
+    }
+
+    func testAdministrationMutationsRequireAdminWriteAndFreshLoadedData() {
+        XCTAssertTrue(WorkspaceStore.administrationMutationAllowed(
+            capabilities: ["admin:write"],
+            hasSnapshot: true,
+            isStale: false
+        ))
+        XCTAssertFalse(WorkspaceStore.administrationMutationAllowed(
+            capabilities: [],
+            hasSnapshot: true,
+            isStale: false
+        ))
+        XCTAssertFalse(WorkspaceStore.administrationMutationAllowed(
+            capabilities: ["admin:write"],
+            hasSnapshot: false,
+            isStale: false
+        ))
+        XCTAssertFalse(WorkspaceStore.administrationMutationAllowed(
+            capabilities: ["admin:write"],
+            hasSnapshot: true,
+            isStale: true
+        ))
+    }
+
     func testRecallDeliveryLabelsExplainInternalActions() {
         XCTAssertEqual(recallFragment(action: "add").deliveryTitle, "Sent to agent")
         XCTAssertEqual(recallFragment(action: "replace").deliveryTitle, "Updated for agent")
@@ -96,6 +129,7 @@ final class WorkspaceNavigationTests: XCTestCase {
             WorkspaceSection.memory,
             .bundles,
             .sessions,
+            .administration,
         ] {
             XCTAssertEqual(
                 WorkspaceColumnLayout(section: section),
