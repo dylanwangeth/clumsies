@@ -188,8 +188,8 @@ helper copy from silently taking over the Agent runtime.
 | Direct-file Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
 | opencode lifecycle plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
-The retired Zig adapter implementation is historical source under
-`archive/zig-cli/`; it is not executed as an installation or compatibility
-path. The native daemon contains only a bounded, read-only manifest discovery
-pass; it never runs code from the archive or treats archived manifests as an
-ownership database.
+The retired Zig adapter implementation remains recoverable from Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d`; it is not present or executed as
+an installation or compatibility path. The native daemon contains only a
+bounded, read-only manifest discovery pass; it never runs retired code or
+treats archived manifests as an ownership database.

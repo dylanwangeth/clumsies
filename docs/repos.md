@@ -1,9 +1,9 @@
 # Codebase map
 
 Clumsies is an active Bun, Swift, and Rust monorepo. Ownership follows runtime
-boundaries rather than language alone. The retired Zig client is preserved only
-as historical source under `archive/zig-cli/`; it is outside active builds,
-tests, packaging, and release artifacts.
+boundaries rather than language alone. The retired Zig client is absent from
+the active tree and remains recoverable from Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d`.
 
 | Path | Responsibility |
 | --- | --- |
@@ -11,9 +11,7 @@ tests, packaging, and release artifacts.
 | `crates/server/` | deployable Rust authority service and PostgreSQL schema |
 | `crates/daemon/` | resident macOS launchd daemon, local state and workers, Agent runtime proxies, native adapter installer, and XPC contracts |
 | `packages/api-contract/` | Public, Admin, and daemon OpenAPI contracts |
-| `packages/api-client/` | generated-type-backed TypeScript clients |
 | `assets/adapters/` | host-specific integration assets |
-| `archive/zig-cli/` | historical Zig CLI, MCP, TUI, and attestation source; not a supported runtime |
 | `docs/` | VitePress public documentation |
 
 ## Authority boundaries

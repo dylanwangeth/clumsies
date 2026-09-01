@@ -156,5 +156,5 @@ LaunchAgent 和宿主配置。
 | direct-file Hook 模板 | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
 | opencode plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
-退役 Zig Adapter 只作为历史源码保留在 `archive/zig-cli/`，不进入当前构建、安装或运行
-路径。
+退役 Zig Adapter 的最后一份活动源码可从 Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d` 恢复，不保留在当前构建、安装或运行路径中。

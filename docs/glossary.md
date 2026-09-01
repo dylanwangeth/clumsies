@@ -112,7 +112,8 @@ Revision for retrieval.
 
 Attestation is a legacy event-stream capability. Agent observability is not part
 of the current product direction or MCP memory contract. Historical client
-source is preserved under `archive/zig-cli/` only.
+source remains recoverable from Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d`.
 
 ## Adapter
 
