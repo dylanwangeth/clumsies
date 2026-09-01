@@ -144,6 +144,8 @@ struct WorkspaceView: View {
     @State private var reviewSearchFocusRequest = 0
     @State private var reviewFilters = ReviewListFilters()
     @State private var pendingReviewToolbarAction: ReviewMenuAction?
+    @State private var pendingProjectReviewDrafts: [LocalDraft] = []
+    @State private var showsProjectReviewRequest = false
     @State private var selectedAdministrationSection: AdministrationSection? = .overview
 
     init(
@@ -166,6 +168,10 @@ struct WorkspaceView: View {
         store.selectedSection == .memory
             && !store.visibleTabs.isEmpty
             && !store.showsProjectSettings
+    }
+
+    private var showsMemoryContentToolbar: Bool {
+        store.selectedSection == .memory && !store.showsProjectSettings
     }
 
     private var documentReconciliationState: DocumentReconciliationToolbarState? {
@@ -221,7 +227,7 @@ struct WorkspaceView: View {
                         .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .toolbar {
-                    if showsDocumentTabs {
+                    if showsMemoryContentToolbar {
                         ToolbarItemGroup {
                             Button {
                                 if let state = documentReconciliationState {
@@ -252,13 +258,9 @@ struct WorkspaceView: View {
                             .help("Go Forward")
                             .accessibilityLabel("Go Forward")
                         }
-
-                        if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.flexible)
-                        }
                     }
 
-                    if #available(macOS 26.0, *), !showsDocumentTabs {
+                    if #available(macOS 26.0, *) {
                         ToolbarSpacer(.flexible)
                     }
 
@@ -399,8 +401,11 @@ struct WorkspaceView: View {
                             .help("Document View")
                             .accessibilityLabel("Document View")
 
-                            if hasDocumentActions(item) {
-                                Menu {
+                        }
+
+                        if showsMemoryContentToolbar {
+                            Menu {
+                                if let item = store.currentItem, hasDocumentActions(item) {
                                     if canRequestDocumentReview(item),
                                        let draft = item.draft,
                                        let sessionKey = store.documentSessionKey(for: item) {
@@ -410,6 +415,7 @@ struct WorkspaceView: View {
                                                 draft: draft
                                             )
                                         }
+                                        .disabled(store.isSynchronizingDocument(item.id))
                                         Divider()
                                     }
                                     if canDiscardDocumentDraft(item),
@@ -421,6 +427,7 @@ struct WorkspaceView: View {
                                                 draft: draft
                                             )
                                         }
+                                        .disabled(store.isSynchronizingDocument(item.id))
                                     }
                                     if canProposeOrganizationDeletion(item),
                                        let sessionKey = store.documentSessionKey(for: item) {
@@ -432,15 +439,22 @@ struct WorkspaceView: View {
                                                 sessionKey: sessionKey
                                             )
                                         }
+                                        .disabled(store.isSynchronizingDocument(item.id))
                                     }
-                                } label: {
-                                    Image(systemName: "ellipsis")
+                                    Divider()
                                 }
-                                .disabled(store.isSynchronizingDocument(item.id))
-                                .menuIndicator(.hidden)
-                                .help("Document Actions")
-                                .accessibilityLabel("Document Actions")
+
+                                Button("Request Review for All Project Changes…") {
+                                    pendingProjectReviewDrafts = activeProjectReviewDrafts
+                                    showsProjectReviewRequest = true
+                                }
+                                .disabled(!canRequestProjectReview)
+                            } label: {
+                                Image(systemName: "ellipsis")
                             }
+                            .menuIndicator(.hidden)
+                            .help("Memory Actions")
+                            .accessibilityLabel("Memory Actions")
                         }
                     }
 
@@ -510,6 +524,18 @@ struct WorkspaceView: View {
         }
         .sheet(isPresented: $store.showsProjectCreation) {
             ProjectCreationSheet(store: store)
+        }
+        .sheet(isPresented: $showsProjectReviewRequest) {
+            ReviewRequestSheet(
+                initialTitle: "Update \(store.activeProject?.name ?? "project") memory",
+                loadCandidate: { throw ReviewRequestError.reconcileDirectoryDrafts }
+            ) { title, description, _, _ in
+                try await store.requestReview(
+                    for: pendingProjectReviewDrafts,
+                    title: title,
+                    description: description
+                )
+            }
         }
     }
 
@@ -1293,6 +1319,23 @@ struct WorkspaceView: View {
         canRequestDocumentReview(item)
             || canDiscardDocumentDraft(item)
             || canProposeOrganizationDeletion(item)
+    }
+
+    private var activeProjectReviewDrafts: [LocalDraft] {
+        WorkspaceStore.reviewableProjectDrafts(
+            store.drafts,
+            projectId: store.activeProjectId
+        )
+    }
+
+    private var canRequestProjectReview: Bool {
+        !activeProjectReviewDrafts.isEmpty
+            && activeProjectReviewDrafts.allSatisfy {
+                $0.syncStatus == .synced
+                    && $0.serverId != nil
+                    && $0.freshness == .current
+                    && !store.isSynchronizingDocument($0.targetId ?? $0.id)
+            }
     }
 
     private var documentMode: Binding<WorkbenchTabMode> {
