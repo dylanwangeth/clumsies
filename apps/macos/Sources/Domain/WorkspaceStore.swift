@@ -5101,6 +5101,17 @@ final class WorkspaceStore: ObservableObject {
         draft.scope == .org
     }
 
+    nonisolated static func reviewableProjectDrafts(
+        _ drafts: [LocalDraft],
+        projectId: String?
+    ) -> [LocalDraft] {
+        let openDrafts = preferredMemoryTreeDrafts(
+            memoryTreeDrafts(drafts, activeProjectId: projectId)
+        ).filter { $0.status == .open }
+        guard openDrafts.allSatisfy(canRequestReview) else { return [] }
+        return openDrafts
+    }
+
     private nonisolated static func isOrganizationDraft(_ draft: ServerDraft) -> Bool {
         draft.resource.scope == MemoryScope.org.rawValue
     }

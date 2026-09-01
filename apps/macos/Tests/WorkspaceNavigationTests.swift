@@ -397,6 +397,24 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
+    func testMemoryToolbarNavigationAndMoreActionsDoNotRequireAnOpenDocument() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains(
+            "if showsMemoryContentToolbar {\n                        ToolbarItemGroup {"
+        ))
+        XCTAssertTrue(source.contains(
+            "if showsMemoryContentToolbar {\n                            Menu {"
+        ))
+        XCTAssertTrue(source.contains("Request Review for All Project Changes…"))
+    }
+
     func testWorkspaceSearchCommandRequestsToolbarFocus() {
         let store = WorkspaceStore()
         let initialFocusToken = store.workspaceSearchFocusToken
@@ -1733,6 +1751,47 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertFalse(WorkspaceStore.canRequestReview(localCreate))
         XCTAssertFalse(WorkspaceStore.canRequestReview(legacyProjectUpdate))
         XCTAssertTrue(WorkspaceStore.canRequestReview(orgCreate))
+    }
+
+    func testProjectReviewUsesEveryCurrentOpenOrganizationDraftOrNone() {
+        let older = localDraft(
+            id: "older",
+            targetId: "shared",
+            scope: .org,
+            updatedAt: "2026-08-18T00:00:00Z"
+        )
+        let newer = localDraft(
+            id: "newer",
+            targetId: "shared",
+            scope: .org,
+            updatedAt: "2026-08-20T00:00:00Z"
+        )
+        let created = localDraft(
+            id: "created",
+            targetId: nil,
+            scope: .org,
+            updatedAt: "2026-08-19T00:00:00Z"
+        )
+        let otherProject = localDraft(
+            id: "other",
+            targetId: nil,
+            projectId: "other-project",
+            scope: .org
+        )
+
+        XCTAssertEqual(
+            WorkspaceStore.reviewableProjectDrafts(
+                [older, newer, created, otherProject],
+                projectId: "project"
+            ).map(\.id),
+            ["newer", "created"]
+        )
+
+        let legacy = localDraft(id: "legacy", targetId: "legacy-memory")
+        XCTAssertTrue(WorkspaceStore.reviewableProjectDrafts(
+            [newer, created, legacy],
+            projectId: "project"
+        ).isEmpty)
     }
 
     func testMemoryTabsAreScopedToTheProjectViewContext() {

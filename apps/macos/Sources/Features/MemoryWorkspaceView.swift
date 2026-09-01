@@ -2159,7 +2159,7 @@ struct DraftReconciliationView: View {
     }
 }
 
-private struct ReviewRequestSheet: View {
+struct ReviewRequestSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let loadCandidate: () async throws -> DraftReconciliationCandidate
