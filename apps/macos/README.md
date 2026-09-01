@@ -77,3 +77,5 @@ flag.
 ```sh
 xcodegen generate --spec apps/macos/project.yml
 ```
+
+The generated `Clumsies.xcodeproj` is ignored; only its SwiftPM lockfile is tracked.

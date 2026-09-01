@@ -20,6 +20,15 @@ dist/
 xcuserdata/
 *.xcuserstate
 .derivedData/
+# XcodeGen output; keep only the SwiftPM lockfile.
+apps/macos/Clumsies.xcodeproj/*
+!apps/macos/Clumsies.xcodeproj/project.xcworkspace/
+apps/macos/Clumsies.xcodeproj/project.xcworkspace/*
+!apps/macos/Clumsies.xcodeproj/project.xcworkspace/xcshareddata/
+apps/macos/Clumsies.xcodeproj/project.xcworkspace/xcshareddata/*
+!apps/macos/Clumsies.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+apps/macos/Clumsies.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!apps/macos/Clumsies.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 *.swp
 *.swo
 *~
