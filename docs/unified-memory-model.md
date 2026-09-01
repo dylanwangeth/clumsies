@@ -123,9 +123,11 @@ Memory {
 
 - `activate` / `load` / `store` use the unified Memory contract; results no
   longer carry a three-type kind.
-- Workflow Skill generation is explicitly retired: it lived in the archived
-  Zig CLI (`archive/zig-cli/src/client/adapter/workflow_skills.zig`), which
-  is outside the active build boundary.
+- Workflow Skill generation is explicitly retired. Its former Zig
+  implementation remains available in Git commit
+  `4b18f7947a977dbc6b62f560b698dc992597f19d` at
+  `archive/zig-cli/src/client/adapter/workflow_skills.zig`, outside the active
+  build boundary.
 - The former `activate` / `ntmd` host-native layer is retired (ISSUE-064).
   Direct-file adapters no longer install project guidance as host skills and
   clean up their old `.agents/skills` / `.claude/skills` artifacts. The Codex

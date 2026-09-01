@@ -27,12 +27,12 @@
 - Agent Hook normalization must discard prompt, transcript, assistant, and tool payloads before IPC.
 - Adapter entries must point to the signed bundled `clumsiesd`; no PATH, worktree build, or archived CLI fallback is allowed.
 
-## Archived Zig source
+## Retired Zig history
 
-`archive/zig-cli/` is historical, intentionally outside active build, CI,
-release, packaging, and installation paths. Do not fix, import, or reuse code
-from it as an active compatibility layer. Restoration requires the explicit
-migration described in its README.
+The former Zig CLI source is intentionally absent from the active tree. Its
+last active snapshot remains recoverable from Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d`. Do not import or reuse that code
+as an active compatibility layer without an explicit product migration.
 
 ## Compatibility
 - No backward compat layers or deprecated wrappers; modify interfaces directly; delete unused code

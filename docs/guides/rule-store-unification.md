@@ -38,8 +38,9 @@ no adapter installs skills, and skill directories are not an authority source.
 ## Historical implementation
 
 The former Zig CLI cache, MCP implementation, and workflow-skill generation
-code are preserved under `archive/zig-cli/` only. They are outside the active
-build, release, installation, and compatibility boundary.
+code remain recoverable from Git commit
+`4b18f7947a977dbc6b62f560b698dc992597f19d`. They are outside the active build,
+release, installation, and compatibility boundary.
 
 See [Runtime](/runtime), [Architecture](/architecture), and [MCP](/mcp) for the
 active contracts.

@@ -16,7 +16,7 @@
     "build": "vitepress build docs",
     "preview": "vitepress preview docs",
     "api:generate": "bun run --cwd packages/api-contract generate",
-    "api:check": "bun run --cwd packages/api-contract check && bun run --cwd packages/api-client typecheck && bun run --cwd packages/api-client test"
+    "api:check": "bun run --cwd packages/api-contract check"
   },
   "devDependencies": {
     "markdown-it-container": "^4.0.0",

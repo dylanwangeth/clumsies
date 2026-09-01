@@ -141,4 +141,4 @@ CAS。
 - Artifact：Organization Memory 管理面的退役名称；
 - Hub：早期 Organization UI 标签，不是服务；
 - Local：早期 Project-scoped Memory UI 标签，不代表当前 authority；
-- Attestation：退役 Zig 客户端事件流能力，当前源码仅在 `archive/zig-cli/` 作历史参考。
+- Attestation：退役 Zig 客户端事件流能力，历史源码可从 Git commit `4b18f7947a977dbc6b62f560b698dc992597f19d` 恢复。

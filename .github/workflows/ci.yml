@@ -27,7 +27,7 @@ jobs:
           shellcheck deploy/site.sh
           bash deploy/server/server-release-test.sh
 
-      - name: Check Agent runtime archive boundary
+      - name: Check Agent runtime boundary
         run: |
           shellcheck dev/check-agent-runtime-boundary.sh
           sh dev/check-agent-runtime-boundary.sh
@@ -75,7 +75,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Check API contracts and client
+      - name: Check API contracts
         run: bun run api:check
 
   rust:
