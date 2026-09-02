@@ -413,6 +413,7 @@ final class WorkspaceNavigationTests: XCTestCase {
             "if showsMemoryContentToolbar {\n                            Menu {"
         ))
         XCTAssertTrue(source.contains("Request Review for All Project Changes…"))
+        XCTAssertTrue(source.contains(".disabled(activeProjectReviewDrafts.isEmpty)"))
     }
 
     func testWorkspaceSearchCommandRequestsToolbarFocus() {
@@ -1753,7 +1754,7 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertTrue(WorkspaceStore.canRequestReview(orgCreate))
     }
 
-    func testProjectReviewUsesEveryCurrentOpenOrganizationDraftOrNone() {
+    func testProjectReviewUsesEveryOpenOrganizationDraft() {
         let older = localDraft(
             id: "older",
             targetId: "shared",
@@ -1788,10 +1789,13 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
 
         let legacy = localDraft(id: "legacy", targetId: "legacy-memory")
-        XCTAssertTrue(WorkspaceStore.reviewableProjectDrafts(
-            [newer, created, legacy],
-            projectId: "project"
-        ).isEmpty)
+        XCTAssertEqual(
+            WorkspaceStore.reviewableProjectDrafts(
+                [newer, created, legacy],
+                projectId: "project"
+            ).map(\.id),
+            ["newer", "created"]
+        )
     }
 
     func testMemoryTabsAreScopedToTheProjectViewContext() {

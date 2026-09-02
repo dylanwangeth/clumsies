@@ -465,7 +465,7 @@ struct WorkspaceView: View {
                                     pendingProjectReviewDrafts = activeProjectReviewDrafts
                                     showsProjectReviewRequest = true
                                 }
-                                .disabled(!canRequestProjectReview)
+                                .disabled(activeProjectReviewDrafts.isEmpty)
                             } label: {
                                 Image(systemName: "ellipsis")
                             }
@@ -1303,16 +1303,6 @@ struct WorkspaceView: View {
             store.drafts,
             projectId: store.activeProjectId
         )
-    }
-
-    private var canRequestProjectReview: Bool {
-        !activeProjectReviewDrafts.isEmpty
-            && activeProjectReviewDrafts.allSatisfy {
-                $0.syncStatus == .synced
-                    && $0.serverId != nil
-                    && $0.freshness == .current
-                    && !store.isSynchronizingDocument($0.targetId ?? $0.id)
-            }
     }
 
     private var documentMode: Binding<WorkbenchTabMode> {
