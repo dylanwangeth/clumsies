@@ -232,7 +232,7 @@ struct ProjectState: Identifiable, Hashable, Sendable {
     let isLoaded: Bool
 }
 
-struct RuntimeState: Sendable {
+struct RuntimeState: Equatable, Sendable {
     let health: DaemonHealth
     let sync: DaemonSyncStatus?
     let mcp: DaemonMCPStatus?

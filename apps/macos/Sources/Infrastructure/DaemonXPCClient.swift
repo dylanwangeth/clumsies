@@ -339,39 +339,47 @@ struct DaemonXPCClient: Sendable {
         to serviceName: String,
         timeout: TimeInterval
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let request = DaemonXPCRequestState(continuation: continuation)
-            let connection = xpc_connection_create_mach_service(serviceName, replyQueue, 0)
-            request.attach(connection)
-            xpc_connection_set_event_handler(connection) { event in
-                if xpc_get_type(event) == XPC_TYPE_ERROR {
-                    let desc = xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION)
-                        .map(String.init(cString:))
-                    request.fail(.connectionFailed(detail: desc))
+        let request = DaemonXPCRequestState()
+        let response = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                guard request.start(continuation) else { return }
+                let connection = xpc_connection_create_mach_service(serviceName, replyQueue, 0)
+                xpc_connection_set_event_handler(connection) { event in
+                    if xpc_get_type(event) == XPC_TYPE_ERROR {
+                        let desc = xpc_dictionary_get_string(event, XPC_ERROR_KEY_DESCRIPTION)
+                            .map(String.init(cString:))
+                        request.fail(.connectionFailed(detail: desc))
+                    }
                 }
-            }
-            xpc_connection_activate(connection)
+                guard request.attach(connection) else { return }
+                xpc_connection_activate(connection)
 
-            let message = xpc_dictionary_create(nil, nil, 0)
-            xpc_dictionary_set_string(message, "request_json", requestJSON)
-            xpc_connection_send_message_with_reply(connection, message, replyQueue) { reply in
-                guard xpc_get_type(reply) != XPC_TYPE_ERROR else {
-                    let desc = xpc_dictionary_get_string(reply, XPC_ERROR_KEY_DESCRIPTION)
-                        .map(String.init(cString:))
-                    request.fail(.connectionFailed(detail: desc))
-                    return
+                let message = xpc_dictionary_create(nil, nil, 0)
+                xpc_dictionary_set_string(message, "request_json", requestJSON)
+                xpc_connection_send_message_with_reply(connection, message, replyQueue) { reply in
+                    guard xpc_get_type(reply) != XPC_TYPE_ERROR else {
+                        let desc = xpc_dictionary_get_string(reply, XPC_ERROR_KEY_DESCRIPTION)
+                            .map(String.init(cString:))
+                        request.fail(.connectionFailed(detail: desc))
+                        return
+                    }
+                    guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                          let responsePointer = xpc_dictionary_get_string(reply, "response_json") else {
+                        request.fail(.invalidReply)
+                        return
+                    }
+                    request.succeed(String(cString: responsePointer))
                 }
-                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
-                      let responsePointer = xpc_dictionary_get_string(reply, "response_json") else {
-                    request.fail(.invalidReply)
-                    return
+                replyQueue.asyncAfter(deadline: .now() + timeout) {
+                    request.fail(.requestTimedOut(timeout: timeout))
                 }
-                request.succeed(String(cString: responsePointer))
             }
-            replyQueue.asyncAfter(deadline: .now() + timeout) {
-                request.fail(.requestTimedOut(timeout: timeout))
-            }
+        } onCancel: {
+            request.cancel()
         }
+        try Task.checkCancellation()
+        return response
     }
 }
 
@@ -428,19 +436,36 @@ private extension Duration {
     }
 }
 
-private final class DaemonXPCRequestState: @unchecked Sendable {
+final class DaemonXPCRequestState: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<String, Error>?
     private var connection: xpc_connection_t?
+    private var isCancelled = false
 
-    init(continuation: CheckedContinuation<String, Error>) {
-        self.continuation = continuation
+    @discardableResult
+    func start(_ continuation: CheckedContinuation<String, Error>) -> Bool {
+        let didStart = lock.withLock {
+            guard !isCancelled, self.continuation == nil else { return false }
+            self.continuation = continuation
+            return true
+        }
+        if !didStart {
+            continuation.resume(throwing: CancellationError())
+        }
+        return didStart
     }
 
-    func attach(_ connection: xpc_connection_t) {
-        lock.withLock {
+    @discardableResult
+    func attach(_ connection: xpc_connection_t) -> Bool {
+        let didAttach = lock.withLock {
+            guard !isCancelled, continuation != nil else { return false }
             self.connection = connection
+            return true
         }
+        if !didAttach {
+            xpc_connection_cancel(connection)
+        }
+        return didAttach
     }
 
     func succeed(_ response: String) {
@@ -451,8 +476,15 @@ private final class DaemonXPCRequestState: @unchecked Sendable {
         finish(.failure(error))
     }
 
-    private func finish(_ result: Result<String, DaemonXPCError>) {
+    func cancel() {
+        finish(.failure(CancellationError()), markCancelled: true)
+    }
+
+    private func finish(_ result: Result<String, Error>, markCancelled: Bool = false) {
         let completion: (CheckedContinuation<String, Error>, xpc_connection_t?)? = lock.withLock {
+            if markCancelled {
+                isCancelled = true
+            }
             guard let continuation else { return nil }
             self.continuation = nil
             let connection = self.connection
