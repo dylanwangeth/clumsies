@@ -8,9 +8,8 @@ the active tree and remains recoverable from Git commit
 | Path | Responsibility |
 | --- | --- |
 | `apps/macos/` | Native macOS product client built with AppKit and SwiftUI |
-| `crates/server/` | deployable Rust authority service and PostgreSQL schema |
+| `crates/server/` | deployable Rust authority service, HTTP contracts, and PostgreSQL schema |
 | `crates/daemon/` | resident macOS launchd daemon, local state and workers, Agent runtime proxies, native adapter installer, and XPC contracts |
-| `packages/api-contract/` | Public, Admin, and daemon OpenAPI contracts |
 | `assets/adapters/` | host-specific integration assets |
 | `docs/` | VitePress public documentation |
 
@@ -38,7 +37,7 @@ identity so another checkout or stale helper cannot become the runtime.
 
 ## Read in this order
 
-1. Read the OpenAPI files in `packages/api-contract/openapi`.
+1. Read the HTTP OpenAPI files in `crates/server/openapi`.
 2. Read `crates/server/src/http.rs` and `repository.rs` for authority behavior.
 3. Read `crates/daemon/src/lib.rs` and `ipc.rs` for local synchronization.
 4. Read `crates/daemon/src/main.rs` and `agent_runtime/` for resident/proxy process boundaries.

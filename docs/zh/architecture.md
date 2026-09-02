@@ -296,7 +296,8 @@ Project Local Storage 的注册键是：
 | 共享 Issue/claim | `crates/server/src/organization/`、`crates/daemon/src/state.rs` |
 | Issue 本地副本与 AgentRun 投影 | `crates/daemon/src/work_tracking.rs` |
 | Desktop 传输与主要页面 | `apps/macos/Sources/Infrastructure/DaemonXPCClient.swift`、`apps/macos/Sources/Features/` |
-| 公开、管理与 daemon 合同 | `packages/api-contract/openapi/` |
+| Public/Admin HTTP 合同 | `crates/server/openapi/` |
+| daemon IPC 合同 | `crates/daemon/src/types.rs`、`crates/daemon/src/state.rs`、Rust/macOS 契约测试 |
 
 ## 5. 安全架构
 
