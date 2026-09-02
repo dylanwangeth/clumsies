@@ -3,10 +3,6 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.5",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
     "dev": "vitepress dev docs",
     "dev:site": "python3 -m http.server 4000 --directory site",
@@ -14,16 +10,12 @@
     "dev:infra:down": "docker compose down",
     "dev:server": "sh dev/server.sh",
     "build": "vitepress build docs",
-    "preview": "vitepress preview docs",
-    "api:generate": "bun run --cwd packages/api-contract generate",
-    "api:check": "bun run --cwd packages/api-contract check"
+    "preview": "vitepress preview docs"
   },
   "devDependencies": {
     "markdown-it-container": "^4.0.0",
     "markdown-it-footnote": "^4.0.0",
     "mermaid": "^11.14.0",
-    "openapi-typescript": "^7.13.0",
-    "typescript": "^5.9.3",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17"
   }

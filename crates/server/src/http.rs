@@ -472,8 +472,8 @@ mod tests {
 
     #[test]
     fn axum_routes_match_public_and_admin_openapi() {
-        let public = include_str!("../../../packages/api-contract/openapi/clumsies.public.v1.yaml");
-        let admin = include_str!("../../../packages/api-contract/openapi/clumsies.admin.v1.yaml");
+        let public = include_str!("../openapi/clumsies.public.v1.yaml");
+        let admin = include_str!("../openapi/clumsies.admin.v1.yaml");
         let contract_operations = openapi_operations(public)
             .into_iter()
             .chain(openapi_operations(admin))

@@ -75,9 +75,13 @@ The OpenAPI sources are the canonical wire contracts:
 
 | Contract | Scope |
 | --- | --- |
-| `packages/api-contract/openapi/clumsies.public.v1.yaml` | Desktop and daemon product API |
-| `packages/api-contract/openapi/clumsies.admin.v1.yaml` | bearer-authenticated organization Administration API, public health, and setup bootstrap |
-| `packages/api-contract/openapi/clumsies.daemon.v1.yaml` | local daemon IPC capability map |
+| `crates/server/openapi/clumsies.public.v1.yaml` | Desktop and daemon product API |
+| `crates/server/openapi/clumsies.admin.v1.yaml` | bearer-authenticated organization Administration API, public health, and setup bootstrap |
+
+Local daemon IPC is not HTTP and has no OpenAPI document. Its executable
+contract is defined by the request and response types in
+`crates/daemon/src/types.rs`, the dispatch table in `crates/daemon/src/state.rs`,
+and the Rust/macOS contract tests.
 
 Authentication uses the organization's OIDC provider in the system browser.
 The native macOS App validates the Server origin and owns the ephemeral loopback

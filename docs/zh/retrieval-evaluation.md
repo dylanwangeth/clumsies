@@ -177,10 +177,10 @@ report **不嵌在** `fixture_json` 中。当前 macOS Save Panel 只把 `fixtur
 - `clear_retrieval_runs`
 - `export_evaluation_set`
 
-线协议以 `packages/api-contract/openapi/clumsies.daemon.v1.yaml` 为准。macOS Diagnostics 的
-Retrieval 页面展示近期 Run、阶段 rank/score、最终 disposition、evidence suggestions、
-Case 状态、benchmark、export 和 clear-unpinned-history；它不经 Server，也不改变 MCP
-`activate_memory` 的请求格式。
+daemon 的可执行线协议由 Rust 请求/响应类型、IPC 分派表与 Rust/macOS 契约测试共同定义。
+macOS Diagnostics 的 Retrieval 页面展示近期 Run、阶段 rank/score、最终 disposition、
+evidence suggestions、Case 状态、benchmark、export 和 clear-unpinned-history；它不经
+Server，也不改变 MCP `activate_memory` 的请求格式。
 
 ## 8. 已知限制与验证
 

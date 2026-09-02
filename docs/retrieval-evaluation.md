@@ -121,11 +121,11 @@ Native clients use typed XPC methods:
 - `clear_retrieval_runs`
 - `export_evaluation_set`
 
-The canonical schemas are in
-`packages/api-contract/openapi/clumsies.daemon.v1.yaml`. Desktop Diagnostics has
-separate Runtime and Retrieval pages. Retrieval shows recent Runs, stage ranks
-and scores, final disposition, relevance controls, missed evidence, benchmark
-metrics, export, and clear-unpinned-history actions.
+The executable daemon contract is defined by the Rust request and response
+types, the IPC dispatch table, and the Rust/macOS contract tests. Desktop
+Diagnostics has separate Runtime and Retrieval pages. Retrieval shows recent
+Runs, stage ranks and scores, final disposition, relevance controls, missed
+evidence, benchmark metrics, export, and clear-unpinned-history actions.
 
 ## Verification
 
