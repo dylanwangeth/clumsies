@@ -844,6 +844,134 @@ final class DaemonContractTests: XCTestCase {
         XCTAssertFalse(warning.contains("release signing identity"))
     }
 
+    func testWorkspaceRefreshLoopHasOneOwnerAndBoundedCadence() throws {
+        XCTAssertEqual(WorkspaceRefreshCadence.syncStatus, .seconds(2))
+        XCTAssertEqual(WorkspaceRefreshCadence.synchronizedData, .seconds(30))
+
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let viewSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(
+            viewSource.components(separatedBy: "await store.runRefreshLoop()").count - 1,
+            1
+        )
+        XCTAssertFalse(viewSource.contains("await store.refreshSyncStatus()"))
+
+        let storeSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Domain/WorkspaceStore.swift"),
+            encoding: .utf8
+        )
+        let statusStart = try XCTUnwrap(
+            storeSource.range(of: "    func refreshSyncStatus()")
+        )
+        let statusEnd = try XCTUnwrap(
+            storeSource[statusStart.lowerBound...].range(
+                of: "\n    func refreshSynchronizedWorkspaceData()"
+            )
+        )
+        let statusRefresh = storeSource[statusStart.lowerBound..<statusEnd.lowerBound]
+        XCTAssertEqual(
+            storeSource.components(separatedBy: "daemon.syncStatus(projectId: projectId)").count - 1,
+            1
+        )
+        XCTAssertTrue(statusRefresh.contains("!isRefreshingSyncStatus"))
+        XCTAssertTrue(statusRefresh.contains("daemon.syncStatus(projectId: projectId)"))
+        XCTAssertTrue(statusRefresh.contains("catch is CancellationError"))
+        XCTAssertFalse(statusRefresh.contains("refreshOrgResourcesIfNeeded()"))
+        XCTAssertFalse(statusRefresh.contains("refreshDraftInventory("))
+        XCTAssertFalse(statusRefresh.contains("refreshStaleResourcesIfNeeded("))
+
+        let dataStart = statusEnd.lowerBound
+        let dataEnd = try XCTUnwrap(
+            storeSource[dataStart...].range(
+                of: "\n    nonisolated static func stableOrgAuthorityCommitId("
+            )
+        )
+        let dataRefresh = storeSource[dataStart..<dataEnd.lowerBound]
+        XCTAssertTrue(dataRefresh.contains("!isRefreshingSynchronizedWorkspaceData"))
+        XCTAssertTrue(dataRefresh.contains("refreshOrgResourcesIfNeeded()"))
+        XCTAssertTrue(dataRefresh.contains("refreshDraftInventory("))
+        XCTAssertTrue(dataRefresh.contains("refreshStaleResourcesIfNeeded("))
+    }
+
+    func testWorkspaceNavigationDefersObservableWritesFromViewUpdates() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let selectionStart = try XCTUnwrap(
+            source.range(of: "    private var selection: Binding<GlobalSidebarDestination?>")
+        )
+        let selectionEnd = try XCTUnwrap(
+            source[selectionStart.lowerBound...].range(of: "\n    }\n\n}")
+        )
+        let selection = source[selectionStart.lowerBound..<selectionEnd.upperBound]
+
+        XCTAssertTrue(source.contains("private func deferSidebarExpansionUpdate"))
+        XCTAssertTrue(selection.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(selection.contains("store.selectedSection = section"))
+        XCTAssertFalse(source.contains(
+            ".onAppear {\n            store.showsProjectSettings = false"
+        ))
+    }
+
+    func testXPCRequestStateCompletesCancellation() async {
+        let state = DaemonXPCRequestState()
+        let task = Task<String, Error> {
+            try await withCheckedThrowingContinuation { continuation in
+                state.start(continuation)
+            }
+        }
+
+        await Task.yield()
+        state.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+    }
+
+    func testXPCTransportForwardsTaskCancellation() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Infrastructure/DaemonXPCClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("withTaskCancellationHandler"))
+        XCTAssertTrue(source.contains("request.cancel()"))
+        XCTAssertTrue(source.contains("try Task.checkCancellation()"))
+    }
+
+    func testAvatarLoadingIsCachedAndCoalesced() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Components/AvatarView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("AsyncImage"))
+        XCTAssertTrue(source.contains("NSCache<NSURL, NSImage>"))
+        XCTAssertTrue(source.contains("if let existing = loads[url]"))
+        XCTAssertTrue(source.contains(".task(id: avatarURL)"))
+        XCTAssertTrue(source.contains("guard !Task.isCancelled else { return }"))
+    }
+
     func testRetrySyncHasAnIndependentPostReadyTask() throws {
         let macOSRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -856,7 +984,7 @@ final class DaemonContractTests: XCTestCase {
             source.range(of: "postReadyRetrySyncTask = Task")
         )
         let statusTask = try XCTUnwrap(
-            source.range(of: "postReadySyncTask = Task")
+            source.range(of: "postReadyMCPTask = Task")
         )
         let statusEnd = try XCTUnwrap(
             source[statusTask.lowerBound...].range(

@@ -181,6 +181,15 @@ struct WorkspaceView: View {
         return state
     }
 
+    private func deferSidebarExpansionUpdate(_ expanded: Bool) {
+        guard store.sidebarExpanded != expanded else { return }
+        DispatchQueue.main.async {
+            if store.sidebarExpanded != expanded {
+                store.sidebarExpanded = expanded
+            }
+        }
+    }
+
     var body: some View {
         Group {
             switch store.selectedSection {
@@ -202,7 +211,15 @@ struct WorkspaceView: View {
             }
         }
         .onChange(of: store.selectedSection) { _, _ in
-            store.searchQuery = ""
+            DispatchQueue.main.async {
+                store.searchQuery = ""
+                if store.selectedSection != .memory {
+                    store.showsProjectSettings = false
+                }
+            }
+        }
+        .task {
+            await store.runRefreshLoop()
         }
     }
 
@@ -489,16 +506,11 @@ struct WorkspaceView: View {
                   !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             Task { await store.prepareWorkspaceIndex(includeContent: true) }
         }
-        .onChange(of: store.selectedSection) { _, section in
-            if section != .memory {
-                store.showsProjectSettings = false
-            }
-        }
         .onChange(of: splitVisibility) { _, visibility in
             if visibility == .all {
-                store.sidebarExpanded = true
+                deferSidebarExpansionUpdate(true)
             } else if visibility == .doubleColumn || visibility == .detailOnly {
-                store.sidebarExpanded = false
+                deferSidebarExpansionUpdate(false)
             }
         }
         .onChange(of: store.sidebarExpanded) { _, expanded in
@@ -510,16 +522,6 @@ struct WorkspaceView: View {
         .onChange(of: syncToolbarPresentation) { _, presentation in
             if presentation == nil || presentation?.isSyncing == true {
                 showsSyncIssuePopover = false
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                await store.refreshSyncStatus()
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
             }
         }
         .sheet(isPresented: $store.showsProjectCreation) {
@@ -640,7 +642,6 @@ struct WorkspaceView: View {
             }
         }
         .onAppear {
-            store.showsProjectSettings = false
             let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .detailOnly
             if reviewSplitVisibility != target {
                 reviewSplitVisibility = target
@@ -658,9 +659,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: reviewSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
-            if store.sidebarExpanded != expanded {
-                store.sidebarExpanded = expanded
-            }
+            deferSidebarExpansionUpdate(expanded)
         }
         .onChange(of: store.sidebarExpanded) { _, expanded in
             let target: NavigationSplitViewVisibility = expanded ? .all : .detailOnly
@@ -670,11 +669,15 @@ struct WorkspaceView: View {
         }
         .onChange(of: reviewNavigationPath) { _, path in
             let reviewId = path.last?.reviewId
-            if store.selectedReviewId != reviewId {
-                store.selectedReviewId = reviewId
+            DispatchQueue.main.async {
+                if store.selectedReviewId != reviewId {
+                    store.selectedReviewId = reviewId
+                }
+                if reviewId == nil {
+                    store.reviewDecisionReadiness = nil
+                }
             }
             if reviewId == nil {
-                store.reviewDecisionReadiness = nil
                 pendingReviewToolbarAction = nil
             }
         }
@@ -699,16 +702,6 @@ struct WorkspaceView: View {
         .onChange(of: syncToolbarPresentation) { _, presentation in
             if presentation == nil || presentation?.isSyncing == true {
                 showsSyncIssuePopover = false
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                await store.refreshSyncStatus()
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
             }
         }
         .sheet(isPresented: $store.showsProjectCreation) {
@@ -948,7 +941,6 @@ struct WorkspaceView: View {
                 }
         }
         .onAppear {
-            store.showsProjectSettings = false
             let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .doubleColumn
             if recallSplitVisibility != target {
                 recallSplitVisibility = target
@@ -959,9 +951,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: recallSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
-            if store.sidebarExpanded != expanded {
-                store.sidebarExpanded = expanded
-            }
+            deferSidebarExpansionUpdate(expanded)
         }
         .onChange(of: store.sidebarExpanded) { _, expanded in
             let target: NavigationSplitViewVisibility = expanded ? .all : .doubleColumn
@@ -1124,7 +1114,6 @@ struct WorkspaceView: View {
             }
         }
         .onAppear {
-            store.showsProjectSettings = false
             let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .detailOnly
             if issueSplitVisibility != target {
                 issueSplitVisibility = target
@@ -1138,9 +1127,7 @@ struct WorkspaceView: View {
         }
         .onChange(of: issueSplitVisibility) { _, visibility in
             let expanded = visibility != .detailOnly
-            if store.sidebarExpanded != expanded {
-                store.sidebarExpanded = expanded
-            }
+            deferSidebarExpansionUpdate(expanded)
         }
         .onChange(of: store.sidebarExpanded) { _, expanded in
             let target: NavigationSplitViewVisibility = expanded ? .all : .detailOnly
@@ -1160,16 +1147,6 @@ struct WorkspaceView: View {
         .onChange(of: syncToolbarPresentation) { _, presentation in
             if presentation == nil || presentation?.isSyncing == true {
                 showsSyncIssuePopover = false
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                await store.refreshSyncStatus()
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
             }
         }
         .task(id: store.activeProjectId) {
@@ -1634,8 +1611,10 @@ private struct GlobalSidebar: View {
             set: { destination in
                 guard let destination else { return }
                 if case .section(let section) = destination {
-                    store.selectedSection = section
-                    store.selectedItemId = nil
+                    DispatchQueue.main.async {
+                        store.selectedSection = section
+                        store.selectedItemId = nil
+                    }
                 }
             }
         )
@@ -1659,38 +1638,4 @@ private struct SidebarDestinationLabel: View {
 
 private enum GlobalSidebarDestination: Hashable {
     case section(WorkspaceSection)
-}
-
-struct AvatarView: View {
-    let account: UserReference?
-
-    var body: some View {
-        Group {
-            if let value = account?.avatarUrl, let url = URL(string: value) {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 24, height: 24)
-                        .clipped()
-                } placeholder: {
-                    fallback
-                }
-            } else {
-                fallback
-            }
-        }
-        .frame(width: 24, height: 24)
-        .clipShape(Circle())
-    }
-
-    private var fallback: some View {
-        ZStack {
-            Color.accentColor.opacity(0.2)
-            Text(String((account?.displayName ?? account?.email ?? "C").prefix(1)).uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-        }
-        .frame(width: 24, height: 24)
-    }
 }

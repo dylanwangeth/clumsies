@@ -365,6 +365,11 @@ struct DraftInventoryPlan: Equatable, Sendable {
     let terminalIds: Set<String>
 }
 
+enum WorkspaceRefreshCadence {
+    static let syncStatus: Duration = .seconds(2)
+    static let synchronizedData: Duration = .seconds(30)
+}
+
 private struct ResourceLoadRequest: Sendable {
     let resource: MemoryResource
     let generation: UUID
@@ -460,8 +465,10 @@ final class WorkspaceStore: ObservableObject {
     private var bundleLoadTask: Task<Void, Never>?
     private var reviewLoadTask: Task<Void, Never>?
     private var legacyAgentAdapterInspectionTask: Task<Void, Never>?
-    private var postReadySyncTask: Task<Void, Never>?
+    private var postReadyMCPTask: Task<Void, Never>?
     private var postReadyRetrySyncTask: Task<Void, Never>?
+    private var isRefreshingSyncStatus = false
+    private var isRefreshingSynchronizedWorkspaceData = false
     private var syncRetryTasks: [SyncRetryKey: SyncRetryTaskHandle] = [:]
     private var presentedSyncRetryErrorKey: SyncRetryKey?
     private var dismissedBackgroundErrorSources: Set<WorkspaceBackgroundErrorSource> = []
@@ -3288,6 +3295,8 @@ final class WorkspaceStore: ObservableObject {
                 if activeProjectId == projectId {
                     await refreshSyncStatus()
                     try Task.checkCancellation()
+                    await refreshSynchronizedWorkspaceData()
+                    try Task.checkCancellation()
                 }
                 return SyncRetryOutcome.completed
             } catch is CancellationError {
@@ -3316,51 +3325,96 @@ final class WorkspaceStore: ObservableObject {
         return outcome
     }
 
+    func runRefreshLoop() async {
+        let clock = ContinuousClock()
+        var nextSynchronizedDataRefresh = clock.now
+        while !Task.isCancelled {
+            if phase == .ready {
+                await refreshSyncStatus()
+                guard !Task.isCancelled else { return }
+                if clock.now >= nextSynchronizedDataRefresh {
+                    await refreshSynchronizedWorkspaceData()
+                    nextSynchronizedDataRefresh = clock.now.advanced(
+                        by: WorkspaceRefreshCadence.synchronizedData
+                    )
+                }
+            }
+            do {
+                try await Task.sleep(for: WorkspaceRefreshCadence.syncStatus)
+            } catch {
+                return
+            }
+        }
+    }
+
     func refreshSyncStatus() async {
-        guard phase == .ready else { return }
+        guard phase == .ready, !isRefreshingSyncStatus else { return }
+        isRefreshingSyncStatus = true
+        defer { isRefreshingSyncStatus = false }
+        let generation = workspaceReloadGeneration
+        let projectId = activeProjectId
+        guard let runtime else { return }
+        do {
+            let sync = try await daemon.syncStatus(projectId: projectId)
+            try Task.checkCancellation()
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId,
+                  phase == .ready else {
+                return
+            }
+            let updatedRuntime = RuntimeState(
+                health: runtime.health,
+                sync: sync,
+                mcp: runtime.mcp,
+                serverDataSource: server.dataSource
+            )
+            if self.runtime != updatedRuntime {
+                self.runtime = updatedRuntime
+            }
+            if !syncStatusAvailable {
+                syncStatusAvailable = true
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard workspaceReloadGeneration == generation,
+                  activeProjectId == projectId else {
+                return
+            }
+            if syncStatusAvailable {
+                syncStatusAvailable = false
+            }
+        }
+    }
+
+    func refreshSynchronizedWorkspaceData() async {
+        guard phase == .ready, !isRefreshingSynchronizedWorkspaceData else { return }
+        isRefreshingSynchronizedWorkspaceData = true
+        defer { isRefreshingSynchronizedWorkspaceData = false }
         let generation = workspaceReloadGeneration
         let projectId = activeProjectId
         await refreshOrgResourcesIfNeeded()
         guard workspaceReloadGeneration == generation,
               activeProjectId == projectId,
               phase == .ready,
-              let runtime else {
+              !Task.isCancelled,
+              let sync = runtime?.sync else {
             return
         }
-        do {
-            let sync = try await daemon.syncStatus(projectId: projectId)
-            guard workspaceReloadGeneration == generation,
-                  activeProjectId == projectId,
-                  phase == .ready else {
-                return
-            }
-            self.runtime = .init(
-                health: runtime.health,
-                sync: sync,
-                mcp: runtime.mcp,
-                serverDataSource: server.dataSource
+        if draftInventoryLoadTask == nil {
+            await refreshDraftInventory(
+                includeFailed: sync.pendingOperationCount > 0
+                    || sync.failedOperationCount > 0,
+                generation: generation
             )
-            syncStatusAvailable = true
-            if draftInventoryLoadTask == nil {
-                await refreshDraftInventory(
-                    includeFailed: sync.pendingOperationCount > 0
-                        || sync.failedOperationCount > 0,
-                    generation: generation
-                )
-            }
-            guard workspaceReloadGeneration == generation,
-                  activeProjectId == projectId,
-                  phase == .ready else {
-                return
-            }
-            await refreshStaleResourcesIfNeeded(sync: sync)
-        } catch {
-            guard workspaceReloadGeneration == generation,
-                  activeProjectId == projectId else {
-                return
-            }
-            syncStatusAvailable = false
         }
+        guard workspaceReloadGeneration == generation,
+              activeProjectId == projectId,
+              phase == .ready,
+              !Task.isCancelled else {
+            return
+        }
+        await refreshStaleResourcesIfNeeded(sync: sync)
     }
 
     nonisolated static func stableOrgAuthorityCommitId(
@@ -5395,8 +5449,8 @@ final class WorkspaceStore: ObservableObject {
         reviewLoadTask = nil
         legacyAgentAdapterInspectionTask?.cancel()
         legacyAgentAdapterInspectionTask = nil
-        postReadySyncTask?.cancel()
-        postReadySyncTask = nil
+        postReadyMCPTask?.cancel()
+        postReadyMCPTask = nil
         postReadyRetrySyncTask?.cancel()
         postReadyRetrySyncTask = nil
     }
@@ -5587,10 +5641,10 @@ final class WorkspaceStore: ObservableObject {
             _ = await self.retrySync(projectId: self.activeProjectId)
         }
 
-        postReadySyncTask = Task { @MainActor [weak self] in
+        postReadyMCPTask = Task { @MainActor [weak self] in
             defer {
                 if let self, self.workspaceReloadGeneration == generation {
-                    self.postReadySyncTask = nil
+                    self.postReadyMCPTask = nil
                 }
             }
             guard let self,
@@ -5599,25 +5653,21 @@ final class WorkspaceStore: ObservableObject {
                   !Task.isCancelled else {
                 return
             }
-            let projectId = self.activeProjectId
-            async let syncRequest = try? daemon.syncStatus(projectId: projectId)
-            async let mcpRequest = try? daemon.mcpStatus()
-            let (sync, mcp) = await (syncRequest, mcpRequest)
+            let mcp = try? await daemon.mcpStatus()
             guard self.workspaceReloadGeneration == generation,
-                  self.activeProjectId == projectId,
                   self.phase == .ready,
                   !Task.isCancelled,
                   let runtime = self.runtime else {
                 return
             }
-            self.runtime = .init(
+            let updatedRuntime = RuntimeState(
                 health: runtime.health,
-                sync: sync != nil ? sync : runtime.sync,
-                mcp: mcp != nil ? mcp : runtime.mcp,
+                sync: runtime.sync,
+                mcp: mcp ?? runtime.mcp,
                 serverDataSource: runtime.serverDataSource
             )
-            if sync != nil {
-                self.syncStatusAvailable = true
+            if self.runtime != updatedRuntime {
+                self.runtime = updatedRuntime
             }
         }
     }
