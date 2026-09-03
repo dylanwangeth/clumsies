@@ -81,6 +81,30 @@ final class ProjectManagementTests: XCTestCase {
         )
     }
 
+    func testProjectCreationIsAvailableFromEveryProjectFilter() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let filter = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Components/ToolbarFilterMenu.swift"),
+            encoding: .utf8
+        )
+        let workspace = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(filter.contains("Button(\"New Project…\", systemImage: \"plus\")"))
+        XCTAssertEqual(
+            workspace.components(separatedBy: "onCreate: store.canManageProjects").count - 1,
+            3
+        )
+        XCTAssertEqual(
+            workspace.components(separatedBy: "ProjectCreationSheet(store: store)").count - 1,
+            1
+        )
+    }
+
     func testAdministrationProjectCreationHasNoRepositoryRequirement() throws {
         let request = WorkspaceStore.adminProjectCreationRequest(
             name: "Server-only Project",
