@@ -102,7 +102,7 @@ enum WorkspaceColumnLayout: Equatable {
     case sidebarContentDetail
 
     init(section: WorkspaceSection) {
-        self = section == .issues || section == .reviews
+        self = section == .reviews
             ? .sidebarDetail
             : .sidebarContentDetail
     }
@@ -115,31 +115,21 @@ private enum DocumentSyncReadiness {
     case unavailable
 }
 
-struct IssueBoardRoute: Hashable {
-    let issueId: String
-}
-
 struct WorkspaceView: View {
     @ObservedObject var store: WorkspaceStore
     let onOpenSettings: () -> Void
     let onOpenDiagnostics: (DiagnosticsDestination) -> Void
     let onShowLogs: () -> Void
     let loadsReviewDetail: Bool
-    @StateObject private var issueBoardModel: IssueBoardModel
     @StateObject private var recallModel: RecallModel
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
-    @State private var issueSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var reviewSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var recallSplitVisibility: NavigationSplitViewVisibility = .all
     @State private var showsBundleResourcePicker = false
     @State private var confirmsBundleDeletion = false
     @State private var showsSyncIssuePopover = false
-    @State private var showsUnlinkedActivity = false
-    @State private var showsIssueWorkflowHelp = false
-    @State private var issueNavigationPath: [IssueBoardRoute] = []
     @State private var reviewNavigationPath: [ReviewRoute] = []
     @State private var workspaceSearchFocusRequest = 0
-    @State private var issueSearchFocusRequest = 0
     @State private var reviewSearchQuery = ""
     @State private var reviewSearchFocusRequest = 0
     @State private var reviewFilters = ReviewListFilters()
@@ -160,7 +150,6 @@ struct WorkspaceView: View {
         self.onOpenDiagnostics = onOpenDiagnostics
         self.onShowLogs = onShowLogs
         self.loadsReviewDetail = loadsReviewDetail
-        _issueBoardModel = StateObject(wrappedValue: IssueBoardModel(daemon: store.daemon))
         _recallModel = StateObject(wrappedValue: RecallModel(daemon: store.daemon))
     }
 
@@ -193,8 +182,6 @@ struct WorkspaceView: View {
     var body: some View {
         Group {
             switch store.selectedSection {
-            case .issues:
-                issuesWorkspace
             case .reviews:
                 reviewsWorkspace
             case .sessions:
@@ -544,60 +531,6 @@ struct WorkspaceView: View {
         }
     }
 
-    private func issueDetailView(for route: IssueBoardRoute) -> some View {
-        IssueDetailView(
-            issueId: route.issueId,
-            model: issueBoardModel,
-            members: store.projectMembers,
-            onGate: { action, issue in
-                Task {
-                    do {
-                        try await issueBoardModel.applyGate(action, to: issue)
-                    } catch {
-                        store.errorMessage = error.localizedDescription
-                    }
-                }
-            },
-            onAssign: { issue, member in
-                try await store.assignIssue(issue, to: member)
-                await issueBoardModel.refresh()
-            },
-            onUnclaim: { issue in
-                Task {
-                    do {
-                        try await issueBoardModel.unclaim(issue)
-                    } catch {
-                        store.errorMessage = error.localizedDescription
-                    }
-                }
-            },
-            onResume: { issue in
-                Task {
-                    do {
-                        try await issueBoardModel.resume(issue)
-                    } catch {
-                        store.errorMessage = error.localizedDescription
-                    }
-                }
-            },
-            onToggleVerificationStep: { issue, index, completed in
-                Task {
-                    do {
-                        try await issueBoardModel.setVerificationStep(
-                            completed,
-                            stepIndex: index,
-                            issue: issue
-                        )
-                    } catch {
-                        store.errorMessage = error.localizedDescription
-                    }
-                }
-            },
-            onArchive: nil,
-            onDelete: nil
-        )
-    }
-
     private var reviewsWorkspace: some View {
         NavigationSplitView(columnVisibility: $reviewSplitVisibility) {
             GlobalSidebar(
@@ -714,7 +647,6 @@ struct WorkspaceView: View {
         case .memory: "Search Memory"
         case .bundles: "Search Bundles"
         case .reviews: "Search Reviews"
-        case .issues: "Search Issues"
         case .sessions: "Search Activity"
         case .administration: "Search Administration"
         }
@@ -983,185 +915,6 @@ struct WorkspaceView: View {
         }
     }
 
-    private var issuesWorkspace: some View {
-        NavigationSplitView(columnVisibility: $issueSplitVisibility) {
-            GlobalSidebar(
-                store: store,
-                onOpenSettings: onOpenSettings,
-                onOpenDiagnostics: onOpenDiagnostics,
-                onShowLogs: onShowLogs
-            )
-            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
-        } detail: {
-            NavigationStack(path: $issueNavigationPath) {
-                IssueBoardView(
-                    model: issueBoardModel,
-                    projectId: store.activeProjectId,
-                    projectName: store.activeProject?.name,
-                    members: store.projectMembers,
-                    onOpenDetails: { issue in
-                        issueNavigationPath = [IssueBoardRoute(issueId: issue.id)]
-                    },
-                    onAssign: { issue, member in
-                        try await store.assignIssue(issue, to: member)
-                        await issueBoardModel.refresh()
-                    }
-                )
-                .navigationDestination(for: IssueBoardRoute.self) { route in
-                    issueDetailView(for: route)
-                }
-            }
-            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-            .toolbar {
-                if issueNavigationPath.isEmpty {
-                    ToolbarItem(placement: .navigation) {
-                        IssueProjectFilter(store: store)
-                    }
-
-                    if #available(macOS 26.0, *) {
-                        ToolbarSpacer(.flexible, placement: .automatic)
-                    }
-
-                    ToolbarItemGroup(placement: .trailingPinned) {
-                        Toggle(isOn: $issueBoardModel.showsStaleOnly) {
-                            Label("Stale", systemImage: "clock.badge.exclamationmark")
-                        }
-                        .toggleStyle(.button)
-                        .disabled(issueBoardModel.response == nil)
-                        .help("Show only stale In Progress Issues")
-
-                        Toggle(isOn: $issueBoardModel.showsBlockedOnly) {
-                            Label("Blocked", systemImage: "exclamationmark.triangle.fill")
-                        }
-                        .toggleStyle(.button)
-                        .disabled(issueBoardModel.response == nil)
-                        .help("Show only Issues blocked by unresolved dependencies or conditions")
-
-                        IssueExternalReferenceFilterMenu(model: issueBoardModel)
-
-                        if showsUnlinkedActivityButton {
-                            Button {
-                                showsUnlinkedActivity.toggle()
-                            } label: {
-                                Label(
-                                    "\(issueBoardModel.unlinkedRuns.count)",
-                                    systemImage: "bolt.circle"
-                                )
-                                .labelStyle(.titleAndIcon)
-                            }
-                            .help("Unlinked Activity")
-                            .accessibilityLabel("Unlinked Activity")
-                            .accessibilityValue(
-                                "\(issueBoardModel.unlinkedRuns.count) Agent Runs"
-                            )
-                            .popover(isPresented: $showsUnlinkedActivity, arrowEdge: .top) {
-                                IssueUnlinkedActivityPopover(runs: issueBoardModel.unlinkedRuns)
-                            }
-                        }
-
-                        Button {
-                            showsIssueWorkflowHelp.toggle()
-                        } label: {
-                            Image(systemName: "questionmark.circle")
-                        }
-                        .help("How to use Kanban")
-                        .accessibilityLabel("How to use Kanban")
-                        .popover(isPresented: $showsIssueWorkflowHelp, arrowEdge: .top) {
-                            IssueWorkflowHelpPopover()
-                        }
-
-                        if let syncToolbarPresentation {
-                            switch syncToolbarPresentation {
-                            case .syncing:
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .frame(width: 24, height: 24)
-                                    .help(syncToolbarPresentation.label)
-                                    .accessibilityLabel(syncToolbarPresentation.label)
-                            case .failed, .unavailable, .stale:
-                                Button {
-                                    showsSyncIssuePopover.toggle()
-                                } label: {
-                                    Image(systemName: syncToolbarPresentation.symbolName)
-                                        .foregroundStyle(syncToolbarPresentation.tint)
-                                }
-                                .help(syncToolbarPresentation.label)
-                                .accessibilityLabel(syncToolbarPresentation.label)
-                                .popover(isPresented: $showsSyncIssuePopover, arrowEdge: .top) {
-                                    SyncIssuePopover(
-                                        presentation: syncToolbarPresentation,
-                                        store: store
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if #available(macOS 26.0, *) {
-                        ToolbarSpacer(.fixed, placement: .automatic)
-                    }
-
-                    ToolbarItem(id: "issue.search", placement: .trailingPinned) {
-                        ClassicSearchField(
-                            text: $issueBoardModel.searchQuery,
-                            prompt: "Search Issues",
-                            accessibilityIdentifier: "issue-toolbar-search",
-                            accessibilityHelp: "Search only the Issues on this board",
-                            focusToken: issueSearchFocusRequest
-                        )
-                    }
-                }
-            }
-        }
-        .onAppear {
-            let target: NavigationSplitViewVisibility = store.sidebarExpanded ? .all : .detailOnly
-            if issueSplitVisibility != target {
-                issueSplitVisibility = target
-            }
-        }
-        .onChange(of: store.issueSearchFocusToken) { _, _ in
-            issueNavigationPath.removeAll()
-            DispatchQueue.main.async {
-                issueSearchFocusRequest += 1
-            }
-        }
-        .onChange(of: issueSplitVisibility) { _, visibility in
-            let expanded = visibility != .detailOnly
-            deferSidebarExpansionUpdate(expanded)
-        }
-        .onChange(of: store.sidebarExpanded) { _, expanded in
-            let target: NavigationSplitViewVisibility = expanded ? .all : .detailOnly
-            if issueSplitVisibility != target {
-                issueSplitVisibility = target
-            }
-        }
-        .onChange(of: store.activeProjectId) {
-            showsUnlinkedActivity = false
-            issueNavigationPath.removeAll()
-        }
-        .onChange(of: showsUnlinkedActivityButton) { _, isAvailable in
-            if !isAvailable {
-                showsUnlinkedActivity = false
-            }
-        }
-        .onChange(of: syncToolbarPresentation) { _, presentation in
-            if presentation == nil || presentation?.isSyncing == true {
-                showsSyncIssuePopover = false
-            }
-        }
-        .task(id: store.activeProjectId) {
-            await store.refreshProjectMembers()
-        }
-    }
-
-    private var showsUnlinkedActivityButton: Bool {
-        IssueBoardPresentation.showsUnlinkedActivity(
-            activeProjectId: store.activeProjectId,
-            responseProjectId: issueBoardModel.response?.projectId,
-            runCount: issueBoardModel.unlinkedRuns.count
-        )
-    }
-
     @ToolbarContentBuilder
     private var navigationToolbarContent: some ToolbarContent {
         switch store.selectedSection {
@@ -1190,10 +943,6 @@ struct WorkspaceView: View {
                 .help("New Bundle")
                 .accessibilityLabel("New Bundle")
             }
-        case .issues:
-            ToolbarItem {
-                EmptyView()
-            }
         case .reviews:
             ToolbarItem {
                 EmptyView()
@@ -1216,8 +965,6 @@ struct WorkspaceView: View {
             MemoryNavigator(store: store)
         case .bundles:
             BundleNavigator(store: store)
-        case .issues:
-            EmptyView()
         case .reviews:
             EmptyView()
         case .sessions:
@@ -1244,8 +991,6 @@ struct WorkspaceView: View {
                 showsResourcePicker: $showsBundleResourcePicker,
                 confirmsDeletion: $confirmsBundleDeletion
             )
-        case .issues:
-            EmptyView()
         case .reviews:
             EmptyView()
         case .sessions:
@@ -1349,26 +1094,6 @@ struct WorkspaceView: View {
         )
     }
 
-}
-
-private struct IssueProjectFilter: View {
-    @ObservedObject var store: WorkspaceStore
-
-    var body: some View {
-        ProjectFilterMenu(
-            projects: store.projects,
-            selectedProjectId: store.activeProjectId,
-            unscopedTitle: nil,
-            unscopedSystemImage: nil,
-            isLoading: store.loadingProjectId != nil,
-            help: "Filter Kanban by Project",
-            onCreate: store.canManageProjects ? { store.presentProjectCreation() } : nil
-        ) { projectId in
-            if let projectId {
-                Task { await store.selectProject(projectId) }
-            }
-        }
-    }
 }
 
 private struct MemoryProjectFilter: View {

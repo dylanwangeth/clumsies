@@ -24,11 +24,11 @@ mod codex_plugin;
 mod legacy;
 
 const ISSUE_RUN_EVENT_CODEX: &str =
-    include_str!("../../../assets/adapters/codex/runtime/hooks/issue-run-event.sh.tpl");
+    include_str!("../../../assets/adapters/codex/runtime/hooks/agent-run-event.sh.tpl");
 const ISSUE_RUN_EVENT_CLAUDE: &str =
-    include_str!("../../../assets/adapters/claude-code/runtime/hooks/issue-run-event.sh.tpl");
+    include_str!("../../../assets/adapters/claude-code/runtime/hooks/agent-run-event.sh.tpl");
 const ISSUE_RUN_EVENT_ANTIGRAVITY: &str =
-    include_str!("../../../assets/adapters/antigravity/runtime/hooks/issue-run-event.sh.tpl");
+    include_str!("../../../assets/adapters/antigravity/runtime/hooks/agent-run-event.sh.tpl");
 const OPENCODE_PLUGIN: &str = include_str!("../../../assets/adapters/opencode/runtime/plugin.ts");
 const LEGACY_USER_PROMPT_SUBMIT_CODEX_SHA256: &str =
     "03bfb5ddbad36dcf53ba3f1e4e07a83cece33d4a98c29298dc0d7e776f63f815";
@@ -250,15 +250,15 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
             &["mcp_servers.clumsies.command", "mcp_servers.clumsies.args"]
         }
         ManagedFileKind::CodexHooks | ManagedFileKind::ClaudeSettings => &[
-            "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-            "hooks.StopFailure[clumsies-issue-run-event]",
+            "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+            "hooks.StopFailure[clumsies-agent-run-event]",
         ],
         ManagedFileKind::ClaudeMcp => &["mcpServers.clumsies"],
         ManagedFileKind::OpencodeConfig => {
             &["mcp.clumsies", "plugin[./.opencode/plugins/clumsies.ts]"]
         }
         ManagedFileKind::DshConfig => &["$file"],
-        ManagedFileKind::AntigravityHooks => &["clumsies-issue-run-event.PreInvocation"],
+        ManagedFileKind::AntigravityHooks => &["clumsies-agent-run-event.PreInvocation"],
         ManagedFileKind::Exclusive => &["$file"],
     }
 }
@@ -266,13 +266,13 @@ fn managed_file_owned_fragments(kind: ManagedFileKind) -> &'static [&'static str
 fn legacy_managed_file_owned_fragments(kind: ManagedFileKind) -> Option<&'static [&'static str]> {
     match kind {
         ManagedFileKind::CodexHooks | ManagedFileKind::ClaudeSettings => Some(&[
-            "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-            "hooks.Stop[clumsies-issue-run-event]",
-            "hooks.StopFailure[clumsies-issue-run-event]",
+            "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+            "hooks.Stop[clumsies-agent-run-event]",
+            "hooks.StopFailure[clumsies-agent-run-event]",
         ]),
         ManagedFileKind::AntigravityHooks => Some(&[
-            "clumsies-issue-run-event.PreInvocation",
-            "clumsies-issue-run-event.Stop",
+            "clumsies-agent-run-event.PreInvocation",
+            "clumsies-agent-run-event.Stop",
         ]),
         _ => None,
     }
@@ -437,7 +437,7 @@ fn validate_adapter_journal_path(
                 | (
                     Some(
                         ".codex/hooks/resolve-binary.sh"
-                            | ".codex/hooks/issue-run-event.sh"
+                            | ".codex/hooks/agent-run-event.sh"
                             | ".codex/hooks/user-prompt-submit.sh"
                             | ".agents/skills/activate/SKILL.md"
                             | ".agents/skills/ntmd/SKILL.md"
@@ -455,7 +455,7 @@ fn validate_adapter_journal_path(
                 | (
                     Some(
                         ".claude/hooks/resolve-binary.sh"
-                            | ".claude/hooks/issue-run-event.sh"
+                            | ".claude/hooks/agent-run-event.sh"
                             | ".claude/hooks/user-prompt-submit.sh"
                             | ".claude/skills/activate/SKILL.md"
                             | ".claude/skills/ntmd/SKILL.md"
@@ -483,7 +483,7 @@ fn validate_adapter_journal_path(
                     ManagedFileKind::AntigravityHooks
                 )
                 | (
-                    Some(".agents/hooks/resolve-binary.sh" | ".agents/hooks/issue-run-event.sh"),
+                    Some(".agents/hooks/resolve-binary.sh" | ".agents/hooks/agent-run-event.sh"),
                     ManagedFileKind::Exclusive
                 )
         ),
@@ -2386,14 +2386,14 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join(".codex/config.toml"),
             workspace_root.join(".codex/hooks.json"),
             workspace_root.join(".codex/hooks/resolve-binary.sh"),
-            workspace_root.join(".codex/hooks/issue-run-event.sh"),
+            workspace_root.join(".codex/hooks/agent-run-event.sh"),
             workspace_root.join(".codex/hooks/user-prompt-submit.sh"),
         ],
         ProjectAgentAdapterKind::ClaudeCode => vec![
             effective_claude_mcp_path.clone(),
             workspace_root.join(".claude/settings.json"),
             workspace_root.join(".claude/hooks/resolve-binary.sh"),
-            workspace_root.join(".claude/hooks/issue-run-event.sh"),
+            workspace_root.join(".claude/hooks/agent-run-event.sh"),
             workspace_root.join(".claude/hooks/user-prompt-submit.sh"),
         ],
         ProjectAgentAdapterKind::Opencode => vec![
@@ -2405,7 +2405,7 @@ fn install_plan_with_claude_mcp_path(
             workspace_root.join(".mcp.json"),
             workspace_root.join(".agents/hooks.json"),
             workspace_root.join(".agents/hooks/resolve-binary.sh"),
-            workspace_root.join(".agents/hooks/issue-run-event.sh"),
+            workspace_root.join(".agents/hooks/agent-run-event.sh"),
         ],
     };
     for path in &target_paths {
@@ -2417,7 +2417,7 @@ fn install_plan_with_claude_mcp_path(
     let mut changes = match adapter {
         ProjectAgentAdapterKind::Codex => {
             let hooks_path = workspace_root.join(".codex/hooks.json");
-            let hook_script_path = workspace_root.join(".codex/hooks/issue-run-event.sh");
+            let hook_script_path = workspace_root.join(".codex/hooks/agent-run-event.sh");
             let legacy_hook_script_path = workspace_root.join(".codex/hooks/user-prompt-submit.sh");
             let hook_ownership = HookOwnership {
                 lifecycle: manifest_manages_path(previous_manifest, &hook_script_path),
@@ -2462,7 +2462,7 @@ fn install_plan_with_claude_mcp_path(
         ProjectAgentAdapterKind::ClaudeCode => {
             let settings_path = workspace_root.join(".claude/settings.json");
             let mcp_path = effective_claude_mcp_path;
-            let hook_script_path = workspace_root.join(".claude/hooks/issue-run-event.sh");
+            let hook_script_path = workspace_root.join(".claude/hooks/agent-run-event.sh");
             let legacy_hook_script_path =
                 workspace_root.join(".claude/hooks/user-prompt-submit.sh");
             let hook_ownership = HookOwnership {
@@ -2541,7 +2541,7 @@ fn install_plan_with_claude_mcp_path(
         ProjectAgentAdapterKind::Antigravity => {
             let mcp_path = workspace_root.join(".mcp.json");
             let hooks_path = workspace_root.join(".agents/hooks.json");
-            let hook_script_path = workspace_root.join(".agents/hooks/issue-run-event.sh");
+            let hook_script_path = workspace_root.join(".agents/hooks/agent-run-event.sh");
             let hook_ownership = HookOwnership {
                 lifecycle: manifest_manages_path(previous_manifest, &hook_script_path),
                 legacy_prompt: false,
@@ -2676,7 +2676,7 @@ fn remove_plan(
                             &path
                                 .parent()
                                 .unwrap_or(Path::new("."))
-                                .join("hooks/issue-run-event.sh"),
+                                .join("hooks/agent-run-event.sh"),
                             false,
                         )
                     })
@@ -2697,7 +2697,7 @@ fn remove_plan(
                             &path
                                 .parent()
                                 .unwrap_or(Path::new("."))
-                                .join("hooks/issue-run-event.sh"),
+                                .join("hooks/agent-run-event.sh"),
                             true,
                         )
                     })
@@ -2718,7 +2718,7 @@ fn remove_plan(
                             &path
                                 .parent()
                                 .unwrap_or(Path::new("."))
-                                .join("hooks/issue-run-event.sh"),
+                                .join("hooks/agent-run-event.sh"),
                         )
                     })
                     .transpose()?
@@ -2776,18 +2776,18 @@ fn validate_manifest_managed_path(
         // produce them; the update path retires the files on disk.
         ManagedFileKind::Exclusive => [
             ".codex/hooks/resolve-binary.sh",
-            ".codex/hooks/issue-run-event.sh",
+            ".codex/hooks/agent-run-event.sh",
             ".codex/hooks/user-prompt-submit.sh",
             ".agents/skills/activate/SKILL.md",
             ".agents/skills/ntmd/SKILL.md",
             ".claude/hooks/resolve-binary.sh",
-            ".claude/hooks/issue-run-event.sh",
+            ".claude/hooks/agent-run-event.sh",
             ".claude/hooks/user-prompt-submit.sh",
             ".claude/skills/activate/SKILL.md",
             ".claude/skills/ntmd/SKILL.md",
             ".opencode/plugins/clumsies.ts",
             ".agents/hooks/resolve-binary.sh",
-            ".agents/hooks/issue-run-event.sh",
+            ".agents/hooks/agent-run-event.sh",
         ]
         .iter()
         .any(|candidate| relative == Path::new(candidate)),
@@ -3184,7 +3184,7 @@ fn local_hook_script_kind(handler: &Value, script_path: &Path) -> Option<LocalHo
         return None;
     }
     match candidate.file_name().and_then(|name| name.to_str()) {
-        Some("issue-run-event.sh") => Some(LocalHookScriptKind::Lifecycle),
+        Some("agent-run-event.sh") => Some(LocalHookScriptKind::Lifecycle),
         Some("user-prompt-submit.sh") => Some(LocalHookScriptKind::LegacyPrompt),
         _ => None,
     }
@@ -3323,22 +3323,22 @@ fn render_antigravity_hooks(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("The Antigravity hook registry must be a JSON object."))?;
 
-    if let Some(existing_entry) = root_object.get("clumsies-issue-run-event") {
+    if let Some(existing_entry) = root_object.get("clumsies-agent-run-event") {
         if !ownership.lifecycle {
             return Err(adapter_conflict(
-                "The Antigravity `clumsies-issue-run-event` hook entry is already registered but is not owned by this Clumsies integration.",
+                "The Antigravity `clumsies-agent-run-event` hook entry is already registered but is not owned by this Clumsies integration.",
             ));
         }
         if !antigravity_hook_entry_matches(existing_entry, script_path) {
             return Err(adapter_conflict(
-                "The managed Antigravity `clumsies-issue-run-event` hook entry changed after installation.",
+                "The managed Antigravity `clumsies-agent-run-event` hook entry changed after installation.",
             ));
         }
     }
 
     let hook_cmd = hook_command(script_path);
     root_object.insert(
-        "clumsies-issue-run-event".to_owned(),
+        "clumsies-agent-run-event".to_owned(),
         json!({
             "PreInvocation": [{
                 "type": "command",
@@ -3362,13 +3362,13 @@ fn remove_antigravity_hooks(
         .as_object_mut()
         .ok_or_else(|| adapter_conflict("The Antigravity hook registry must be a JSON object."))?;
 
-    if let Some(entry) = root_object.get("clumsies-issue-run-event") {
+    if let Some(entry) = root_object.get("clumsies-agent-run-event") {
         if !antigravity_hook_entry_matches(entry, script_path) {
             return Err(adapter_conflict(
-                "The Antigravity `clumsies-issue-run-event` hook entry changed after installation.",
+                "The Antigravity `clumsies-agent-run-event` hook entry changed after installation.",
             ));
         }
-        root_object.remove("clumsies-issue-run-event");
+        root_object.remove("clumsies-agent-run-event");
     }
 
     if root_object.is_empty() {
@@ -4462,7 +4462,7 @@ mod tests {
                 .display()
         );
         let foreign_lifecycle =
-            format!("bash \"/old/workspace/{host_directory}/hooks/issue-run-event.sh\"");
+            format!("bash \"/old/workspace/{host_directory}/hooks/agent-run-event.sh\"");
         let foreign_legacy =
             format!("bash '/old/workspace/{host_directory}/hooks/user-prompt-submit.sh'");
         let foreign_known =
@@ -4694,35 +4694,35 @@ mod tests {
                 ManagedFileKind::CodexHooks,
                 "codex_hooks",
                 &[
-                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-                    "hooks.StopFailure[clumsies-issue-run-event]",
+                    "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+                    "hooks.StopFailure[clumsies-agent-run-event]",
                 ],
                 &[
-                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-                    "hooks.Stop[clumsies-issue-run-event]",
-                    "hooks.StopFailure[clumsies-issue-run-event]",
+                    "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+                    "hooks.Stop[clumsies-agent-run-event]",
+                    "hooks.StopFailure[clumsies-agent-run-event]",
                 ],
             ),
             (
                 ManagedFileKind::ClaudeSettings,
                 "claude_settings",
                 &[
-                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-                    "hooks.StopFailure[clumsies-issue-run-event]",
+                    "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+                    "hooks.StopFailure[clumsies-agent-run-event]",
                 ],
                 &[
-                    "hooks.UserPromptSubmit[clumsies-issue-run-event]",
-                    "hooks.Stop[clumsies-issue-run-event]",
-                    "hooks.StopFailure[clumsies-issue-run-event]",
+                    "hooks.UserPromptSubmit[clumsies-agent-run-event]",
+                    "hooks.Stop[clumsies-agent-run-event]",
+                    "hooks.StopFailure[clumsies-agent-run-event]",
                 ],
             ),
             (
                 ManagedFileKind::AntigravityHooks,
                 "antigravity_hooks",
-                &["clumsies-issue-run-event.PreInvocation"],
+                &["clumsies-agent-run-event.PreInvocation"],
                 &[
-                    "clumsies-issue-run-event.PreInvocation",
-                    "clumsies-issue-run-event.Stop",
+                    "clumsies-agent-run-event.PreInvocation",
+                    "clumsies-agent-run-event.Stop",
                 ],
             ),
         ];
@@ -4874,7 +4874,7 @@ mod tests {
 
         let workspace = tempfile::tempdir().unwrap();
         let config = workspace.path().join(".codex/config.toml");
-        let hook = workspace.path().join(".codex/hooks/issue-run-event.sh");
+        let hook = workspace.path().join(".codex/hooks/agent-run-event.sh");
         fs::create_dir_all(config.parent().unwrap()).unwrap();
         fs::write(&config, b"[model]\nname = \"member\"\n").unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
@@ -5111,13 +5111,13 @@ mod tests {
 
     #[test]
     fn codex_hooks_retire_proven_legacy_without_touching_foreign_handlers() {
-        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.codex/hooks/agent-run-event.sh");
         assert_hook_registry_migration(script, ".codex", ".claude", false);
     }
 
     #[test]
     fn claude_hooks_retire_proven_legacy_without_touching_foreign_handlers() {
-        let script = Path::new("/tmp/workspace/.claude/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.claude/hooks/agent-run-event.sh");
         assert_hook_registry_migration(script, ".claude", ".codex", true);
     }
 
@@ -5125,11 +5125,11 @@ mod tests {
     fn fresh_hook_install_rejects_an_unowned_local_stop_handler() {
         for (script, include_stop_failure) in [
             (
-                Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh"),
+                Path::new("/tmp/workspace/.codex/hooks/agent-run-event.sh"),
                 false,
             ),
             (
-                Path::new("/tmp/workspace/.claude/hooks/issue-run-event.sh"),
+                Path::new("/tmp/workspace/.claude/hooks/agent-run-event.sh"),
                 true,
             ),
         ] {
@@ -5164,7 +5164,7 @@ mod tests {
 
     #[test]
     fn remove_hook_registry_still_retires_an_old_managed_stop_handler() {
-        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.codex/hooks/agent-run-event.sh");
         let existing = render_json(&json!({
             "theme": "dark",
             "hooks": {
@@ -5232,7 +5232,7 @@ mod tests {
             change.path.ends_with(".codex/hooks.json") && change.kind == ManagedFileKind::CodexHooks
         }));
         assert!(codex.iter().any(|change| {
-            change.path.ends_with(".codex/hooks/issue-run-event.sh") && change.mode == 0o755
+            change.path.ends_with(".codex/hooks/agent-run-event.sh") && change.mode == 0o755
         }));
         let codex_registry: Value = serde_json::from_slice(
             codex
@@ -5257,7 +5257,7 @@ mod tests {
                 && change.kind == ManagedFileKind::ClaudeSettings
         }));
         assert!(claude.iter().any(|change| {
-            change.path.ends_with(".claude/hooks/issue-run-event.sh") && change.mode == 0o755
+            change.path.ends_with(".claude/hooks/agent-run-event.sh") && change.mode == 0o755
         }));
         let claude_registry: Value = serde_json::from_slice(
             claude
@@ -5342,7 +5342,7 @@ mod tests {
 
     #[test]
     fn managed_lifecycle_wrapper_drift_conflicts_without_mutating_the_group() {
-        let script = Path::new("/tmp/workspace/.codex/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.codex/hooks/agent-run-event.sh");
         let command = hook_command(script);
         for group in [
             json!({
@@ -5577,7 +5577,7 @@ mod tests {
                 && change.mode == 0o755
         }));
         assert!(changes.iter().any(|change| {
-            change.path == workspace.path().join(".agents/hooks/issue-run-event.sh")
+            change.path == workspace.path().join(".agents/hooks/agent-run-event.sh")
                 && change.kind == ManagedFileKind::Exclusive
                 && change.mode == 0o755
         }));
@@ -5762,7 +5762,7 @@ name: legacy
         let mcp_path = workspace.path().join(".mcp.json");
         let hooks_path = workspace.path().join(".agents/hooks.json");
         let resolver_path = workspace.path().join(".agents/hooks/resolve-binary.sh");
-        let hook_path = workspace.path().join(".agents/hooks/issue-run-event.sh");
+        let hook_path = workspace.path().join(".agents/hooks/agent-run-event.sh");
 
         assert!(mcp_path.exists());
         assert!(hooks_path.exists());
@@ -5776,8 +5776,8 @@ name: legacy
         );
 
         let hooks_json: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
-        assert!(hooks_json["clumsies-issue-run-event"]["PreInvocation"].is_array());
-        assert!(hooks_json["clumsies-issue-run-event"].get("Stop").is_none());
+        assert!(hooks_json["clumsies-agent-run-event"]["PreInvocation"].is_array());
+        assert!(hooks_json["clumsies-agent-run-event"].get("Stop").is_none());
 
         let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
         let removals = remove_plan(&manifest, workspace.path()).unwrap();
@@ -5793,13 +5793,13 @@ name: legacy
 
     #[test]
     fn antigravity_update_retires_legacy_stop_and_preserves_foreign_entries() {
-        let script = Path::new("/tmp/workspace/.agents/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.agents/hooks/agent-run-event.sh");
         let command = hook_command(script);
         let legacy = render_json(&json!({
             "lint-checker": {
                 "PostToolUse": [{"type": "command", "command": "./lint.sh"}]
             },
-            "clumsies-issue-run-event": {
+            "clumsies-agent-run-event": {
                 "PreInvocation": [{
                     "type": "command",
                     "command": command,
@@ -5825,9 +5825,9 @@ name: legacy
         .unwrap();
         let migrated_value: Value = serde_json::from_slice(&migrated).unwrap();
         assert!(migrated_value.get("lint-checker").is_some());
-        assert!(migrated_value["clumsies-issue-run-event"]["PreInvocation"].is_array());
+        assert!(migrated_value["clumsies-agent-run-event"]["PreInvocation"].is_array());
         assert!(
-            migrated_value["clumsies-issue-run-event"]
+            migrated_value["clumsies-agent-run-event"]
                 .get("Stop")
                 .is_none()
         );
@@ -5849,14 +5849,14 @@ name: legacy
             .unwrap();
         let removed: Value = serde_json::from_slice(&removed).unwrap();
         assert!(removed.get("lint-checker").is_some());
-        assert!(removed.get("clumsies-issue-run-event").is_none());
+        assert!(removed.get("clumsies-agent-run-event").is_none());
     }
 
     #[test]
     fn antigravity_update_rejects_drifted_or_foreign_named_entries() {
-        let script = Path::new("/tmp/workspace/.agents/hooks/issue-run-event.sh");
+        let script = Path::new("/tmp/workspace/.agents/hooks/agent-run-event.sh");
         let drifted = render_json(&json!({
-            "clumsies-issue-run-event": {
+            "clumsies-agent-run-event": {
                 "PreInvocation": [{
                     "type": "command",
                     "command": hook_command(script),
@@ -5883,7 +5883,7 @@ name: legacy
         );
 
         let unowned_legacy = render_json(&json!({
-            "clumsies-issue-run-event": {
+            "clumsies-agent-run-event": {
                 "PreInvocation": [{
                     "type": "command",
                     "command": hook_command(script),
@@ -5903,7 +5903,7 @@ name: legacy
         );
 
         let foreign = render_json(&json!({
-            "clumsies-issue-run-event": {
+            "clumsies-agent-run-event": {
                 "PreInvocation": [{
                     "type": "command",
                     "command": "./foreign.sh",
@@ -5955,7 +5955,7 @@ name: legacy
 
         let merged_hooks: Value = serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(merged_hooks.get("lint-checker").is_some());
-        assert!(merged_hooks.get("clumsies-issue-run-event").is_some());
+        assert!(merged_hooks.get("clumsies-agent-run-event").is_some());
 
         let manifest = manifest_for_changes(&changes, helper, "helper-hash".to_owned());
         let removals = remove_plan(&manifest, workspace.path()).unwrap();
@@ -5968,7 +5968,7 @@ name: legacy
         let remaining_hooks: Value =
             serde_json::from_slice(&fs::read(&hooks_path).unwrap()).unwrap();
         assert!(remaining_hooks.get("lint-checker").is_some());
-        assert!(remaining_hooks.get("clumsies-issue-run-event").is_none());
+        assert!(remaining_hooks.get("clumsies-agent-run-event").is_none());
     }
 
     #[test]
@@ -6182,7 +6182,7 @@ name: legacy
         assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
         assert!(
             !workspace_root
-                .join(".codex/hooks/issue-run-event.sh")
+                .join(".codex/hooks/agent-run-event.sh")
                 .exists()
         );
         assert!(

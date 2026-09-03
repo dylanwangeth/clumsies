@@ -1094,7 +1094,7 @@ private struct AdministrationAccessView: View {
         if token.revoked {
             return ("Revoked", .secondary, false)
         }
-        if let expiration = IssueTiming.date(from: token.expiresAt), expiration <= Date.now {
+        if let expiration = TimestampFormatting.date(from: token.expiresAt), expiration <= Date.now {
             return ("Expired", .orange, false)
         }
         return ("Active", .green, true)

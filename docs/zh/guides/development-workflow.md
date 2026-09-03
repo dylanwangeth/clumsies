@@ -1,12 +1,11 @@
 # 开发流程：Worktree 与 Dev Instance
 
-本文说明当前仓库的并行开发约束，以及 macOS 开发实例的真实隔离边界。Issue 工作流见
-[《原生 Issue 看板设计》](../issue-board-design.md)；本文只描述源码、分支和运行环境，
-不把 Git worktree 当成运行时隔离机制。
+本文说明当前仓库的并行开发约束，以及 macOS 开发实例的真实隔离边界。Git worktree
+只隔离源码和分支，不等同于运行时隔离。
 
 ## 1. 基本原则
 
-推荐以“一条 Issue、一棵 worktree、一个分支、一个 PR”为交付单元。worktree 只隔离
+推荐以“一项独立工作、一棵 worktree、一个分支、一个 PR”为交付单元。worktree 只隔离
 源码和 Git 状态；App、daemon、端口、数据库、Keychain、缓存和日志仍可能互相冲突，
 因此每棵 worktree 必须启动自己的完整 **Dev Instance**。
 
@@ -24,23 +23,20 @@ Application Support、Keychain 身份或全局 Codex Plugin；只有显式执行
 
 ## 2. 核心开发循环
 
-1. 通过 `kanban.begin_work` 绑定当前 Hook 签发的 AgentRun；临时工作不必强行创建 Issue。
-2. 从合适的基线创建独立 worktree 和分支，例如：
+1. 从合适的基线创建独立 worktree 和分支，例如：
 
    ```sh
    git worktree add target/codex-worktrees/<name> -b codex/<name> main
    ```
 
-3. 在新 worktree 内启动完整 Dev Instance：
+2. 在新 worktree 内启动完整 Dev Instance：
 
    ```sh
    just dev-macos
    ```
 
-4. 修改并运行覆盖所改层级的测试。
-5. 满足验收标准后由根 Agent 显式调用 `kanban.request_closure`；生命周期 Hook 不替代这项
-   语义判断。
-6. PR 合并且不再需要实例后，先清理实例，再删除 worktree：
+3. 修改并运行覆盖所改层级的测试。
+4. PR 合并且不再需要实例后，先清理实例，再删除 worktree：
 
    ```sh
    just dev-macos-reset
@@ -125,9 +121,6 @@ hooks 与 remote 由 worktree 共享；`clumsies-commit-format` 会检查提交�
 
 ## 7. 当前边界
 
-- Kanban 不会自动创建或清理 worktree/Dev Instance；Agent 绑定 Issue 和本地环境管理是
-  两个显式步骤。
 - `down` 有意保留状态，删除 worktree 前必须 `reset`，否则实例目录和凭据仍会存在。
-- Preview 模式消费既有 descriptor；仓库当前没有由 `kanban.begin_work` 自动部署远端
-  Preview 的实现。
+- Preview 模式只消费既有 descriptor，不负责自动部署远端 Preview。
 - 安全快照分支是否可删取决于其内容是否已进入 `main`，不能用“worktree 已删除”推断。

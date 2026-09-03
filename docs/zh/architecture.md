@@ -65,7 +65,7 @@ flowchart LR
 | --- | --- | --- |
 | 普通成员 | 浏览 Memory，编辑 Draft，提交 Review，使用 Project 与 Agent | 直接推进组织权威 Ref，批准自己的发布 |
 | 组织 owner/admin | 管理组织并决定 Organization Memory 的发布 Review | 绕过 Commit/Ref 并发约束直接改表 |
-| Agent Host | 通过 `memory` 和 `kanban` 使用绑定 Project | 选择任意 Project、读取凭据、批准 Review 或关闭自己的 Issue |
+| Agent Host | 通过 `memory` 使用绑定 Project | 选择任意 Project、读取凭据或批准 Review |
 | OIDC Provider | 证明组织成员身份 | 持有 clumsies 的本地 Project 状态 |
 
 ### 当前实现边界
@@ -73,8 +73,8 @@ flowchart LR
 当前已实现：Organization 唯一 Memory 权威、Project 选择与投影、本地 Draft 队列、
 支持有序多 Draft 的 Review/Commit 原子发布、常驻 daemon、macOS XPC、Codex、
 Claude Code、opencode、dsh 与 Antigravity 接入、Effective Memory overlay、混合检索、
-检索历史与 Evaluation Case、Server 共享 Kanban Issue/lease claim 与本地 AgentRun
-投影、OIDC 登录和 Keychain 凭据存储。Memory 在 Server、daemon 与 MCP 的主要读写模型
+检索历史与 Evaluation Case、本地 AgentRun 观测、OIDC 登录和 Keychain 凭据存储。
+Memory 在 Server、daemon 与 MCP 的主要读写模型
 已经统一，但下列兼容字段仍说明迁移没有完全收口。
 
 以下能力尚未实现或不属于当前承诺：
@@ -99,11 +99,11 @@ Claude Code、opencode、dsh 与 Antigravity 接入、Effective Memory overlay�
 
 | 组件 | 负责 | 不负责 |
 | --- | --- | --- |
-| Server | 组织与 Project 身份、授权、Organization Memory、Project 选择/投影、Draft/Review、Commit 图、共享 Kanban Issue 与 lease claim、审计 | 本地工作目录、检索模型、客户端进程生命周期 |
+| Server | 组织与 Project 身份、授权、Organization Memory、Project 选择/投影、Draft/Review、Commit 图与审计 | 本地工作目录、检索模型、客户端进程生命周期 |
 | PostgreSQL | Server 权威数据与事务约束 | 本地 Draft 可用性和 Project 搜索索引 |
-| 常驻 daemon | Project 绑定、本地 Draft、同步队列、Commit 缓存与安装、Effective Memory、检索、AgentRun、Issue 本地副本与 stale 投影、本地 Server 代理 | 发布审批、Organization Memory 权威和共享 Issue/claim 权威 |
+| 常驻 daemon | Project 绑定、本地 Draft、同步队列、Commit 缓存与安装、Effective Memory、检索、AgentRun 与本地 Server 代理 | 发布审批和 Organization Memory 权威 |
 | Project Local Storage | 可重建的 immutable generations 与 Project 搜索数据库 | Draft、凭据、共享模型和 Server 权威 |
-| Desktop | Memory、Draft、Review、Issue、诊断和设置的原生交互 | bearer token 和内容权威 |
+| Desktop | Memory、Draft、Review、诊断和设置的原生交互 | bearer token 和内容权威 |
 | Agent runtime proxy | 有界 MCP/Hook 解码、运行身份校验、Project 解析和 typed XPC 转发 | 数据库、模型、后台 worker 和第二套检索实现 |
 | Web Admin | 组织、成员、Project、令牌、审计和健康管理 | 日常 Memory 编辑和 Review 工作流 |
 
@@ -138,8 +138,7 @@ Server 才创建新的 Organization Commit 并推进 Organization Ref。
   重定向它，请求体也不能改写 Project。
 - 手工启动的普通 `mcp serve` 保留兼容回退：目录没有绑定时可以使用 daemon 当前选中的
   Project；该回退不适用于纳管 host-plugin，也不允许调用方指定任意 Project。
-- Kanban Issue 与 lease claim 以 Server 记录协调多安装并发；daemon 不能只凭本地副本授予 claim。
-- Ref、Draft、Issue 和 AgentRun 都使用乐观并发或明确的所有权约束，拒绝隐式覆盖。
+- Ref、Draft 和 AgentRun 都使用乐观并发或明确的所有权约束，拒绝隐式覆盖。
 - 派生缓存可以删除并重建；Draft、操作队列、凭据和权威历史不能因此丢失。
 
 ## 3. 数据架构
@@ -156,8 +155,7 @@ Server 才创建新的 Organization Commit 并推进 Organization Ref。
 | Review | 人类协调和发布决策边界；持有有序且非空的 Draft 集合，逐 Draft 计算 freshness/reconciliation，并原子提交、决定和合并 |
 | Bundle | 某成员保存的共享 Memory ID 集合，不创建内容副本或新权威 |
 | Effective Memory | 已安装 Project 投影与当前 open/submitted Draft 操作合成的本地读取模型 |
-| Issue / lease claim | Server 中的共享 Kanban 权威记录；daemon 保存本地副本供原生交互，并与本机 AgentRun、lease 和 stale 状态合成看板投影 |
-| AgentRun | daemon 本地的有界执行遥测，可绑定 Issue，但生命周期事件不直接决定 Issue 语义状态 |
+| AgentRun | daemon 本地的有界执行遥测，只用于 Activity 与诊断 |
 | Retrieval Run / Evaluation Case | 本地检索轨迹及其人工标注评测样本，不上传 Server |
 
 Memory 的目标角色——规则、流程、项目背景或设计约束——由内容和路径表达，不由封闭的
@@ -192,8 +190,8 @@ Draft 并应用各自确认过的候选。合并同样锁定目标 Ref，校验 
 
 | 数据 | 存储位置 | 性质 |
 | --- | --- | --- |
-| 组织、成员、Memory、Draft/Review、Commit 图、Kanban Issue/lease claim、审计 | PostgreSQL | Server 共享权威 |
-| Project 绑定、Draft 与操作队列、缓存对象、Refs、Issue 本地副本、AgentRun、检索历史 | daemon 中心 SQLite | 本机持久状态与共享数据副本 |
+| 组织、成员、Memory、Draft/Review、Commit 图、审计 | PostgreSQL | Server 共享权威 |
+| Project 绑定、Draft 与操作队列、缓存对象、Refs、AgentRun、检索历史 | daemon 中心 SQLite | 本机持久状态与共享数据副本 |
 | Commit generations、完整 Effective Memory、检索单元、FTS、向量 | Project Local Storage | 可验证、可重建的派生状态 |
 | access/refresh token | macOS Keychain | 本机秘密 |
 | embedding/reranker 模型 | daemon 共享缓存 | 可重建的本机依赖 |
@@ -207,7 +205,7 @@ Revision。`activate` 与 `load` 因而读取同一快照。检索记录保存�
 ### 进程拓扑
 
 App bundle 只包含一份签名的 Rust `clumsiesd`：无 proxy 子命令时作为 launchd
-常驻服务；`mcp serve` 与 `_agent issue-run-event` 是短进程协议代理。代理在转发前比较
+常驻服务；`mcp serve` 与 `_agent agent-run-event` 是短进程协议代理。代理在转发前比较
 自身与常驻进程的 Agent runtime protocol revision 和 build identity，并在每个
 Agent-scoped 请求中携带相同标记。
 
@@ -361,7 +359,6 @@ Activity 正常 UI 与完整片段读取受 Project binding 限制，但显式 w
 | Commit generation 与搜索索引是可重建派生物 | 本地路径不应成为内容权威 | 存储可迁移/清理，但 Draft、凭据和 Commit 权威不能放进去 |
 | 统一为一个 Memory 类型 | Agent 更适合从语义和正文理解用途，封闭种类会重复合同和迁移 | 角色由内容和路径表达；`description` 进入检索，但非空写入约束及 macOS/OpenAPI 旧 kind 清理尚未完成 |
 | Effective Memory 由 Project 投影和 Draft overlay 合成 | Agent 需要立即看到自己尚未发布的变更，同时保持组织发布受控 | 索引必须绑定 effective hash；Draft Base 不能随 Ref 隐式漂移 |
-| Issue 是共享原生对象，AgentRun 只是本地遥测 | 内容文档、跨安装工作协调和单机执行具有不同一致性边界 | Server 保存 Issue/claim，daemon 合并本地 AgentRun/stale；Hook 不推进 Issue，Agent 提议关闭，用户执行最终 gate |
 | 检索和评测历史默认仅本地 | 完整查询轨迹对诊断有用，但不应扩大 Server 数据边界 | Server 不接收 Retrieval Run、Evaluation Case 或宿主 transcript |
 
 这些决策的专题说明分别位于：
@@ -370,7 +367,6 @@ Activity 正常 UI 与完整片段读取受 Project binding 限制，但显式 w
 - [Organization memory](/zh/artifact) 与 [Project](/zh/workspace)：权威、选择和投影；
 - [Server](/zh/server) 与 [Runtime](/zh/runtime)：服务端和本地运行细节；
 - [MCP](/zh/mcp) 与 [Adapter](/zh/adapter)：Agent 合同和宿主接入；
-- [Issue Board Design](/zh/issue-board-design)：Issue 与 AgentRun 状态模型；
 - [Retrieval Runs and Evaluation](/zh/retrieval-evaluation)：检索诊断和评测数据。
 
 新设计若改变本页任一不变量，应先原位更新对应章节和决策，再修改专题页与代码；

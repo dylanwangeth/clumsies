@@ -121,7 +121,7 @@ private struct AgentsSettingsView: View {
                         .controlSize(.small)
                 }
 
-                Text("Clumsies installs and keeps this user-level Plugin enabled automatically. Repository bindings only choose the Project used by Memory and Kanban.")
+                Text("Clumsies installs and keeps this user-level Plugin enabled automatically. Repository bindings choose the Project used by Memory.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

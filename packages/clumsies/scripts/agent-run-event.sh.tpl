@@ -10,5 +10,5 @@ CLUMSIES=__CLUMSIESD_SHELL_LITERAL_REQUIRED__
 [ -x "$CLUMSIES" ] || exit 0
 
 cd "$PROJECT_ROOT" 2>/dev/null || exit 0
-"$CLUMSIES" _agent issue-run-event --host codex --delivery host-plugin 2>/dev/null || true
+"$CLUMSIES" _agent agent-run-event --host codex --delivery host-plugin 2>/dev/null || true
 exit 0

@@ -21,15 +21,13 @@
 | 产品概念、需求、架构、详细设计、ADR、当前验证报告 | 仓库 `docs/` | 与代码一起版本化、公开审查；Memory 不复制正文 |
 | 工程规范、Agent skill、可执行工作流 | Memory Space | 按任务动态召回，不承担产品设计权威 |
 | 本机环境事实、故障复盘和可复用排障经验 | Memory Space | 适合动态召回；若演变成现行设计约束，应提炼进 `docs/` |
-| 未完成工作、缺口与跟进项 | 原生 Kanban Issue | 不用文档或 Memory 列表代替状态跟踪 |
 | 已退役原始资料 | 私有校验备份 / 明确的 History 页面 | 不进入当前 Effective Memory，也不与当前权威并列 |
 
 | 生命周期 | 主类型 | 质量层级 | 当前权威 | 回答的问题 |
 | --- | --- | --- | --- | --- |
 | 概念 | 概念定义型 | L1 | [Overview](/zh/overview)、[术语表](/zh/glossary) | 产品是什么，核心对象边界是什么 |
-| 需求 | 需求型 | L2 | [Issue 看板需求](/zh/issue-board-requirements) | 原生协作看板必须满足什么 |
 | 架构 | 设计型 | L2 | [系统架构](/zh/architecture) | 系统边界、组件、数据、运行、安全和决策如何统一 |
-| 详细设计 | 设计型 | L3 | [统一 Memory 模型](/zh/unified-memory-model)、[macOS Memory 界面](/zh/macos-memory-ui)、[本地运行时](/zh/runtime)、[Server](/zh/server)、[MCP](/zh/mcp)、[Adapter](/zh/adapter)、[Issue 看板设计](/zh/issue-board-design) | 各子系统怎样实现架构约束 |
+| 详细设计 | 设计型 | L3 | [统一 Memory 模型](/zh/unified-memory-model)、[macOS Memory 界面](/zh/macos-memory-ui)、[本地运行时](/zh/runtime)、[Server](/zh/server)、[MCP](/zh/mcp)、[Adapter](/zh/adapter) | 各子系统怎样实现架构约束 |
 | 验证 | 评估决策型 | L3 | [检索运行与评测](/zh/retrieval-evaluation)、[性能与验证专题](/zh/performance/) | 如何保存检索证据并评估质量；如何记录有截止日期的性能证据 |
 | 运行维护 | 指南说明型 / 契约规范型 | L2–L3 | [部署指南](/zh/guides/deploy-for-an-org)、[认证与会话](/zh/reference/auth)、[代码库地图](/zh/repos) | 如何部署、保护和定位实现 |
 

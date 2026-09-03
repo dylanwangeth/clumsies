@@ -1,10 +1,9 @@
 use crate::{
-    ActivateMemoryRequest, ActivateMemoryResponse, AgentRuntimeIdentity, ApplyIssueGateRequest,
-    ClearRetrievalRunsRequest, ClearRetrievalRunsResponse, CreateEvaluationCaseRequest,
-    CreateIssueRequest, DaemonCodexPluginRequest, DaemonCodexPluginStatus, DaemonDraftDetail,
-    DaemonDraftDetailRequest, DaemonDraftListQuery, DaemonDraftListResponse,
-    DaemonDraftOperationRequest, DaemonDraftOperationResponse, DaemonError, DaemonHealth,
-    DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
+    ActivateMemoryRequest, ActivateMemoryResponse, AgentRuntimeIdentity, ClearRetrievalRunsRequest,
+    ClearRetrievalRunsResponse, CreateEvaluationCaseRequest, DaemonCodexPluginRequest,
+    DaemonCodexPluginStatus, DaemonDraftDetail, DaemonDraftDetailRequest, DaemonDraftListQuery,
+    DaemonDraftListResponse, DaemonDraftOperationRequest, DaemonDraftOperationResponse,
+    DaemonError, DaemonHealth, DaemonIpcRequest, DaemonIpcResponse, DaemonIpcService,
     DaemonLegacyAgentAdapterInspectionRequest, DaemonLegacyAgentAdapterInspectionResponse,
     DaemonMcpStatus, DaemonProjectAgentAdapter, DaemonProjectAgentAdapterInstallRequest,
     DaemonProjectAgentAdapterListRequest, DaemonProjectAgentAdapterListResponse,
@@ -18,15 +17,11 @@ use crate::{
     DaemonProjectStorageReplaceRequest, DaemonProjectStorageRequest,
     DaemonProjectStorageResetRequest, DaemonRetryResponse, DaemonServerRequest,
     DaemonServerResponse, DaemonSyncRetryRequest, DaemonSyncStatus, EvaluationCaseDetail,
-    ExportEvaluationSetRequest, ExportEvaluationSetResponse, GetIssueRequest,
-    GetRecallFragmentRequest, GetRecallFragmentResponse, IssueBoardListRequest, IssueBoardResponse,
-    IssueDetailRequest, IssueDetailResponse, IssueMutationResponse, IssueRemovalResponse,
-    IssueWorkflowMutationResponse, ListRecallsRequest, ListRecallsResponse, LoadMemoryRequest,
+    ExportEvaluationSetRequest, ExportEvaluationSetResponse, GetRecallFragmentRequest,
+    GetRecallFragmentResponse, ListRecallsRequest, ListRecallsResponse, LoadMemoryRequest,
     LoadMemoryResponse, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
-    RemoveIssueRequest, RequestIssueClosureRequest, ResolveEvaluationCaseRequest,
-    RetrievalRunDetail, RetrievalRunListRequest, RetrievalRunListResponse, RetrievalRunRequest,
-    SearchIndexProjectRequest, SearchIndexStatus, SetVerificationStepCompletedRequest,
-    StartIssueWorkRequest, UnclaimIssueRequest, UpdateIssueRequest,
+    ResolveEvaluationCaseRequest, RetrievalRunDetail, RetrievalRunListRequest,
+    RetrievalRunListResponse, RetrievalRunRequest, SearchIndexProjectRequest, SearchIndexStatus,
 };
 use std::time::Duration;
 
@@ -333,124 +328,6 @@ impl DaemonIpcClient {
     ) -> Result<RecordAgentRunEventResponse, DaemonError> {
         self.call(DaemonIpcRequest::new(
             "record_agent_run_event",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn list_issue_board(
-        &self,
-        request: IssueBoardListRequest,
-    ) -> Result<IssueBoardResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "list_issue_board",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn get_issue_detail(
-        &self,
-        request: IssueDetailRequest,
-    ) -> Result<IssueDetailResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "get_issue_detail",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn get_issue(&self, request: GetIssueRequest) -> Result<IssueDetailResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "get_issue",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn create_issue(
-        &self,
-        request: CreateIssueRequest,
-    ) -> Result<IssueMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "create_issue",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn update_issue(
-        &self,
-        request: UpdateIssueRequest,
-    ) -> Result<IssueMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "update_issue",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn apply_issue_gate(
-        &self,
-        request: ApplyIssueGateRequest,
-    ) -> Result<IssueMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "apply_issue_gate",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn set_verification_step_completed(
-        &self,
-        request: SetVerificationStepCompletedRequest,
-    ) -> Result<IssueMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "set_verification_step_completed",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn unclaim_issue(
-        &self,
-        request: UnclaimIssueRequest,
-    ) -> Result<IssueMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "unclaim_issue",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn remove_issue(
-        &self,
-        request: RemoveIssueRequest,
-    ) -> Result<IssueRemovalResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "remove_issue",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn start_issue_work(
-        &self,
-        request: StartIssueWorkRequest,
-    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "start_issue_work",
-            serde_json::to_value(request)?,
-        ))?
-        .into_payload()
-    }
-
-    pub fn request_issue_closure(
-        &self,
-        request: RequestIssueClosureRequest,
-    ) -> Result<IssueWorkflowMutationResponse, DaemonError> {
-        self.call(DaemonIpcRequest::new(
-            "request_issue_closure",
             serde_json::to_value(request)?,
         ))?
         .into_payload()
@@ -1120,17 +997,6 @@ mod tests {
             "load_memory",
             "store_draft_operation",
             "record_agent_run_event",
-            "list_issue_board",
-            "get_issue_detail",
-            "get_issue",
-            "export_issue",
-            "create_issue",
-            "update_issue",
-            "start_issue_work",
-            "pause_issue",
-            "resume_issue",
-            "request_issue_closure",
-            "unclaim_issue",
         ] {
             let missing = DaemonIpcRequest::empty(method);
             assert!(matches!(
@@ -1154,14 +1020,7 @@ mod tests {
 
     #[test]
     fn unmarked_health_and_desktop_aliases_remain_available() {
-        for method in [
-            "health",
-            "desktop_store_draft_operation",
-            "desktop_list_issue_board",
-            "desktop_get_issue_detail",
-            "desktop_unclaim_issue",
-            "desktop_resume_issue",
-        ] {
+        for method in ["health", "desktop_store_draft_operation"] {
             assert!(validate_agent_runtime_request(&DaemonIpcRequest::empty(method)).is_ok());
         }
     }

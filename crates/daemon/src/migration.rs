@@ -319,76 +319,11 @@ pub(crate) async fn migrate_local_schema_23_to_24(pool: &SqlitePool) -> Result<(
 }
 
 pub(crate) async fn migrate_local_schema_24_to_25(pool: &SqlitePool) -> Result<(), DaemonError> {
-    work_tracking::migrate(pool).await?;
-    let columns = sqlx::query("PRAGMA table_info(native_issues)")
-        .fetch_all(pool)
-        .await?;
-    if !columns
-        .iter()
-        .any(|row| row.get::<String, _>("name") == "started_at")
-    {
-        sqlx::query("ALTER TABLE native_issues ADD COLUMN started_at TEXT")
-            .execute(pool)
-            .await?;
-    }
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
 pub(crate) async fn migrate_local_schema_25_to_26(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "CREATE TABLE native_issues_v26 (
-            issue_id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL CHECK (status IN (
-                'todo', 'in_progress', 'closure_requested', 'done'
-            )),
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
-            closure_summary TEXT,
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            updated_at TEXT NOT NULL,
-            closed_at TEXT,
-            archived_at TEXT,
-            UNIQUE (project_id, issue_number)
-        )",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO native_issues_v26 (
-            issue_id, project_id, issue_number, title, description,
-            acceptance_criteria_json, status, revision, changed_by_run_id,
-            closure_summary, created_at, started_at, updated_at, closed_at,
-            archived_at
-         )
-         SELECT issue_id, project_id, issue_number, title, description,
-                acceptance_criteria_json, status, revision, changed_by_run_id,
-                closure_summary, created_at, started_at, updated_at, closed_at,
-                NULL
-         FROM native_issues",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("DROP TABLE native_issues")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("ALTER TABLE native_issues_v26 RENAME TO native_issues")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "CREATE INDEX idx_native_issues_project_status
-         ON native_issues (project_id, status, issue_number)",
-    )
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
 pub(crate) async fn migrate_local_schema_27_to_28(pool: &SqlitePool) -> Result<(), DaemonError> {
@@ -491,33 +426,7 @@ pub(crate) async fn migrate_local_schema_27_to_28(pool: &SqlitePool) -> Result<(
 }
 
 pub(crate) async fn migrate_local_schema_26_to_27(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut connection = pool.acquire().await?;
-    let columns = sqlx::query("PRAGMA table_info(native_issues)")
-        .fetch_all(&mut *connection)
-        .await?;
-    if !columns
-        .iter()
-        .any(|row| row.get::<String, _>("name") == "external_references_json")
-    {
-        let result = sqlx::query(
-            "ALTER TABLE native_issues
-             ADD COLUMN external_references_json TEXT NOT NULL DEFAULT '[]'",
-        )
-        .execute(&mut *connection)
-        .await;
-        if let Err(error) = result {
-            let columns = sqlx::query("PRAGMA table_info(native_issues)")
-                .fetch_all(&mut *connection)
-                .await?;
-            if !columns
-                .iter()
-                .any(|row| row.get::<String, _>("name") == "external_references_json")
-            {
-                return Err(error.into());
-            }
-        }
-    }
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
 pub(crate) async fn migrate_local_schema_28_to_29(pool: &SqlitePool) -> Result<(), DaemonError> {
@@ -663,209 +572,18 @@ pub(crate) async fn migrate_local_schema_30_to_31(pool: &SqlitePool) -> Result<(
     Ok(())
 }
 
-/// Add the Issue verification protocol columns to native_issues.
 pub(crate) async fn migrate_local_schema_31_to_32(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut connection = pool.acquire().await?;
-    let columns = sqlx::query("PRAGMA table_info(native_issues)")
-        .fetch_all(&mut *connection)
-        .await?;
-    let has_verification_level = columns
-        .iter()
-        .any(|row| row.get::<String, _>("name") == "verification_level");
-    let has_verification_steps = columns
-        .iter()
-        .any(|row| row.get::<String, _>("name") == "verification_steps_json");
-    if !has_verification_level {
-        sqlx::query(
-            "ALTER TABLE native_issues
-             ADD COLUMN verification_level TEXT NOT NULL DEFAULT 'agent_self'
-             CHECK (verification_level IN ('agent_self', 'human_required', 'mixed'))",
-        )
-        .execute(&mut *connection)
-        .await?;
-    }
-    if !has_verification_steps {
-        sqlx::query(
-            "ALTER TABLE native_issues
-             ADD COLUMN verification_steps_json TEXT NOT NULL DEFAULT '[]'",
-        )
-        .execute(&mut *connection)
-        .await?;
-    }
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
-/// Add the paused board state to the native_issues.status and
-/// issue_workflow_states.open_state CHECK constraints. SQLite cannot alter a
-/// CHECK in place, so both tables are rebuilt in a single FK-safe
-/// transaction. project_bindings rows are preserved; native_issues is a
-/// child of agent_runs via changed_by_run_id (FK kept, rows copied).
 pub(crate) async fn migrate_local_schema_32_to_33(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut tx = pool.begin().await?;
-    for statement in [
-        // Rebuild native_issues with the widened status CHECK.
-        "CREATE TABLE native_issues_v33 (
-            issue_id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-            external_references_json TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL CHECK (status IN (
-                'todo', 'in_progress', 'paused', 'closure_requested', 'done'
-            )),
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
-            closure_summary TEXT,
-            verification_level TEXT NOT NULL DEFAULT 'agent_self' CHECK (verification_level IN ('agent_self', 'human_required', 'mixed')),
-            verification_steps_json TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            updated_at TEXT NOT NULL,
-            closed_at TEXT,
-            archived_at TEXT,
-            UNIQUE (project_id, issue_number)
-        )",
-        "INSERT INTO native_issues_v33 (
-            issue_id, project_id, issue_number, title, description,
-            acceptance_criteria_json, external_references_json, status, revision,
-            changed_by_run_id, closure_summary, verification_level, verification_steps_json,
-            created_at, started_at, updated_at, closed_at, archived_at
-         )
-         SELECT issue_id, project_id, issue_number, title, description,
-                acceptance_criteria_json, external_references_json, status, revision,
-                changed_by_run_id, closure_summary, verification_level, verification_steps_json,
-                created_at, started_at, updated_at, closed_at, archived_at
-         FROM native_issues",
-        "DROP TABLE native_issues",
-        "ALTER TABLE native_issues_v33 RENAME TO native_issues",
-        "CREATE INDEX idx_native_issues_project_status
-         ON native_issues (project_id, status, issue_number)",
-        // Rebuild issue_workflow_states with the widened open_state CHECK.
-        "CREATE TABLE issue_workflow_states_v33 (
-            project_id TEXT NOT NULL,
-            issue_number BIGINT NOT NULL CHECK (issue_number > 0),
-            open_state TEXT NOT NULL CHECK (open_state IN (
-                'todo', 'in_progress', 'paused', 'closure_requested'
-            )),
-            observed_lifecycle TEXT NOT NULL CHECK (observed_lifecycle IN ('open', 'closed')),
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
-            summary TEXT,
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            PRIMARY KEY (project_id, issue_number)
-        )",
-        "INSERT INTO issue_workflow_states_v33 (
-            project_id, issue_number, open_state, observed_lifecycle, revision,
-            changed_by_run_id, summary, updated_at
-         )
-         SELECT project_id, issue_number, open_state, observed_lifecycle, revision,
-                changed_by_run_id, summary, updated_at
-         FROM issue_workflow_states",
-        "DROP TABLE issue_workflow_states",
-        "ALTER TABLE issue_workflow_states_v33 RENAME TO issue_workflow_states",
-        "CREATE INDEX idx_issue_workflow_states_project_state
-         ON issue_workflow_states (project_id, open_state, updated_at DESC)",
-    ] {
-        sqlx::query(statement).execute(&mut *tx).await?;
-    }
-    tx.commit().await?;
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
-/// Rename the `closure_requested` board state to `in_review`: rebuild both
-/// tables whose CHECK constraints name the state, rewriting existing rows,
-/// and backfill the new `issue_state_events` timeline table.
 pub(crate) async fn migrate_local_schema_33_to_34(pool: &SqlitePool) -> Result<(), DaemonError> {
-    let mut tx = pool.begin().await?;
-    for statement in [
-        // Rebuild native_issues with the renamed status CHECK; existing
-        // closure_requested rows are converted to in_review.
-        "CREATE TABLE native_issues_v34 (
-            issue_id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            issue_number BIGINT NOT NULL CHECK (issue_number BETWEEN 1 AND 999),
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
-            external_references_json TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL CHECK (status IN (
-                'todo', 'in_progress', 'paused', 'in_review', 'done'
-            )),
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
-            closure_summary TEXT,
-            verification_level TEXT NOT NULL DEFAULT 'agent_self' CHECK (verification_level IN ('agent_self', 'human_required', 'mixed')),
-            verification_steps_json TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL,
-            started_at TEXT,
-            updated_at TEXT NOT NULL,
-            closed_at TEXT,
-            archived_at TEXT,
-            UNIQUE (project_id, issue_number)
-        )",
-        "INSERT INTO native_issues_v34 (
-            issue_id, project_id, issue_number, title, description,
-            acceptance_criteria_json, external_references_json, status, revision,
-            changed_by_run_id, closure_summary, verification_level, verification_steps_json,
-            created_at, started_at, updated_at, closed_at, archived_at
-         )
-         SELECT issue_id, project_id, issue_number, title, description,
-                acceptance_criteria_json, external_references_json,
-                CASE status WHEN 'closure_requested' THEN 'in_review' ELSE status END,
-                revision, changed_by_run_id, closure_summary, verification_level,
-                verification_steps_json,
-                created_at, started_at, updated_at, closed_at, archived_at
-         FROM native_issues",
-        "DROP TABLE native_issues",
-        "ALTER TABLE native_issues_v34 RENAME TO native_issues",
-        "CREATE INDEX idx_native_issues_project_status
-         ON native_issues (project_id, status, issue_number)",
-        // Rebuild issue_workflow_states with the renamed open_state CHECK.
-        "CREATE TABLE issue_workflow_states_v34 (
-            project_id TEXT NOT NULL,
-            issue_number BIGINT NOT NULL CHECK (issue_number > 0),
-            open_state TEXT NOT NULL CHECK (open_state IN (
-                'todo', 'in_progress', 'paused', 'in_review'
-            )),
-            observed_lifecycle TEXT NOT NULL CHECK (observed_lifecycle IN ('open', 'closed')),
-            revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
-            changed_by_run_id TEXT REFERENCES agent_runs(run_id),
-            summary TEXT,
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            PRIMARY KEY (project_id, issue_number)
-        )",
-        "INSERT INTO issue_workflow_states_v34 (
-            project_id, issue_number, open_state, observed_lifecycle, revision,
-            changed_by_run_id, summary, updated_at
-         )
-         SELECT project_id, issue_number,
-                CASE open_state WHEN 'closure_requested' THEN 'in_review' ELSE open_state END,
-                observed_lifecycle, revision, changed_by_run_id, summary, updated_at
-         FROM issue_workflow_states",
-        "DROP TABLE issue_workflow_states",
-        "ALTER TABLE issue_workflow_states_v34 RENAME TO issue_workflow_states",
-        "CREATE INDEX idx_issue_workflow_states_project_state
-         ON issue_workflow_states (project_id, open_state, updated_at DESC)",
-        // Upgrade legacy verification_steps string arrays to step objects.
-        "UPDATE native_issues
-         SET verification_steps_json = COALESCE((
-             SELECT json_group_array(json_object('text', value, 'completed', json('false')))
-             FROM json_each(native_issues.verification_steps_json)
-         ), '[]')
-         WHERE json_valid(verification_steps_json)
-           AND json_type(verification_steps_json) = 'array'",
-    ] {
-        sqlx::query(statement).execute(&mut *tx).await?;
-    }
-    tx.commit().await?;
-    Ok(())
+    work_tracking::migrate(pool).await
 }
 
-/// Manual AgentRuns are removed (ISSUE-039): retag every existing
-/// `manual` run as the opencode host so no row keeps the self-issued
-/// identity, and no future code path can create one.
 pub(crate) async fn migrate_local_schema_34_to_35(pool: &SqlitePool) -> Result<(), DaemonError> {
     sqlx::query("UPDATE agent_runs SET host = 'opencode' WHERE host = 'manual'")
         .execute(pool)
@@ -877,8 +595,7 @@ pub(crate) async fn migrate_local_schema_34_to_35(pool: &SqlitePool) -> Result<(
 /// CHECK is enforced at the table level, so the table is rebuilt (copy ->
 /// drop -> rename) exactly like the v28 rebuild that added `opencode`.
 ///
-/// Unlike the v28 rebuild, tables created since then (`agent_run_events`,
-/// `native_issues.changed_by_run_id`) hold foreign keys into agent_runs.
+/// Unlike the v28 rebuild, later tables hold foreign keys to agent_runs.
 /// With FK enforcement on, DROP TABLE's implicit DELETE either violates
 /// those references or (for ON DELETE CASCADE children) silently deletes
 /// child rows. The rebuild therefore follows SQLite's documented

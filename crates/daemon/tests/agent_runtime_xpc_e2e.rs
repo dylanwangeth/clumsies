@@ -105,7 +105,7 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     let daemon_root = fixture.path().join("daemon");
     std::fs::create_dir_all(&workspace).unwrap();
     let suffix = Uuid::new_v4().simple().to_string();
-    let service_name = format!("ai.clumsies.test.issue049.{suffix}");
+    let service_name = format!("ai.clumsies.test.runtime.{suffix}");
     let binary = stage_test_binary(
         Path::new(env!("CARGO_BIN_EXE_clumsiesd")),
         &daemon_root.join("bin/clumsiesd"),
@@ -129,7 +129,6 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n",
             "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"activate\":{\"query\":\"agent runtime e2e\"}}}}}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"load\":{\"ids\":[\"workflow/CODING.md\"]}}}}}\n"
         ),
@@ -137,21 +136,16 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     );
     assert_process_succeeded("MCP proxy", &mcp);
     let responses = json_lines(&mcp.stdout);
-    assert_eq!(responses.len(), 5);
+    assert_eq!(responses.len(), 4);
     assert_eq!(
         response_with_id(&responses, 1)["result"]["protocolVersion"],
         "2025-06-18"
     );
-    assert!(
-        response_with_id(&responses, 2)["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["name"] == "kanban")
-    );
-    let tool_call = response_with_id(&responses, 3);
-    assert_eq!(tool_call["result"]["isError"], false, "{tool_call}");
-    assert!(tool_call["result"]["structuredContent"]["issues"].is_array());
+    let tools = response_with_id(&responses, 2)["result"]["tools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "memory");
     for (id, expected_code) in [(4, "project_ref_not_synced"), (5, "project_ref_not_synced")] {
         let response = response_with_id(&responses, id);
         assert_eq!(response["result"]["isError"], true, "{response}");
@@ -182,7 +176,7 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
             concat!(
                 "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"initialize\"}\n",
                 "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
-                "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n"
+                "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"activate\":{\"query\":\"binding check\"}}}}}\n"
             )
             .as_bytes(),
         )
@@ -191,12 +185,16 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     assert_eq!(read_proxy_json_line(&mut plugin_stdout)["id"], 20);
     let before_rebind = read_proxy_json_line(&mut plugin_stdout);
     assert_eq!(before_rebind["id"], 21);
-    assert_eq!(before_rebind["result"]["isError"], false, "{before_rebind}");
+    assert_eq!(before_rebind["result"]["isError"], true, "{before_rebind}");
+    assert_eq!(
+        before_rebind["result"]["structuredContent"]["error"]["code"],
+        "project_ref_not_synced"
+    );
 
     rebind_project(&daemon_root.join("local.db")).await;
     plugin_stdin
         .write_all(
-            b"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n",
+            b"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"activate\":{\"query\":\"binding check\"}}}}}\n",
         )
         .unwrap();
     plugin_stdin.flush().unwrap();
@@ -209,8 +207,8 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     assert_process_succeeded("delivery-gated MCP proxy", &plugin_output);
 
     let hook_fixture = json!({
-        "session_id": "issue049-e2e-session",
-        "turn_id": "issue049-e2e-turn",
+        "session_id": "runtime-e2e-session",
+        "turn_id": "runtime-e2e-turn",
         "hook_event_name": "UserPromptSubmit",
         "cwd": workspace.display().to_string(),
         "prompt": "SECRET_HOOK_PROMPT_MUST_NOT_PERSIST",
@@ -218,18 +216,14 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
     });
     let hook = run_proxy(
         &binary,
-        &["_agent", "issue-run-event", "--host", "codex"],
+        &["_agent", "agent-run-event", "--host", "codex"],
         &workspace,
         &service_name,
         &serde_json::to_string(&hook_fixture).unwrap(),
         &[],
     );
     assert_process_succeeded("Hook proxy", &hook);
-    let hook_output: Value = serde_json::from_slice(&hook.stdout).unwrap();
-    assert_eq!(
-        hook_output["hookSpecificOutput"]["hookEventName"],
-        "UserPromptSubmit"
-    );
+    assert!(hook.stdout.is_empty());
     assert_hook_fixture_persisted(&daemon_root.join("local.db")).await;
 
     let stale_mcp = run_proxy(
@@ -240,7 +234,7 @@ async fn real_clumsiesd_process_proxies_use_xpc_and_reject_stale_identity() {
         concat!(
             "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"initialize\"}\n",
             "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"kanban\",\"arguments\":{\"op\":{\"list\":{}}}}}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"memory\",\"arguments\":{\"op\":{\"activate\":{\"query\":\"stale runtime\"}}}}}\n"
         ),
         &[(STALE_TOOL_BUILD_ENV, "stale-proxy-build")],
     );
@@ -355,12 +349,6 @@ async fn seed_project_fixture(local_db: &Path, workspace: &Path) {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO native_issue_imports (project_id, imported_at) VALUES ($1, $2)")
-        .bind(PROJECT_ID)
-        .bind("2026-08-12T00:00:00.000Z")
-        .execute(&pool)
-        .await
-        .unwrap();
     pool.close().await;
 }
 
@@ -382,7 +370,7 @@ async fn assert_hook_fixture_persisted(local_db: &Path) {
         .unwrap();
     let run = sqlx::query(
         "SELECT project_id, host, host_run_key, host_session_id, kind, phase, summary
-         FROM agent_runs WHERE host_session_id = 'issue049-e2e-session'",
+         FROM agent_runs WHERE host_session_id = 'runtime-e2e-session'",
     )
     .fetch_one(&pool)
     .await
@@ -391,7 +379,7 @@ async fn assert_hook_fixture_persisted(local_db: &Path) {
     assert_eq!(run.get::<String, _>("host"), "codex");
     assert_eq!(
         run.get::<String, _>("host_run_key"),
-        "root:issue049-e2e-turn"
+        "root:runtime-e2e-turn"
     );
     assert_eq!(run.get::<String, _>("kind"), "root");
     assert_eq!(run.get::<String, _>("phase"), "running");
@@ -400,7 +388,7 @@ async fn assert_hook_fixture_persisted(local_db: &Path) {
     let event = sqlx::query(
         "SELECT source, event_type, summary FROM agent_run_events
          WHERE run_id = (SELECT run_id FROM agent_runs
-                         WHERE host_session_id = 'issue049-e2e-session')",
+                         WHERE host_session_id = 'runtime-e2e-session')",
     )
     .fetch_one(&pool)
     .await

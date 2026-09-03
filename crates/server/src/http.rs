@@ -114,20 +114,6 @@ define_routes!(protected_routes, PROTECTED_OPERATIONS, {
         delete: crate::organization::http::delete_project,
     };
     "/api/v1/projects/{project_id}/members" => { get: crate::organization::http::list_project_members };
-    "/api/v1/projects/{project_id}/issue-claims" => { get: crate::organization::http::list_issue_claims };
-    "/api/v1/projects/{project_id}/issues" => {
-        get: crate::organization::http::list_kanban_issues,
-        post: crate::organization::http::import_kanban_issues,
-    };
-    "/api/v1/projects/{project_id}/issues/{issue_id}" => {
-        put: crate::organization::http::update_kanban_issue,
-        delete: crate::organization::http::delete_kanban_issue,
-    };
-    "/api/v1/projects/{project_id}/issues/{issue_id}/assignee" => { put: crate::organization::http::assign_kanban_issue };
-    "/api/v1/projects/{project_id}/issues/{issue_id}/claim" => {
-        post: crate::organization::http::acquire_issue_claim,
-        delete: crate::organization::http::release_issue_claim,
-    };
     "/api/v1/me/bundles" => {
         get: crate::memory::http::list_personal_bundles,
         post: crate::memory::http::create_personal_bundle,

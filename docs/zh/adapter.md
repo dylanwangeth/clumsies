@@ -5,7 +5,7 @@
 Adapter 是 daemon 管理的宿主集成层，让 Codex、Claude Code、opencode、dsh 与
 Antigravity 使用同一套 Clumsies Agent runtime。Codex 使用全局 Clumsies Plugin；其余
 宿主保留仓库级 direct-file 集成。两种交付方式都只注册 MCP 与非阻塞生命周期桥，不
-创建第二套 Memory、Kanban 或运行时实现。
+创建第二套 Memory 或运行时实现。
 
 ## 运行边界
 
@@ -21,8 +21,8 @@ launchd 把它作为常驻 daemon 运行；Adapter 把同一绝对路径写入�
 ```text
 clumsiesd mcp serve
 clumsiesd mcp serve --host codex --delivery host-plugin
-clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity
-clumsiesd _agent issue-run-event --host codex --delivery host-plugin
+clumsiesd _agent agent-run-event --host codex|claude-code|opencode|dsh|antigravity
+clumsiesd _agent agent-run-event --host codex --delivery host-plugin
 ```
 
 安装器要求规范路径以 `Contents/Resources/clumsiesd` 结尾，校验 macOS code signature，
@@ -47,9 +47,8 @@ Codex 集成由 **Settings → Agent** 管理为用户级 Plugin，不创建 Pro
 文件。其他宿主以 `(Server authority, workspace root, host)` 保存带 revision 的 Adapter
 记录，并只修改明确归属的配置段和文件。
 
-所有宿主直接消费两个 MCP 工具：`memory` 与 `kanban`。Codex Plugin 只附带一个很薄的
-bootstrap Skill，用于说明何时 `memory.activate`、如何加载 Project skill、以及何时使用
-Kanban。`skills/**` 中的项目技能仍是普通 Memory，由 bootstrap 在相关时通过
+所有宿主直接消费 `memory` MCP 工具。Codex Plugin 只附带一个很薄的 bootstrap Skill，
+用于说明何时 `memory.activate`、如何加载 Project skill。`skills/**` 中的项目技能仍是普通 Memory，由 bootstrap 在相关时通过
 `memory.load` 读取；Adapter 不把它们复制到宿主 skill 目录，也不从 `workflow/` 路径
 自动生成可执行 skill。
 
@@ -80,7 +79,7 @@ Codex Plugin、Claude Code 与其他受支持宿主把有限的生命周期事�
 ```text
 host event
   -> managed Hook / plugin
-  -> clumsiesd _agent issue-run-event --host <host>
+  -> clumsiesd _agent agent-run-event --host <host>
   -> typed XPC record_agent_run_event
   -> resident daemon AgentRun
 ```
@@ -101,13 +100,11 @@ proxy 最多读取 1 MiB，并只保留有界 session/turn/agent 标识、父子
 标签、事件类型与 outcome。prompt、transcript、assistant message、tool payload 和原始错误
 正文不跨 XPC。桥接失败必须 fail-open，不能阻止宿主继续工作。
 
-root/subagent start 成功后，桥接返回包含当前 `run_id`、revision 与绑定状态的宿主原生
-上下文。Hook 只建立 AgentRun 身份，不调用 `kanban`、不自动创建 Issue，也不在正常完成
-时注入阻塞式关闭提醒。是否满足验收标准由 root Agent 或项目 skill 判断，并显式调用
-`kanban.request_closure`；用户仍掌握最终 Approve gate。
+root/subagent 事件成功后，桥接只记录有界 AgentRun 遥测，不向宿主注入工作上下文，也不在
+正常完成时注入阻塞式提醒。
 
-为了清理旧安装，私有桥仍接受 legacy/手工 root `Stop`，但只记录终止遥测，不能阻塞宿主
-或推进 Issue。完整映射见 [AgentRun 生命周期](/zh/guides/agent-run-injection)。
+为了清理旧安装，私有桥仍接受 legacy/手工 root `Stop`，但只记录终止遥测，不能阻塞宿主。
+完整映射见 [AgentRun 生命周期](/zh/guides/agent-run-injection)。
 
 ## 安装、更新与移除
 
@@ -152,8 +149,8 @@ LaunchAgent 和宿主配置。
 | MCP / Hook proxy | `crates/daemon/src/main.rs` |
 | typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
 | Hook 归一化 | `crates/daemon/src/agent_runtime/hook.rs` |
-| Codex Hook 模板 | `packages/clumsies/scripts/issue-run-event.sh.tpl` |
-| direct-file Hook 模板 | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| Codex Hook 模板 | `packages/clumsies/scripts/agent-run-event.sh.tpl` |
+| direct-file Hook 模板 | `assets/adapters/*/runtime/hooks/agent-run-event.sh.tpl` |
 | opencode plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
 退役 Zig Adapter 的最后一份活动源码可从 Git commit

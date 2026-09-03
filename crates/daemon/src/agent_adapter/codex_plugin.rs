@@ -28,7 +28,7 @@ const PLUGIN_MANIFEST: &str =
 const MCP_TEMPLATE: &str = include_str!("../../../../packages/clumsies/.mcp.json.tpl");
 const HOOKS: &str = include_str!("../../../../packages/clumsies/hooks/hooks.json");
 const HOOK_SCRIPT_TEMPLATE: &str =
-    include_str!("../../../../packages/clumsies/scripts/issue-run-event.sh.tpl");
+    include_str!("../../../../packages/clumsies/scripts/agent-run-event.sh.tpl");
 const HOOK_DEV_ENV_PLACEHOLDER: &str = "__CLUMSIES_DEV_INSTANCE_ENV_REQUIRED__";
 const BOOTSTRAP_SKILL: &str =
     include_str!("../../../../packages/clumsies/skills/clumsies/SKILL.md");
@@ -230,7 +230,7 @@ fn materialize(
         ));
     }
     write_private_file(
-        &plugin_root.join("scripts/issue-run-event.sh"),
+        &plugin_root.join("scripts/agent-run-event.sh"),
         hook_script.as_bytes(),
     )?;
     write_private_file(
@@ -575,8 +575,8 @@ mod tests {
         assert!(skill.contains("skill stored in Memory as ordinary Memory content"));
         assert!(!plugin_root.join("skills/coding").exists());
         let hooks = fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap();
-        assert!(hooks.contains("${PLUGIN_ROOT}/scripts/issue-run-event.sh"));
-        let hook = fs::read_to_string(plugin_root.join("scripts/issue-run-event.sh")).unwrap();
+        assert!(hooks.contains("${PLUGIN_ROOT}/scripts/agent-run-event.sh"));
+        let hook = fs::read_to_string(plugin_root.join("scripts/agent-run-event.sh")).unwrap();
         assert!(!hook.contains(DEV_INSTANCE_ID_ENV));
     }
 
@@ -593,7 +593,7 @@ mod tests {
             mcp["mcpServers"]["clumsies"]["env"],
             json!({ DEV_INSTANCE_ID_ENV: instance_id })
         );
-        let hook = fs::read_to_string(plugin_root.join("scripts/issue-run-event.sh")).unwrap();
+        let hook = fs::read_to_string(plugin_root.join("scripts/agent-run-event.sh")).unwrap();
         assert!(hook.contains(&format!("export {DEV_INSTANCE_ID_ENV}='a1b2c3d4e5f6'")));
     }
 

@@ -18,7 +18,6 @@ a type discriminator.
 | Organization authority | the sole publication namespace, with its own Ref and immutable Commit history |
 | Project | repository binding that selects Organization Memory, owns a projection Ref, and carries private pre-merge Draft overlays |
 | Bundle | a personal selection of shared memory resources (`resource_ids`) |
-| Issue | a native agent-managed Kanban object, distinct from Memory |
 
 New Memory objects receive `mem_`-prefixed IDs. Legacy `ctx_` / `rul_` / `wfl_`
 IDs remain stable and opaque; they are never rewritten. `description` is a
@@ -33,7 +32,7 @@ field, chunked and indexed separately from `content`.
 | resident `clumsiesd` | always-on Rust runtime for drafts, sync, retrieval, native transport, and client coordination |
 | Agent runtime | short-lived `clumsiesd mcp serve` and `_agent` proxies used by supported hosts |
 | Server | self-hosted authority service backed by PostgreSQL |
-| MCP | agent-facing `activate`, `load`, `store`, and `kanban` interface |
+| MCP | agent-facing `activate`, `load`, and `store` interface |
 
 Organization is the sole Memory authority. A Project view is a projection of
 selected Organization Memory plus Project-carried Organization Draft overlays;
@@ -90,8 +89,8 @@ Draft operations into one Effective Memory view. It derives Markdown retrieval
 units, SQLite FTS5 BM25 rows, local dense vectors, RRF fusion, cross-encoder
 reranking, and activation delta state from that view. The App-bundled Rust
 `clumsiesd mcp serve` process is a thin stdio-to-XPC adapter for `activate`,
-`load`, `store`, and `kanban`; it owns no database, model, or background worker.
-The private `_agent issue-run-event` mode applies the same boundary to lifecycle
+`load`, and `store`; it owns no database, model, or background worker.
+The private `_agent agent-run-event` mode applies the same boundary to lifecycle
 Hooks.
 
 Automatic three-way conflict resolution and the versioned production retrieval

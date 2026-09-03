@@ -32,7 +32,7 @@ Historical Project-scoped rows are displayed only for migration compatibility.
 
 The App bundle contains one signed `clumsiesd`. launchd runs it as the resident
 daemon, while supported Agent hosts run the same binary as `mcp serve` or
-`_agent issue-run-event`. Adapter manifests pin the bundled path and release
+`_agent agent-run-event`. Adapter manifests pin the bundled path and release
 identity so another checkout or stale helper cannot become the runtime.
 
 ## Read in this order

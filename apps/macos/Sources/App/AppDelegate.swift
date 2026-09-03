@@ -728,8 +728,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func showSearch(_ sender: Any?) {
         mainWindow?.makeKeyAndOrderFront(nil)
         switch store.selectedSection {
-        case .issues:
-            store.focusIssueSearch()
         case .reviews:
             store.focusReviewSearch()
         case .memory, .bundles:

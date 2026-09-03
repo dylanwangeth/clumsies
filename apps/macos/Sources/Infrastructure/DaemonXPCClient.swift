@@ -210,42 +210,6 @@ struct DaemonXPCClient: Sendable {
         try await call(method: "desktop_store_draft_operation", payload: request)
     }
 
-    func issueBoard(_ projectId: String) async throws -> IssueBoardResponse {
-        try await call(
-            method: "desktop_list_issue_board",
-            payload: IssueBoardListRequest(projectId: projectId)
-        )
-    }
-
-    func issueDetail(projectId: String, issueNumber: Int) async throws -> IssueDetailResponse {
-        try await call(
-            method: "desktop_get_issue_detail",
-            payload: IssueDetailRequest(projectId: projectId, issueNumber: issueNumber)
-        )
-    }
-
-    func applyIssueGate(_ request: ApplyIssueGateRequest) async throws -> IssueMutationResponse {
-        try await call(method: "apply_issue_gate", payload: request)
-    }
-
-    func setVerificationStepCompleted(
-        _ request: SetVerificationStepCompletedRequest
-    ) async throws -> IssueMutationResponse {
-        try await call(method: "set_verification_step_completed", payload: request)
-    }
-
-    func unclaimIssue(_ request: UnclaimIssueRequest) async throws -> IssueMutationResponse {
-        try await call(method: "desktop_unclaim_issue", payload: request)
-    }
-
-    func resumeIssue(_ request: ResumeIssueRequest) async throws -> IssueWorkflowMutationResponse {
-        try await call(method: "desktop_resume_issue", payload: request)
-    }
-
-    func removeIssue(_ request: RemoveIssueRequest) async throws -> IssueRemovalResponse {
-        try await call(method: "remove_issue", payload: request)
-    }
-
     func listRetrievalRuns(_ request: RetrievalRunListRequest) async throws
         -> RetrievalRunListResponse {
         try await call(method: "list_retrieval_runs", payload: request)

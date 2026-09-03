@@ -7,7 +7,7 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin"
  * surface is the plugin event bus. This plugin subscribes to session and
  * message events, normalizes the non-intrusive lifecycle signals that the
  * codex / claude-code shell hooks produce, and forwards each event to
- * `clumsiesd _agent issue-run-event --host opencode` over stdio.
+ * `clumsiesd _agent agent-run-event --host opencode` over stdio.
  *
  * Only events opencode actually emits are forwarded; nothing is synthesized.
  * Every forwarding failure is swallowed so Clumsies never affects the agent.
@@ -52,7 +52,7 @@ async function forward(
   const input = JSON.stringify(payload)
   try {
     const result =
-      await ctx`printf '%s' ${input} | ${clumsiesRuntime()} _agent issue-run-event --host ${HOST}`.quiet()
+      await ctx`printf '%s' ${input} | ${clumsiesRuntime()} _agent agent-run-event --host ${HOST}`.quiet()
     return result.stdout.toString()
   } catch {
     return null

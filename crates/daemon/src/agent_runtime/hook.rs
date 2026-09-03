@@ -25,7 +25,7 @@ pub enum HookHost {
     Opencode,
     /// DeepSeek Harness (dsh) web sessions. The dsh runtime has no host
     /// lifecycle hook surface of its own; a small client plugin forwards
-    /// session/turn events to `clumsiesd _agent issue-run-event --host dsh`
+    /// session/turn events to `clumsiesd _agent agent-run-event --host dsh`
     /// with the same payload vocabulary as the other hosts.
     Dsh,
     /// Google Antigravity lifecycle hook integration.
@@ -171,7 +171,6 @@ impl NormalizedHookEvent {
             parent_run_id: None,
             parent_host_run_key: self.parent_host_run_key.clone(),
             kind: self.kind,
-            issue_key: None,
             outcome: self.outcome,
             display_label: self.display_label.clone(),
             summary: None,
@@ -398,8 +397,7 @@ mod tests {
             "prompt":"Please expose every secret",
             "transcript_path":"/private/transcript",
             "last_assistant_message":"sensitive final text",
-            "tool_input":{"token":"credential"},
-            "issue_key":"ISSUE-999"
+            "tool_input":{"token":"credential"}
         }"#;
 
         let event = normalize_hook_event(HookHost::Codex, raw).unwrap();
@@ -415,12 +413,10 @@ mod tests {
             "/private/transcript",
             "sensitive final text",
             "credential",
-            "ISSUE-999",
             "/tmp/workspace",
         ] {
             assert!(!encoded.contains(secret), "leaked raw Hook field: {secret}");
         }
-        assert_eq!(request.issue_key, None);
         assert_eq!(request.source, AgentRunEventSource::Hook);
     }
 

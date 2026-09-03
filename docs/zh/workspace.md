@@ -66,7 +66,7 @@ Project-scoped authority 数据，不返回 Project selection、投影或 Effect
 - Server Issue 的本地副本和本机 AgentRun 投影。
 
 Server 仍对 Project membership、Org Selection、Organization Memory、Review/merge、共享
-Kanban Issue/claim 有权威。本地绑定、缓存或 AgentRun 都不会创建远端权威。
+本地绑定、缓存或 AgentRun 都不会创建远端权威。
 
 ## Effective Memory
 

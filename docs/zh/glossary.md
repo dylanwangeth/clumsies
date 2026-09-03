@@ -3,8 +3,7 @@
 ## Server
 
 共享权威服务。负责 Organization Memory、Project 选择与投影、Bundle、Draft/Review、
-Blob/Tree/Commit/Ref、身份授权，以及 Server 共享的 Kanban Issue/claim。它不负责本机
-工作目录、检索模型或 AgentRun。
+Blob/Tree/Commit/Ref 与身份授权。它不负责本机工作目录、检索模型或 AgentRun。
 
 ## Memory
 
@@ -94,29 +93,17 @@ Adapter 注册 MCP 和生命周期桥，不是 Server 或 MCP 协议本身。
 
 ## MCP
 
-Agent-facing 协议面，只暴露两个工具：
+Agent-facing 协议面，只暴露一个工具：
 
 - `memory`：`activate`、`load`、`store`；
-- `kanban`：Issue 查询、语义更新和显式状态转换。
 
 App 内 `clumsiesd mcp serve` 是 stdio-to-XPC 短进程 proxy，不拥有数据库、模型或后台
 worker，也不是内容发布权威。
 
-## Issue / Kanban
-
-Issue 是 Server 共享的 Project 工作事项，不是 Memory 或 GitHub Issue。Server 的
-`kanban_issues` 保存内容、状态、assignee 与 revision；`issue_claims` 保存跨安装短租约；
-daemon 的 `native_issues` 是本地副本与离线执行状态。
-
-持久状态为 `todo`、`in_progress`、`paused`、`in_review`、`done`。看板显示 Todo、In
-Progress、In Review、派生的 Abandoned 与 Done；Paused 保留在 In Progress。Agent 只能
-显式请求转换，最终 Approve 属于用户。
-
 ## AgentRun
 
-daemon 本机记录的一次 root turn 或 subagent 执行。它提供 Hook 签发的 `run_id`、revision、
-父子关系、lease 与 outcome，可绑定 Issue，但生命周期事件不会自动推进 Issue。Server
-claim 也不会把 AgentRun 变成共享权威。
+daemon 本机记录的一次 root turn 或 subagent 执行。它提供 revision、父子关系、lease 与
+outcome，只用于本地 Activity 与诊断。
 
 ## Retrieval Run
 

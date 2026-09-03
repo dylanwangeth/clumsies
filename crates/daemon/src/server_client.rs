@@ -42,28 +42,6 @@ where
     decode_server_json(response).await
 }
 
-pub(crate) async fn put_server_json<T, R>(
-    state: &DaemonState,
-    path: &str,
-    request: &T,
-) -> Result<R, DaemonError>
-where
-    T: Serialize + ?Sized,
-    R: DeserializeOwned,
-{
-    let mut headers = BTreeMap::new();
-    headers.insert("content-type".to_owned(), "application/json".to_owned());
-    let response = execute_authenticated_server_request(
-        state,
-        reqwest::Method::PUT,
-        path,
-        &headers,
-        Some(serde_json::to_vec(request)?),
-    )
-    .await?;
-    decode_server_json(response).await
-}
-
 pub(crate) async fn get_server_json<R>(state: &DaemonState, path: &str) -> Result<R, DaemonError>
 where
     R: DeserializeOwned,

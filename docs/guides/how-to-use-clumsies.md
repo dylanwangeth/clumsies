@@ -67,10 +67,9 @@ approved state. Historical Approved Reviews can still be merged.
 
 ## Agent workflow
 
-The MCP server exposes exactly two tools:
+The MCP server exposes exactly one tool:
 
 - `memory`, with `activate`, `load`, and `store` operations
-- `kanban`, for native Issue reads, semantic updates, and explicit transitions
 
 Managed host-plugin processes resolve their Project from the current directory
 through the always-on daemon and fail closed if that binding is missing or

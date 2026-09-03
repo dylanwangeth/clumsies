@@ -4,10 +4,6 @@ import XCTest
 
 @MainActor
 final class WorkspaceNavigationTests: XCTestCase {
-    func testIssueWorkspaceIsPresentedAsKanban() {
-        XCTAssertEqual(WorkspaceSection.issues.title, "Kanban")
-    }
-
     func testMemoryWorkspaceTitleIsMemory() {
         XCTAssertEqual(WorkspaceSection.memory.title, "Memory")
     }
@@ -121,8 +117,7 @@ final class WorkspaceNavigationTests: XCTestCase {
         )
     }
 
-    func testReviewsAndKanbanUseSidebarWithPushNavigatedDetail() {
-        XCTAssertEqual(WorkspaceColumnLayout(section: .issues), .sidebarDetail)
+    func testReviewsUseSidebarWithPushNavigatedDetail() {
         XCTAssertEqual(WorkspaceColumnLayout(section: .reviews), .sidebarDetail)
 
         for section in [
@@ -503,17 +498,6 @@ final class WorkspaceNavigationTests: XCTestCase {
         let route = ReviewRoute(reviewId: "review-0123456789abcdef")
 
         XCTAssertEqual(route.reviewId, "review-0123456789abcdef")
-    }
-
-    func testIssueDetailRouteCarriesOnlyTheGlobalIssueId() {
-        let route = IssueBoardRoute(
-            issueId: "issue_0123456789abcdef0123456789abcdef"
-        )
-
-        XCTAssertEqual(
-            route.issueId,
-            "issue_0123456789abcdef0123456789abcdef"
-        )
     }
 
     func testReviewStatusFiltersKeepServerStatusOrderAndTitles() {

@@ -97,7 +97,7 @@ final class ProjectManagementTests: XCTestCase {
         XCTAssertTrue(filter.contains("Button(\"New Project…\", systemImage: \"plus\")"))
         XCTAssertEqual(
             workspace.components(separatedBy: "onCreate: store.canManageProjects").count - 1,
-            3
+            2
         )
         XCTAssertEqual(
             workspace.components(separatedBy: "ProjectCreationSheet(store: store)").count - 1,

@@ -12,8 +12,7 @@ clumsies 是面向编码 Agent 的外部记忆与协作基础设施。它把可�
 | Project | 仓库绑定、成员授权、Organization Memory 选择、投影 Ref 与合并前 Draft overlay 的 carrier |
 | Bundle | 某成员保存的共享 Memory ID 集合，不复制内容或建立新权威 |
 | Draft / Review | 提案、协调与授权发布边界；Review 可有序包含一个或多个 Draft |
-| Issue | Server 共享的原生 Kanban 对象，与 Memory 完全独立 |
-| AgentRun | daemon 本机的 Agent 生命周期遥测，可绑定 Issue，但不直接决定 Issue 状态 |
+| AgentRun | daemon 本机的 Agent 生命周期遥测 |
 
 新 Memory 使用 `mem_` 前缀；历史 `ctx_`、`rul_`、`wfl_` ID 保持稳定且不因统一模型
 改写。规则、流程、项目背景等用途由正文和路径表达，不再由封闭的 Context、Rule、
@@ -26,11 +25,11 @@ Workflow 类型决定。
 
 | Surface | 职责 |
 | --- | --- |
-| macOS Desktop | 浏览 Organization/Project/Effective Memory，编辑 Draft，Review/merge，查看 Issue、Activity 与诊断 |
-| 常驻 `clumsiesd` | Draft 与队列、Commit sync、Project storage、检索、Issue 本地副本、AgentRun 和 XPC |
-| Agent runtime | App 内 `clumsiesd mcp serve` 与 `_agent issue-run-event` 短进程代理 |
-| Server | PostgreSQL 上的共享身份、Organization Memory、Project 投影、Review/Commit、Issue/claim 权威 |
-| MCP | 两个 Agent 工具：`memory`（`activate` / `load` / `store`）与 `kanban` |
+| macOS Desktop | 浏览 Organization/Project/Effective Memory，编辑 Draft，Review/merge，查看 Activity 与诊断 |
+| 常驻 `clumsiesd` | Draft 与队列、Commit sync、Project storage、检索、AgentRun 和 XPC |
+| Agent runtime | App 内 `clumsiesd mcp serve` 与 `_agent agent-run-event` 短进程代理 |
+| Server | PostgreSQL 上的共享身份、Organization Memory、Project 投影与 Review/Commit 权威 |
+| MCP | `memory` 工具：`activate` / `load` / `store` |
 | Web Admin | Organization、成员、Project、token、审计与健康管理 |
 
 Organization 是唯一 Memory 发布权威。Project 视图由所选 Organization Memory 的
@@ -72,7 +71,7 @@ HTTP `ETag` / `If-Match` 和对象 revision 保护各自的并发边界，不能
 
 当前主链已经覆盖 Organization authority、Project Org Selection/Ref、Project-carried
 Draft overlay、有序多 Draft Review、Commit 同步、Effective Memory、混合检索、
-Retrieval Run/Evaluation Case、原生 Issue/claim、macOS XPC、OIDC/Keychain，以及
+Retrieval Run/Evaluation Case、macOS XPC、OIDC/Keychain，以及
 Codex、Claude Code、opencode、dsh、Antigravity 接入。
 
 仍需如实保留的主要缺口：
@@ -80,7 +79,6 @@ Codex、Claude Code、opencode、dsh、Antigravity 接入。
 - Public OpenAPI `TreeEntry` 仍声明旧 kind 且缺少 `description`，与 Rust/数据库不一致；
 - `description` 非空与 merge 持久化尚未端到端保证；
 - macOS 仍有 `MemoryKind` 驱动的创建、校验、预览和分组；
-- Kanban 本地 SQLite 与 Server 之间没有持久 outbox，部分 mutation 存在本地先提交窗口；
 - 自动三方冲突解决、代表性生产检索评测集和完整生产安装生命周期尚未闭环。
 
 系统边界与决策见[系统架构](/zh/architecture)，各专题当前权威见

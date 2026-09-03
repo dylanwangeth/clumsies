@@ -599,7 +599,7 @@ async fn seed_memory(seed: SeedMemory<'_>) {
 }
 
 /// ISSUE-012 migration tooling: the admin memory-export must capture every
-/// identity family (legacy ctx_/rul_ ids verbatim, native issues/ paths),
+/// identity family (legacy ctx_/rul_ ids and historical paths verbatim),
 /// descriptions, active drafts with their operations, org selections and
 /// personal bundles — the data the migration verification compares against.
 #[tokio::test]
@@ -759,7 +759,7 @@ async fn memory_export_contains_verifiable_full_state() {
         .memories
         .iter()
         .find(|item| item.memory_id == issue_memory_id)
-        .expect("native issue path captured");
+        .expect("historical memory path captured");
     assert_eq!(issue_memory.path, "issues/ISSUE-012.md");
     assert_eq!(issue_memory.status, "active");
 
