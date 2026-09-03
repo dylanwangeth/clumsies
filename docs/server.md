@@ -62,8 +62,8 @@ comment; only an Organization owner or administrator may approve or reject an
 Org publication Review. Approval records the decision and advances the target
 Ref in one transaction, moving an Open Review directly to Merged. The merge
 endpoint still accepts historical Approved Reviews. Review creation/submission
-can apply a confirmed candidate in the same Ref-locked transaction. Publication
-never performs the first stale check as a normal workflow; it retains
+can apply each Draft's confirmed candidate in the same Ref-locked transaction.
+Publication never performs the first stale check as a normal workflow; it retains
 `If-Match`/CAS as the final concurrency guard.
 
 The detailed state model and failure semantics are maintained in the Obsidian

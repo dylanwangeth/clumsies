@@ -160,7 +160,6 @@ enum ReviewRequestError: LocalizedError, Sendable {
     case draftNotSynchronized
     case legacyProjectDraftCannotBePublished
     case reconciliationRequired
-    case reconcileDirectoryDrafts
     case mixedProjects
     case reviewChanged
 
@@ -172,8 +171,6 @@ enum ReviewRequestError: LocalizedError, Sendable {
             "Legacy Project-scoped drafts are read-only and cannot be published."
         case .reconciliationRequired:
             "Merge the latest shared version before requesting a review."
-        case .reconcileDirectoryDrafts:
-            "Sync every changed file in this directory before requesting one review."
         case .mixedProjects:
             "All drafts in a review must belong to the same Project."
         case .reviewChanged:
@@ -4829,12 +4826,12 @@ final class WorkspaceStore: ObservableObject {
             body: CreateReviewRequest(
                 drafts: [ReviewDraftRequest(
                     draftId: serverId,
-                    expectedDraftVersion: candidate?.draftVersion ?? draft.serverVersion
+                    expectedDraftVersion: candidate?.draftVersion ?? draft.serverVersion,
+                    candidateId: candidate?.candidateId,
+                    resolvedState: resolvedState
                 )],
                 title: title,
-                description: description,
-                candidateId: candidate?.candidateId,
-                resolvedState: resolvedState
+                description: description
             )
         )
         let record = WorkspaceLoader.mapReview(detail)
@@ -4846,7 +4843,8 @@ final class WorkspaceStore: ObservableObject {
     func requestReview(
         for drafts: [LocalDraft],
         title: String,
-        description: String
+        description: String,
+        reconciliations: [ReviewDraftReconciliation] = []
     ) async throws {
         let selectedDrafts = drafts.sorted {
             $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending
@@ -4872,27 +4870,44 @@ final class WorkspaceStore: ObservableObject {
             )
         }
         guard let primary = drafts.first else { return }
-        guard drafts.allSatisfy({ $0.freshness == .current }) else {
-            throw ReviewRequestError.reconcileDirectoryDrafts
-        }
         guard drafts.allSatisfy({ $0.serverId != nil }) else {
             throw ReviewRequestError.draftNotSynchronized
+        }
+        let reconciliationByDraftId = Dictionary(
+            reconciliations.map { ($0.candidate.draftId, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        guard drafts.allSatisfy({ draft in
+            draft.freshness == .current
+                || draft.serverId.flatMap { reconciliationByDraftId[$0] } != nil
+        }) else {
+            throw ReviewRequestError.reconciliationRequired
+        }
+        let selectedDraftIds = Set(drafts.compactMap(\.serverId))
+        guard reconciliationByDraftId.keys.allSatisfy(selectedDraftIds.contains) else {
+            throw ReviewRequestError.reconciliationRequired
         }
         let detail: ReviewDetail = try await server.send(
             method: "POST",
             path: "/api/v1/reviews",
-            headers: ["If-Match": Self.refETag(primary.currentCommitId)],
+            headers: [
+                "If-Match": Self.refETag(
+                    reconciliations.first?.candidate.currentCommitId ?? primary.currentCommitId
+                )
+            ],
             body: CreateReviewRequest(
-                drafts: drafts.map {
-                    ReviewDraftRequest(
-                        draftId: $0.serverId!,
-                        expectedDraftVersion: $0.serverVersion
+                drafts: drafts.map { draft in
+                    let reconciliation = reconciliationByDraftId[draft.serverId!]
+                    return ReviewDraftRequest(
+                        draftId: draft.serverId!,
+                        expectedDraftVersion: reconciliation?.candidate.draftVersion
+                            ?? draft.serverVersion,
+                        candidateId: reconciliation?.candidate.candidateId,
+                        resolvedState: reconciliation?.resolvedState
                     )
                 },
                 title: title,
-                description: description,
-                candidateId: nil,
-                resolvedState: nil
+                description: description
             )
         )
         let record = WorkspaceLoader.mapReview(detail)
@@ -4928,18 +4943,20 @@ final class WorkspaceStore: ObservableObject {
                 expectedReviewVersion: review.version,
                 drafts: (detail.drafts ?? [
                     ReviewDraftDetail(draft: detail.draft, operations: detail.operations)
-                ]).map {
-                    ReviewDraftRequest(
-                        draftId: $0.draft.draftId,
-                        expectedDraftVersion: $0.draft.draftId == detail.draft.draftId
-                            ? candidate?.draftVersion ?? $0.draft.version
-                            : $0.draft.version
+                ]).map { draftDetail in
+                    let reconciliation = candidate.flatMap { candidate in
+                        candidate.draftId == draftDetail.draft.draftId ? candidate : nil
+                    }
+                    return ReviewDraftRequest(
+                        draftId: draftDetail.draft.draftId,
+                        expectedDraftVersion: reconciliation?.draftVersion
+                            ?? draftDetail.draft.version,
+                        candidateId: reconciliation?.candidateId,
+                        resolvedState: reconciliation == nil ? nil : resolvedState
                     )
                 },
                 title: review.title,
-                description: review.description,
-                candidateId: candidate?.candidateId,
-                resolvedState: resolvedState
+                description: review.description
             )
         )
         replaceReview(with: WorkspaceLoader.mapReview(updated))
@@ -4998,6 +5015,28 @@ final class WorkspaceStore: ObservableObject {
             throw CancellationError()
         }
         return candidate
+    }
+
+    func reconciliationCandidates(
+        for drafts: [LocalDraft]
+    ) async throws -> [DraftReconciliationCandidate] {
+        guard !isSwitchingMemoryContext else {
+            throw DocumentSyncError.mutationWhileSynchronizing
+        }
+        let selectedDrafts = drafts.sorted {
+            $0.document.path.localizedStandardCompare($1.document.path) == .orderedAscending
+        }
+        var candidates = [DraftReconciliationCandidate]()
+        for draft in selectedDrafts {
+            let synchronized = try await synchronizedDraftForReconciliation(
+                itemId: draft.targetId ?? draft.id,
+                draft: draft
+            )
+            if synchronized.freshness == .behind {
+                candidates.append(try await requestReconciliationCandidate(for: synchronized))
+            }
+        }
+        return candidates
     }
 
     private func requestReconciliationCandidate(

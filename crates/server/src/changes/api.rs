@@ -284,6 +284,8 @@ pub struct DraftOperationBatchResponse {
 pub struct ReviewDraftRequest {
     pub draft_id: String,
     pub expected_draft_version: i64,
+    pub candidate_id: Option<String>,
+    pub resolved_state: Option<ReconciliationResourceState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -291,8 +293,6 @@ pub struct CreateReviewRequest {
     pub drafts: Vec<ReviewDraftRequest>,
     pub title: Option<String>,
     pub description: Option<String>,
-    pub candidate_id: Option<String>,
-    pub resolved_state: Option<ReconciliationResourceState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,8 +301,6 @@ pub struct CreateReviewSubmissionRequest {
     pub drafts: Vec<ReviewDraftRequest>,
     pub title: Option<String>,
     pub description: Option<String>,
-    pub candidate_id: Option<String>,
-    pub resolved_state: Option<ReconciliationResourceState>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -3,12 +3,13 @@ mod common;
 use std::time::Duration;
 
 use server::api::{
-    CreateDraftRequest, CreateReviewDecisionRequest, CreateReviewMergeRequest, CreateReviewRequest,
-    DraftOperationAction, DraftOperationBatchItem, DraftOperationBatchRequest, DraftOperationInput,
-    DraftResourceContent, DraftResourceRef, ResourceScope, ReviewDecision, ReviewDraftRequest,
+    CreateDraftReconciliationCandidateRequest, CreateDraftRequest, CreateReviewDecisionRequest,
+    CreateReviewMergeRequest, CreateReviewRequest, DraftOperationAction, DraftOperationBatchItem,
+    DraftOperationBatchRequest, DraftOperationInput, DraftResourceContent, DraftResourceRef,
+    ResourceScope, ReviewDecision, ReviewDraftRequest,
 };
 use server::auth::AuthPrincipal;
-use server::repository::ServerRepository;
+use server::repository::{ServerError, ServerRepository};
 
 fn memory_content(content: &str) -> Option<DraftResourceContent> {
     Some(DraftResourceContent {
@@ -84,11 +85,11 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: drafts[0].draft.draft_id.clone(),
                     expected_draft_version: drafts[0].draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: Some("Create coding skill".to_owned()),
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -114,16 +115,18 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
                     ReviewDraftRequest {
                         draft_id: rejected.drafts[0].draft.draft_id.clone(),
                         expected_draft_version: rejected.drafts[0].draft.version,
+                        candidate_id: None,
+                        resolved_state: None,
                     },
                     ReviewDraftRequest {
                         draft_id: drafts[1].draft.draft_id.clone(),
                         expected_draft_version: drafts[1].draft.version,
+                        candidate_id: None,
+                        resolved_state: None,
                     },
                 ],
                 title: Some("Create coding skill".to_owned()),
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -209,6 +212,179 @@ async fn multi_draft_review_merges_every_file_in_one_commit() {
     assert!(paths.contains(&"skills/coding/references/workflow.md"));
 }
 
+#[tokio::test]
+async fn multi_draft_review_reconciles_atomically() {
+    let postgres = common::migrated_postgres().await;
+    let repo = ServerRepository::new(postgres.pool.clone());
+    let bootstrap = common::initialize_installation(
+        postgres.pool.clone(),
+        "Atomic Directory Review",
+        "owner@example.com",
+        "Owner",
+        "oidc-subject-owner",
+        "Atomic Directory Review",
+    )
+    .await;
+    let initial_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+
+    let mut drafts = Vec::new();
+    for (index, path) in [
+        "context/first.md",
+        "context/second.md",
+        "context/advance-head.md",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        drafts.push(
+            repo.create_draft(
+                &bootstrap.user_id,
+                CreateDraftRequest {
+                    daemon_installation_id: format!("daemon_atomic_review_{index}"),
+                    project_id: bootstrap.project_id.clone(),
+                    base_commit_id: initial_head.clone(),
+                    title: format!("Create {path}"),
+                    description: None,
+                    resource: DraftResourceRef {
+                        scope: ResourceScope::Org,
+                        id: None,
+                        path: Some(path.to_owned()),
+                    },
+                    operations: vec![DraftOperationInput {
+                        action: DraftOperationAction::Create,
+                        resource: DraftResourceRef {
+                            scope: ResourceScope::Org,
+                            id: None,
+                            path: Some(path.to_owned()),
+                        },
+                        content: memory_content(&format!("# File {index}")),
+                        new_path: None,
+                    }],
+                },
+            )
+            .await
+            .unwrap(),
+        );
+    }
+
+    approve_and_merge(
+        &repo,
+        &bootstrap.user_id,
+        initial_head.as_deref(),
+        &drafts[2].draft.draft_id,
+        drafts[2].draft.version,
+    )
+    .await;
+    let current_head = repo
+        .get_org_commit_state(&bootstrap.org_id, None)
+        .await
+        .unwrap()
+        .reference
+        .commit_id;
+    let first_candidate = repo
+        .create_draft_reconciliation_candidate(
+            &drafts[0].draft.draft_id,
+            CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: drafts[0].draft.version,
+            },
+        )
+        .await
+        .unwrap();
+    let second_candidate = repo
+        .create_draft_reconciliation_candidate(
+            &drafts[1].draft.draft_id,
+            CreateDraftReconciliationCandidateRequest {
+                expected_draft_version: drafts[1].draft.version,
+            },
+        )
+        .await
+        .unwrap();
+
+    let before = repo.get_draft(&drafts[0].draft.draft_id).await.unwrap();
+    let error = repo
+        .create_review(
+            &bootstrap.user_id,
+            current_head.as_deref(),
+            CreateReviewRequest {
+                drafts: vec![
+                    ReviewDraftRequest {
+                        draft_id: drafts[0].draft.draft_id.clone(),
+                        expected_draft_version: drafts[0].draft.version,
+                        candidate_id: Some(first_candidate.candidate_id.clone()),
+                        resolved_state: None,
+                    },
+                    ReviewDraftRequest {
+                        draft_id: drafts[1].draft.draft_id.clone(),
+                        expected_draft_version: drafts[1].draft.version,
+                        candidate_id: None,
+                        resolved_state: None,
+                    },
+                ],
+                title: Some("Update two files".to_owned()),
+                description: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ServerError::ReconciliationRequired { draft_id, .. }
+            if draft_id == drafts[1].draft.draft_id
+    ));
+    let after_failure = repo.get_draft(&drafts[0].draft.draft_id).await.unwrap();
+    assert_eq!(after_failure.draft.version, before.draft.version);
+    assert_eq!(
+        after_failure.draft.base_commit_id,
+        before.draft.base_commit_id
+    );
+
+    let review = repo
+        .create_review(
+            &bootstrap.user_id,
+            current_head.as_deref(),
+            CreateReviewRequest {
+                drafts: vec![
+                    ReviewDraftRequest {
+                        draft_id: drafts[0].draft.draft_id.clone(),
+                        expected_draft_version: drafts[0].draft.version,
+                        candidate_id: Some(first_candidate.candidate_id),
+                        resolved_state: None,
+                    },
+                    ReviewDraftRequest {
+                        draft_id: drafts[1].draft.draft_id.clone(),
+                        expected_draft_version: drafts[1].draft.version,
+                        candidate_id: Some(second_candidate.candidate_id),
+                        resolved_state: None,
+                    },
+                ],
+                title: Some("Update two files".to_owned()),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(review.drafts.len(), 2);
+    assert!(review.drafts.iter().all(|draft| {
+        draft.draft.base_commit_id == current_head
+            && draft.draft.status == server::api::DraftStatus::Submitted
+    }));
+    let revision_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM draft_revisions WHERE draft_id = ANY($1)")
+            .bind(vec![
+                drafts[0].draft.draft_id.clone(),
+                drafts[1].draft.draft_id.clone(),
+            ])
+            .fetch_one(&postgres.pool)
+            .await
+            .unwrap();
+    assert_eq!(revision_count, 2);
+}
+
 async fn approve_and_merge(
     repo: &ServerRepository,
     user_id: &str,
@@ -224,11 +400,11 @@ async fn approve_and_merge(
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft_id.to_owned(),
                     expected_draft_version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await

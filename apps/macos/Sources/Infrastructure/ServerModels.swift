@@ -560,8 +560,6 @@ struct CreateReviewRequest: Codable, Sendable {
     let drafts: [ReviewDraftRequest]
     let title: String
     let description: String
-    let candidateId: String?
-    let resolvedState: ReconciliationResourceState?
 }
 
 struct CreateReviewSubmissionRequest: Codable, Sendable {
@@ -569,13 +567,18 @@ struct CreateReviewSubmissionRequest: Codable, Sendable {
     let drafts: [ReviewDraftRequest]
     let title: String
     let description: String
-    let candidateId: String?
-    let resolvedState: ReconciliationResourceState?
 }
 
 struct ReviewDraftRequest: Codable, Sendable {
     let draftId: String
     let expectedDraftVersion: Int
+    let candidateId: String?
+    let resolvedState: ReconciliationResourceState?
+}
+
+struct ReviewDraftReconciliation: Sendable {
+    let candidate: DraftReconciliationCandidate
+    let resolvedState: ReconciliationResourceState?
 }
 
 struct CreateReviewCommentRequest: Codable, Sendable {

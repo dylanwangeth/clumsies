@@ -919,7 +919,7 @@ paths:
               $ref: "#/components/schemas/CreateReviewSubmissionRequest"
       responses:
         "200":
-          description: Reopened review and resubmitted draft, atomically rebased when a confirmed candidate was supplied.
+          description: Reopened review and resubmitted draft, atomically rebased when confirmed per-Draft candidates were supplied.
           content:
             application/json:
               schema:
@@ -1921,13 +1921,6 @@ components:
           type: string
         description:
           type: string
-        candidate_id:
-          type: string
-        resolved_state:
-          description: Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate.
-          oneOf:
-            - $ref: "#/components/schemas/ReconciliationResourceState"
-            - type: "null"
     CreateReviewSubmissionRequest:
       type: object
       required: [expected_review_version, drafts]
@@ -1943,14 +1936,6 @@ components:
           type: string
         description:
           type: string
-        candidate_id:
-          type: string
-          description: Confirmed reconciliation candidate to apply atomically before resubmission when the Draft is behind.
-        resolved_state:
-          description: Required complete user-resolved result for a conflicts candidate; must be omitted for a clean candidate.
-          oneOf:
-            - $ref: "#/components/schemas/ReconciliationResourceState"
-            - type: "null"
     ReviewDraftRequest:
       type: object
       required: [draft_id, expected_draft_version]
@@ -1959,6 +1944,14 @@ components:
           type: string
         expected_draft_version:
           type: integer
+        candidate_id:
+          type: string
+          description: Confirmed reconciliation candidate to apply atomically for this Draft when it is behind.
+        resolved_state:
+          description: Required complete user-resolved result for this Draft's conflicts candidate; must be omitted for a clean candidate.
+          oneOf:
+            - $ref: "#/components/schemas/ReconciliationResourceState"
+            - type: "null"
     ReviewDraftDetail:
       type: object
       required: [draft, operations]
