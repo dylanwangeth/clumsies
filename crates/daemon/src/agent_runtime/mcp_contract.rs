@@ -30,7 +30,7 @@ impl ContractError {
 pub enum AgentRuntimeRequest {
     Activate(ActivateMemoryRequest),
     Load(LoadMemoryRequest),
-    Store(DaemonDraftOperationRequest),
+    Store(Box<DaemonDraftOperationRequest>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,18 +358,20 @@ impl StoreInput {
                 operation.discard = Some(DaemonDiscardDraftOperation { id: input.id });
             }
         }
-        Ok(AgentRuntimeRequest::Store(DaemonDraftOperationRequest {
-            draft_id: None,
-            base_commit_id: None,
-            project_id: project_id.to_owned(),
-            // The bound Project carries this LocalDraft and is the only place
-            // its overlay is visible before merge. Org is the proposal's
-            // authority target, not a Project and not directly writable here.
-            scope: DaemonDraftScope::Org,
-            resource,
-            op: operation,
-            source: Some(DaemonDraftOperationSource::McpStore),
-        }))
+        Ok(AgentRuntimeRequest::Store(Box::new(
+            DaemonDraftOperationRequest {
+                draft_id: None,
+                base_commit_id: None,
+                project_id: project_id.to_owned(),
+                // The bound Project carries this LocalDraft and is the only place
+                // its overlay is visible before merge. Org is the proposal's
+                // authority target, not a Project and not directly writable here.
+                scope: DaemonDraftScope::Org,
+                resource,
+                op: operation,
+                source: Some(DaemonDraftOperationSource::McpStore),
+            },
+        )))
     }
 }
 

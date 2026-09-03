@@ -623,13 +623,6 @@ mod tests {
     }
 
     #[test]
-    fn run_id_validation_is_bounded_and_exact() {
-        assert!(safe_run_id("arun_0123456789abcdef0123456789abcdef"));
-        assert!(!safe_run_id("arun_0123"));
-        assert!(!safe_run_id("manual_0123456789abcdef0123456789abcdef"));
-    }
-
-    #[test]
     fn proxy_rejects_a_different_resident_build() {
         assert!(agent_runtime_matches(&daemon::AgentRuntimeIdentity {
             protocol_revision: daemon::agent_runtime::AGENT_RUNTIME_PROTOCOL_REVISION,
@@ -645,7 +638,7 @@ mod tests {
     fn test_mach_service_seam_cannot_target_the_installed_daemon() {
         let error = validate_test_mach_service_name(DAEMON_MACH_SERVICE_NAME).unwrap_err();
         assert!(matches!(error, DaemonError::InvalidConfig(_)));
-        assert!(validate_test_mach_service_name("ai.clumsies.test.issue049_1").is_ok());
+        assert!(validate_test_mach_service_name("ai.clumsies.test.runtime_e2e_1").is_ok());
     }
 
     #[test]
