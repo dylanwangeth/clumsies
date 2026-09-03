@@ -2,7 +2,7 @@
 # Forward a dsh lifecycle event (JSON on stdin) to the local Clumsies daemon.
 # Best effort only: lifecycle observation must never block the dsh session.
 #
-# Usage:  printf '%s' "$PAYLOAD" | issue-run-event.sh
+# Usage:  printf '%s' "$PAYLOAD" | agent-run-event.sh
 # Payload: {"hook_event_name":"UserPromptSubmit|StopFailure|SubagentStart|SubagentStop|SessionEnd",
 #           "session_id":"...","turn_id":"...","agent_id":"...","agent_type":"...","cwd":"/path"}
 #
@@ -45,5 +45,5 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-printf '%s' "$INPUT" | "$CLUMSIES_BIN" _agent issue-run-event --host dsh 2>/dev/null || true
+printf '%s' "$INPUT" | "$CLUMSIES_BIN" _agent agent-run-event --host dsh 2>/dev/null || true
 exit 0

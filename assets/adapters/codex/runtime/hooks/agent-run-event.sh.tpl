@@ -16,5 +16,5 @@ if [ -z "$INPUT" ]; then
 fi
 
 cd "$PROJECT_ROOT" 2>/dev/null || exit 0
-printf '%s' "$INPUT" | "$CLUMSIES" _agent issue-run-event --host codex 2>/dev/null || true
+printf '%s' "$INPUT" | "$CLUMSIES" _agent agent-run-event --host codex 2>/dev/null || true
 exit 0

@@ -259,14 +259,6 @@ struct UpdateAdminProjectMemberRequest: Codable, Sendable {
     let role: ProjectMemberRole
 }
 
-struct AssignKanbanIssueRequest: Codable, Sendable {
-    let assigneeUserId: String
-}
-
-struct KanbanIssueAssignmentResponse: Codable, Sendable {
-    let assignee: UserReference
-}
-
 struct ListResponse<Item: Decodable & Sendable>: Decodable, Sendable {
     let items: [Item]
     let pageInfo: PageInfo

@@ -78,7 +78,7 @@ function forward(payload, runtime) {
     log('forward ' + input.slice(0, 140))
     let child
     try {
-      child = spawn(bin, ['_agent', 'issue-run-event', '--host', 'dsh'], {
+      child = spawn(bin, ['_agent', 'agent-run-event', '--host', 'dsh'], {
         stdio: ['pipe', 'ignore', 'pipe'],
         windowsHide: true,
       })

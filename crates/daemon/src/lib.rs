@@ -85,7 +85,7 @@ pub(crate) use server_client::{
     clear_server_response_cache, decode_server_json, delete_server_json, ensure_server_success,
     execute_authenticated_server_request, filter_proxy_request_headers,
     filter_proxy_response_headers, get_server_json, is_retryable_http_status,
-    load_cached_server_response, post_server_json, put_server_json, save_cached_server_response,
+    load_cached_server_response, post_server_json, save_cached_server_response,
     validate_server_proxy_path,
 };
 pub use state::DaemonIpcService;
@@ -123,15 +123,5 @@ use util::{
 };
 pub use work_tracking::{
     AgentRun, AgentRunEventSource, AgentRunEventType, AgentRunHost, AgentRunKind, AgentRunOutcome,
-    AgentRunPhase, ApplyIssueGateRequest, CreateIssueRequest, ExportIssueRequest,
-    ExportIssueResponse, GetIssueRequest, IssueBlockingFact, IssueBlockingFactKind,
-    IssueBlockingReason, IssueBlockingReasonKind, IssueBoardCard, IssueBoardDiagnostic,
-    IssueBoardDiagnosticCode, IssueBoardListRequest, IssueBoardResponse, IssueBoardState,
-    IssueClaim, IssueDependencyState, IssueDetailRequest, IssueDetailResponse,
-    IssueExternalReference, IssueExternalReferenceKind, IssueGateAction, IssueLifecycle,
-    IssueMember, IssueMutationResponse, IssueRemovalAction, IssueRemovalResponse,
-    IssueWorkflowMutationResponse, PauseIssueRequest, RecordAgentRunEventRequest,
-    RecordAgentRunEventResponse, RemoveIssueRequest, RequestIssueClosureRequest,
-    ResumeIssueRequest, SetVerificationStepCompletedRequest, StartIssueWorkRequest,
-    UnclaimIssueRequest, UpdateIssueRequest,
+    AgentRunPhase, RecordAgentRunEventRequest, RecordAgentRunEventResponse,
 };

@@ -5,10 +5,8 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use serde::Deserialize;
 
 use crate::api::{
-    AcquireIssueClaimRequest, AssignKanbanIssueRequest, CreateMemberRequest,
-    CreateProjectMemberRequest, CreateProjectRequest, ImportKanbanIssuesRequest, ProjectRole,
-    ReleaseIssueClaimRequest, UpdateAdminOrgRequest, UpdateKanbanIssueRequest, UpdateMemberRequest,
-    UpdateProjectMemberRequest, UpdateProjectRequest,
+    CreateMemberRequest, CreateProjectMemberRequest, CreateProjectRequest, ProjectRole,
+    UpdateAdminOrgRequest, UpdateMemberRequest, UpdateProjectMemberRequest, UpdateProjectRequest,
 };
 use crate::auth::AuthPrincipal;
 use crate::http::{AppState, HttpError, parse_idempotency_key, parse_if_match, require_org_admin};
@@ -444,18 +442,6 @@ pub(crate) async fn delete_project(
     ))
 }
 
-pub(crate) async fn list_issue_claims(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-) -> Result<Json<crate::api::IssueClaimListResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(state.repository.list_issue_claims(&project_id).await?))
-}
-
 pub(crate) async fn list_project_members(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthPrincipal>,
@@ -471,125 +457,4 @@ pub(crate) async fn list_project_members(
             .list_admin_project_members(&principal.org_id, &project_id, None, 0, 200)
             .await?,
     ))
-}
-
-pub(crate) async fn list_kanban_issues(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-) -> Result<Json<crate::api::KanbanIssueListResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state.repository.list_kanban_issues(&project_id).await?,
-    ))
-}
-
-pub(crate) async fn import_kanban_issues(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path(project_id): Path<String>,
-    Json(request): Json<ImportKanbanIssuesRequest>,
-) -> Result<Json<crate::api::KanbanIssueListResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .import_kanban_issues(&principal, &project_id, request)
-            .await?,
-    ))
-}
-
-pub(crate) async fn update_kanban_issue(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, issue_id)): Path<(String, String)>,
-    Json(request): Json<UpdateKanbanIssueRequest>,
-) -> Result<Json<crate::api::KanbanIssue>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .update_kanban_issue(&project_id, &issue_id, request)
-            .await?,
-    ))
-}
-
-pub(crate) async fn assign_kanban_issue(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, issue_id)): Path<(String, String)>,
-    Json(request): Json<AssignKanbanIssueRequest>,
-) -> Result<Json<crate::api::KanbanIssue>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .assign_kanban_issue(&project_id, &issue_id, &request.assignee_user_id)
-            .await?,
-    ))
-}
-
-pub(crate) async fn delete_kanban_issue(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, issue_id)): Path<(String, String)>,
-) -> Result<Json<crate::api::DeleteResult>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .delete_kanban_issue(&project_id, &issue_id)
-            .await?,
-    ))
-}
-
-pub(crate) async fn acquire_issue_claim(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, issue_id)): Path<(String, String)>,
-    Json(request): Json<AcquireIssueClaimRequest>,
-) -> Result<Json<crate::api::IssueClaim>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(
-        state
-            .repository
-            .acquire_issue_claim(&principal, &project_id, &issue_id, request)
-            .await?,
-    ))
-}
-
-pub(crate) async fn release_issue_claim(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthPrincipal>,
-    Path((project_id, issue_id)): Path<(String, String)>,
-    Json(request): Json<ReleaseIssueClaimRequest>,
-) -> Result<Json<crate::api::ReleaseIssueClaimResponse>, HttpError> {
-    state
-        .repository
-        .ensure_project_member(&principal, &project_id)
-        .await?;
-    Ok(Json(crate::api::ReleaseIssueClaimResponse {
-        released: state
-            .repository
-            .release_issue_claim(&principal, &project_id, &issue_id, &request.run_id)
-            .await?,
-    }))
 }

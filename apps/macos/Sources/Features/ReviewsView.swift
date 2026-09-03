@@ -1,5 +1,29 @@
 import SwiftUI
 
+enum TimestampFormatting {
+    static func date(from value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
+    static func absoluteText(_ value: String?) -> String? {
+        guard let date = date(from: value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    static func relativeText(_ value: String?, relativeTo now: Date) -> String? {
+        guard let date = date(from: value) else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+
 enum ReviewStatusFilter: String, CaseIterable, Identifiable {
     case open
     case rejected
@@ -560,7 +584,7 @@ struct ReviewRow: View {
 
                 Spacer(minLength: 8)
 
-                if let updatedAt = IssueTiming.date(from: review.updatedAt) {
+                if let updatedAt = TimestampFormatting.date(from: review.updatedAt) {
                     Text(updatedAt, style: .relative)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -621,13 +645,13 @@ struct ReviewRow: View {
     }
 
     private var metadataHelp: String {
-        IssueTiming.absoluteText(review.updatedAt)
+        TimestampFormatting.absoluteText(review.updatedAt)
             .map { "Last Review record update: \($0)" }
             ?? "Review submission"
     }
 
     private var accessibilityText: String {
-        let relative = IssueTiming.relativeText(review.updatedAt, relativeTo: .now)
+        let relative = TimestampFormatting.relativeText(review.updatedAt, relativeTo: .now)
         let time = relative.map { ", updated \($0)" } ?? ""
         let queueState = state.isQueueSignal ? ", \(state.title)" : ""
         return "\(review.title), \(lifecycleTitle)\(queueState), \(context)\(time)"
@@ -980,7 +1004,7 @@ struct ReviewDetailPage: View {
                     }
                     .font(.caption)
                     .help(
-                        IssueTiming.absoluteText(review.decidedAt).map {
+                        TimestampFormatting.absoluteText(review.decidedAt).map {
                             "Merged by \(decider.displayName ?? decider.email) at \($0)"
                         } ?? "Merged by \(decider.displayName ?? decider.email)"
                     )
@@ -1026,7 +1050,7 @@ struct ReviewDetailPage: View {
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
-        let updated = IssueTiming.relativeText(review.updatedAt, relativeTo: .now)
+        let updated = TimestampFormatting.relativeText(review.updatedAt, relativeTo: .now)
             .map { " · Updated \($0)" } ?? ""
         return Text("\(context)\(updated)")
         .font(.caption)
@@ -1066,7 +1090,7 @@ struct ReviewDetailPage: View {
 
     private func decisionSummary(_ review: ReviewRecord) -> some View {
         let relativeDecisionTime = review.decidedAt.flatMap {
-            IssueTiming.relativeText($0, relativeTo: .now)
+            TimestampFormatting.relativeText($0, relativeTo: .now)
         }
         return VStack(alignment: .leading, spacing: 7) {
             if review.status != "merged" {
@@ -1086,7 +1110,7 @@ struct ReviewDetailPage: View {
                         Text("· \(relativeDecisionTime)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .help(IssueTiming.absoluteText(decidedAt).map {
+                            .help(TimestampFormatting.absoluteText(decidedAt).map {
                                 "Decision recorded at \($0)"
                             } ?? "Decision time")
                     }
@@ -1461,7 +1485,7 @@ struct ReviewCommentRow: View {
                     Text(comment.author.displayName ?? comment.author.email)
                         .font(.caption.weight(.semibold))
                     Text(
-                        IssueTiming.relativeText(comment.createdAt, relativeTo: .now)
+                        TimestampFormatting.relativeText(comment.createdAt, relativeTo: .now)
                             ?? comment.createdAt
                     )
                     .font(.caption)

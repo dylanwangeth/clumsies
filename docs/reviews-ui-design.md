@@ -1,6 +1,6 @@
 # Reviews UI Design (macOS App)
 
-The Reviews section follows the same native navigation hierarchy as Kanban:
+The Reviews section follows the native workspace navigation hierarchy:
 the global app sidebar stays in place, the Review list is the root page, and a
 selected Review is pushed onto a `NavigationStack`. The detail is a file-review
 workspace rather than a permanently visible third app column.

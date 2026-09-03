@@ -24,14 +24,14 @@ direct-file Hook invokes the private lifecycle bridge as:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd \
-  _agent issue-run-event --host codex|claude-code|opencode
+  _agent agent-run-event --host codex|claude-code|opencode
 ```
 
 The Codex plugin Hook invokes the host-plugin form:
 
 ```bash
 /path/to/Clumsies.app/Contents/Resources/clumsiesd \
-  _agent issue-run-event --host codex --delivery host-plugin
+  _agent agent-run-event --host codex --delivery host-plugin
 ```
 
 Both modes are short-lived proxies. They are parsed before daemon
@@ -77,15 +77,13 @@ retrieval path.
 
 ## Tool loop
 
-The current MCP surface contains exactly two tools:
+The current MCP surface contains exactly one tool:
 
 - `memory`: dispatches three Memory operations:
   - `activate`: send a natural-language task cue and receive ranked fragments
   ready for the current reasoning context.
   - `load`: read complete resources by known stable ID or exact path.
   - `store`: persist an explicit user-requested Memory Draft.
-- `kanban`: get a native Issue by global ID, create/update/list native Issues, explicitly start Issue work, or
-  request Issue closure after semantic judgment.
 
 Typical use is:
 
@@ -94,10 +92,6 @@ memory.activate(query, optional state)
   -> use returned fragments
   -> optionally memory.load known complete resources
   -> memory.store only for explicit memory maintenance
-  -> kanban.get when the user supplies a copied global Issue ID
-  -> kanban.create for durable new or follow-up work
-  -> explicitly kanban.begin_work when this is durable Local Issue work
-  -> kanban.request_closure only when acceptance criteria are satisfied
 ```
 
 For an update, `memory.load` is mandatory: use the returned complete-resource hash and
@@ -114,8 +108,7 @@ context.
 
 Adapters make a concrete host launch the MCP server. Codex receives one thin
 bootstrap Skill inside the plugin; it coordinates `memory.activate`, loads
-relevant project-maintained skills from Memory Space with `memory.load`, and
-uses Kanban when durable work exists. The project skills themselves remain
+relevant project-maintained skills from Memory Space with `memory.load`. The project skills themselves remain
 ordinary Memory resources and are never installed into a host skill directory.
 Other hosts consume the MCP tools directly. Host-specific Hooks observe
 lifecycle outside the MCP memory contract and must not reimplement retrieval or
@@ -128,8 +121,8 @@ binding at startup and before every `tools/call`; removing or changing the
 binding makes an already running plugin proxy fail its next call closed. There
 is no per-Project Codex enable/disable row. Plugin installation does not grant
 Hook trust: the user must review the current
-Clumsies Hook in `/hooks` before AgentRun injection and run-bound Kanban actions
-become available. Installation also does not hot-load the plugin into an
+Clumsies Hook in `/hooks` before AgentRun observation becomes available.
+Installation also does not hot-load the plugin into an
 existing Codex task; restart Codex after install or update, then start a new
 task with the new plugin snapshot.
 

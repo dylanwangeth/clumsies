@@ -4,14 +4,11 @@ The Clumsies daemon treats the DeepSeek Harness web app as a first-class
 Agent host ("dsh"). This guide covers both halves of the integration:
 
 1. **MCP access** — the dsh web profile connects to the Clumsies MCP server,
-   which gives the model `mcp__clumsies__memory` and
-   `mcp__clumsies__kanban`; `activate` / `load` / `store` are operations of
-   the `memory` tool.
+   which gives the model `mcp__clumsies__memory`; `activate` / `load` /
+   `store` are operations of that tool.
 2. **AgentRun lifecycle** — a dsh-side client plugin forwards non-blocking
    session/turn events to the daemon's hook proxy, which issues `dsh`
-   AgentRuns and records failure or session boundaries. With a live run the
-   model can use `kanban.begin_work`; an opt-in skill or manually maintained
-   workflow may explicitly call `kanban.request_closure`.
+   AgentRuns and records failure or session boundaries.
 
 ## MCP access (read + mutate content)
 
@@ -30,12 +27,9 @@ Register the Clumsies MCP server in the dsh profile patch layer
         cwd: /path/to/workspace
 ```
 
-`cwd` pins the proxy to the project whose kanban the session should see
-(kanban scope follows the workspace binding). Tools appear as
-`mcp__clumsies__*` and are usable without any AgentRun, but
-`kanban.begin_work` / `kanban.request_closure` require a live run issued
-by the hook (see below) — the daemon never lets an agent mint its own
-identity.
+`cwd` pins the proxy to the Project whose Effective Memory the session should
+see. The tool appears as `mcp__clumsies__memory` and does not require an
+AgentRun.
 
 ## Agent adapter (global settings)
 
@@ -71,19 +65,19 @@ Project even when `dsh web` was launched from a parent directory) and the
 marker's `runtime` pins the clumsiesd binary that forwards events (no
 machine-specific path in the plugin). Sessions without a marker fall back to
 the session cwd and the environment/default runtime, so manual setups keep
-working. `dev/dsh/issue-run-event.sh` does the same lookup for shell-driven
+working. `dev/dsh/agent-run-event.sh` does the same lookup for shell-driven
 forwarding.
 
 The MCP side remains a one-time profile registration (below): the static
 `cwd` pins the spawned `clumsiesd mcp serve` to one workspace, so the
-profile patch targets the workspace whose kanban the dsh sessions should see.
+profile patch targets the workspace whose Memory the dsh sessions should see.
 
 ## AgentRun lifecycle hook
 
 The daemon accepts hook events from the `dsh` host:
 
 ```sh
-printf '%s' "$PAYLOAD" | clumsiesd _agent issue-run-event --host dsh
+printf '%s' "$PAYLOAD" | clumsiesd _agent agent-run-event --host dsh
 ```
 
 `$PAYLOAD` is a JSON object with the shared hook vocabulary:
@@ -121,7 +115,7 @@ import { Context } from 'cordis'
 export const name = 'clumsies-hook'
 export function apply(ctx: Context) {
   const forward = (payload: object) => {
-    try { execFileSync('clumsiesd', ['_agent', 'issue-run-event', '--host', 'dsh'], { input: JSON.stringify(payload), stdio: 'pipe' }) } catch { /* fail-open */ }
+    try { execFileSync('clumsiesd', ['_agent', 'agent-run-event', '--host', 'dsh'], { input: JSON.stringify(payload), stdio: 'pipe' }) } catch { /* fail-open */ }
   }
   // ctx.on('session/…', …) — turn start/failure, session end, subagent start/stop
 }
@@ -129,7 +123,7 @@ export function apply(ctx: Context) {
 
 The shipped plugin (`dev/dsh/clumsies-hook.mjs`) also resolves the
 `.dsh/clumsies.json` marker described above; a shell wrapper
-(`dev/dsh/issue-run-event.sh`) drives the same contract from any event
+(`dev/dsh/agent-run-event.sh`) drives the same contract from any event
 source. A normal successful turn does not emit root `Stop`. The invariant to
 preserve is **one `turn_id` per user prompt, reused for a failure event**, and
 **no event ever blocks the session**. If an older or manually maintained
@@ -139,7 +133,7 @@ no stop-blocking decision.
 ## Daemon-side changes (landed)
 
 - `AgentRunHost::Dsh` + `HookHost::Dsh` (`--host dsh`) accepted by
-  `clumsiesd _agent issue-run-event`.
+  `clumsiesd _agent agent-run-event`.
 - `agent_runs.host` CHECK constraint extended with `'dsh'` via schema
   migration 35 → 36 (table rebuild, idempotent).
 - `StopFailure` supported for dsh (root run ends with outcome `failed`).

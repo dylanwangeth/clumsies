@@ -1,8 +1,8 @@
 # Unified Memory Model
 
-Date: 2026-08-15 · Status: implemented in code (native ISSUE-012 in review)
+Date: 2026-08-15 · Status: implemented in code
 
-This document is the implementation blueprint for ISSUE-012: replacing the
+This document is the implementation blueprint for replacing the
 closed Rule / Workflow / Context types with one unified Memory object across
 Server, daemon, OpenAPI, MCP, macOS, and the Agent Adapter. The Server, daemon,
 API contract, MCP, and macOS unification commits landed on 2026-08-15; this
@@ -13,7 +13,7 @@ three-type write contracts are not preserved for the long term.
 > Authority update (2026-08-26): Organization is now the only active Memory
 > authority. Projects select Organization Memory, own a projection Ref, and
 > carry Organization-scoped Draft overlays. References to Project-scoped
-> authority below describe the ISSUE-012 historical schema; they are retained
+> authority below describe the historical schema; they are retained
 > only as migration context. See [Project authority cutover](/project-authority-migration).
 
 ## Core object
@@ -128,7 +128,7 @@ Memory {
   `4b18f7947a977dbc6b62f560b698dc992597f19d` at
   `archive/zig-cli/src/client/adapter/workflow_skills.zig`, outside the active
   build boundary.
-- The former `activate` / `ntmd` host-native layer is retired (ISSUE-064).
+- The former `activate` / `ntmd` host-native layer is retired.
   Direct-file adapters no longer install project guidance as host skills and
   clean up their old `.agents/skills` / `.claude/skills` artifacts. The Codex
   plugin adds only a generic Clumsies bootstrap Skill: it uses MCP to activate
@@ -150,7 +150,7 @@ Memory {
 
 1. Generate a repeatable, verifiable neutral export covering: effective
    Memory bodies, title/path, description (backfilled), status, provenance,
-   active Drafts, Project/Org relations, and native Issues that must be
+   active Drafts and Project/Org relations that must be
    preserved. This is implemented as the org-admin endpoint
    `GET /api/v1/admin/memory-export`, which emits every Memory (including
    `issues/` paths), all Drafts with their raw operations, Project org
@@ -159,7 +159,7 @@ Memory {
    `content_hash` is the byte-level comparison key.
 2. Take a full database backup (PostgreSQL dump and daemon SQLite copy).
 3. Import into the new schema; verify counts, content hashes, description,
-   scope/project relations, active Drafts, and preserved native Issues.
+   scope/project relations and active Drafts.
    `dev/memory-migration-verify.sh check <before.json> <after.json>` compares
    two exports (identity set, per-memory hash/scope/description, draft,
    selection and bundle counts, draft operation count) and fails loudly on

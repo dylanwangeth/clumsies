@@ -73,8 +73,8 @@ keystroke.
 ## MCP write path
 
 The adapter-managed MCP entrypoint is `clumsiesd mcp serve`. This process owns
-only bounded JSON-RPC framing, the typed two-tool contract (`memory` and
-`kanban`), Project binding, and XPC forwarding. Before accepting Agent traffic it
+only bounded JSON-RPC framing, the typed `memory` contract, Project binding,
+and XPC forwarding. Before accepting Agent traffic it
 verifies that its Agent runtime protocol revision and build identity match the
 resident daemon. It does not initialize `DaemonState`, open SQLite, load models,
 or start background workers.

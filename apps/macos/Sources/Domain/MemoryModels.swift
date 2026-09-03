@@ -2,7 +2,6 @@ import Foundation
 
 enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     case memory
-    case issues
     case bundles
     case reviews
     case sessions
@@ -13,7 +12,6 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .memory: "Memory"
-        case .issues: "Kanban"
         case .bundles: "Bundles"
         case .reviews: "Reviews"
         case .sessions: "Activity"
@@ -24,7 +22,6 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     var symbol: String {
         switch self {
         case .memory: "brain"
-        case .issues: "rectangle.3.group"
         case .bundles: "shippingbox"
         case .reviews: "checkmark.bubble"
         case .sessions: "bubble.left.and.bubble.right"
@@ -33,7 +30,7 @@ enum WorkspaceSection: String, CaseIterable, Identifiable, Sendable {
     }
 
     static func sidebarSections(canAdminister: Bool) -> [WorkspaceSection] {
-        var sections: [WorkspaceSection] = [.memory, .issues, .bundles, .reviews, .sessions]
+        var sections: [WorkspaceSection] = [.memory, .bundles, .reviews, .sessions]
         if canAdminister {
             sections.append(.administration)
         }

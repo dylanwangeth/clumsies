@@ -419,7 +419,6 @@ final class WorkspaceStore: ObservableObject {
     @Published var selectedReviewId: String?
     @Published var searchQuery = ""
     @Published var workspaceSearchFocusToken = UUID()
-    @Published var issueSearchFocusToken = UUID()
     @Published var reviewSearchFocusToken = UUID()
     @Published var showsProjectCreation = false
     @Published var showsProjectSettings = false
@@ -1114,7 +1113,7 @@ final class WorkspaceStore: ObservableObject {
         switch selectedSection {
         case .memory:
             break
-        case .issues, .bundles, .reviews, .sessions, .administration:
+        case .bundles, .reviews, .sessions, .administration:
             return []
         }
 
@@ -2072,14 +2071,6 @@ final class WorkspaceStore: ObservableObject {
         return try await addProjectMember(userId: invited.userId, role: role)
     }
 
-    func assignIssue(_ issue: IssueBoardCard, to member: ProjectMemberRecord) async throws {
-        let _: KanbanIssueAssignmentResponse = try await server.send(
-            method: "PUT",
-            path: "/api/v1/projects/\(issue.projectId)/issues/\(issue.issueId)/assignee",
-            body: AssignKanbanIssueRequest(assigneeUserId: member.id)
-        )
-    }
-
     func projectBindings(_ projectId: String) async throws -> [DaemonProjectBinding] {
         try await daemon.projectBindings(projectId)
     }
@@ -2313,10 +2304,6 @@ final class WorkspaceStore: ObservableObject {
 
     func focusWorkspaceSearch() {
         workspaceSearchFocusToken = UUID()
-    }
-
-    func focusIssueSearch() {
-        issueSearchFocusToken = UUID()
     }
 
     func focusReviewSearch() {

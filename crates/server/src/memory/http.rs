@@ -11,8 +11,8 @@ use crate::api::{
 use crate::auth::AuthPrincipal;
 use crate::http::{AppState, HttpError, parse_if_match, require_org_admin};
 
-/// ISSUE-012 migration tooling: neutral, verifiable export of the org's
-/// effective Memory state (memories incl. issues/ paths, drafts, org
+/// Unified Memory migration tooling: neutral, verifiable export of the org's
+/// effective Memory state (memories, drafts, org
 /// selections, bundles). IDs are emitted verbatim so the export doubles
 /// as the old_id -> memory_id identity map.
 pub(crate) async fn export_org_memory_state(

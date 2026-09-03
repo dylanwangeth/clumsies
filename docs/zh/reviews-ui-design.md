@@ -6,7 +6,7 @@ Draft**；Memory 文件树如何创建、选择和提交这些 Draft，见
 
 ## 1. 导航模型
 
-Reviews 与 Kanban 共用原生导航层级：
+Reviews 使用统一的原生导航层级：
 
 ```text
 全局侧栏 | NavigationStack（Review 列表 -> Review 详情）

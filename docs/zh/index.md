@@ -26,9 +26,6 @@ features:
   - icon: ✅
     title: Review 后发布
     details: Project 承载的 Draft 只有通过 Review 并以 Commit 推进组织 Ref 后才会成为权威。
-  - icon: 🗂️
-    title: Agent 原生看板
-    details: Agent 通过 typed kanban 操作认领、暂停、释放并提议关闭 Issue；只有用户的 Approve 闸门能让 Issue 进入 Done。
   - icon: 🔌
     title: Host 适配器
     details: Codex、Claude Code、opencode、DeepSeek Harness 与 Antigravity 共用同一个 App 内签名 Rust runtime，并做 release-identity 校验。

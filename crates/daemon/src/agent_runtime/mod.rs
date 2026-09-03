@@ -49,17 +49,6 @@ pub(crate) fn method_requires_identity(method: &str) -> bool {
             | "load_memory"
             | "store_draft_operation"
             | "record_agent_run_event"
-            | "list_issue_board"
-            | "get_issue_detail"
-            | "get_issue"
-            | "export_issue"
-            | "create_issue"
-            | "update_issue"
-            | "start_issue_work"
-            | "pause_issue"
-            | "resume_issue"
-            | "request_issue_closure"
-            | "unclaim_issue"
     )
 }
 
@@ -108,18 +97,6 @@ impl mcp_contract::AgentRuntimeRequest {
             Self::Activate(request) => ("activate_memory", serde_json::to_value(request)?),
             Self::Load(request) => ("load_memory", serde_json::to_value(request)?),
             Self::Store(request) => ("store_draft_operation", serde_json::to_value(request)?),
-            Self::ListIssues(request) => ("list_issue_board", serde_json::to_value(request)?),
-            Self::GetIssue(request) => ("get_issue", serde_json::to_value(request)?),
-            Self::CreateIssue(request) => ("create_issue", serde_json::to_value(request)?),
-            Self::UpdateIssue(request) => ("update_issue", serde_json::to_value(request)?),
-            Self::BeginIssueWork(request) => ("start_issue_work", serde_json::to_value(request)?),
-            Self::PauseIssue(request) => ("pause_issue", serde_json::to_value(request)?),
-            Self::ResumeIssue(request) => ("resume_issue", serde_json::to_value(request)?),
-            Self::RequestIssueClosure(request) => {
-                ("request_issue_closure", serde_json::to_value(request)?)
-            }
-            Self::UnclaimIssue(request) => ("unclaim_issue", serde_json::to_value(request)?),
-            Self::ExportIssue(request) => ("export_issue", serde_json::to_value(request)?),
         };
         Ok(DaemonIpcRequest::new(method, payload))
     }
@@ -169,28 +146,10 @@ mod tests {
             "load_memory",
             "store_draft_operation",
             "record_agent_run_event",
-            "list_issue_board",
-            "get_issue_detail",
-            "get_issue",
-            "export_issue",
-            "create_issue",
-            "update_issue",
-            "start_issue_work",
-            "pause_issue",
-            "resume_issue",
-            "request_issue_closure",
-            "unclaim_issue",
         ] {
             assert!(super::method_requires_identity(method), "{method}");
         }
-        for method in [
-            "health",
-            "desktop_store_draft_operation",
-            "desktop_list_issue_board",
-            "desktop_get_issue_detail",
-            "desktop_unclaim_issue",
-            "desktop_resume_issue",
-        ] {
+        for method in ["health", "desktop_store_draft_operation"] {
             assert!(!super::method_requires_identity(method), "{method}");
         }
     }

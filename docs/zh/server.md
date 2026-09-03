@@ -13,10 +13,9 @@ Server 负责：
 - 个人 Bundle（`resource_ids`）；
 - Draft、操作历史、有序多 Draft Review、决定、评论和原子合并；
 - 不可变 Blob、Tree、Commit、Organization 权威 Ref 与 Project 投影 Ref；
-- Server 共享的 Kanban Issue、成员 assignee、短期 lease claim；
 - 管理配置、token 撤销、审计事件和健康检查。
 
-Server 不负责本机工作目录、目录到 Project 的绑定、macOS bookmark、检索模型和 Project Local Storage。这些状态属于 daemon。Desktop 和 MCP 只能先把 Draft 写入 daemon，再由 daemon 同步；客户端不能绕过 Draft/Review 直接修改 Memory 权威。AgentRun 也是本地执行遥测，不会因为 Server 上存在 claim 就变成共享权威对象。
+Server 不负责本机工作目录、目录到 Project 的绑定、macOS bookmark、检索模型、AgentRun 和 Project Local Storage。这些状态属于 daemon。Desktop 和 MCP 只能先把 Draft 写入 daemon，再由 daemon 同步；客户端不能绕过 Draft/Review 直接修改 Memory 权威。
 
 ## Memory 权威与版本模型
 
@@ -53,12 +52,6 @@ reconciliation 候选绑定 Draft ID、Draft version、Base Commit 和 Current C
 - Draft 编辑或 Ref 前进都会使旧候选失效。
 
 合并持有目标 Ref 锁，并以 `If-Match`/CAS 作为最终并发保护。版本冲突、候选失效或任一校验失败时，事务不推进 Ref，原 Draft 仍可继续检查和协调。
-
-## Kanban 共享权威
-
-`kanban_issues` 是 Project 看板的共享持久权威，保存稳定 Issue 身份、1–999 的 Project 内编号、Project 成员 assignee、内容快照和 `content_revision`。更新使用 revision CAS；assignee 必须仍是该 Project 成员。
-
-`issue_claims` 是带到期时间的执行租约，以 `(project_id, issue_id)` 唯一。Server 只允许当前 claimant/run 续租或释放；未过期的其他 claim 会阻止并发认领。daemon 的 `native_issues` 是本地副本和离线执行状态，AgentRun 保持本地。共享 Issue、claim 与本地投影的具体运行语义见 [Issue 看板设计](/zh/issue-board-design)。
 
 ## HTTP 契约
 
@@ -114,4 +107,4 @@ cargo test -p server
 cargo test -p daemon
 ```
 
-Server 与 daemon 集成测试使用真实 PostgreSQL Testcontainer。发布流程还必须验证生产镜像和 Compose health；仅有文档构建不证明认证、Review 或 Kanban 并发语义正确。
+Server 与 daemon 集成测试使用真实 PostgreSQL Testcontainer。发布流程还必须验证生产镜像和 Compose health；仅有文档构建不证明认证或 Review 并发语义正确。

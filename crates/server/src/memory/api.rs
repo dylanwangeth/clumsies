@@ -4,8 +4,8 @@ use time::OffsetDateTime;
 use crate::api::PageInfo;
 
 /// Neutral, verifiable export of the org's effective Memory state for the
-/// ISSUE-012 migration: every Memory (including native Issues under
-/// issues/ paths), active Drafts, Project org selections and personal
+/// Unified Memory migration: every Memory, active Draft, Project org
+/// selection, and personal
 /// bundles. IDs are emitted as-is so the export doubles as the
 /// old_id -> memory_id identity map (identity is preserved).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

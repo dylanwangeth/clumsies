@@ -1,21 +1,17 @@
-use std::io::{Read, Write};
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use daemon::agent_runtime::hook::{
-    HookEventName, HookHost, MAX_HOOK_INPUT_BYTES, NormalizedHookEvent, normalize_hook_event,
-};
+use daemon::agent_runtime::hook::{HookHost, MAX_HOOK_INPUT_BYTES, normalize_hook_event};
 use daemon::agent_runtime::mcp::McpServer;
 use daemon::agent_runtime::{AgentRuntimeBackend, mcp_contract::AgentRuntimeRequest};
 use daemon::{
-    AgentRunKind, CredentialStore, CredentialStoreError, DAEMON_MACH_SERVICE_NAME,
-    DEV_INSTANCE_ID_ENV, DaemonConfig, DaemonError, DaemonIpcClient, DaemonIpcResponse,
-    DaemonIpcServer, DaemonIpcService, DaemonProjectBindingResolveRequest, DaemonState,
-    IssueBoardState, IssueDetailRequest, LaunchAgentConfig, LaunchAgentController,
-    ProjectAgentAdapterDelivery, ProjectAgentAdapterKind, ProjectAgentAdapterRuntimeRequirement,
-    RecordAgentRunEventResponse, ServerCredentials,
+    CredentialStore, CredentialStoreError, DAEMON_MACH_SERVICE_NAME, DEV_INSTANCE_ID_ENV,
+    DaemonConfig, DaemonError, DaemonIpcClient, DaemonIpcResponse, DaemonIpcServer,
+    DaemonIpcService, DaemonProjectBindingResolveRequest, DaemonState, LaunchAgentConfig,
+    LaunchAgentController, ProjectAgentAdapterDelivery, ProjectAgentAdapterKind,
+    ProjectAgentAdapterRuntimeRequirement, ServerCredentials,
 };
-use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -23,7 +19,7 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProcessMode {
     McpServe(Option<ProjectAgentAdapterRuntimeRequirement>),
-    AgentIssueRunEvent {
+    AgentRunEvent {
         host: HookHost,
         required_adapter: Option<ProjectAgentAdapterRuntimeRequirement>,
     },
@@ -109,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match process_mode(&args)? {
         ProcessMode::McpServe(required_adapter) => run_mcp_proxy(required_adapter),
-        ProcessMode::AgentIssueRunEvent {
+        ProcessMode::AgentRunEvent {
             host,
             required_adapter,
         } => {
@@ -167,22 +163,22 @@ fn process_mode(args: &[String]) -> Result<ProcessMode, Box<dyn std::error::Erro
             Ok(ProcessMode::McpServe(Some(required_adapter)))
         }
         [agent, command, flag, host]
-            if agent == "_agent" && command == "issue-run-event" && flag == "--host" =>
+            if agent == "_agent" && command == "agent-run-event" && flag == "--host" =>
         {
             let (host, _) = agent_runtime_requirement(host, "legacy-files")?;
-            Ok(ProcessMode::AgentIssueRunEvent {
+            Ok(ProcessMode::AgentRunEvent {
                 host,
                 required_adapter: None,
             })
         }
         [agent, command, host_flag, host, delivery_flag, delivery]
             if agent == "_agent"
-                && command == "issue-run-event"
+                && command == "agent-run-event"
                 && host_flag == "--host"
                 && delivery_flag == "--delivery" =>
         {
             let (host, required_adapter) = agent_runtime_requirement(host, delivery)?;
-            Ok(ProcessMode::AgentIssueRunEvent {
+            Ok(ProcessMode::AgentRunEvent {
                 host,
                 required_adapter: Some(required_adapter),
             })
@@ -276,13 +272,7 @@ fn run_hook_proxy(
         workspace_path,
         required_adapter,
     })?;
-    let response = client.record_agent_run_event(event.to_record_request(&binding.project_id))?;
-    if response.duplicate {
-        return Ok(());
-    }
-    if let Some(output) = hook_context(&client, &binding.project_id, &event, &response) {
-        write_hook_output(&output)?;
-    }
+    client.record_agent_run_event(event.to_record_request(&binding.project_id))?;
     Ok(())
 }
 
@@ -413,83 +403,6 @@ fn agent_runtime_matches(resident: &daemon::AgentRuntimeIdentity) -> bool {
         && resident.build_id == daemon::agent_runtime::AGENT_RUNTIME_BUILD_ID
 }
 
-fn hook_context(
-    client: &DaemonIpcClient,
-    project_id: &str,
-    event: &NormalizedHookEvent,
-    response: &RecordAgentRunEventResponse,
-) -> Option<Value> {
-    if !matches!(
-        event.hook_event_name(),
-        HookEventName::UserPromptSubmit | HookEventName::SubagentStart
-    ) {
-        return None;
-    }
-    let run = response.run.as_ref()?;
-    if run.revision < 1 || !safe_run_id(&run.run_id) {
-        return None;
-    }
-    let binding = run
-        .issue_number
-        .and_then(|number| {
-            client
-                .get_issue_detail(IssueDetailRequest {
-                    project_id: project_id.to_owned(),
-                    issue_number: number,
-                })
-                .ok()
-        })
-        .map(|detail| {
-            format!(
-                "This run is bound to {} ({}). ",
-                detail.issue.issue_key,
-                board_state_title(detail.issue.board_state)
-            )
-        })
-        .unwrap_or_else(|| "This run is not bound to any Issue yet. ".to_owned());
-    let context = match run.kind {
-        AgentRunKind::Root => format!(
-            "Clumsies current root AgentRun: run_id={}, revision={}. {}Decide semantically whether this prompt continues an existing native Issue, creates a new durable Issue, or should not become an Issue; never infer that from text matching. Use kanban.list to inspect existing Issues and kanban.create to capture a new one. Before calling kanban.begin_work, check the Issue's active_runs via kanban.get: another AgentRun may already hold it, so claim only the Issue this run is actually working. Call kanban.begin_work with this run_id and revision only when the Issue is the active line of work.",
-            run.run_id, run.revision, binding
-        ),
-        AgentRunKind::Subagent => format!(
-            "Clumsies current subagent AgentRun: run_id={}, revision={}. {}Call kanban.begin_work only when this subagent is explicitly working an existing native Issue. Subagents must not request Issue closure; report findings to the root Agent.",
-            run.run_id, run.revision, binding
-        ),
-    };
-    Some(json!({
-        "hookSpecificOutput": {
-            "hookEventName": event.hook_event_name().as_str(),
-            "additionalContext": context
-        }
-    }))
-}
-
-fn write_hook_output(output: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    let stdout = std::io::stdout();
-    let mut stdout = stdout.lock();
-    serde_json::to_writer(&mut stdout, output)?;
-    stdout.write_all(b"\n")?;
-    stdout.flush()?;
-    Ok(())
-}
-
-fn safe_run_id(run_id: &str) -> bool {
-    run_id.strip_prefix("arun_").is_some_and(|suffix| {
-        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
-    })
-}
-
-fn board_state_title(state: IssueBoardState) -> &'static str {
-    match state {
-        IssueBoardState::Todo => "Todo",
-        IssueBoardState::InProgress => "In Progress",
-        IssueBoardState::Paused => "Paused",
-        IssueBoardState::InReview => "In Review",
-        IssueBoardState::Done => "Done",
-    }
-}
-
 async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let config = DaemonConfig::from_env()?;
     let runtime_mode = daemon_runtime_mode(config.dev_instance_id.as_deref())?;
@@ -546,7 +459,7 @@ async fn run_daemon(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>>
             [] => unreachable!(),
             _ => {
                 tracing::error!(
-                    "usage: clumsiesd [mcp serve|_agent issue-run-event --host <host>|--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
+                    "usage: clumsiesd [mcp serve|_agent agent-run-event --host <host>|--print-launch-agent-plist|--install-launch-agent|--status-launch-agent|--bootstrap-launch-agent|--bootout-launch-agent|--restart-launch-agent|--reconcile-launch-agent]"
                 );
                 std::process::exit(64);
             }
@@ -665,12 +578,12 @@ mod tests {
         assert_eq!(
             process_mode(&[
                 "_agent".to_owned(),
-                "issue-run-event".to_owned(),
+                "agent-run-event".to_owned(),
                 "--host".to_owned(),
                 "codex".to_owned(),
             ])
             .unwrap(),
-            ProcessMode::AgentIssueRunEvent {
+            ProcessMode::AgentRunEvent {
                 host: HookHost::Codex,
                 required_adapter: None,
             }
@@ -694,14 +607,14 @@ mod tests {
         assert_eq!(
             process_mode(&[
                 "_agent".to_owned(),
-                "issue-run-event".to_owned(),
+                "agent-run-event".to_owned(),
                 "--host".to_owned(),
                 "codex".to_owned(),
                 "--delivery".to_owned(),
                 "host-plugin".to_owned(),
             ])
             .unwrap(),
-            ProcessMode::AgentIssueRunEvent {
+            ProcessMode::AgentRunEvent {
                 host: HookHost::Codex,
                 required_adapter: Some(plugin_requirement),
             }

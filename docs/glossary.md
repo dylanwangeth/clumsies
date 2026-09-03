@@ -129,29 +129,15 @@ Adapter is not the Server and not the MCP protocol itself. It is the layer that 
 
 ## MCP
 
-MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates task-relevant fragments, loads known complete resources, stores explicit Draft refinements, and drives the native Kanban.
+MCP is the agent-facing protocol surface. It is the runtime path through which an agent activates task-relevant fragments, loads known complete resources, and stores explicit Draft refinements.
 
 MCP is not an authority or storage layer. The App-bundled Rust `clumsiesd mcp
 serve` proxy validates the agent-facing contract and delegates Effective
-Memory, retrieval, loading, Draft persistence, and Kanban operations to the
+Memory, retrieval, loading, and Draft persistence to the
 resident daemon over XPC.
 
-The current implementation exposes four concise tools: `activate`, `load`,
-`store`, and `kanban`. That is the runtime contract the docs should describe.
-
-## Issue and Kanban
-
-An Issue is a native, agent-managed project concern stored in the daemon
-database — not a Memory object and not a GitHub Issue. The macOS board shows
-five columns: Todo, In Progress, In Review, the derived Abandoned bucket (In
-Progress Issues whose AgentRun claim silently died), and Done. A Paused Issue
-keeps its place in In Progress with a paused badge.
-
-Board states are `todo`, `in_progress`, `paused`, `in_review`, and `done`.
-Agents transition them with explicit `kanban` operations (`begin_work`,
-`pause_issue`, `resume_issue`, `unclaim`, `request_closure`); only the user's
-Desktop gates (Approve, Request Changes, Reopen, Release) move authority
-states. AgentRun lifecycle events never advance an Issue.
+The current implementation exposes one `memory` tool with `activate`, `load`,
+and `store` operations.
 
 ## Retrieval Run and Evaluation Case
 

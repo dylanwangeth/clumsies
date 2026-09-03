@@ -1,16 +1,15 @@
 # MCP
 
-Clumsies exposes two agent-facing tools:
+Clumsies exposes one agent-facing tool:
 
 | Tool | Purpose |
 |---|---|
 | `memory` | Read the bound Project's Effective Memory or persist Project-carried proposal Drafts (`store`). |
-| `kanban` | Create, update, list, or semantically transition native Issues. |
 
 The App-bundled Rust `clumsiesd mcp serve` process is a protocol proxy.
 Effective Memory construction, indexing, retrieval, exact loading, Draft
-persistence, and AgentRun projection belong to the resident `clumsiesd` and
-are reached over local XPC. The proxy exposes only the two typed MCP tools; it
+persistence, and AgentRun observation belong to the resident `clumsiesd` and
+are reached over local XPC. The proxy exposes only the typed `memory` tool; it
 cannot pass arbitrary JSON through to daemon methods.
 
 The proxy verifies the resident's Agent runtime protocol revision and build
@@ -133,8 +132,7 @@ Draft overlays. It does not perform fuzzy search, embedding, or reranking.
 ### Store
 
 Call `memory` with `op: { store: ... }` only when the user explicitly asks to create, update, rename,
-delete, or discard managed memory. Issues are native objects managed by
-`kanban`; do not model them as Memory documents.
+delete, or discard managed memory.
 
 Every MCP Draft is carried by the Project resolved from the current directory.
 Its internal `org` scope is the authority target for a future Review, not Draft
@@ -222,100 +220,6 @@ authority Ref moved. Ordinary Project members may propose and submit changes,
 but only an Org owner or administrator may approve, reject, or merge an Org
 publication Review.
 
-## Issue
-
-`kanban` manages durable native Issues and connects them to installation-local
-AgentRun observations without deriving semantic state from execution telemetry. An
-AgentRun records one root turn or subagent execution; its Stop does not advance
-an Issue.
-
-The input contains exactly one tagged operation under `op`:
-
-| Operation | Fields | Result |
-|---|---|---|
-| `list` | none | The bound Project's native Issue board and recent unlinked runs. |
-| `get` | exactly one of global `issue_id` or Project-local `issue_key` | The complete Issue, acceptance criteria, external references, dependencies, blocking facts, verification protocol, `changed_by_run_id`, state, revision, event timeline, and owning `project_id`. |
-| `create` | `title`, `description`; optional `acceptance_criteria`, `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | A new Todo Issue with an atomically allocated key. |
-| `update` | `issue_key`, Issue `expected_revision`, and at least one semantic field, including optional `external_references`, `dependencies`, `blocking_facts`, `verification_level`, `verification_steps` | Updated Issue content without a status transition. |
-| `begin_work` | `issue_key`, Hook-issued `run_id`, and `expected_revision` | In Progress state plus the linked AgentRun. Agents cannot mint a manual run, and one session holds at most one In Progress Issue. |
-| `pause_issue` | `run_id`, `issue_key` | Paused state; the pausing run may later resume. |
-| `resume_issue` | `run_id`, `issue_key`; optional `takeover` | Back to In Progress. Non-owner resume requires `takeover`. |
-| `request_closure` | `issue_key`, `run_id`, `expected_revision`; optional `summary` | In Review state plus the linked AgentRun. Rejected when the Issue requires human verification and `verification_steps` is empty. |
-| `unclaim` | `issue_key`, `expected_revision`; optional `run_id` | Releases an In Progress, Paused, or abandoned Issue back to Todo without an AgentRun binding. Refused while an active run is working the Issue (that run must pause or request closure first); a human release omits `run_id`. |
-| `export` | `issue_key` | A deterministic, portable Markdown snapshot of the Issue. |
-
-`issue_id` uses `issue_` followed by 32 lowercase hexadecimal characters and is
-globally unique. This is the value copied from Kanban and passed to `get`.
-`issue_key` uses the exact `ISSUE-NNN` form and is only Project-local: exactly three
-digits, with `ISSUE-000` reserved as invalid. Repeating the same start is
-idempotent; changing an existing run association to another Issue is a
-conflict. `expected_revision` is the exact positive run revision injected by
-the lifecycle hook.
-
-`verification_level` is `agent_self`, `human_required`, or `mixed`, with
-`verification_steps` listing the human verification protocol for closure.
-`request_closure` is rejected when the level is not `agent_self` and
-`verification_steps` is empty; the Agent must first add the protocol with
-`update`.
-
-`external_references` is a bounded array of objects with `kind` (`issue` or
-`pull_request`) and an absolute HTTP(S) `url`. Omitting it on create produces an
-empty list; omitting it on update preserves the current list; passing `[]`
-clears it. `list` and `get` return the normalized list.
-
-`dependencies` is a bounded array of `ISSUE-NNN` keys in the same Project that
-must be Done before this Issue can start. `blocking_facts` is a bounded array of
-checkable predicates: `fact_id` (stable identifier), `kind`
-(`host_capability` or `external`), optional `value`, `description`, and
-`satisfied`. Both follow the same patch semantics as `external_references`:
-omission preserves, `[]` clears. Dependency cycles, self-references,
-duplicates, and missing targets are rejected. `list` and `get` return each
-Issue's resolved dependency states, blocking facts, `blocked`, and concrete
-`blocking_reasons`, so an Agent can judge whether a Todo is actionable now.
-
-On a successful root or subagent start, the lifecycle hook adds a short context
-message containing that agent's current `run_id` and revision. Use those exact
-values after deciding semantically whether the prompt continues an Issue,
-creates a new native Issue, or should not create one. Use `create` for durable
-work and `begin_work` only when it is the active line of work. Before finishing,
-a root Agent uses `request_closure` only after judging the linked Issue
-acceptance criteria satisfied. Subagents cannot request closure. Do not choose
-a current run from `list` by recency: concurrent runs make that inference
-ambiguous.
-
-The optional closure summary is limited to 1,000 UTF-8 bytes. In Review
-(formerly called Closure Requested) is an Agent proposal. Agents cannot approve
-it; only the user's desktop Approve gate makes the Issue Done. The board shows
-five columns — Todo, In Progress, In Review, Abandoned, Done — where Abandoned
-is a derived bucket of In Progress Issues whose AgentRun claim silently died
-(stale, no active run, 24h of inactivity); the daemon never stores an
-"abandoned" state. A Paused Issue keeps its place in In Progress with a paused
-badge, and its handling Agent may resume it or a new handler may take it over
-with `takeover`.
-
-Example:
-
-```json
-{
-  "op": {
-    "request_closure": {
-      "issue_key": "ISSUE-123",
-      "run_id": "arun_123",
-      "summary": "Acceptance criteria are satisfied.",
-      "expected_revision": 4
-    }
-  }
-}
-```
-
-`get` resolves its global ID independently and returns the owning Project. List
-and mutations use the Project binding established for the MCP process. For
-`begin_work` and `request_closure`, the MCP proxy injects that Project ID into
-the private daemon request; a run from another Project is not visible or
-mutable even if its ID and revision are known. The resident daemon owns Issue
-discovery, AgentRun association, and board-state derivation; the proxy only
-validates the tagged input and forwards the operation.
-
 ## Daemon operations
 
 | XPC method | Consumer |
@@ -323,41 +227,23 @@ validates the tagged input and forwards the operation.
 | `activate_memory` | MCP `activate` |
 | `load_memory` | MCP `load` |
 | `store_draft_operation` | MCP `store`, Desktop, and other clients |
-| `list_issue_board` | MCP `kanban.list` and Desktop |
-| `get_issue_detail` | Native Issue detail lookup for local clients |
-| `get_issue` | MCP `kanban.get` (by `issue_id` or `issue_key`) |
-| `export_issue` | MCP `kanban.export` |
-| `start_issue_work` | MCP `kanban.begin_work` |
-| `pause_issue` | MCP `kanban.pause_issue` |
-| `resume_issue` | MCP `kanban.resume_issue` |
-| `request_issue_closure` | MCP `kanban.request_closure` |
-| `unclaim_issue` | MCP `kanban.unclaim`, Desktop Release |
-| `apply_issue_gate` | Desktop Approve / Request Changes / Reopen gates |
-| `remove_issue` | Desktop Archive / Delete cleanup |
 | `record_agent_run_event` | Private Coding Agent lifecycle hook bridge |
 | `search_index_status` | Desktop diagnostics and tests |
 | `rebuild_search_index` | Recovery, tests, and development tooling |
 
-Lifecycle hooks do not call the agent-facing `kanban` tool. Adapter-managed
-scripts pipe the host event to the private command
-`clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity`. The
+Adapter-managed scripts pipe lifecycle events to the private command
+`clumsiesd _agent agent-run-event --host codex|claude-code|opencode|dsh|antigravity`. The
 short-lived Rust proxy resolves the repository's daemon Project binding,
 reduces the host payload to bounded identifiers and lifecycle fields, and
-calls `record_agent_run_event`. It emits a bounded current-run context
-containing `run_id`, revision, and binding state after a successful root or
-subagent start. Managed adapters neither install nor synthesize a normal root
-`Stop`, and the proxy never blocks a host to force a closure decision.
+calls `record_agent_run_event`. Managed adapters neither install nor synthesize
+a normal root `Stop`, and the proxy never blocks a host.
 `StopFailure`, `SubagentStop`, and `SessionEnd` remain non-blocking lifecycle
 observations. All parsing, binding, IPC, and daemon failures remain fail-open.
 
 The private bridge does not persist raw hook JSON, prompts, transcripts, tool
 payloads, or assistant messages. `record_agent_run_event` is not exposed as an
-MCP tool; agents use `kanban.begin_work` and `kanban.request_closure` for explicit
-semantic updates. Closure judgment is supplied by an opt-in skill or a
-manually maintained workflow, not by a lifecycle callback. Prompt text is not
-matched to an Issue automatically. The bridge accepts a legacy or manually
-forwarded normal `Stop` for compatibility, but records only AgentRun telemetry
-and never blocks or mutates an Issue.
+MCP tool. The bridge accepts a legacy or manually forwarded normal `Stop` for
+compatibility, but records only AgentRun telemetry and never blocks the host.
 
 Every valid `activate_memory` call also writes one local Retrieval Run from the
 same ranked candidate trace used for the response. This does not add fields to

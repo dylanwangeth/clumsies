@@ -241,7 +241,7 @@ The current daemon transport is macOS launchd plus XPC. Its LaunchAgent label
 and Mach service are both `ai.clumsies.daemon`, under the `ai.clumsies` product
 namespace. The signed App bundle contains one Rust `clumsiesd` executable. With
 no proxy subcommand it runs as the resident service; `mcp serve` and `_agent
-issue-run-event` run as short-lived protocol proxies. Adapters pin that exact
+agent-run-event` run as short-lived protocol proxies. Adapters pin that exact
 App-bundled path rather than searching `PATH` or copying another executable.
 
 Before forwarding any Agent traffic, a proxy compares its protocol revision and

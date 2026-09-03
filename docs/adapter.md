@@ -22,8 +22,8 @@ one of two short-lived proxy modes:
 ```text
 clumsiesd mcp serve
 clumsiesd mcp serve --host codex --delivery host-plugin
-clumsiesd _agent issue-run-event --host codex|claude-code|opencode|dsh|antigravity
-clumsiesd _agent issue-run-event --host codex --delivery host-plugin
+clumsiesd _agent agent-run-event --host codex|claude-code|opencode|dsh|antigravity
+clumsiesd _agent agent-run-event --host codex --delivery host-plugin
 ```
 
 The installer requires an executable whose canonical path ends in
@@ -47,14 +47,14 @@ adapter record per Server authority, workspace root, and host.
 | Host | MCP registration | Lifecycle integration |
 | --- | --- | --- |
 | Codex | `clumsies@clumsies-local` plugin → pinned MCP server | plugin Hooks; no project files |
-| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/issue-run-event.sh` |
+| Claude Code | `.mcp.json` → `mcpServers.clumsies` | `.claude/settings.json`, `hooks/resolve-binary.sh`, `hooks/agent-run-event.sh` |
 | opencode | `opencode.json` → `mcp.clumsies` | `.opencode/plugins/clumsies.ts` |
 | dsh | profile-managed MCP registration | `.dsh/clumsies.json` routes the separately installed client bridge |
-| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/issue-run-event.sh` |
+| Antigravity | `.mcp.json` → `mcpServers.clumsies` | `.agents/hooks.json`, `.agents/hooks/resolve-binary.sh`, `.agents/hooks/agent-run-event.sh` |
 
 Every host consumes the MCP tools directly. The Codex plugin carries one thin
 `clumsies` bootstrap Skill that tells the harness when to activate Memory and
-how to use Kanban. Project-maintained skills such as `coding` are ordinary
+how to load relevant project guidance. Project-maintained skills such as `coding` are ordinary
 resources in Memory Space: the bootstrap loads them through `memory.load` when
 relevant and never copies or installs them into a host skill directory.
 
@@ -78,15 +78,14 @@ events.
 ## Lifecycle bridge
 
 The Codex plugin and Claude Code direct-file adapter each register an
-`issue-run-event.sh` for prompt, subagent, and session lifecycle. Codex forwards
+`agent-run-event.sh` for prompt, subagent, and session lifecycle. Codex forwards
 the same `host-plugin` delivery marker used by MCP; the Hook resolves its
 repository binding rather than a project-level Codex switch.
 Codex treats plugin Hooks as non-managed code and skips a new or changed Hook
 until the user reviews and trusts its current hash in `/hooks`. Adapter never
 bypasses that trust boundary. Plugin changes do not hot-load into an already
 open Codex task: restart Codex after install or update, then start a new task.
-MCP and Memory are then available; AgentRun injection and run-bound Kanban
-actions begin after Hook trust.
+MCP and Memory are then available; AgentRun observation begins after Hook trust.
 Claude Code additionally registers `StopFailure`. Antigravity registers
 `PreInvocation`. None of these adapters registers a normal root `Stop`. The
 opencode plugin forwards user messages, failed assistant completions, and
@@ -96,7 +95,7 @@ The dsh client bridge follows the same non-blocking boundary.
 ```text
 host event
   -> managed Hook or plugin
-  -> clumsiesd _agent issue-run-event --host <host>
+  -> clumsiesd _agent agent-run-event --host <host>
   -> typed XPC record_agent_run_event
   -> resident daemon AgentRun
 ```
@@ -107,16 +106,13 @@ messages, tool payloads, and failure bodies never enter the daemon request.
 Lifecycle observation is fail-open: an unavailable runtime or daemon must not
 prevent the Agent host from continuing.
 
-Successful root and subagent starts return bounded context containing the
-current `run_id`, revision, binding status, and the information needed for
-explicit Kanban work. Lifecycle integration never creates a stop-blocking
-closure prompt. Acceptance-criteria judgment and `kanban.request_closure`
-belong to an opt-in skill or a manually maintained Agent workflow.
+Successful delivery records bounded AgentRun telemetry. Lifecycle integration
+does not inject prompt context or create a stop-blocking completion prompt.
 
 The private bridge continues to accept a legacy or manually forwarded root
 `Stop` so older installations fail open while they are cleaned up. Such an
-event is only a non-blocking AgentRun observation: it cannot call `kanban`,
-block the host, or advance an Issue. `StopFailure`, `SubagentStop`, and
+event is only a non-blocking AgentRun observation: it cannot block the host.
+`StopFailure`, `SubagentStop`, and
 `SessionEnd` remain available because they do not create a root completion
 decision point.
 
@@ -184,8 +180,8 @@ helper copy from silently taking over the Agent runtime.
 | MCP and Hook proxy modes | `crates/daemon/src/main.rs` |
 | Typed MCP contract | `crates/daemon/src/agent_runtime/mcp_contract.rs` |
 | Hook normalization | `crates/daemon/src/agent_runtime/hook.rs` |
-| Codex plugin Hook template | `packages/clumsies/scripts/issue-run-event.sh.tpl` |
-| Direct-file Hook templates | `assets/adapters/*/runtime/hooks/issue-run-event.sh.tpl` |
+| Codex plugin Hook template | `packages/clumsies/scripts/agent-run-event.sh.tpl` |
+| Direct-file Hook templates | `assets/adapters/*/runtime/hooks/agent-run-event.sh.tpl` |
 | opencode lifecycle plugin | `assets/adapters/opencode/runtime/plugin.ts` |
 
 The retired Zig adapter implementation remains recoverable from Git commit

@@ -1,10 +1,10 @@
 #!/bin/sh
-# ISSUE-012 migration tooling: verify the unified Memory migration preserved
+# Verify that the unified Memory migration preserved
 # every identity and byte of the org's effective Memory state.
 #
 # The server exposes a neutral, verifiable export at
 #   GET /api/v1/admin/memory-export  (org admin bearer token)
-# that emits memories (including native issues/ paths) with their
+# that emits memories with their
 # content_hash verbatim, plus active drafts, org selections and bundles.
 # Because IDs are emitted unchanged, the "before" export doubles as the
 # old_id -> memory_id identity map: after the migration the same IDs must

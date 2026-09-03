@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${PLUGIN_ROOT}/scripts/issue-run-event.sh\"",
+            "command": "bash \"${PLUGIN_ROOT}/scripts/agent-run-event.sh\"",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${PLUGIN_ROOT}/scripts/issue-run-event.sh\"",
+            "command": "bash \"${PLUGIN_ROOT}/scripts/agent-run-event.sh\"",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${PLUGIN_ROOT}/scripts/issue-run-event.sh\"",
+            "command": "bash \"${PLUGIN_ROOT}/scripts/agent-run-event.sh\"",
             "timeout": 5
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${PLUGIN_ROOT}/scripts/issue-run-event.sh\"",
+            "command": "bash \"${PLUGIN_ROOT}/scripts/agent-run-event.sh\"",
             "timeout": 3
           }
         ]
