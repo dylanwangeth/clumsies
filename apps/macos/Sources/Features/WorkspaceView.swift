@@ -210,6 +210,9 @@ struct WorkspaceView: View {
                 }
             }
         }
+        .sheet(isPresented: $store.showsProjectCreation) {
+            ProjectCreationSheet(store: store)
+        }
         .onChange(of: store.selectedSection) { _, _ in
             DispatchQueue.main.async {
                 store.searchQuery = ""
@@ -524,9 +527,6 @@ struct WorkspaceView: View {
                 showsSyncIssuePopover = false
             }
         }
-        .sheet(isPresented: $store.showsProjectCreation) {
-            ProjectCreationSheet(store: store)
-        }
         .sheet(isPresented: $showsProjectReviewRequest) {
             ReviewRequestSheet(
                 initialTitle: "Update \(store.activeProject?.name ?? "project") memory",
@@ -703,9 +703,6 @@ struct WorkspaceView: View {
             if presentation == nil || presentation?.isSyncing == true {
                 showsSyncIssuePopover = false
             }
-        }
-        .sheet(isPresented: $store.showsProjectCreation) {
-            ProjectCreationSheet(store: store)
         }
     }
 
@@ -1152,9 +1149,6 @@ struct WorkspaceView: View {
         .task(id: store.activeProjectId) {
             await store.refreshProjectMembers()
         }
-        .sheet(isPresented: $store.showsProjectCreation) {
-            ProjectCreationSheet(store: store)
-        }
     }
 
     private var showsUnlinkedActivityButton: Bool {
@@ -1364,7 +1358,8 @@ private struct IssueProjectFilter: View {
             unscopedTitle: nil,
             unscopedSystemImage: nil,
             isLoading: store.loadingProjectId != nil,
-            help: "Filter Kanban by Project"
+            help: "Filter Kanban by Project",
+            onCreate: store.canManageProjects ? { store.presentProjectCreation() } : nil
         ) { projectId in
             if let projectId {
                 Task { await store.selectProject(projectId) }
@@ -1383,7 +1378,8 @@ private struct MemoryProjectFilter: View {
             unscopedTitle: "Org",
             unscopedSystemImage: "building.2",
             isLoading: store.isSwitchingMemoryContext,
-            help: "Filter Memory by Project"
+            help: "Filter Memory by Project",
+            onCreate: store.canManageProjects ? { store.presentProjectCreation() } : nil
         ) { projectId in
             if let projectId {
                 Task { await store.selectProject(projectId) }
@@ -1405,7 +1401,8 @@ private struct ActivityProjectFilter: View {
             unscopedTitle: "All Projects",
             unscopedSystemImage: nil,
             isLoading: model.isLoading,
-            help: "Filter Activity by Project"
+            help: "Filter Activity by Project",
+            onCreate: store.canManageProjects ? { store.presentProjectCreation() } : nil
         ) { projectId in
             Task { await model.selectProject(projectId) }
         }

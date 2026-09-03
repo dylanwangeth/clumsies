@@ -45,6 +45,7 @@ struct ProjectFilterMenu: View {
     let unscopedSystemImage: String?
     let isLoading: Bool
     let help: String
+    let onCreate: (() -> Void)?
     let onSelect: (String?) -> Void
 
     private var selectionTitle: String {
@@ -92,6 +93,14 @@ struct ProjectFilterMenu: View {
                     }
                     .disabled(isLoading)
                 }
+            }
+
+            if let onCreate {
+                Divider()
+                Button("New Project…", systemImage: "plus") {
+                    onCreate()
+                }
+                .disabled(isLoading)
             }
         }
         .help(help)
