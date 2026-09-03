@@ -120,11 +120,11 @@ async fn approve_and_merge(
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft_id.to_owned(),
                     expected_draft_version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -566,11 +566,11 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft.draft.draft_id.clone(),
                     expected_draft_version: draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -649,11 +649,11 @@ async fn local_draft_refreshes_auth_and_syncs_to_the_real_server() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: rejected.draft.draft_id.clone(),
                     expected_draft_version: edited.draft.server_version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: Some("Revised daemon context".to_owned()),
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -1386,11 +1386,11 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: server_behind.draft.draft_id.clone(),
                     expected_draft_version: server_behind.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -1494,11 +1494,11 @@ async fn offline_behind_draft_stays_editable_until_explicit_reconciliation() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: rebased.draft.draft.draft_id.clone(),
                     expected_draft_version: rebased.draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -2640,11 +2640,11 @@ async fn merged_commit_materializes_on_two_daemons_and_survives_restart() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft.draft.draft_id,
                     expected_draft_version: draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await

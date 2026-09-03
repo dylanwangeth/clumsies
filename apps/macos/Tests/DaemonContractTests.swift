@@ -2015,20 +2015,31 @@ final class DaemonContractTests: XCTestCase {
     func testReviewRequestUsesRequiredDraftArray() throws {
         let request = CreateReviewRequest(
             drafts: [
-                .init(draftId: "draft-1", expectedDraftVersion: 1),
-                .init(draftId: "draft-2", expectedDraftVersion: 2),
+                .init(
+                    draftId: "draft-1",
+                    expectedDraftVersion: 1,
+                    candidateId: nil,
+                    resolvedState: nil
+                ),
+                .init(
+                    draftId: "draft-2",
+                    expectedDraftVersion: 2,
+                    candidateId: "candidate-2",
+                    resolvedState: nil
+                ),
             ],
             title: "Directory update",
-            description: "",
-            candidateId: nil,
-            resolvedState: nil
+            description: ""
         )
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: JSONCoding.encoder().encode(request))
                 as? [String: Any]
         )
-        XCTAssertEqual((object["drafts"] as? [[String: Any]])?.count, 2)
+        let drafts = try XCTUnwrap(object["drafts"] as? [[String: Any]])
+        XCTAssertEqual(drafts.count, 2)
         XCTAssertNil(object["draft_id"])
+        XCTAssertNil(object["candidate_id"])
+        XCTAssertEqual(drafts[1]["candidate_id"] as? String, "candidate-2")
     }
 
     func testReconciliationCandidateAndRebaseWireContract() throws {
@@ -2113,20 +2124,21 @@ final class DaemonContractTests: XCTestCase {
             expectedReviewVersion: 4,
             drafts: [.init(
                 draftId: candidate.draftId,
-                expectedDraftVersion: candidate.draftVersion
+                expectedDraftVersion: candidate.draftVersion,
+                candidateId: candidate.candidateId,
+                resolvedState: nil
             )],
             title: "Guide",
-            description: "",
-            candidateId: candidate.candidateId,
-            resolvedState: nil
+            description: ""
         )
         let submissionData = try JSONCoding.encoder().encode(submission)
         let submissionObject = try XCTUnwrap(
             JSONSerialization.jsonObject(with: submissionData) as? [String: Any]
         )
-        XCTAssertEqual(submissionObject["candidate_id"] as? String, "candidate-1")
+        XCTAssertNil(submissionObject["candidate_id"])
         XCTAssertEqual(submissionObject["expected_review_version"] as? Int, 4)
         let submissionDrafts = try XCTUnwrap(submissionObject["drafts"] as? [[String: Any]])
+        XCTAssertEqual(submissionDrafts.first?["candidate_id"] as? String, "candidate-1")
         XCTAssertEqual(submissionDrafts.first?["expected_draft_version"] as? Int, 7)
     }
 

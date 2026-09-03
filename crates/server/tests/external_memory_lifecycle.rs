@@ -200,11 +200,11 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: "drf_legacy_open".to_owned(),
                     expected_draft_version: 1,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -249,11 +249,11 @@ async fn legacy_project_drafts_cannot_enter_or_complete_publication() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: "drf_legacy_open".to_owned(),
                     expected_draft_version: 1,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -1479,11 +1479,11 @@ async fn invalid_org_projection_rolls_back_authority_and_every_ref() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: org_draft.draft.draft_id,
                     expected_draft_version: org_draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -1762,11 +1762,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: edited.draft.draft_id.clone(),
                 expected_draft_version: edited.draft.version,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: None,
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await;
@@ -1781,11 +1781,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: edited.draft.draft_id.clone(),
                 expected_draft_version: edited.draft.version - 1,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: None,
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await;
@@ -1800,11 +1800,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: edited.draft.draft_id.clone(),
                 expected_draft_version: edited.draft.version,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: None,
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await;
@@ -1828,11 +1828,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: edited.draft.draft_id.clone(),
                 expected_draft_version: edited.draft.version,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: Some("Revised review lifecycle context".to_owned()),
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await;
@@ -1879,11 +1879,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: edited.draft.draft_id.clone(),
                 expected_draft_version: edited.draft.version,
+                candidate_id: Some(candidate_id),
+                resolved_state: None,
             }],
             title: Some("Revised review lifecycle context".to_owned()),
             description: None,
-            candidate_id: Some(candidate_id),
-            resolved_state: None,
         },
     )
     .await;
@@ -1921,11 +1921,11 @@ async fn rejected_review_reopens_its_draft_and_reuses_the_same_review() {
             drafts: vec![ReviewDraftRequest {
                 draft_id: resubmitted.draft.draft_id.clone(),
                 expected_draft_version: resubmitted.draft.version,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: None,
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await;
@@ -2376,11 +2376,11 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
                 drafts: vec![ReviewDraftRequest {
                     draft_id: seed.draft.draft_id,
                     expected_draft_version: seed.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -2455,11 +2455,11 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
                 drafts: vec![ReviewDraftRequest {
                     draft_id: local_update.draft.draft_id.clone(),
                     expected_draft_version: local_update.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -2528,11 +2528,11 @@ async fn reconciliation_handles_overlapping_updates_and_editable_behind_drafts()
                 drafts: vec![ReviewDraftRequest {
                     draft_id: remote.draft.draft_id,
                     expected_draft_version: remote.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -3238,11 +3238,11 @@ async fn project_org_selection_resolves_legacy_path_only_draft_after_authority_r
                 drafts: vec![ReviewDraftRequest {
                     draft_id: rename_draft.draft.draft_id,
                     expected_draft_version: rename_draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -3623,11 +3623,11 @@ async fn created_org_draft_materializes_local_identity_updates_and_renames() {
                 drafts: vec![ReviewDraftRequest {
                     draft_id: draft.draft.draft_id,
                     expected_draft_version: draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -3765,11 +3765,11 @@ async fn org_delete_merge_advances_authority_past_other_projects_active_drafts()
                 drafts: vec![ReviewDraftRequest {
                     draft_id: deletion_draft.draft.draft_id,
                     expected_draft_version: deletion_draft.draft.version,
+                    candidate_id: None,
+                    resolved_state: None,
                 }],
                 title: None,
                 description: None,
-                candidate_id: None,
-                resolved_state: None,
             },
         )
         .await
@@ -4184,11 +4184,11 @@ async fn create_review_for_draft(app: axum::Router, draft: &DraftDetail) -> Revi
             drafts: vec![ReviewDraftRequest {
                 draft_id: draft.draft.draft_id.clone(),
                 expected_draft_version: draft.draft.version,
+                candidate_id: None,
+                resolved_state: None,
             }],
             title: None,
             description: None,
-            candidate_id: None,
-            resolved_state: None,
         },
     )
     .await

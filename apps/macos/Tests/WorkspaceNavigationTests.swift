@@ -416,6 +416,27 @@ final class WorkspaceNavigationTests: XCTestCase {
         XCTAssertTrue(source.contains(".disabled(activeProjectReviewDrafts.isEmpty)"))
     }
 
+    func testProjectReviewCollectsEveryCandidateBeforeOneSubmission() throws {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workspaceSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/WorkspaceView.swift"),
+            encoding: .utf8
+        )
+        let reviewSource = try String(
+            contentsOf: macOSRoot.appending(path: "Sources/Features/MemoryWorkspaceView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(workspaceSource.contains(
+            "store.reconciliationCandidates(for: pendingProjectReviewDrafts)"
+        ))
+        XCTAssertTrue(reviewSource.contains("Text(\"Update and Request Review\")"))
+        XCTAssertTrue(reviewSource.contains("resolvedStatesByCandidateId[candidate.candidateId]"))
+        XCTAssertTrue(reviewSource.contains(".id(candidate.candidateId)"))
+    }
+
     func testWorkspaceSearchCommandRequestsToolbarFocus() {
         let store = WorkspaceStore()
         let initialFocusToken = store.workspaceSearchFocusToken

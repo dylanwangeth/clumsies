@@ -198,30 +198,20 @@ impl ServerRepository {
         expected_ref: Option<&str>,
         request: CreateReviewRequest,
     ) -> Result<ReviewDetail, ServerError> {
-        let requested_drafts = request
+        let draft_ids = request
             .drafts
             .iter()
-            .map(|draft| (draft.draft_id.clone(), draft.expected_draft_version))
+            .map(|draft| draft.draft_id.clone())
             .collect::<Vec<_>>();
-        let Some((primary_draft_id, _)) = requested_drafts.first() else {
+        let Some(primary_draft_id) = draft_ids.first() else {
             return Err(ServerError::InvalidRequest(
                 "a review must contain at least one draft".to_owned(),
             ));
         };
-        let distinct_draft_ids = requested_drafts
-            .iter()
-            .map(|(draft_id, _)| draft_id)
-            .collect::<BTreeSet<_>>();
-        if distinct_draft_ids.len() != requested_drafts.len() {
+        let distinct_draft_ids = draft_ids.iter().collect::<BTreeSet<_>>();
+        if distinct_draft_ids.len() != draft_ids.len() {
             return Err(ServerError::InvalidRequest(
                 "a review must not contain duplicate drafts".to_owned(),
-            ));
-        }
-        if requested_drafts.len() > 1
-            && (request.candidate_id.is_some() || request.resolved_state.is_some())
-        {
-            return Err(ServerError::InvalidRequest(
-                "reconcile every draft before requesting a multi-file review".to_owned(),
             ));
         }
         if let Some((review_id, version)) =
@@ -237,27 +227,15 @@ impl ServerRepository {
                         drafts: request.drafts,
                         title: request.title,
                         description: request.description,
-                        candidate_id: request.candidate_id,
-                        resolved_state: request.resolved_state,
                     },
                 )
                 .await;
         }
 
-        let draft_ids = requested_drafts
-            .iter()
-            .map(|(draft_id, _)| draft_id.clone())
-            .collect::<Vec<_>>();
         let mut tx = self.pool().begin().await?;
         postgres::ensure_drafts_authored_by(&mut tx, author_user_id, &draft_ids).await?;
-        let outcome = postgres::create_review(
-            &mut tx,
-            author_user_id,
-            expected_ref,
-            request,
-            requested_drafts,
-        )
-        .await?;
+        let outcome =
+            postgres::create_review(&mut tx, author_user_id, expected_ref, request).await?;
         tx.commit().await?;
         outcome.into_result()
     }
@@ -361,17 +339,19 @@ impl ServerRepository {
                 "a review must contain at least one draft".to_owned(),
             ));
         };
-        let distinct_draft_ids = request
+        let draft_ids = request
             .drafts
             .iter()
-            .map(|draft| &draft.draft_id)
-            .collect::<BTreeSet<_>>();
-        if distinct_draft_ids.len() != request.drafts.len() {
+            .map(|draft| draft.draft_id.clone())
+            .collect::<Vec<_>>();
+        let distinct_draft_ids = draft_ids.iter().collect::<BTreeSet<_>>();
+        if distinct_draft_ids.len() != draft_ids.len() {
             return Err(ServerError::InvalidRequest(
                 "a review must not contain duplicate drafts".to_owned(),
             ));
         }
         let mut tx = self.pool().begin().await?;
+        postgres::ensure_drafts_authored_by(&mut tx, author_user_id, &draft_ids).await?;
         let outcome = postgres::create_review_submission(
             &mut tx,
             review_id,

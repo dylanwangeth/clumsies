@@ -3055,35 +3055,103 @@ pub(super) async fn create_review_decision(
     Ok(detail)
 }
 
+async fn missing_review_reconciliation_candidate(
+    tx: &mut Transaction<'_, Postgres>,
+    current_ref: &Option<String>,
+    requests: &[ReviewDraftRequest],
+) -> Result<Option<ServerError>, ServerError> {
+    for request in requests {
+        if request.candidate_id.is_some() {
+            continue;
+        }
+        let row = sqlx::query("SELECT base_commit_id FROM drafts WHERE draft_id = $1 FOR UPDATE")
+            .bind(&request.draft_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| ServerError::not_found("draft", &request.draft_id))?;
+        if row.try_get::<Option<String>, _>("base_commit_id")? == *current_ref {
+            continue;
+        }
+        let candidate = create_reconciliation_candidate_in_tx(
+            tx,
+            &request.draft_id,
+            request.expected_draft_version,
+        )
+        .await?;
+        return Ok(Some(ServerError::ReconciliationRequired {
+            draft_id: request.draft_id.clone(),
+            candidate_id: candidate.candidate_id,
+            current_commit_id: candidate.current_commit_id,
+        }));
+    }
+    Ok(None)
+}
+
+async fn reconcile_review_draft(
+    tx: &mut Transaction<'_, Postgres>,
+    author_user_id: &str,
+    expected_ref: Option<&str>,
+    current_ref: &Option<String>,
+    request: &ReviewDraftRequest,
+    base_commit_id: Option<String>,
+) -> Result<(), ServerError> {
+    if base_commit_id.as_deref() == current_ref.as_deref() {
+        if request.candidate_id.is_some() || request.resolved_state.is_some() {
+            return Err(ServerError::InvalidRequest(
+                "a current draft must not submit reconciliation data".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let candidate_id = request.candidate_id.clone().ok_or_else(|| {
+        ServerError::InvalidRequest("a behind draft must submit reconciliation data".to_owned())
+    })?;
+    apply_draft_rebase_in_tx(
+        tx,
+        &request.draft_id,
+        author_user_id,
+        expected_ref,
+        CreateDraftRebaseRequest {
+            candidate_id,
+            expected_draft_version: request.expected_draft_version,
+            resolved_state: request.resolved_state.clone(),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn create_review(
     tx: &mut Transaction<'_, Postgres>,
     author_user_id: &str,
     expected_ref: Option<&str>,
     request: CreateReviewRequest,
-    requested_drafts: Vec<(String, i64)>,
 ) -> Result<CommitOutcome<ReviewDetail>, ServerError> {
-    let (primary_draft_id, primary_expected_version) = requested_drafts
+    let primary_request = request
+        .drafts
         .first()
-        .cloned()
         .expect("service validates non-empty review drafts");
-    let mut row = sqlx::query(
+    let primary_draft_id = &primary_request.draft_id;
+    let primary_expected_version = primary_request.expected_draft_version;
+    let row = sqlx::query(
         "SELECT draft_id, project_id, author_user_id, title, description, status, version,
                     base_commit_id, resource_scope
              FROM drafts
              WHERE draft_id = $1
              FOR UPDATE",
     )
-    .bind(&primary_draft_id)
+    .bind(primary_draft_id)
     .fetch_optional(&mut **tx)
     .await?
-    .ok_or_else(|| ServerError::not_found("draft", &primary_draft_id))?;
+    .ok_or_else(|| ServerError::not_found("draft", primary_draft_id))?;
 
     if row.try_get::<String, _>("author_user_id")? != author_user_id {
         return Err(ServerError::Forbidden(
             "only the draft author can create its review".to_owned(),
         ));
     }
-    let mut status: String = row.try_get("status")?;
+    let status: String = row.try_get("status")?;
     let version: i64 = row.try_get("version")?;
     if status != "open" {
         return Err(ServerError::invalid_transition(
@@ -3109,57 +3177,22 @@ pub(super) async fn create_review(
             current_ref.as_deref(),
         ));
     }
+    if let Some(error) =
+        missing_review_reconciliation_candidate(tx, &current_ref, &request.drafts).await?
+    {
+        return Ok(CommitOutcome::Failure(error));
+    }
     let base_commit_id: Option<String> = row.try_get("base_commit_id")?;
-    if base_commit_id != current_ref {
-        let Some(candidate_id) = request.candidate_id.clone() else {
-            let candidate = create_reconciliation_candidate_in_tx(
-                tx,
-                &primary_draft_id,
-                primary_expected_version,
-            )
-            .await?;
-            return Ok(CommitOutcome::Failure(
-                ServerError::ReconciliationRequired {
-                    draft_id: primary_draft_id,
-                    candidate_id: candidate.candidate_id,
-                    current_commit_id: candidate.current_commit_id,
-                },
-            ));
-        };
-        apply_draft_rebase_in_tx(
-            tx,
-            &primary_draft_id,
-            author_user_id,
-            expected_ref,
-            CreateDraftRebaseRequest {
-                candidate_id,
-                expected_draft_version: primary_expected_version,
-                resolved_state: request.resolved_state.clone(),
-            },
-        )
-        .await?;
-        row = sqlx::query(
-            "SELECT draft_id, project_id, author_user_id, title, description, status, version,
-                        base_commit_id, resource_scope
-                 FROM drafts WHERE draft_id = $1 FOR UPDATE",
-        )
-        .bind(&primary_draft_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        status = row.try_get("status")?;
-    } else if request.candidate_id.is_some() || request.resolved_state.is_some() {
-        return Err(ServerError::InvalidRequest(
-            "a current draft must not submit reconciliation data".to_owned(),
-        ));
-    }
-    if status != "open" {
-        return Err(ServerError::invalid_transition(
-            "draft",
-            &status,
-            "submitted",
-        ));
-    }
-    let operations = load_draft_operations(tx, &primary_draft_id).await?;
+    reconcile_review_draft(
+        tx,
+        author_user_id,
+        expected_ref,
+        &current_ref,
+        primary_request,
+        base_commit_id,
+    )
+    .await?;
+    let operations = load_draft_operations(tx, primary_draft_id).await?;
     if operations.is_empty() {
         return Err(ServerError::InvalidRequest(
             "a review draft must contain at least one operation".to_owned(),
@@ -3177,15 +3210,15 @@ pub(super) async fn create_review(
         .await?;
     }
 
-    for (additional_draft_id, expected_version) in requested_drafts.iter().skip(1) {
+    for requested in request.drafts.iter().skip(1) {
         let additional = sqlx::query(
             "SELECT project_id, author_user_id, status, version, base_commit_id, resource_scope
                  FROM drafts WHERE draft_id = $1 FOR UPDATE",
         )
-        .bind(additional_draft_id)
+        .bind(&requested.draft_id)
         .fetch_optional(&mut **tx)
         .await?
-        .ok_or_else(|| ServerError::not_found("draft", additional_draft_id))?;
+        .ok_or_else(|| ServerError::not_found("draft", &requested.draft_id))?;
         if additional.try_get::<String, _>("author_user_id")? != author_user_id {
             return Err(ServerError::Forbidden(
                 "only the draft author can create its review".to_owned(),
@@ -3200,10 +3233,10 @@ pub(super) async fn create_review(
             ));
         }
         let actual_version: i64 = additional.try_get("version")?;
-        if actual_version != *expected_version {
+        if actual_version != requested.expected_draft_version {
             return Err(ServerError::version_conflict(
                 "draft",
-                *expected_version,
+                requested.expected_draft_version,
                 actual_version,
             ));
         }
@@ -3220,12 +3253,17 @@ pub(super) async fn create_review(
                 "all drafts in a review must use the same scope".to_owned(),
             ));
         }
-        if additional.try_get::<Option<String>, _>("base_commit_id")? != current_ref {
-            return Err(ServerError::InvalidRequest(format!(
-                "draft {additional_draft_id} must be reconciled before requesting this review"
-            )));
-        }
-        let additional_operations = load_draft_operations(tx, additional_draft_id).await?;
+        let base_commit_id: Option<String> = additional.try_get("base_commit_id")?;
+        reconcile_review_draft(
+            tx,
+            author_user_id,
+            expected_ref,
+            &current_ref,
+            requested,
+            base_commit_id,
+        )
+        .await?;
+        let additional_operations = load_draft_operations(tx, &requested.draft_id).await?;
         if additional_operations.is_empty() {
             return Err(ServerError::InvalidRequest(
                 "a review draft must contain at least one operation".to_owned(),
@@ -3256,13 +3294,13 @@ pub(super) async fn create_review(
              WHERE draft_id = $1
              RETURNING project_id, version",
     )
-    .bind(&primary_draft_id)
+    .bind(primary_draft_id)
     .fetch_one(&mut **tx)
     .await?;
-    invalidate_draft_candidates(tx, &primary_draft_id).await?;
+    invalidate_draft_candidates(tx, primary_draft_id).await?;
     insert_draft_event(
         tx,
-        &primary_draft_id,
+        primary_draft_id,
         &draft_event_row.try_get::<String, _>("project_id")?,
         DraftEventType::Submitted,
         draft_event_row.try_get("version")?,
@@ -3270,20 +3308,20 @@ pub(super) async fn create_review(
     )
     .await?;
 
-    for (additional_draft_id, _) in requested_drafts.iter().skip(1) {
+    for requested in request.drafts.iter().skip(1) {
         let additional_event_row = sqlx::query(
             "UPDATE drafts
                  SET status = 'submitted', version = version + 1, updated_at = now()
                  WHERE draft_id = $1
                  RETURNING project_id, version",
         )
-        .bind(additional_draft_id)
+        .bind(&requested.draft_id)
         .fetch_one(&mut **tx)
         .await?;
-        invalidate_draft_candidates(tx, additional_draft_id).await?;
+        invalidate_draft_candidates(tx, &requested.draft_id).await?;
         insert_draft_event(
             tx,
-            additional_draft_id,
+            &requested.draft_id,
             &additional_event_row.try_get::<String, _>("project_id")?,
             DraftEventType::Submitted,
             additional_event_row.try_get("version")?,
@@ -3300,7 +3338,7 @@ pub(super) async fn create_review(
              VALUES ($1, $2, $3, $4, $5, $6, 'open', 1)",
     )
     .bind(&review_id)
-    .bind(&primary_draft_id)
+    .bind(primary_draft_id)
     .bind(&project_id)
     .bind(author_user_id)
     .bind(&title)
@@ -3308,13 +3346,13 @@ pub(super) async fn create_review(
     .execute(&mut **tx)
     .await?;
 
-    for (ordinal, (draft_id, _)) in requested_drafts.iter().enumerate() {
+    for (ordinal, requested) in request.drafts.iter().enumerate() {
         sqlx::query(
             "INSERT INTO review_drafts (review_id, draft_id, ordinal)
                  VALUES ($1, $2, $3)",
         )
         .bind(&review_id)
-        .bind(draft_id)
+        .bind(&requested.draft_id)
         .bind(ordinal as i32)
         .execute(&mut **tx)
         .await?;
@@ -3416,44 +3454,21 @@ pub(super) async fn create_review_submission(
             current_ref.as_deref(),
         ));
     }
-    let base_commit_id: Option<String> = row.try_get("base_commit_id")?;
-    if base_commit_id != current_ref {
-        let Some(candidate_id) = request.candidate_id.clone() else {
-            let candidate =
-                create_reconciliation_candidate_in_tx(tx, &draft_id, primary_expected_version)
-                    .await?;
-            return Ok(CommitOutcome::Failure(
-                ServerError::ReconciliationRequired {
-                    draft_id,
-                    candidate_id: candidate.candidate_id,
-                    current_commit_id: candidate.current_commit_id,
-                },
-            ));
-        };
-        apply_draft_rebase_in_tx(
-            tx,
-            &draft_id,
-            author_user_id,
-            expected_ref,
-            CreateDraftRebaseRequest {
-                candidate_id,
-                expected_draft_version: primary_expected_version,
-                resolved_state: request.resolved_state.clone(),
-            },
-        )
-        .await?;
-    } else if request.candidate_id.is_some() || request.resolved_state.is_some() {
-        return Err(ServerError::InvalidRequest(
-            "a current draft must not submit reconciliation data".to_owned(),
-        ));
-    }
-    if request.drafts.len() > 1
-        && (request.candidate_id.is_some() || request.resolved_state.is_some())
+    if let Some(error) =
+        missing_review_reconciliation_candidate(tx, &current_ref, &request.drafts).await?
     {
-        return Err(ServerError::InvalidRequest(
-            "reconcile every draft before resubmitting a multi-file review".to_owned(),
-        ));
+        return Ok(CommitOutcome::Failure(error));
     }
+    let base_commit_id: Option<String> = row.try_get("base_commit_id")?;
+    reconcile_review_draft(
+        tx,
+        author_user_id,
+        expected_ref,
+        &current_ref,
+        primary_request,
+        base_commit_id,
+    )
+    .await?;
     let operations = load_draft_operations(tx, &draft_id).await?;
     if operations.is_empty() {
         return Err(ServerError::InvalidRequest(
@@ -3521,12 +3536,16 @@ pub(super) async fn create_review_submission(
                 "all drafts in a review must share one project and scope".to_owned(),
             ));
         }
-        if additional.try_get::<Option<String>, _>("base_commit_id")? != current_ref {
-            return Err(ServerError::InvalidRequest(format!(
-                "draft {} must be reconciled before resubmitting this review",
-                requested.draft_id
-            )));
-        }
+        let base_commit_id: Option<String> = additional.try_get("base_commit_id")?;
+        reconcile_review_draft(
+            tx,
+            author_user_id,
+            expected_ref,
+            &current_ref,
+            requested,
+            base_commit_id,
+        )
+        .await?;
         let operations = load_draft_operations(tx, &requested.draft_id).await?;
         if operations.is_empty() {
             return Err(ServerError::InvalidRequest(

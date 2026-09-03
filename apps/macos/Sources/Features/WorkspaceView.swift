@@ -530,12 +530,15 @@ struct WorkspaceView: View {
         .sheet(isPresented: $showsProjectReviewRequest) {
             ReviewRequestSheet(
                 initialTitle: "Update \(store.activeProject?.name ?? "project") memory",
-                loadCandidate: { throw ReviewRequestError.reconcileDirectoryDrafts }
-            ) { title, description, _, _ in
+                loadCandidates: {
+                    try await store.reconciliationCandidates(for: pendingProjectReviewDrafts)
+                }
+            ) { title, description, reconciliations in
                 try await store.requestReview(
                     for: pendingProjectReviewDrafts,
                     title: title,
-                    description: description
+                    description: description,
+                    reconciliations: reconciliations
                 )
             }
         }
